@@ -3,12 +3,12 @@
 
 //! Observed pipeline status and aggregation logic per core.
 
-use crate::CoreId;
 use crate::conditions::{
     Condition, ConditionKind, ConditionReason, ConditionState, ConditionStatus,
 };
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
+use otap_df_config::CoreId;
 use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
 use serde::Serialize;
 use serde::ser::SerializeStruct;
@@ -52,6 +52,16 @@ impl PipelineStatus {
             .values()
             .filter(|c| matches!(c.phase, PipelinePhase::Running))
             .count()
+    }
+
+    #[must_use]
+    /// Returns true if all cores have reached a terminal state (Stopped, Deleted, Failed, or Rejected).
+    /// Returns false if there are no cores tracked or if any core is still active.
+    pub fn is_terminated(&self) -> bool {
+        if self.cores.is_empty() {
+            return false;
+        }
+        self.cores.values().all(|c| c.phase.is_terminal())
     }
 
     #[must_use]

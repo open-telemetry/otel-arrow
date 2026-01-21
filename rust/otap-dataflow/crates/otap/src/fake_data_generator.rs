@@ -129,7 +129,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             None => "uncapped".to_string(),
         };
         otel_info!(
-            "Receiver.Start",
+            "receiver.start",
             signals_per_second = rate_limit_status,
             max_batch_size = max_batch_size,
             metrics_per_iteration = metric_count,
@@ -180,7 +180,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 let remaining_time = wait_till - Instant::now();
                                 if remaining_time.as_secs_f64() > 0.0 {
                                     otel_debug!(
-                                        "RateLimit.Sleep",
+                                        "rate_limit.sleep",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
                                         message = "Sleeping to maintain configured signal rate"
                                     );
@@ -189,7 +189,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 // ToDo: Handle negative time, not able to keep up with specified rate limit
                             } else {
                                 otel_debug!(
-                                    "RateLimit.Uncapped",
+                                    "rate_limit.uncapped",
                                     message = "Rate limiting disabled, continuing immediately"
                                 );
                             }
@@ -472,7 +472,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::metrics::v1::MetricsData;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
     use otap_df_pdata::proto::opentelemetry::trace::v1::TracesData;
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::future::Future;
     use std::pin::Pin;
     use tokio::time::{Duration, sleep};
@@ -706,8 +706,8 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver
@@ -786,8 +786,8 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver
@@ -862,8 +862,8 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
         ));
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle.clone());
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
         // create our receiver

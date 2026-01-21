@@ -6,10 +6,11 @@
 use crate::attributes::{
     ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
 };
+use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::registry::MetricsRegistryHandle;
+use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
@@ -83,7 +84,7 @@ static CONTAINER_ID: LazyLock<Cow<'static, str>> =
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
-    metrics_registry_handle: MetricsRegistryHandle,
+    telemetry_registry_handle: TelemetryRegistryHandle,
     process_instance_id: Cow<'static, str>,
     host_id: Cow<'static, str>,
     container_id: Cow<'static, str>,
@@ -105,9 +106,9 @@ pub struct PipelineContext {
 
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
-    pub fn new(metrics_registry_handle: MetricsRegistryHandle) -> Self {
+    pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
-            metrics_registry_handle,
+            telemetry_registry_handle,
             process_instance_id: PROCESS_INSTANCE_ID.clone(),
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
@@ -174,34 +175,96 @@ impl PipelineContext {
         self.core_id
     }
 
-    /// Registers a new multivariate metrics instance with the metrics registry.
+    /// Registers a metric set for the given entity key and tracks it in node telemetry if present.
+    #[must_use]
+    pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+        entity_key: EntityKey,
+    ) -> MetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_for_entity::<T>(entity_key);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Registers a metric set for the current node entity.
     #[must_use]
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.register_metric_set::<T>()
+        } else if let Some(entity_key) = node_entity_key() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_metric_set_for_entity::<T>(entity_key)
+        } else {
+            // Tests often construct nodes directly without the engine's entity scoping. So the
+            // following code path is only enabled for test builds.
+            #[cfg(feature = "test-utils")]
+            {
+                self.controller_context
+                    .telemetry_registry_handle
+                    .register_metric_set::<T>(self.node_attribute_set())
+            }
+            #[cfg(not(feature = "test-utils"))]
+            {
+                panic!(
+                    "node entity key not set; ensure node entity is registered and instrumented"
+                );
+            }
+        }
+    }
+
+    /// Registers the pipeline entity for this context.
+    #[must_use]
+    pub fn register_pipeline_entity(&self) -> EntityKey {
         self.controller_context
-            .metrics_registry_handle
-            .register::<T>(self.node_attribute_set())
+            .telemetry_registry_handle
+            .register_entity(self.pipeline_attribute_set())
+    }
+
+    /// Registers the node entity for this context.
+    #[must_use]
+    pub fn register_node_entity(&self) -> EntityKey {
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(self.node_attribute_set())
+    }
+
+    fn engine_attribute_set(&self) -> EngineAttributeSet {
+        use crate::attributes::ResourceAttributeSet;
+
+        EngineAttributeSet {
+            resource_attrs: ResourceAttributeSet {
+                process_instance_id: self.controller_context.process_instance_id.clone(),
+                host_id: self.controller_context.host_id.clone(),
+                container_id: self.controller_context.container_id.clone(),
+            },
+            core_id: self.core_id,
+            numa_node_id: self.controller_context.numa_node_id,
+        }
+    }
+
+    /// Returns the pipeline attribute set for the current pipeline context.
+    #[must_use]
+    pub fn pipeline_attribute_set(&self) -> PipelineAttributeSet {
+        PipelineAttributeSet {
+            engine_attrs: self.engine_attribute_set(),
+            pipeline_id: self.pipeline_id.clone(),
+            pipeline_group_id: self.pipeline_group_id.clone(),
+        }
     }
 
     /// Returns the node attribute set for the current node context.
     #[must_use]
     pub fn node_attribute_set(&self) -> NodeAttributeSet {
-        use crate::attributes::ResourceAttributeSet;
-
         NodeAttributeSet {
-            pipeline_attrs: PipelineAttributeSet {
-                engine_attrs: EngineAttributeSet {
-                    resource_attrs: ResourceAttributeSet {
-                        process_instance_id: self.controller_context.process_instance_id.clone(),
-                        host_id: self.controller_context.host_id.clone(),
-                        container_id: self.controller_context.container_id.clone(),
-                    },
-                    core_id: self.core_id,
-                    numa_node_id: self.controller_context.numa_node_id,
-                },
-                pipeline_id: self.pipeline_id.clone(),
-            },
+            pipeline_attrs: self.pipeline_attribute_set(),
             node_id: self.node_id.clone(),
             node_urn: self.node_urn.clone(),
             node_type: self.node_kind.into(),
@@ -228,10 +291,32 @@ impl PipelineContext {
         }
     }
 
+    /// Registers a channel entity for the given channel attributes.
+    #[must_use]
+    pub fn register_channel_entity(
+        &self,
+        channel_id: Cow<'static, str>,
+        channel_kind: &'static str,
+        channel_mode: &'static str,
+        channel_type: &'static str,
+        channel_impl: &'static str,
+    ) -> EntityKey {
+        let attrs = self.channel_attribute_set(
+            channel_id,
+            channel_kind,
+            channel_mode,
+            channel_type,
+            channel_impl,
+        );
+        self.controller_context
+            .telemetry_registry_handle
+            .register_entity(attrs)
+    }
+
     /// Returns a metrics registry handle.
     #[must_use]
-    pub fn metrics_registry(&self) -> MetricsRegistryHandle {
-        self.controller_context.metrics_registry_handle.clone()
+    pub fn metrics_registry(&self) -> TelemetryRegistryHandle {
+        self.controller_context.telemetry_registry_handle.clone()
     }
 
     /// Returns a new pipeline context with the given node identifiers.

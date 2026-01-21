@@ -40,6 +40,10 @@ impl ValueAccessor {
         &self.selectors
     }
 
+    pub fn into_selectors(self) -> Vec<ScalarExpression> {
+        self.selectors
+    }
+
     pub fn get_selectors_mut(&mut self) -> &mut [ScalarExpression] {
         &mut self.selectors
     }

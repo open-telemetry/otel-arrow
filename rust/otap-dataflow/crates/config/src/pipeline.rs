@@ -8,13 +8,13 @@ pub mod service;
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
-use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::service::ServiceConfig;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -42,11 +42,19 @@ pub struct PipelineConfig {
     #[serde(default)]
     settings: PipelineSettings,
 
+    /// Quota for this pipeline.
+    #[serde(default)]
+    quota: Quota,
+
     /// All nodes in this pipeline, keyed by node ID.
-    ///
-    /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
-    /// across multiple cores/threads without cloning the entire configuration.
-    nodes: HashMap<NodeId, Arc<NodeUserConfig>>,
+    #[serde(default)]
+    nodes: PipelineNodes,
+
+    /// Internal telemetry pipeline nodes. These have the same structure
+    /// as `nodes` but are independent and isolated to a separate internal
+    /// telemetry runtime.
+    #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
+    internal: PipelineNodes,
 
     /// Service-level telemetry configuration.
     #[serde(default)]
@@ -68,6 +76,255 @@ pub enum PipelineType {
     /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
     Otap,
 }
+
+/// Pipeline quota configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Quota {
+    /// CPU core allocation strategy for this pipeline.
+    #[serde(default)]
+    pub core_allocation: CoreAllocation,
+}
+
+/// Defines how CPU cores should be allocated for pipeline execution.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CoreAllocation {
+    /// Use all available CPU cores.
+    #[default]
+    AllCores,
+    /// Use a specific number of CPU cores (starting from core 0).
+    /// If the requested number exceeds available cores, use all available cores.
+    CoreCount {
+        /// Number of cores to use. If 0, uses all available cores.
+        count: usize,
+    },
+    /// Defines a set of CPU cores should be allocated for pipeline execution.
+    CoreSet {
+        /// Core set defined as a set of ranges.
+        set: Vec<CoreRange>,
+    },
+}
+
+impl Display for CoreAllocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CoreAllocation::AllCores => write!(f, "*"),
+            CoreAllocation::CoreCount { count } => write!(f, "[{count} cores]"),
+            CoreAllocation::CoreSet { set } => {
+                let mut first = true;
+                for item in set {
+                    if !first {
+                        write!(f, ",")?
+                    }
+                    write!(f, "{item}")?;
+                    first = false
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Defines a range of CPU cores should be allocated for pipeline execution.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub struct CoreRange {
+    /// Start core ID (inclusive).
+    pub start: usize,
+    /// End core ID (inclusive).
+    pub end: usize,
+}
+
+impl Display for CoreRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}", self.start)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
+    }
+}
+
+/// A collection of nodes forming a pipeline graph.
+///
+/// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
+/// across multiple cores/threads without cloning the entire configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(transparent)]
+pub struct PipelineNodes(HashMap<NodeId, Arc<NodeUserConfig>>);
+
+impl PipelineNodes {
+    /// Returns true if the node collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of nodes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns a reference to the node with the given ID, if it exists.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Arc<NodeUserConfig>> {
+        self.0.get(id)
+    }
+
+    /// Returns true if a node with the given ID exists.
+    #[must_use]
+    pub fn contains_key(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
+    /// Returns an iterator visiting all nodes.
+    pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
+        self.0.iter()
+    }
+
+    /// Returns an iterator over node IDs.
+    pub fn keys(&self) -> impl Iterator<Item = &NodeId> {
+        self.0.keys()
+    }
+
+    /// Validate the node graph structure.
+    ///
+    /// Checks for:
+    /// - Invalid hyper-edges (missing target nodes)
+    /// - Cycles in the DAG
+    pub fn validate(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        errors: &mut Vec<Error>,
+    ) {
+        self.validate_hyper_edges(pipeline_group_id, pipeline_id, errors);
+
+        // Only check for cycles if no hyper-edge errors
+        if errors.is_empty() {
+            for cycle in self.detect_cycles() {
+                errors.push(Error::CycleDetected {
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                    nodes: cycle,
+                });
+            }
+        }
+    }
+
+    /// Validate hyper-edges (check that all destination nodes exist).
+    fn validate_hyper_edges(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        errors: &mut Vec<Error>,
+    ) {
+        for (node_id, node) in self.0.iter() {
+            for edge in node.out_ports.values() {
+                let missing_targets: Vec<_> = edge
+                    .destinations
+                    .iter()
+                    .filter(|target| !self.0.contains_key(*target))
+                    .cloned()
+                    .collect();
+
+                if !missing_targets.is_empty() {
+                    errors.push(Error::InvalidHyperEdgeSpec {
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                        source_node: node_id.clone(),
+                        missing_source: false,
+                        details: Box::new(HyperEdgeSpecDetails {
+                            target_nodes: edge.destinations.iter().cloned().collect(),
+                            dispatch_strategy: edge.dispatch_strategy.clone(),
+                            missing_targets,
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Detect cycles in the node graph.
+    fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
+        fn visit(
+            node: &NodeId,
+            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
+            visiting: &mut HashSet<NodeId>,
+            visited: &mut HashSet<NodeId>,
+            current_path: &mut Vec<NodeId>,
+            cycles: &mut Vec<Vec<NodeId>>,
+        ) {
+            if visited.contains(node) {
+                return;
+            }
+            if visiting.contains(node) {
+                if let Some(pos) = current_path.iter().position(|n| n == node) {
+                    cycles.push(current_path[pos..].to_vec());
+                }
+                return;
+            }
+            _ = visiting.insert(node.clone());
+            current_path.push(node.clone());
+
+            if let Some(n) = nodes.get(node) {
+                for edge in n.out_ports.values() {
+                    for tgt in &edge.destinations {
+                        visit(tgt, nodes, visiting, visited, current_path, cycles);
+                    }
+                }
+            }
+
+            _ = visiting.remove(node);
+            _ = visited.insert(node.clone());
+            _ = current_path.pop();
+        }
+
+        let mut visiting = HashSet::new();
+        let mut current_path = Vec::new();
+        let mut visited = HashSet::new();
+        let mut cycles = Vec::new();
+
+        for node in self.0.keys() {
+            if !visited.contains(node) {
+                visit(
+                    node,
+                    &self.0,
+                    &mut visiting,
+                    &mut visited,
+                    &mut current_path,
+                    &mut cycles,
+                );
+            }
+        }
+
+        cycles
+    }
+}
+
+impl std::ops::Index<&str> for PipelineNodes {
+    type Output = Arc<NodeUserConfig>;
+
+    fn index(&self, id: &str) -> &Self::Output {
+        &self.0[id]
+    }
+}
+
+impl IntoIterator for PipelineNodes {
+    type Item = (NodeId, Arc<NodeUserConfig>);
+    type IntoIter = std::collections::hash_map::IntoIter<NodeId, Arc<NodeUserConfig>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
+    fn from_iter<T: IntoIterator<Item = (NodeId, Arc<NodeUserConfig>)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
@@ -84,10 +341,6 @@ pub struct PipelineSettings {
     /// The default size of the pdata channels.
     #[serde(default = "default_pdata_channel_size")]
     pub default_pdata_channel_size: usize,
-
-    /// Observed state settings.
-    #[serde(default)]
-    pub observed_state: ObservedStateSettings,
 
     /// Health policy.
     #[serde(default)]
@@ -156,7 +409,6 @@ impl Default for PipelineSettings {
             default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
             default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
             default_pdata_channel_size: default_pdata_channel_size(),
-            observed_state: ObservedStateSettings::default(),
             health_policy: HealthPolicy::default(),
             telemetry: TelemetrySettings::default(),
         }
@@ -262,6 +514,23 @@ impl PipelineConfig {
         &self.settings
     }
 
+    /// Returns the quota configuration for this pipeline.
+    #[must_use]
+    pub fn quota(&self) -> &Quota {
+        &self.quota
+    }
+
+    /// Sets the quota configuration for this pipeline.
+    pub fn set_quota(&mut self, quota: Quota) {
+        self.quota = quota;
+    }
+
+    /// Returns a reference to the main pipeline nodes.
+    #[must_use]
+    pub fn nodes(&self) -> &PipelineNodes {
+        &self.nodes
+    }
+
     /// Returns an iterator visiting all nodes in the pipeline.
     pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.nodes.iter()
@@ -278,13 +547,29 @@ impl PipelineConfig {
         &self.service
     }
 
+    /// Returns true if the internal telemetry pipeline is configured.
+    #[must_use]
+    pub fn has_internal_pipeline(&self) -> bool {
+        !self.internal.is_empty()
+    }
+
+    /// Returns a reference to the internal pipeline nodes.
+    #[must_use]
+    pub fn internal_nodes(&self) -> &PipelineNodes {
+        &self.internal
+    }
+
+    /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
+    pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
+        self.internal.iter()
+    }
+
     /// Validate the pipeline specification.
     ///
     /// This method checks for:
     /// - Duplicate node IDs
     /// - Duplicate out-ports (same source node + port name)
     /// - Invalid hyper-edges (missing source or target nodes)
-    /// - Cycles in the DAG
     pub fn validate(
         &self,
         pipeline_group_id: &PipelineGroupId,
@@ -292,41 +577,20 @@ impl PipelineConfig {
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
-        // Check for invalid hyper-edges (references to non-existent nodes)
-        for (node_id, node) in self.nodes.iter() {
-            for edge in node.out_ports.values() {
-                let mut missing_targets = Vec::new();
+        // Validate main pipeline
+        self.nodes
+            .validate(pipeline_group_id, pipeline_id, &mut errors);
 
-                for target in &edge.destinations {
-                    if !self.nodes.contains_key(target) {
-                        missing_targets.push(target.clone());
-                    }
-                }
-
-                if !missing_targets.is_empty() {
-                    errors.push(Error::InvalidHyperEdgeSpec {
-                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                        source_node: node_id.clone(),
-                        missing_source: false, // source exists since we're iterating over nodes
-                        details: Box::new(HyperEdgeSpecDetails {
-                            target_nodes: edge.destinations.iter().cloned().collect(),
-                            dispatch_strategy: edge.dispatch_strategy.clone(),
-                            missing_targets,
-                        }),
-                    });
-                }
-            }
-        }
-
-        // Check for cycles if no errors so far
-        if errors.is_empty() {
-            let cycles = self.detect_cycles();
-            for cycle in cycles {
-                errors.push(Error::CycleDetected {
-                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                    nodes: cycle,
-                });
-            }
+        // Validate internal pipeline if present
+        if !self.internal.is_empty() {
+            // TODO: the location of the internal telemetry pipeline
+            // nodes is subject to change. Temporarily, we append
+            // ("_internal") to the pipeline_id. We need a way to
+            // refer to the set of node defining the internal
+            // pipeline.
+            let internal_id: PipelineId = format!("{}_internal", &pipeline_id).into();
+            self.internal
+                .validate(pipeline_group_id, &internal_id, &mut errors);
         }
 
         if !errors.is_empty() {
@@ -335,65 +599,13 @@ impl PipelineConfig {
             Ok(())
         }
     }
-
-    fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
-        fn visit(
-            node: &NodeId,
-            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
-            visiting: &mut HashSet<NodeId>,
-            visited: &mut HashSet<NodeId>,
-            current_path: &mut Vec<NodeId>,
-            cycles: &mut Vec<Vec<NodeId>>,
-        ) {
-            if visited.contains(node) {
-                return;
-            }
-            if visiting.contains(node) {
-                // Cycle found
-                if let Some(pos) = current_path.iter().position(|n| n == node) {
-                    cycles.push(current_path[pos..].to_vec());
-                }
-                return;
-            }
-            _ = visiting.insert(node.clone());
-            current_path.push(node.clone());
-
-            if let Some(n) = nodes.get(node) {
-                for edge in n.out_ports.values() {
-                    for tgt in &edge.destinations {
-                        visit(tgt, nodes, visiting, visited, current_path, cycles);
-                    }
-                }
-            }
-
-            _ = visiting.remove(node);
-            _ = visited.insert(node.clone());
-            _ = current_path.pop();
-        }
-
-        let mut visiting = HashSet::new();
-        let mut current_path = Vec::new();
-        let mut visited = HashSet::new();
-        let mut cycles = Vec::new();
-
-        for node in self.nodes.keys() {
-            if !visited.contains(node) {
-                visit(
-                    node,
-                    &self.nodes,
-                    &mut visiting,
-                    &mut visited,
-                    &mut current_path,
-                    &mut cycles,
-                );
-            }
-        }
-
-        cycles
-    }
 }
 
-/// A builder for constructing a [`PipelineConfig`].
+/// A builder for constructing a [`PipelineConfig`]. This type is used
+/// for easy testing of the PipelineNodes logic.
+///
+/// Note: does not support testing the internal pipeline build,
+/// because it is identical.
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
@@ -656,7 +868,9 @@ impl PipelineConfigBuilder {
                     .into_iter()
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
+                internal: PipelineNodes(HashMap::new()),
                 settings: PipelineSettings::default(),
+                quota: Quota::default(),
                 r#type: pipeline_type,
                 service: ServiceConfig::default(),
             };
@@ -683,8 +897,40 @@ mod tests {
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
     use crate::pipeline::service::telemetry::{AttributeValue, TelemetryConfig};
-    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
+    use crate::pipeline::{CoreAllocation, CoreRange, PipelineConfigBuilder, PipelineType};
     use serde_json::json;
+
+    #[test]
+    fn test_core_allocation_display_all_cores() {
+        let allocation = CoreAllocation::AllCores;
+        assert_eq!(allocation.to_string(), "*");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_count() {
+        let allocation = CoreAllocation::CoreCount { count: 4 };
+        assert_eq!(allocation.to_string(), "[4 cores]");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_set_single_range() {
+        let allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 0, end: 3 }],
+        };
+        assert_eq!(allocation.to_string(), "0-3");
+    }
+
+    #[test]
+    fn test_core_allocation_display_core_set_multiple_ranges() {
+        let allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 0, end: 3 },
+                CoreRange { start: 8, end: 11 },
+                CoreRange { start: 16, end: 16 },
+            ],
+        };
+        assert_eq!(allocation.to_string(), "0-3,8-11,16");
+    }
 
     #[test]
     fn test_duplicate_node_errors() {
@@ -1052,12 +1298,18 @@ mod tests {
             file_path,
         );
 
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "failed parsing {}", result.unwrap_err());
         let config = result.unwrap();
         assert_eq!(config.nodes.len(), 3);
         assert!(config.nodes.contains_key("receiver1"));
         assert!(config.nodes.contains_key("processor1"));
         assert!(config.nodes.contains_key("exporter1"));
+
+        assert_eq!(config.internal.len(), 4);
+        assert!(config.internal.contains_key("receiver1"));
+        assert!(config.internal.contains_key("processor1"));
+        assert!(config.internal.contains_key("processor2"));
+        assert!(config.internal.contains_key("exporter1"));
 
         let telemetry_config = &config.service().telemetry;
         let reporting_interval = telemetry_config.reporting_interval;

@@ -1,0 +1,10 @@
+# Idle State Performance Test - Single Core
+# Measures baseline resource consumption with no active telemetry traffic on 1 core
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "Single Core"
+    core_range: "0-0"
+    allocated_cores: 1
+    port: 8086
+    result_subdir: "1core"

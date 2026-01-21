@@ -1,6 +1,9 @@
-# Proposal: OpenTelemetry-based Tracing for our dataflow engine
+# Proposal: OpenTelemetry-based tracing for our dataflow engine
 
-## Problem Statement
+Status: Experimental - Please do not use this proposal at this stage. This
+document will most likely be deeply updated.
+
+## Problem statement
 
 Modern observability pipelines are increasingly complex. In our system, these
 pipelines are defined as Directed Acyclic Graphs (DAGs) of interconnected
@@ -23,11 +26,10 @@ traces that could be initiated outside the dataflow engine. This topic will need
 to be studied further at a later time.
 
 > Note: An RFC on the same topic was issued for the Go Collector. This document
-> is a refinement of
->
-that [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+> is a refinement of that
+> [one](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
-## System Overview
+## System overview
 
 The dataflow engine is structured as a DAG of the following node types:
 
@@ -51,7 +53,7 @@ Each node features:
 > mandatory name. However, at a higher abstraction level (e.g. in semantic
 > conventions), they are treated as a separate signal type.
 
-## Tracing Modes
+## Tracing modes
 
 - **No Tracing**: No spans emitted.
 - **Tail Sampling**: Only selected traces (e.g. errors, random sample) are
@@ -63,10 +65,12 @@ Each node features:
 > defined here, it is possible to envision an extremely efficient implementation
 > since we control all the dataflow nodes involved in an end-to-end trace.
 
-**Metrics are derived from spans before sampling**, ensuring high-fidelity
-monitoring regardless of trace sampling.
+~~**Metrics are derived from spans before sampling**, ensuring high-fidelity
+monitoring regardless of trace sampling.~~ This approach has not been adopted
+for the moment because it would involve too much memory allocation on the hot
+path.
 
-## Mapping OTEL Tracing Primitives to the DAG
+## Mapping OTEL tracing primitives to the DAG
 
 ### Trace
 
@@ -95,18 +99,18 @@ monitoring regardless of trace sampling.
   - State transitions (batch full/flush/drop)
   - Output port selection, backpressure, errors
 
-### Span Links
+### Span links
 
 - Definition: Capture relationships between spans when batches are split (
   fan-out) or merged (fan-in) across nodes.
 - Purpose: Enables lineage and parallel flow reconstruction.
 
-### Control Plane Integration
+### Control plane integration
 
 - Control actions generate events or standalone spans, linked to affected
   data spans as needed, providing operational audit trails.
 
-### Channel Utilization Tracking
+### Channel utilization tracking
 
 - Utilization Metrics (either maintained as direct metrics or derived from span,
   events/attributes):
@@ -133,7 +137,7 @@ The following attribute conventions are proposed for metrics:
 - otelcol.component.outcome: success, failure, refused
 - more to come...
 
-## Possible Visualization & Analysis
+## Possible visualization & analysis
 
 - Trace views show the full DAG traversal for any batch, including processing
   time, routing, control actions, and errors.
@@ -143,7 +147,7 @@ The following attribute conventions are proposed for metrics:
 > Idea: A connector like the service graph connector could perhaps be used to
 > graphically represent the dataflow.
 
-## Example Trace Structure
+## Example trace structure
 
 ```text
 Trace: batch-1234
@@ -169,6 +173,6 @@ Fan-out/fan-in cases are modeled with span links.
 - **Operational insight**: Track the impact and results of control-plane
   actions.
 
-## Implementation Details
+## Implementation details
 
 Not yet defined

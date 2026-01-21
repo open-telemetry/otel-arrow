@@ -2,16 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Batching for `OtapArrowRecords`
-//!
-//!
 
 use super::{OtapArrowRecords, error::Result, groups::RecordsGroup};
 use otap_df_config::SignalType;
 use std::num::NonZeroU64;
 
-/// Rebatch records to the appropriate size in a single pass.
-/// Returns error if not the same signal type.
-pub fn make_output_batches(
+/// Rebatch records to the appropriate size in a single pass, measured
+/// in items.  Requires all inputs have the same signal type.
+pub fn make_item_batches(
     signal: SignalType,
     max_items: Option<NonZeroU64>,
     records: Vec<OtapArrowRecords>,

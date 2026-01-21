@@ -26,6 +26,9 @@ otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
 
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["registry"] }
+
 fluke-hpack.workspace = true
 futures-channel.workspace = true
 futures.workspace = true
@@ -86,4 +89,8 @@ harness = false
 
 [[bench]]
 name = "otap_logs_view"
+harness = false
+
+[[bench]]
+name = "self_tracing"
 harness = false

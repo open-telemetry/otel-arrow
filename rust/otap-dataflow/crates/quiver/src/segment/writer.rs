@@ -64,7 +64,7 @@
 //!
 //! // Write directly to disk (streaming serialization)
 //! let writer = SegmentWriter::new(SegmentSeq::new(1));
-//! let (bytes_written, checksum) = writer.write_segment(&path, open_segment)?;
+//! let (bytes_written, checksum) = writer.write_segment(&path, open_segment).await?;
 //! ```
 //!
 //! [`OpenSegment`]: super::OpenSegment
@@ -134,10 +134,12 @@ impl SegmentWriter {
         self.segment_seq
     }
 
-    /// Writes an open segment directly to disk with streaming serialization.
+    /// Writes an open segment to disk with streaming serialization.
     ///
     /// This method streams each stream's IPC data directly to disk, avoiding
-    /// the need to buffer all serialized data in memory.
+    /// the need to buffer all serialized data in memory. Uses async I/O for
+    /// fsync while Arrow IPC serialization runs synchronously (Arrow doesn't
+    /// support async I/O).
     ///
     /// # Arguments
     ///
@@ -153,52 +155,84 @@ impl SegmentWriter {
     /// Returns [`SegmentError::Io`] if file operations fail.
     /// Returns [`SegmentError::Arrow`] if IPC encoding fails.
     /// Returns [`SegmentError::EmptySegment`] if the segment has no bundles.
-    pub fn write_segment(
+    pub async fn write_segment(
         &self,
         path: impl AsRef<Path>,
         segment: super::OpenSegment,
     ) -> Result<(u64, u32), SegmentError> {
-        let path = path.as_ref();
+        let path = path.as_ref().to_path_buf();
         let (accumulators, manifest) = segment.into_parts()?;
+        let segment_seq = self.segment_seq;
 
-        let file = File::create(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
-        let mut writer = BufWriter::new(file);
+        // Create the file asynchronously, then convert to std::fs::File for Arrow IPC.
+        let async_file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| SegmentError::io(path.clone(), e))?;
+        let std_file = async_file.into_std().await;
 
-        let result = self.write_streaming(&mut writer, accumulators, manifest, path)?;
+        // Run the blocking Arrow IPC serialization on Tokio's blocking thread pool.
+        // Arrow IPC requires std::io::Write, so we can't use async I/O for
+        // serialization. Using spawn_blocking prevents blocking the async
+        // runtime's worker threads during file writes.
+        let (file, result) = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || -> Result<(File, (u64, u32)), SegmentError> {
+                let mut writer = BufWriter::new(std_file);
 
-        // Ensure durability: fsync the file to guarantee data is persisted to disk.
-        // This is critical for crash recovery - without fsync, data may be lost
-        // if the system crashes before the OS flushes its caches.
-        let file = writer
-            .into_inner()
-            .map_err(|e| SegmentError::io(path.to_path_buf(), e.into_error()))?;
-        file.sync_all()
-            .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+                let segment_writer = SegmentWriter::new(segment_seq);
+                let result =
+                    segment_writer.write_streaming(&mut writer, accumulators, manifest, &path)?;
 
-        Self::set_readonly(path)?;
+                // Extract the underlying file for fsync
+                let file = writer
+                    .into_inner()
+                    .map_err(|e| SegmentError::io(path.clone(), e.into_error()))?;
+
+                Ok((file, result))
+            }
+        })
+        .await
+        .map_err(|e| SegmentError::InvalidFormat {
+            message: format!("blocking task panicked: {e}"),
+        })??;
+
+        // Async fsync - convert back to tokio::fs::File for async I/O
+        tokio::fs::File::from_std(file)
+            .sync_all()
+            .await
+            .map_err(|e| SegmentError::io(path.clone(), e))?;
+
+        // Sync parent directory to ensure the new file entry is durable.
+        // Required on some filesystems (older ext3, NFS) for crash consistency.
+        sync_parent_dir(&path).await?;
+
+        Self::set_readonly(&path).await?;
 
         Ok(result)
     }
 
     /// Sets the file to read-only after writing to enforce immutability.
-    fn set_readonly(path: &Path) -> Result<(), SegmentError> {
+    async fn set_readonly(path: &Path) -> Result<(), SegmentError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             // 0o440 = r--r----- (read-only for owner and group, no access for others)
             let permissions = std::fs::Permissions::from_mode(0o440);
-            std::fs::set_permissions(path, permissions)
+            tokio::fs::set_permissions(path, permissions)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         }
 
         #[cfg(not(unix))]
         {
             // On non-Unix platforms, use the portable read-only flag
-            let mut permissions = std::fs::metadata(path)
+            let mut permissions = tokio::fs::metadata(path)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?
                 .permissions();
             permissions.set_readonly(true);
-            std::fs::set_permissions(path, permissions)
+            tokio::fs::set_permissions(path, permissions)
+                .await
                 .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
         }
 
@@ -534,6 +568,30 @@ impl<W: Write> Write for HashingWriter<'_, W> {
     }
 }
 
+/// Syncs the parent directory to ensure new file entries are durable.
+///
+/// On POSIX systems, file creation is atomic but not necessarily durable until
+/// the parent directory is fsynced. This matters on filesystems without automatic
+/// barriers (older ext3, NFS, non-default mount options).
+///
+/// On non-Unix platforms this is a no-op since directory sync semantics differ.
+async fn sync_parent_dir(path: &Path) -> Result<(), SegmentError> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            let dir = tokio::fs::File::open(parent)
+                .await
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+            dir.sync_all()
+                .await
+                .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path; // silence unused warning
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -549,8 +607,8 @@ mod tests {
     use crate::segment::test_utils::{make_batch, test_schema};
     use crate::segment::types::{ChunkIndex, FOOTER_V1_SIZE, SEGMENT_MAGIC, StreamId};
 
-    #[test]
-    fn write_empty_segment_fails() {
+    #[tokio::test]
+    async fn write_empty_segment_fails() {
         use crate::segment::{OpenSegment, SegmentError};
 
         let dir = tempdir().unwrap();
@@ -560,12 +618,12 @@ mod tests {
         let open_segment = OpenSegment::new();
 
         // Empty segment should fail
-        let result = writer.write_segment(&path, open_segment);
+        let result = writer.write_segment(&path, open_segment).await;
         assert!(matches!(result, Err(SegmentError::EmptySegment)));
     }
 
-    #[test]
-    fn write_segment_with_single_stream() {
+    #[tokio::test]
+    async fn write_segment_with_single_stream() {
         use crate::segment::OpenSegment;
         use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
 
@@ -587,7 +645,7 @@ mod tests {
         let _ = open_segment.append(&bundle2).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         // File should be non-empty
         assert!(bytes_written > 0);
@@ -604,8 +662,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_segment_with_multiple_streams() {
+    #[tokio::test]
+    async fn write_segment_with_multiple_streams() {
         use crate::segment::OpenSegment;
         use crate::segment::test_utils::{TestBundle, slot_descriptors};
 
@@ -631,14 +689,14 @@ mod tests {
         let _ = open_segment.append(&bundle).unwrap();
 
         let writer = SegmentWriter::new(SegmentSeq::new(1));
-        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, _crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         // File should be non-empty
         assert!(bytes_written > 0);
     }
 
-    #[test]
-    fn write_segment_streaming_produces_readable_file() {
+    #[tokio::test]
+    async fn write_segment_streaming_produces_readable_file() {
         use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
         use crate::segment::{OpenSegment, SegmentReader};
 
@@ -660,7 +718,7 @@ mod tests {
 
         // Write using the streaming API
         let writer = SegmentWriter::new(SegmentSeq::new(42));
-        let (bytes_written, crc) = writer.write_segment(&path, open_segment).unwrap();
+        let (bytes_written, crc) = writer.write_segment(&path, open_segment).await.unwrap();
 
         assert!(bytes_written > 0);
         assert!(crc != 0);

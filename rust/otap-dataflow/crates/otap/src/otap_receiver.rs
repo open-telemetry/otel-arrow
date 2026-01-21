@@ -234,7 +234,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otap_df_telemetry::otel_info!("Receiver.Start", message = "Starting OTAP Arrow Receiver");
+        otap_df_telemetry::otel_info!("receiver.start", message = "Starting OTAP Arrow Receiver");
 
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
@@ -842,11 +842,11 @@ mod tests {
 
         // Create a proper pipeline context for the test
         use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -875,9 +875,9 @@ mod tests {
         use crate::compression::CompressionMethod;
         use serde_json::json;
 
-        let metrics_registry_handle = otap_df_telemetry::registry::MetricsRegistryHandle::new();
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
         let controller_ctx =
-            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -975,11 +975,11 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
         use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
@@ -1014,11 +1014,11 @@ mod tests {
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTAP_RECEIVER_URN));
 
         use otap_df_engine::context::ControllerContext;
-        use otap_df_telemetry::registry::MetricsRegistryHandle;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
         use serde_json::json;
 
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 

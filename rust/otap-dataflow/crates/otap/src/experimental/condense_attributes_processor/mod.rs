@@ -578,7 +578,7 @@ mod condense_tests {
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
     };
-    use otap_df_telemetry::registry::MetricsRegistryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
 
@@ -607,8 +607,8 @@ mod condense_tests {
     where
         F: FnOnce(ExportLogsServiceRequest) + 'static,
     {
-        let metrics_registry_handle = MetricsRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 

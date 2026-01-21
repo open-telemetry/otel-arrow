@@ -15,10 +15,10 @@ use crate::context::PipelineContext;
 use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, PipelineCtrlMsgReceiver};
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::TelemetrySettings;
-use otap_df_state::DeployedPipelineKey;
-use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
@@ -420,6 +420,7 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
+    use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_config::pipeline::PipelineSettings;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
@@ -444,6 +445,7 @@ mod tests {
         crate::control::PipelineCtrlMsgSender<PData>,
         HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
+        crate::entity_context::PipelineEntityScope,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = ControlSenders::new();
@@ -458,10 +460,10 @@ mod tests {
         }
 
         // Create a dummy MetricsReporter for testing using MetricsSystem
-        let metrics_system = otap_df_telemetry::MetricsSystem::default();
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
         let pipeline_settings = PipelineSettings::default();
-        let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+        let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let core_id = 0;
@@ -473,6 +475,12 @@ mod tests {
             pipeline_id.clone(),
             core_id,
             thread_id,
+        );
+
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+            pipeline_context.metrics_registry(),
+            pipeline_entity_key,
         );
 
         let manager = PipelineCtrlMsgManager::new(
@@ -489,7 +497,13 @@ mod tests {
             pipeline_settings.telemetry.clone(),
             Vec::new(),
         );
-        (manager, pipeline_tx, control_receivers, nodes)
+        (
+            manager,
+            pipeline_tx,
+            control_receivers,
+            nodes,
+            pipeline_entity_guard,
+        )
     }
 
     /// Validates the core timer workflow:
@@ -503,7 +517,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
@@ -568,7 +582,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
@@ -621,7 +635,8 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
             let node1 = nodes.first().expect("ok");
             let node2 = nodes.get(1).expect("ok");
@@ -720,7 +735,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
 
 		let node = nodes.first().expect("ok");
                 let first_duration = Duration::from_millis(150); // Original (longer)
@@ -783,7 +799,8 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
+                let (manager, pipeline_tx, _control_receivers, _, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
 
                 // Start the manager in the background
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -811,7 +828,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                     setup_test_manager::<()>();
 
                 let node = nodes.first().expect("ok");
@@ -870,10 +887,10 @@ mod tests {
             .run_until(async {
                 let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
                 // Create a dummy MetricsReporter for testing
-                let metrics_system = otap_df_telemetry::MetricsSystem::default();
+                let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
-                let pipeline_settings = PipelineSettings::default();
-                let observed_state_store = ObservedStateStore::new(&pipeline_settings);
+                let observed_state_store =
+                    ObservedStateStore::new(&ObservedStateSettings::default());
                 let pipeline_key = DeployedPipelineKey {
                     pipeline_group_id: Default::default(),
                     pipeline_id: Default::default(),
@@ -890,6 +907,11 @@ mod tests {
                     pipeline_id.clone(),
                     core_id,
                     thread_id,
+                );
+                let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+                    pipeline_context.metrics_registry(),
+                    pipeline_entity_key,
                 );
 
                 // Create manager with empty control_senders map (no registered nodes)
@@ -946,7 +968,8 @@ mod tests {
         let local = LocalSet::new();
 
         local.run_until(async {
-            let (manager, pipeline_tx, mut control_receivers, nodes) = setup_test_manager::<()>();
+            let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                setup_test_manager::<()>();
 
             // Use different durations to test timer ordering
             let node1 = nodes.first().expect("ok");
@@ -1072,7 +1095,8 @@ mod tests {
     /// initial state for all internal data structures.
     #[tokio::test]
     async fn test_manager_creation() {
-        let (manager, _pipeline_tx, _control_receivers, _) = setup_test_manager::<()>();
+        let (manager, _pipeline_tx, _control_receivers, _, _pipeline_entity_guard) =
+            setup_test_manager::<()>();
 
         // Verify manager is created with correct initial state
         assert_eq!(
@@ -1109,7 +1133,8 @@ mod tests {
     /// This is a unit test of the data structure, separate from the run() method.
     #[tokio::test]
     async fn test_timer_heap_ordering() {
-        let (mut manager, _pipeline_tx, _control_receivers, nodes) = setup_test_manager::<()>();
+        let (mut manager, _pipeline_tx, _control_receivers, nodes, _pipeline_entity_guard) =
+            setup_test_manager::<()>();
 
         let node1 = nodes.first().expect("ok");
         let node2 = nodes.get(1).expect("ok");
@@ -1214,7 +1239,7 @@ mod tests {
 
         local
             .run_until(async {
-                let (manager, pipeline_tx, mut control_receivers, nodes) =
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
                     setup_test_manager::<String>();
 
                 let node = nodes.first().expect("ok");

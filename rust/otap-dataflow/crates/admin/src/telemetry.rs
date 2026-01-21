@@ -15,8 +15,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
-use otap_df_telemetry::metrics::MetricValue;
-use otap_df_telemetry::registry::{MetricsIterator, MetricsRegistryHandle};
+use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
@@ -290,7 +290,7 @@ pub async fn get_metrics_aggregate(
 }
 
 fn aggregate_metric_groups(
-    registry: &MetricsRegistryHandle,
+    telemetry_registry: &TelemetryRegistryHandle,
     reset: bool,
     group_attrs: &[&str],
 ) -> Vec<AggregateGroup> {
@@ -366,9 +366,9 @@ fn aggregate_metric_groups(
     };
 
     if reset {
-        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
-        registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
 
     // Convert to vector
@@ -581,12 +581,12 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
 
 /// Collects a snapshot of current metrics without resetting them.
 fn collect_metrics_snapshot(
-    registry: &MetricsRegistryHandle,
+    telemetry_registry: &TelemetryRegistryHandle,
     keep_all_zeroes: bool,
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics_with_zeroes(
+    telemetry_registry.visit_current_metrics_with_zeroes(
         |descriptor, attributes, metrics_iter| {
             let mut metrics = Vec::new();
 
@@ -620,12 +620,12 @@ fn collect_metrics_snapshot(
 
 /// Collects a snapshot of current metrics and resets them afterwards.
 fn collect_metrics_snapshot_and_reset(
-    registry: &MetricsRegistryHandle,
+    telemetry_registry: &TelemetryRegistryHandle,
     keep_all_zeroes: bool,
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset_with_zeroes(
+    telemetry_registry.visit_metrics_and_reset_with_zeroes(
         |descriptor, attributes, metrics_iter| {
             let mut metrics = Vec::new();
 
@@ -657,10 +657,10 @@ fn collect_metrics_snapshot_and_reset(
 }
 
 /// Compact snapshot without resetting.
-fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSet> {
+fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
         let mut metrics = HashMap::new();
         for (field, value) in metrics_iter {
             let _ = metrics.insert(field.name.to_string(), value);
@@ -685,10 +685,12 @@ fn collect_compact_snapshot(registry: &MetricsRegistryHandle) -> Vec<MetricSet> 
 }
 
 /// Compact snapshot with resetting.
-fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<MetricSet> {
+fn collect_compact_snapshot_and_reset(
+    telemetry_registry: &TelemetryRegistryHandle,
+) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = HashMap::new();
         for (field, value) in metrics_iter {
             let _ = metrics.insert(field.name.to_string(), value);
@@ -712,7 +714,7 @@ fn collect_compact_snapshot_and_reset(registry: &MetricsRegistryHandle) -> Vec<M
 }
 
 fn format_line_protocol(
-    registry: &MetricsRegistryHandle,
+    telemetry_registry: &TelemetryRegistryHandle,
     reset: bool,
     timestamp_millis: Option<i64>,
 ) -> String {
@@ -766,16 +768,16 @@ fn format_line_protocol(
     };
 
     if reset {
-        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
-        registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
 
     out
 }
 
 fn format_prometheus_text(
-    registry: &MetricsRegistryHandle,
+    telemetry_registry: &TelemetryRegistryHandle,
     reset: bool,
     timestamp_millis: Option<i64>,
 ) -> String {
@@ -848,9 +850,9 @@ fn format_prometheus_text(
     };
 
     if reset {
-        registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
-        registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
 
     out
@@ -1184,18 +1186,18 @@ mod tests {
         }
 
         // Build registry with two entries for the same metric set but different attributes
-        let reg = MetricsRegistryHandle::new();
+        let telemetry_registry = TelemetryRegistryHandle::new();
         let _m1: otap_df_telemetry::metrics::MetricSet<MetricSetA> =
-            reg.register(MockAttrSet::new("prod", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
         let _m2: otap_df_telemetry::metrics::MetricSet<MetricSetB> =
-            reg.register(MockAttrSet::new("dev", "eu"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("dev", "eu"));
         let _m3: otap_df_telemetry::metrics::MetricSet<MetricSetC> =
-            reg.register(MockAttrSet::new("prod", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("prod", "us"));
         let _m4: otap_df_telemetry::metrics::MetricSet<MetricSetD> =
-            reg.register(MockAttrSet::new("dev", "us"));
+            telemetry_registry.register_metric_set(MockAttrSet::new("dev", "us"));
 
         // Group by the "env" attribute and do not reset
-        let groups = aggregate_metric_groups(&reg, false, &["env"]);
+        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env"]);
 
         // Expect two groups for the same descriptor name, keyed by env values
         assert_eq!(groups.len(), 2);
@@ -1244,7 +1246,7 @@ mod tests {
         assert!(prod_found && dev_found);
 
         // Group by the "env" and region attributes and do not reset
-        let groups = aggregate_metric_groups(&reg, false, &["env", "region"]);
+        let groups = aggregate_metric_groups(&telemetry_registry, false, &["env", "region"]);
 
         // Expect three groups for the same descriptor name, keyed by env, region values
         assert_eq!(groups.len(), 3);

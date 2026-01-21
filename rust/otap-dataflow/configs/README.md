@@ -103,6 +103,14 @@ A basic OTLP pipeline configuration:
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Exports OTLP traffic to `http://127.0.0.1:1235`
 
+### `otlp-http-otlp.yaml`
+
+OTLP receiver over both protocols:
+
+- Receives OTLP/gRPC on `127.0.0.1:4317`
+- Receives OTLP/HTTP on `127.0.0.1:4318`
+- Exports OTLP/gRPC traffic to `http://127.0.0.1:4319`
+
 ### `otlp-perf.yaml`
 
 OTLP receiver with performance metrics:
@@ -110,6 +118,29 @@ OTLP receiver with performance metrics:
 - Receives OTLP traffic on `127.0.0.1:4317`
 - Measures and exports performance metrics
 - View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+### `syslog-perf.yaml`
+
+Syslog/CEF receiver with performance metrics:
+
+- Receives syslog messages on UDP `0.0.0.0:5140`
+- Measures and exports performance metrics
+- View metrics at: `http://127.0.0.1:8080/telemetry/metrics?format=prometheus&reset=false`
+
+To send test syslog messages:
+
+```bash
+# Send a single syslog message
+echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" | nc -u -w1 127.0.0.1 5140
+
+# Send multiple messages
+for i in {1..100}; do
+  echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message #$i" | nc -u -w1 127.0.0.1 5140
+done
+
+# Send CEF format message
+echo "<134>$(date '+%b %d %H:%M:%S') testhost CEF:0|Security|IDS|1.0|100|Test Event|5|src=192.168.1.100 dst=10.0.0.50" | nc -u -w1 127.0.0.1 5140
+```
 
 ## Usage
 

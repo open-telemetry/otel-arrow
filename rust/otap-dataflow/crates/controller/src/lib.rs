@@ -3,42 +3,62 @@
 
 //! OTAP Dataflow Engine Controller
 //!
-//! This controller manages and monitors the execution of pipelines within the current process.
-//! It uses a thread-per-core model, where each thread is pinned to a specific CPU core.
-//! This approach maximizes multi-core efficiency and reduces contention between threads,
-//! ensuring that each pipeline runs on a dedicated core for predictable and optimal CPU usage.
+//! This controller is responsible for deploying, managing, and monitoring pipeline groups
+//! within the current process.
+//!
+//! Each pipeline configuration declares its CPU requirements through quota settings.
+//! Based on these settings, the controller allocates CPU cores and spawns one dedicated
+//! thread per assigned core. Threads are pinned to distinct CPU cores, following a
+//! strict thread-per-core model.
+//!
+//! A pipeline deployed on `n` cores results in `n` worker threads. Hot data paths are
+//! fully contained within each thread to maximize CPU cache locality and minimize
+//! cross-thread contention. Inter-thread communication is restricted to control
+//! messages and internal telemetry only.
+//!
+//! By default, pipelines are expected to run on dedicated CPU cores. It is possible
+//! to deploy multiple pipeline configurations on the same cores, primarily for
+//! consolidation, testing, or transitional deployments. This comes at the cost of
+//! reduced efficiency, especially cache locality. Even in this mode, pipeline
+//! instances run in independent threads and do not share mutable data structures.
+//!
+//! Pipelines do not perform implicit work stealing, dynamic scheduling, or automatic
+//! load balancing across threads. Any form of cross-pipeline or cross-thread data
+//! exchange must be explicitly modeled.
+//!
+//! In the future, controller-managed named channels will be introduced as the
+//! recommended mechanism to implement explicit load balancing and routing schemes
+//! within the engine. These channels will complement the existing SO_REUSEPORT-based
+//! load balancing mechanism already supported at the receiver level on operating
+//! systems that provide it.
+//!
+//! Pipelines can be gracefully shut down by sending control messages through their
+//! control channels.
 //!
 //! Future work includes:
-//! - TODO: Status and health checks for pipelines
-//! - TODO: Graceful shutdown of pipelines
+//! - TODO: Complete status and health checks for pipelines
 //! - TODO: Auto-restart threads in case of panic
 //! - TODO: Live pipeline updates
 //! - TODO: Better resource control
-//! - TODO: Monitoring
-//! - TODO: Support pipeline groups
 
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::HttpAdminSettings;
-use otap_df_config::{
-    PipelineGroupId, PipelineId,
-    pipeline::PipelineConfig,
-    pipeline_group::{CoreAllocation, Quota},
-};
+use otap_df_config::engine::EngineConfig;
+use otap_df_config::pipeline::CoreAllocation;
+use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
+use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::DeployedPipelineKey;
-use otap_df_state::event::{ErrorSummary, ObservedEvent};
 use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::opentelemetry_client::OpentelemetryClient;
+use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{MetricsSystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -63,40 +83,48 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         Self { pipeline_factory }
     }
 
-    /// Starts the controller with the given pipeline configuration and quota.
-    pub fn run_forever(
-        &self,
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        pipeline: PipelineConfig,
-        quota: Quota,
-        admin_settings: HttpAdminSettings,
-    ) -> Result<(), Error> {
+    /// Starts the controller with the given engine configurations.
+    pub fn run_forever(&self, engine_config: EngineConfig) -> Result<(), Error> {
+        let EngineConfig {
+            settings: engine_settings,
+            pipeline_groups,
+        } = engine_config;
+        let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = &pipeline.service().telemetry;
-        let settings = pipeline.pipeline_settings();
+        let telemetry_config = &engine_settings.telemetry;
         otel_info!(
-            "Controller.Start",
-            num_nodes = pipeline.node_iter().count(),
-            pdata_channel_size = settings.default_pdata_channel_size,
-            node_ctrl_msg_channel_size = settings.default_node_ctrl_msg_channel_size,
-            pipeline_ctrl_msg_channel_size = settings.default_pipeline_ctrl_msg_channel_size
+            "controller.start",
+            num_pipeline_groups = pipeline_groups.len(),
+            num_pipelines = pipeline_groups
+                .values()
+                .map(|group| group.pipelines.len())
+                .sum::<usize>()
         );
-        let opentelemetry_client = OpentelemetryClient::new(telemetry_config)?;
-        let metrics_system = MetricsSystem::new(telemetry_config);
-        let metrics_dispatcher = metrics_system.dispatcher();
-        let metrics_reporter = metrics_system.reporter();
-        let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let obs_state_store = ObservedStateStore::new(pipeline.pipeline_settings());
+        let telemetry_system = InternalTelemetrySystem::new(telemetry_config)?;
+        let metrics_dispatcher = telemetry_system.dispatcher();
+        let metrics_reporter = telemetry_system.reporter();
+        let controller_ctx = ControllerContext::new(telemetry_system.registry());
+        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
         let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
         let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
+        for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
+            for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
+                let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
+                obs_state_store.register_pipeline_health_policy(
+                    pipeline_key,
+                    pipeline.pipeline_settings().health_policy.clone(),
+                );
+            }
+        }
+
         // Start the metrics aggregation
-        let metrics_registry = metrics_system.registry();
+        let telemetry_registry = telemetry_system.registry();
+        let internal_collector = telemetry_system.collector();
         let metrics_agg_handle =
             spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
-                metrics_system.run(cancellation_token)
+                internal_collector.run(cancellation_token)
             })?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
@@ -115,63 +143,88 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 obs_state_store.run(cancellation_token)
             })?;
 
-        // Start one thread per requested core
-        // Get available CPU cores for pinning
-        let requested_cores = Self::select_cores_for_quota(
-            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?,
-            quota,
-        )?;
-        let mut threads = Vec::with_capacity(requested_cores.len());
-        let mut ctrl_msg_senders = Vec::with_capacity(requested_cores.len());
+        let pipeline_count: usize = pipeline_groups
+            .values()
+            .map(|group| group.pipelines.len())
+            .sum();
+        let available_core_ids = if pipeline_count == 0 {
+            Vec::new()
+        } else {
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?
+        };
+        let mut threads = Vec::new();
+        let mut ctrl_msg_senders = Vec::new();
 
-        // ToDo [LQ] Support multiple pipeline groups in the future.
+        for (pipeline_group_id, pipeline_group) in pipeline_groups {
+            for (pipeline_id, pipeline) in pipeline_group.pipelines {
+                let quota = pipeline.quota().clone();
+                let requested_cores = Self::select_cores_for_allocation(
+                    available_core_ids.clone(),
+                    &quota.core_allocation,
+                )?;
 
-        for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                core_id: core_id.id,
-            };
-            let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-                pipeline
-                    .pipeline_settings()
-                    .default_pipeline_ctrl_msg_channel_size,
-            );
-            ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
+                for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+                    let pipeline_key = DeployedPipelineKey {
+                        pipeline_group_id: pipeline_group_id.clone(),
+                        pipeline_id: pipeline_id.clone(),
+                        core_id: core_id.id,
+                    };
+                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
+                        pipeline
+                            .pipeline_settings()
+                            .default_pipeline_ctrl_msg_channel_size,
+                    );
+                    ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
-            let pipeline_config = pipeline.clone();
-            let pipeline_factory = self.pipeline_factory;
-            let pipeline_handle = controller_ctx.pipeline_context_with(
-                pipeline_group_id.clone(),
-                pipeline_id.clone(),
-                core_id.id,
-                thread_id,
-            );
-            let metrics_reporter = metrics_reporter.clone();
+                    let pipeline_config = pipeline.clone();
+                    let pipeline_factory = self.pipeline_factory;
+                    let pipeline_handle = controller_ctx.pipeline_context_with(
+                        pipeline_group_id.clone(),
+                        pipeline_id.clone(),
+                        core_id.id,
+                        thread_id,
+                    );
+                    let metrics_reporter = metrics_reporter.clone();
 
-            let thread_name = format!("pipeline-core-{}", core_id.id);
-            let obs_evt_reporter = obs_evt_reporter.clone();
-            let handle = thread::Builder::new()
-                .name(thread_name.clone())
-                .spawn(move || {
-                    Self::run_pipeline_thread(
-                        pipeline_key,
-                        core_id,
-                        pipeline_config,
-                        pipeline_factory,
-                        pipeline_handle,
-                        obs_evt_reporter,
-                        metrics_reporter,
-                        pipeline_ctrl_msg_tx,
-                        pipeline_ctrl_msg_rx,
-                    )
-                })
-                .map_err(|e| Error::ThreadSpawnError {
-                    thread_name: thread_name.clone(),
-                    source: e,
-                })?;
+                    let thread_name = format!(
+                        "pipeline-{}-{}-core-{}",
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        core_id.id
+                    );
+                    let obs_evt_reporter = obs_evt_reporter.clone();
+                    let group_id = pipeline_group_id.clone();
+                    let pipeline_id = pipeline_id.clone();
+                    let handle = thread::Builder::new()
+                        .name(thread_name.clone())
+                        .spawn(move || {
+                            Self::run_pipeline_thread(
+                                pipeline_key,
+                                core_id,
+                                pipeline_config,
+                                pipeline_factory,
+                                pipeline_handle,
+                                obs_evt_reporter,
+                                metrics_reporter,
+                                pipeline_ctrl_msg_tx,
+                                pipeline_ctrl_msg_rx,
+                            )
+                        })
+                        .map_err(|e| Error::ThreadSpawnError {
+                            thread_name: thread_name.clone(),
+                            source: e,
+                        })?;
 
-            threads.push((thread_name, thread_id, core_id.id, handle));
+                    threads.push((
+                        thread_name,
+                        thread_id,
+                        core_id.id,
+                        group_id,
+                        pipeline_id,
+                        handle,
+                    ));
+                }
+            }
         }
 
         // Drop the original metrics sender so only pipeline threads hold references
@@ -195,16 +248,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     admin_settings,
                     obs_state_handle,
                     admin_senders,
-                    metrics_registry,
+                    telemetry_registry,
                     cancellation_token,
                 )
             })?;
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, core_id, handle) in threads {
+        for (thread_name, thread_id, core_id, group_id, pipeline_id, handle) in threads {
             let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: pipeline_group_id.clone(),
+                pipeline_group_id: group_id.clone(),
                 pipeline_id: pipeline_id.clone(),
                 core_id,
             };
@@ -243,6 +296,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
+        // Check if any pipeline threads returned an error
+        if let Some(err) = results.into_iter().find_map(Result::err) {
+            return Err(err);
+        }
+
         // ToDo Add CTRL-C handler to initiate graceful shutdown of pipelines and admin server.
 
         // In this project phase (alpha), we park the main thread indefinitely. This is useful for
@@ -257,29 +315,29 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        opentelemetry_client.shutdown()?;
+        telemetry_system.shutdown()?;
 
         Ok(())
     }
 
-    /// Selects which CPU cores to use based on the given quota configuration.
-    fn select_cores_for_quota(
+    /// Selects which CPU cores to use based on the given allocation.
+    fn select_cores_for_allocation(
         mut available_core_ids: Vec<CoreId>,
-        quota: Quota,
+        core_allocation: &CoreAllocation,
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids.sort_by_key(|c| c.id);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
 
-        match quota.core_allocation {
+        match core_allocation {
             CoreAllocation::AllCores => Ok(available_core_ids),
             CoreAllocation::CoreCount { count } => {
-                if count == 0 {
+                if *count == 0 {
                     Ok(available_core_ids)
-                } else if count > num_cores {
+                } else if *count > num_cores {
                     Err(Error::InvalidCoreAllocation {
-                        alloc: quota.core_allocation.clone(),
+                        alloc: core_allocation.clone(),
                         message: format!(
                             "Requested {} cores but only {} cores available on this system",
                             count, num_cores
@@ -287,15 +345,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         available: available_core_ids.iter().map(|c| c.id).collect(),
                     })
                 } else {
-                    Ok(available_core_ids.into_iter().take(count).collect())
+                    Ok(available_core_ids.into_iter().take(*count).collect())
                 }
             }
-            CoreAllocation::CoreSet { ref set } => {
+            CoreAllocation::CoreSet { set } => {
                 // Validate all ranges first
                 for r in set.iter() {
                     if r.start > r.end {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Invalid core range: start ({}) is greater than end ({})",
                                 r.start, r.end
@@ -305,7 +363,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     }
                     if r.start > max_core_id {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Core ID {} exceeds available cores (system has cores 0-{})",
                                 r.start, max_core_id
@@ -315,7 +373,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     }
                     if r.end > max_core_id {
                         return Err(Error::InvalidCoreAllocation {
-                            alloc: quota.core_allocation.clone(),
+                            alloc: core_allocation.clone(),
                             message: format!(
                                 "Core ID {} exceeds available cores (system has cores 0-{})",
                                 r.end, max_core_id
@@ -333,7 +391,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             let overlap_start = r1.start.max(r2.start);
                             let overlap_end = r1.end.min(r2.end);
                             return Err(Error::InvalidCoreAllocation {
-                                alloc: quota.core_allocation.clone(),
+                                alloc: core_allocation.clone(),
                                 message: format!(
                                     "Core ranges overlap: {}-{} and {}-{} share cores {}-{}",
                                     r1.start, r1.end, r2.start, r2.end, overlap_start, overlap_end
@@ -355,7 +413,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                 if selected.is_empty() {
                     return Err(Error::InvalidCoreAllocation {
-                        alloc: quota.core_allocation.clone(),
+                        alloc: core_allocation.clone(),
                         message: "No available cores in the specified ranges".to_owned(),
                         available: core_affinity::get_core_ids()
                             .unwrap_or_default()
@@ -387,12 +445,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
         let _guard = span.enter();
 
+        // The controller creates a pipeline instance into a dedicated thread. The corresponding
+        // entity is registered here for proper context tracking and set into thread-local storage
+        // in order to be accessible by all components within this thread.
+        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
+
         // Pin thread to specific core
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
             otel_warn!(
-                "CoreAffinity.SetFailed",
+                "core_affinity.set_failed",
                 message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
             );
         }
@@ -454,7 +519,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline_group::CoreRange;
+    use otap_df_config::pipeline::CoreRange;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -475,23 +540,24 @@ mod tests {
 
     #[test]
     fn select_all_cores_by_default() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::AllCores,
-        };
+        let core_allocation = CoreAllocation::AllCores;
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 
     #[test]
     fn select_limited_by_num_cores() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreCount { count: 4 },
-        };
+        let core_allocation = CoreAllocation::CoreCount { count: 4 };
         let available_core_ids = available_core_ids();
-        let result =
-            Controller::<()>::select_cores_for_quota(available_core_ids.clone(), quota).unwrap();
+        let result = Controller::<()>::select_cores_for_allocation(
+            available_core_ids.clone(),
+            &core_allocation,
+        )
+        .unwrap();
         assert_eq!(result.len(), 4);
         let expected_ids: Vec<usize> = available_core_ids
             .into_iter()
@@ -505,30 +571,30 @@ mod tests {
     fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![CoreRange {
-                    start: first_id,
-                    end: first_id,
-                }],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![CoreRange {
+                start: first_id,
+                end: first_id,
+            }],
         };
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![first_id]);
     }
 
     #[test]
     fn select_with_valid_multi_core_range() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 2, end: 5 },
-                    CoreRange { start: 6, end: 6 },
-                ],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 5 },
+                CoreRange { start: 6, end: 6 },
+            ],
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
     }
 
@@ -537,11 +603,10 @@ mod tests {
         let core_allocation = CoreAllocation::CoreSet {
             set: vec![CoreRange { start: 2, end: 1 }],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -557,11 +622,10 @@ mod tests {
         let core_allocation = CoreAllocation::CoreSet {
             set: vec![CoreRange { start, end }],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -572,12 +636,12 @@ mod tests {
 
     #[test]
     fn select_with_zero_count_uses_all_cores() {
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreCount { count: 0 },
-        };
+        let core_allocation = CoreAllocation::CoreCount { count: 0 };
         let available_core_ids = available_core_ids();
         let expected_core_ids = available_core_ids.clone();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), to_ids(&expected_core_ids));
     }
 
@@ -589,11 +653,10 @@ mod tests {
                 CoreRange { start: 4, end: 7 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -615,11 +678,10 @@ mod tests {
                 CoreRange { start: 3, end: 5 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -641,11 +703,10 @@ mod tests {
                 CoreRange { start: 3, end: 5 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);
@@ -662,16 +723,16 @@ mod tests {
     #[test]
     fn select_with_adjacent_ranges_succeeds() {
         // Adjacent but non-overlapping ranges should work
-        let quota = Quota {
-            core_allocation: CoreAllocation::CoreSet {
-                set: vec![
-                    CoreRange { start: 2, end: 3 },
-                    CoreRange { start: 4, end: 5 },
-                ],
-            },
+        let core_allocation = CoreAllocation::CoreSet {
+            set: vec![
+                CoreRange { start: 2, end: 3 },
+                CoreRange { start: 4, end: 5 },
+            ],
         };
         let available_core_ids = available_core_ids();
-        let result = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap();
+        let result =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5]);
     }
 
@@ -684,11 +745,10 @@ mod tests {
                 CoreRange { start: 5, end: 6 },
             ],
         };
-        let quota = Quota {
-            core_allocation: core_allocation.clone(),
-        };
         let available_core_ids = available_core_ids();
-        let err = Controller::<()>::select_cores_for_quota(available_core_ids, quota).unwrap_err();
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
         match err {
             Error::InvalidCoreAllocation { alloc, message, .. } => {
                 assert_eq!(alloc, core_allocation);

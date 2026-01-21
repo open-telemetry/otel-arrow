@@ -14,7 +14,7 @@
 //! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
-use otap_df_config::SignalType;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::Error;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
@@ -171,6 +171,12 @@ impl OtapPdata {
     #[must_use]
     pub fn signal_type(&self) -> SignalType {
         self.payload.signal_type()
+    }
+
+    /// Returns the format of signal represented by this `OtapPdata` instance.
+    #[must_use]
+    pub fn signal_format(&self) -> SignalFormat {
+        self.payload.signal_format()
     }
 
     /// True if the payload is empty. By definition, we can skip sending an

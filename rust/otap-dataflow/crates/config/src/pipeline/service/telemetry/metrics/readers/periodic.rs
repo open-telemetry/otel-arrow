@@ -97,6 +97,7 @@ mod tests {
                 endpoint: "http://localhost:4317".to_string(),
                 protocol: OtlpProtocol::Grpc,
                 temporality: Temporality::Cumulative,
+                tls: None,
             })
         );
     }

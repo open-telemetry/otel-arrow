@@ -63,7 +63,7 @@ use otap_df_engine::control::{Controllable, NodeControlMsg, pipeline_ctrl_msg_ch
 use otap_df_otap::otap_exporter::OTAP_EXPORTER_URN;
 use otap_df_otap::otlp_grpc::OTLPData;
 use otap_df_otap::perf_exporter::exporter::OTAP_PERF_EXPORTER_URN;
-use otap_df_telemetry::MetricsSystem;
+use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -421,7 +421,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_system = MetricsSystem::default();
+                    let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
@@ -481,7 +481,7 @@ fn bench_exporter(c: &mut Criterion) {
                         Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
 
                     // Create a proper pipeline context for the benchmark
-                    let metrics_system = MetricsSystem::default();
+                    let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
@@ -547,7 +547,7 @@ fn bench_exporter(c: &mut Criterion) {
                         "grpc_endpoint": grpc_endpoint,
                     });
                     // Create a proper pipeline context for the benchmark
-                    let metrics_system = MetricsSystem::default();
+                    let metrics_system = InternalTelemetrySystem::default();
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);

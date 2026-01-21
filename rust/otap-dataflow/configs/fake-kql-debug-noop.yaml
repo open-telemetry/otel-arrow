@@ -1,0 +1,63 @@
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - kql
+        dispatch_strategy: round_robin
+    config:
+      traffic_config:
+        max_signal_count: 100
+        max_batch_size: 50
+        signals_per_second: 10
+        log_weight: 100
+        metric_weight: 0
+        trace_weight: 0
+      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+  kql:
+    kind: processor
+    plugin_urn: "urn:otel:recordset_kql:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - debug
+        dispatch_strategy: round_robin
+    config:
+      query: |
+        source
+        | extend Body = case(
+            EventName == "azure.resource.log",
+            strcat(Body, "\n\nTroubleshooting resource errors: https://docs.example.com/exporter-errors#kql-processor"),
+            Body
+        )
+
+  debug:
+    kind: processor
+    plugin_urn: "urn:otel:debug:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - noop
+        dispatch_strategy: round_robin
+    config:
+      verbosity: detailed
+      mode: signal
+
+  noop:
+    kind: exporter
+    plugin_urn: "urn:otel:noop:exporter"
+    config:
+
+service:
+  telemetry:
+    logs:
+      level: "error"
+      processors:
+        - batch:
+            exporter:
+              console:
+    resource:
+      service.name: "kql-processor-demo"

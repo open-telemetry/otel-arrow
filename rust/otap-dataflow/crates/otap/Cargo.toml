@@ -36,6 +36,7 @@ tonic = { workspace = true }
 tonic-middleware = { workspace = true }
 tonic-prost = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 smallvec = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
@@ -48,6 +49,7 @@ otap-df-engine = { path = "../engine" }
 otap-df-engine-macros = { path = "../engine-macros" }
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
+otap-df-opl = { path = "../opl" }
 otap-df-pdata = { path = "../pdata" }
 otap-df-query-engine = { path = "../query-engine" }
 otap-df-telemetry = { path = "../telemetry" }
@@ -58,6 +60,7 @@ tower-service.workspace = true
 fluke-hpack.workspace = true
 serde.workspace = true
 tokio-stream.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 async-stream.workspace = true
 humantime.workspace = true
 weaver_semconv.workspace = true
@@ -67,15 +70,22 @@ rand.workspace = true
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
+hyper = { workspace = true }
+http-body-util = { workspace = true }
 socket2 = { workspace = true }
 ipnet = { workspace = true }
+flate2 = { workspace = true }
+zstd = { workspace = true }
 
 # Geneva exporter dependencies
-geneva-uploader = { version = "0.3.0", optional = true }
+geneva-uploader = { version = "0.4.0", optional = true }
+
+# Recordset KQL OTLP query_engine Processor dependencies
+data_engine_recordset_otlp_bridge = { workspace = true, optional = true }
+data_engine_recordset = { workspace = true, optional = true }
 
 # Azure Monitor Exporter dependencies
 azure_identity = { workspace = true, optional = true }
-flate2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
@@ -99,7 +109,6 @@ azure-monitor-exporter = [
     "experimental-exporters",
     "dep:opentelemetry-proto",
     "dep:azure_identity",
-    "dep:flate2",
     "dep:reqwest",
     "dep:azure_core",
     "dep:ahash",
@@ -108,6 +117,11 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 # Experimental processors
 experimental-processors = []
 condense-attributes-processor = ["experimental-processors"]
+recordset-kql-processor = [
+    "experimental-processors",
+    "dep:data_engine_recordset_otlp_bridge",
+    "dep:data_engine_recordset"
+]
 
 [dev-dependencies]
 flume.workspace = true
@@ -122,3 +136,6 @@ wiremock.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
+tokio-stream.workspace = true
+otap-df-engine = { path = "../engine", features = ["test-utils"] }
+otap-df-state = { path = "../state" }

@@ -4,15 +4,13 @@
 //! Abstraction to represent generic local senders and receivers.
 
 use crate::channel_metrics::{
-    CHANNEL_IMPL_INTERNAL, CHANNEL_MODE_LOCAL, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
     ChannelMetricsHandle, ChannelMetricsRegistry, ChannelReceiverMetrics,
     ChannelReceiverMetricsState, ChannelSenderMetrics, ChannelSenderMetricsState,
     LocalChannelReceiverMetricsHandle, LocalChannelSenderMetricsHandle,
 };
-use crate::context::PipelineContext;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::{mpmc, mpsc};
-use std::borrow::Cow;
+use otap_df_telemetry::metrics::MetricSet;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -53,21 +51,9 @@ impl<T> LocalSender<T> {
     /// Creates a new local MPSC sender with metrics attached.
     pub(crate) fn mpsc_with_metrics(
         sender: mpsc::Sender<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelSenderMetrics>,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_INTERNAL,
-        );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpsc(sender);
@@ -86,21 +72,9 @@ impl<T> LocalSender<T> {
     /// Creates a new local MPMC sender with metrics attached.
     pub(crate) fn mpmc_with_metrics(
         sender: mpmc::Sender<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelSenderMetrics>,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPMC,
-            CHANNEL_IMPL_INTERNAL,
-        );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register::<ChannelSenderMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelSenderMetricsState::new(metrics)));
         channel_metrics.register(ChannelMetricsHandle::LocalSender(handle.clone()));
         let mut sender = Self::mpmc(sender);
@@ -184,22 +158,10 @@ impl<T> LocalReceiver<T> {
     /// Creates a new local MPSC receiver with metrics attached.
     pub(crate) fn mpsc_with_metrics(
         receiver: mpsc::Receiver<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelReceiverMetrics>,
         capacity: u64,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPSC,
-            CHANNEL_IMPL_INTERNAL,
-        );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));
@@ -221,22 +183,10 @@ impl<T> LocalReceiver<T> {
     /// Creates a new local MPMC receiver with metrics attached.
     pub(crate) fn mpmc_with_metrics(
         receiver: mpmc::Receiver<T>,
-        pipeline_ctx: &PipelineContext,
         channel_metrics: &mut ChannelMetricsRegistry,
-        channel_id: Cow<'static, str>,
-        channel_kind: &'static str,
+        metrics: MetricSet<ChannelReceiverMetrics>,
         capacity: u64,
     ) -> Self {
-        let attrs = pipeline_ctx.channel_attribute_set(
-            channel_id,
-            channel_kind,
-            CHANNEL_MODE_LOCAL,
-            CHANNEL_TYPE_MPMC,
-            CHANNEL_IMPL_INTERNAL,
-        );
-        let metrics = pipeline_ctx
-            .metrics_registry()
-            .register::<ChannelReceiverMetrics>(attrs);
         let handle = Rc::new(RefCell::new(ChannelReceiverMetricsState::new(
             metrics, capacity,
         )));

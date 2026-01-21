@@ -10,7 +10,7 @@ use crate::node::{NodeId, NodeName};
 use otap_df_channel::error::SendError;
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeUrn, PortName};
-use otap_df_state::event::ErrorSummary;
+use otap_df_telemetry::event::ErrorSummary;
 use std::borrow::Cow;
 use std::fmt;
 

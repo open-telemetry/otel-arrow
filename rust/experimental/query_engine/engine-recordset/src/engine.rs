@@ -316,6 +316,14 @@ fn process_record<'a, TRecord: Record + 'static>(
                 );
                 break;
             }
+            DataExpression::Output(c) => {
+                execution_context.add_diagnostic_if_enabled(
+                    RecordSetEngineDiagnosticLevel::Error,
+                    c,
+                    || "Output Expression not yet supported in record set engine".into(),
+                );
+                break;
+            }
         }
     }
 

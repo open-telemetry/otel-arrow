@@ -34,7 +34,7 @@ and OpenTelemetry Protocol (OTLP).
 
 OTAP is a sort of "protocol on top of a protocol". At the outer layer is a gRPC
 service defined via protobuf. Within that we have Apache Arrow Interprocess
-Communication (Arrow IPC). OTAP leverages both it's own mechanisms at the gRPC
+Communication (Arrow IPC). OTAP leverages both its own mechanisms at the gRPC
 layer and existing Arrow IPC mechanisms to reliably transport telemetry signals
 from a Client to a Server.
 
@@ -227,7 +227,7 @@ To understand the protocol, it's enough to know _what_ you want to create. To
 see it in practice, you can take a look at the `Producer` reference
 implementation linked at the top of this document.
 
-For simplicity and readablility we'll take some liberties in this section like
+For simplicity and readability we'll take some liberties in this section like
 trimming down the required fields. You can refer back to the data model for a
 full accounting of required and optional fields for every table.
 
