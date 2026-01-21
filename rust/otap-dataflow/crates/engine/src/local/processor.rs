@@ -435,6 +435,7 @@ mod tests {
         let (tx, rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("proc"),
@@ -442,6 +443,7 @@ mod tests {
             Some("out".into()),
             metrics_reporter,
         );
+
         // Should succeed when channel has capacity
         assert!(eh.try_send_message(42).is_ok());
         assert_eq!(rx.try_recv().unwrap(), 42);
@@ -453,6 +455,7 @@ mod tests {
         let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(
             test_node("proc"),
@@ -460,8 +463,10 @@ mod tests {
             Some("out".into()),
             metrics_reporter,
         );
+
         // First send should succeed
         assert!(eh.try_send_message(1).is_ok());
+
         // Second send should fail with Full since channel capacity is 1
         let result = eh.try_send_message(2);
         assert!(matches!(
@@ -474,12 +479,15 @@ mod tests {
     fn effect_handler_try_send_message_no_default_sender() {
         let (a_tx, _a_rx) = channel::<u64>(10);
         let (b_tx, _b_rx) = channel::<u64>(10);
+
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         // No default port specified with multiple ports = ambiguous
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
         assert!(matches!(result, Err(TypedError::Error(_))));
@@ -489,9 +497,11 @@ mod tests {
     fn effect_handler_try_send_message_to_success() {
         let (a_tx, a_rx) = channel::<u64>(10);
         let (b_tx, b_rx) = channel::<u64>(10);
+
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
         let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
@@ -507,6 +517,7 @@ mod tests {
         let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
@@ -525,6 +536,7 @@ mod tests {
         let (tx, _rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
