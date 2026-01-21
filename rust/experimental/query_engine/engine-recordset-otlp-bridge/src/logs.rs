@@ -86,9 +86,7 @@ impl MapValue for LogRecord {
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
         Ok(match get_log_record_schema().normalize_key(key) {
             "attributes" => Some(&self.attributes),
-            "time_unix_nano" => {
-                self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue)
-            }
+            "time_unix_nano" => self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue),
             "observed_time_unix_nano" => self
                 .observed_timestamp
                 .as_ref()
@@ -97,9 +95,7 @@ impl MapValue for LogRecord {
                 .severity_number
                 .as_ref()
                 .map(|v| v as &dyn AsStaticValue),
-            "severity_text" => {
-                self.severity_text.as_ref().map(|v| v as &dyn AsStaticValue)
-            }
+            "severity_text" => self.severity_text.as_ref().map(|v| v as &dyn AsStaticValue),
             "body" => self.body.as_ref().map(|v| v as &dyn AsStaticValue),
             "trace_id" => self.trace_id.as_ref().map(|v| v as &dyn AsStaticValue),
             "span_id" => self.span_id.as_ref().map(|v| v as &dyn AsStaticValue),
@@ -360,8 +356,7 @@ impl MapValueMut for LogRecord {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::DateTime(old)),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "observed_time_unix_nano" => match self.observed_timestamp.take()
-            {
+            "observed_time_unix_nano" => match self.observed_timestamp.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::DateTime(old)),
                 None => ValueMutRemoveResult::NotFound,
             },

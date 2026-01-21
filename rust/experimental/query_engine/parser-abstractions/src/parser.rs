@@ -125,10 +125,15 @@ impl ParserMapSchema {
         self
     }
 
-    pub fn with_key_aliases<const N: usize>(mut self, aliases: [(&str, &str); N]) -> ParserMapSchema {
+    pub fn with_key_aliases<const N: usize>(
+        mut self,
+        aliases: [(&str, &str); N],
+    ) -> ParserMapSchema {
         for (alias, canonical_key) in aliases {
             if !self.keys.contains_key(canonical_key) {
-                panic!("Cannot create alias '{alias}' for undefined canonical key '{canonical_key}'");
+                panic!(
+                    "Cannot create alias '{alias}' for undefined canonical key '{canonical_key}'"
+                );
             }
             self.aliases.insert(alias.into(), canonical_key.into());
         }

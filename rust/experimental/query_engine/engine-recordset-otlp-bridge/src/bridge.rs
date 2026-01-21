@@ -930,15 +930,19 @@ mod tests {
         assert_eq!(canonical_logs.len(), 1);
         assert_eq!(aliased_logs.len(), 1);
         assert_eq!(
-            canonical_logs[0].severity_text.as_ref().unwrap().get_value(),
-            aliased_logs[0]
+            canonical_logs[0]
                 .severity_text
                 .as_ref()
                 .unwrap()
-                .get_value()
+                .get_value(),
+            aliased_logs[0].severity_text.as_ref().unwrap().get_value()
         );
         assert_eq!(
-            canonical_logs[0].severity_number.as_ref().unwrap().get_value(),
+            canonical_logs[0]
+                .severity_number
+                .as_ref()
+                .unwrap()
+                .get_value(),
             aliased_logs[0]
                 .severity_number
                 .as_ref()
