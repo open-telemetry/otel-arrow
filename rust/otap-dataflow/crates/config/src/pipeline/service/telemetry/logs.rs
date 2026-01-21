@@ -62,6 +62,33 @@ pub struct LoggingProviders {
     /// This defaults to Noop to avoid internal feedback.
     #[serde(default = "default_internal_provider")]
     pub internal: ProviderMode,
+
+    /// Provider mode for admin threads. Cannot be ConsoleAsync as
+    /// that would create a feedback loop. Defaults to ConsoleDirect.
+    #[serde(default = "default_admin_provider")]
+    pub admin: ProviderMode,
+}
+
+impl LoggingProviders {
+    /// Returns true if this uses an OTel logs provider.
+    #[must_use]
+    pub const fn uses_otel_provider(&self) -> bool {
+        self.global.uses_otel_provider()
+            || self.engine.uses_otel_provider()
+            || self.admin.uses_otel_provider()
+            || self.internal.uses_otel_provider()
+    }
+
+    /// Returns true if this uses an async logs provider.
+    #[must_use]
+    pub const fn uses_async_provider(&self) -> bool {
+        // Note: internal is not checked, it's not permitted.
+        debug_assert!(!self.internal.uses_async_provider());
+
+        self.global.uses_async_provider()
+            || self.engine.uses_async_provider()
+            || self.admin.uses_async_provider()
+    }
 }
 
 /// Logs producer: how log events are captured and routed.
@@ -90,11 +117,16 @@ pub enum ProviderMode {
 }
 
 impl ProviderMode {
-    /// Returns true if this requires a LogsReporter channel for
-    /// asynchronous logging.
+    /// Is this an Asynchronous logging mode?
     #[must_use]
-    pub const fn needs_reporter(&self) -> bool {
+    pub const fn uses_async_provider(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
+    }
+
+    /// Is this an OTel logging mode?
+    #[must_use]
+    pub const fn uses_otel_provider(&self) -> bool {
+        matches!(self, Self::OpenTelemetry)
     }
 }
 
@@ -110,11 +142,16 @@ const fn default_internal_provider() -> ProviderMode {
     ProviderMode::Noop
 }
 
+const fn default_admin_provider() -> ProviderMode {
+    ProviderMode::ConsoleDirect
+}
+
 fn default_providers() -> LoggingProviders {
     LoggingProviders {
         global: default_global_provider(),
         engine: default_engine_provider(),
         internal: default_internal_provider(),
+        admin: default_admin_provider(),
     }
 }
 
@@ -133,10 +170,11 @@ impl LogsConfig {
     ///
     /// Returns an error if:
     /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
+    /// - `admin` is configured to use ConsoleAsync (would loop to itself)
     /// - `engine` is `OpenTelemetry` but `global` is not
     ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
-        if self.providers.internal.needs_reporter() {
+        if self.providers.internal.uses_async_provider() {
             return Err(Error::InvalidUserConfig {
                 error: format!(
                     "internal provider is invalid: {:?}",
@@ -144,15 +182,13 @@ impl LogsConfig {
                 ),
             });
         }
-        // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
-        // The SDK logger provider is only created when the global provider is OpenTelemetry.
-        // This could be lifted in the future by creating the logger provider independently.
-        if self.providers.engine == ProviderMode::OpenTelemetry
-            && self.providers.global != ProviderMode::OpenTelemetry
-        {
+        // Admin provider cannot use ConsoleAsync because the observed-state-store
+        // runs in an admin thread and implements console_async logging. Using
+        // ConsoleAsync for admin would create a feedback loop.
+        if self.providers.admin == ProviderMode::ConsoleAsync {
             return Err(Error::InvalidUserConfig {
-                error: "engine provider 'opentelemetry' requires global provider to also be \
-                        'opentelemetry' (current implementation restriction)"
+                error: "admin provider cannot be 'console_async' (would create feedback loop); \
+                        use 'console_direct' or another mode instead"
                     .into(),
             });
         }
@@ -175,11 +211,13 @@ mod tests {
         global: ProviderMode,
         engine: ProviderMode,
         internal: ProviderMode,
+        admin: ProviderMode,
     ) -> LoggingProviders {
         LoggingProviders {
             global,
             engine,
             internal,
+            admin,
         }
     }
 
@@ -188,9 +226,10 @@ mod tests {
         global: ProviderMode,
         engine: ProviderMode,
         internal: ProviderMode,
+        admin: ProviderMode,
     ) -> LogsConfig {
         LogsConfig {
-            providers: providers(global, engine, internal),
+            providers: providers(global, engine, internal, admin),
             ..Default::default()
         }
     }
@@ -215,6 +254,7 @@ mod tests {
         assert_eq!(config.providers.global, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
+        assert_eq!(config.providers.admin, ProviderMode::ConsoleDirect);
         assert!(config.processors.is_empty());
 
         // Serde defaults should match Rust Default
@@ -223,6 +263,7 @@ mod tests {
         assert_eq!(parsed.providers.global, config.providers.global);
         assert_eq!(parsed.providers.engine, config.providers.engine);
         assert_eq!(parsed.providers.internal, config.providers.internal);
+        assert_eq!(parsed.providers.admin, config.providers.admin);
     }
 
     #[test]
@@ -262,7 +303,7 @@ mod tests {
             (ConsoleAsync, true),
         ];
         for (mode, expected) in cases {
-            assert_eq!(mode.needs_reporter(), expected, "{mode:?}");
+            assert_eq!(mode.uses_async_provider(), expected, "{mode:?}");
         }
     }
 
@@ -274,24 +315,44 @@ mod tests {
     #[test]
     fn test_validate_internal_cannot_use_reporter() {
         use ProviderMode::*;
-        let config = config_with(Noop, Noop, ITS);
+        let config = config_with(Noop, Noop, ITS, Noop);
         assert_invalid(&config, "internal provider is invalid");
 
-        let config = config_with(Noop, Noop, ConsoleAsync);
+        let config = config_with(Noop, Noop, ConsoleAsync, Noop);
         assert_invalid(&config, "internal provider is invalid");
     }
 
     #[test]
-    fn test_validate_engine_otel_requires_global_otel() {
+    fn test_validate_mixed_otel() {
         use ProviderMode::*;
-        // Engine OpenTelemetry without global OpenTelemetry fails
-        for global in [Noop, ITS, ConsoleDirect, ConsoleAsync] {
-            let config = config_with(global, OpenTelemetry, Noop);
-            assert_invalid(&config, "opentelemetry");
-        }
 
-        // Both OpenTelemetry succeeds
-        let config = config_with(OpenTelemetry, OpenTelemetry, Noop);
-        assert!(config.validate().is_ok());
+        for config in [
+            config_with(ConsoleAsync, OpenTelemetry, Noop, Noop),
+            config_with(OpenTelemetry, OpenTelemetry, Noop, Noop),
+            config_with(Noop, OpenTelemetry, Noop, OpenTelemetry),
+            config_with(OpenTelemetry, OpenTelemetry, OpenTelemetry, OpenTelemetry),
+        ] {
+            assert!(config.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_validate_admin_cannot_use_console_async() {
+        use ProviderMode::*;
+        // Admin ConsoleAsync should fail validation
+        let config = LogsConfig {
+            providers: providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleAsync),
+            ..Default::default()
+        };
+        assert_invalid(&config, "admin provider cannot be 'console_async'");
+
+        // Others should succeed
+        for admin in [Noop, ITS, ConsoleDirect, OpenTelemetry] {
+            let config = LogsConfig {
+                providers: providers(ConsoleAsync, ConsoleAsync, Noop, admin),
+                ..Default::default()
+            };
+            assert!(config.validate().is_ok());
+        }
     }
 }

@@ -4,17 +4,114 @@
 //! Definition of all signals/conditions that drive state transitions and log events.
 
 use crate::self_tracing::LogRecord;
-use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind};
+use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
 use serde::ser::Serializer;
 use std::time::SystemTime;
 
+/// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
+#[derive(Clone)]
+pub struct ObservedEventReporter {
+    policy: SendPolicy,
+    sender: flume::Sender<ObservedEvent>,
+}
+
+impl ObservedEventReporter {
+    /// Creates a new `ObservedEventReporter` with the given sender channel.
+    #[must_use]
+    pub fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
+        Self { policy, sender }
+    }
+
+    /// Report an engine event.
+    pub fn report(&self, event: EngineEvent) {
+        self.observe(ObservedEvent::Engine(event))
+    }
+
+    /// Report a log event.
+    pub fn log(&self, event: LogEvent) {
+        self.observe(ObservedEvent::Log(event))
+    }
+
+    fn observe(&self, event: ObservedEvent) {
+        match self.policy.blocking_timeout {
+            None => match self.sender.try_send(event) {
+                Ok(_) => {}
+                Err(err) => {
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::TrySendError::Full(event) => {
+                            crate::raw_error!("Channel full, dropping observed event", event = ?event);
+                        }
+                        flume::TrySendError::Disconnected(event) => {
+                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
+                        }
+                    }
+                }
+            },
+            Some(timeout) => match self.sender.send_timeout(event, timeout) {
+                Ok(_) => {}
+                Err(err) => {
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::SendTimeoutError::Timeout(event) => {
+                            crate::raw_error!("Timeout, dropping observed event", event = ?event);
+                        }
+                        flume::SendTimeoutError::Disconnected(event) => {
+                            crate::raw_error!("Disconnect, dropping observed event", event = ?event);
+                        }
+                    }
+                }
+            },
+        };
+    }
+}
+
+/// The observed event
+#[derive(Debug, Clone, Serialize)]
+pub enum ObservedEvent {
+    /// The engine event has pipeline key and structured information.
+    Engine(EngineEvent),
+    /// The log event.
+    Log(LogEvent),
+}
+
 /// An observed event emitted by the engine.
 #[derive(Debug, Clone, Serialize)]
-pub struct ObservedEvent {
+pub struct LogEvent {
+    /// Timestamp of when the event was observed.
+    #[serde(serialize_with = "ts_to_rfc3339")]
+    pub time: SystemTime,
+    /// Structured log record.
+    #[serde(serialize_with = "log_to_string")]
+    pub record: LogRecord,
+}
+
+fn log_to_string<S>(record: &LogRecord, s: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    s.serialize_str(&record.format_without_timestamp())
+}
+
+impl Serialize for LogRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.format_without_timestamp())
+    }
+}
+
+/// An observed event emitted by the engine.
+#[derive(Debug, Clone, Serialize)]
+pub struct EngineEvent {
     // ---- Source identification ----
     /// Unique key identifying the pipeline instance.
-    #[serde(skip_serializing)]
     pub key: DeployedPipelineKey,
     /// When reporting a node-level event, the node it applies to.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -30,65 +127,11 @@ pub struct ObservedEvent {
     /// One of the defined event types (e.g. `StartRequested`, `Ready`, `RuntimeError`, ...).
     pub r#type: EventType,
     /// Message content for this event.
-    #[serde(skip_serializing_if = "EventMessage::is_none")]
-    pub message: EventMessage,
-}
-
-/// Message content for an observed event.
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
-pub enum EventMessage {
-    /// No message content.
-    None,
-    /// A simple string message.
-    Message(String),
-    /// A full log record (except timestamp).
-    Log(LogRecord),
-}
-
-impl EventMessage {
-    /// Returns the message as a string.
-    #[must_use]
-    pub fn formatted(&self) -> Option<String> {
-        match self {
-            EventMessage::None => None,
-            EventMessage::Message(s) => Some(s.as_str().into()),
-            EventMessage::Log(record) => Some(record.format()),
-        }
-    }
-
-    /// Returns true if this is the None variant.
-    #[must_use]
-    pub fn is_none(&self) -> bool {
-        matches!(self, EventMessage::None)
-    }
-}
-
-impl From<String> for EventMessage {
-    fn from(s: String) -> Self {
-        EventMessage::Message(s)
-    }
-}
-
-impl<'a> From<&'a str> for EventMessage {
-    fn from(s: &'a str) -> Self {
-        EventMessage::Message(s.into())
-    }
-}
-
-impl From<Option<String>> for EventMessage {
-    fn from(s: Option<String>) -> Self {
-        match s {
-            Some(s) => EventMessage::Message(s),
-            None => EventMessage::None,
-        }
-    }
-}
-
-impl From<LogRecord> for EventMessage {
-    fn from(record: LogRecord) -> Self {
-        EventMessage::Log(record)
-    }
+    ///
+    /// TODO: Consider replacing String with &'static str, then in places
+    /// that format! strings switch to LogRecord structured values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Grouping of event types by category.
@@ -184,95 +227,95 @@ pub enum ErrorSummary {
     },
 }
 
-impl ObservedEvent {
+impl EngineEvent {
     /// Create an `Admitted` engine-level event.
     #[must_use]
-    pub fn admitted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Admitted),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `Ready` pipeline-level event.
     #[must_use]
-    pub fn ready(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn ready(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Ready),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create an `UpdateAdmitted` pipeline-level event.
     #[must_use]
-    pub fn update_admitted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn update_admitted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::UpdateAdmitted),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create an `UpdateApplied` pipeline-level event.
     #[must_use]
-    pub fn update_applied(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn update_applied(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::UpdateApplied),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `RollbackComplete` pipeline-level event.
     #[must_use]
-    pub fn rollback_complete(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn rollback_complete(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::RollbackComplete),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `Drained` pipeline-level event.
     #[must_use]
-    pub fn drained(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn drained(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Drained),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `Deleted` pipeline-level event.
     #[must_use]
-    pub fn deleted(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn deleted(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Success(SuccessEvent::Deleted),
-            message: message.into(),
+            message,
         }
     }
 
@@ -280,7 +323,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn admission_error(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -289,7 +332,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::AdmissionError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -297,7 +340,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn config_rejected(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -306,7 +349,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::ConfigRejected(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -314,7 +357,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn update_failed(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -323,7 +366,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::UpdateFailed(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -331,7 +374,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn rollback_failed(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -340,7 +383,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::RollbackFailed(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -348,7 +391,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn drain_error(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -357,7 +400,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DrainError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -365,7 +408,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn delete_error(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -374,7 +417,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::DeleteError(error)),
-            message: message.into(),
+            message,
         }
     }
 
@@ -382,7 +425,7 @@ impl ObservedEvent {
     #[must_use]
     pub fn pipeline_runtime_error(
         key: DeployedPipelineKey,
-        message: impl Into<EventMessage>,
+        message: impl Into<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -391,7 +434,7 @@ impl ObservedEvent {
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
-            message: message.into(),
+            message: Some(message.into()),
         }
     }
 
@@ -401,7 +444,7 @@ impl ObservedEvent {
         key: DeployedPipelineKey,
         node_id: NodeId,
         node_kind: NodeKind,
-        message: impl Into<EventMessage>,
+        message: Option<String>,
         error: ErrorSummary,
     ) -> Self {
         Self {
@@ -410,59 +453,59 @@ impl ObservedEvent {
             node_kind: Some(node_kind),
             time: SystemTime::now(),
             r#type: EventType::Error(ErrorEvent::RuntimeError(error)),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `StartRequested` request-level event.
     #[must_use]
-    pub fn start_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn start_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::StartRequested),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `ShutdownRequested` request-level event.
     #[must_use]
-    pub fn shutdown_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn shutdown_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::ShutdownRequested),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `DeleteRequested` request-level event.
     #[must_use]
-    pub fn delete_requested(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::DeleteRequested),
-            message: message.into(),
+            message,
         }
     }
 
     /// Create a `ForceDeleteRequested` request-level event.
     #[must_use]
-    pub fn log_record(key: DeployedPipelineKey, message: impl Into<EventMessage>) -> Self {
+    pub fn force_delete_requested(key: DeployedPipelineKey, message: Option<String>) -> Self {
         Self {
             key,
             node_id: None,
             node_kind: None,
             time: SystemTime::now(),
             r#type: EventType::Request(RequestEvent::ForceDeleteRequested),
-            message: message.into(),
+            message,
         }
     }
 }
