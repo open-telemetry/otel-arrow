@@ -173,15 +173,11 @@ where
 mod tests {
     use super::*;
     use crate::event::ObservedEvent;
-    use std::time::Duration;
+    use otap_df_config::observed_state::SendPolicy;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
         let (tx, rx) = flume::bounded(16);
-        let reporter = ObservedEventReporter::new(
-            Duration::from_millis(100),
-            otap_df_config::pipeline::service::telemetry::logs::ProviderMode::Noop,
-            tx,
-        );
+        let reporter = ObservedEventReporter::new(SendPolicy::default(), tx);
         (reporter, rx)
     }
 
@@ -207,10 +203,7 @@ mod tests {
     #[test]
     fn console_async_provider_sends_logs() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(
-            ProviderSetup::ConsoleAsync { reporter },
-            LogLevel::Info,
-        );
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
             tracing::info!("async log message");
@@ -228,10 +221,7 @@ mod tests {
     #[test]
     fn log_level_filters_debug() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(
-            ProviderSetup::ConsoleAsync { reporter },
-            LogLevel::Info,
-        );
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
             tracing::debug!("this should be filtered out");

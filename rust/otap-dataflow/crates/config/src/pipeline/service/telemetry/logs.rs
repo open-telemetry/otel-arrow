@@ -69,6 +69,28 @@ pub struct LoggingProviders {
     pub admin: ProviderMode,
 }
 
+impl LoggingProviders {
+    /// Returns true if this uses an OTel logs provider.
+    #[must_use]
+    pub const fn uses_otel_provider(&self) -> bool {
+        self.global.uses_otel_provider()
+            || self.engine.uses_otel_provider()
+            || self.admin.uses_otel_provider()
+            || self.internal.uses_otel_provider()
+    }
+
+    /// Returns true if this uses an async logs provider.
+    #[must_use]
+    pub const fn uses_async_provider(&self) -> bool {
+        // Note: internal is not checked, it's not permitted.
+        debug_assert!(!self.internal.uses_async_provider());
+
+        self.global.uses_async_provider()
+            || self.engine.uses_async_provider()
+            || self.admin.uses_async_provider()
+    }
+}
+
 /// Logs producer: how log events are captured and routed.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -95,11 +117,16 @@ pub enum ProviderMode {
 }
 
 impl ProviderMode {
-    /// Returns true if this requires a LogsReporter channel for
-    /// asynchronous logging.
+    /// Is this an Asynchronous logging mode?
     #[must_use]
-    pub const fn needs_reporter(&self) -> bool {
+    pub const fn uses_async_provider(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
+    }
+
+    /// Is this an OTel logging mode?
+    #[must_use]
+    pub const fn uses_otel_provider(&self) -> bool {
+        matches!(self, Self::OpenTelemetry)
     }
 }
 
@@ -147,7 +174,7 @@ impl LogsConfig {
     /// - `engine` is `OpenTelemetry` but `global` is not
     ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
-        if self.providers.internal.needs_reporter() {
+        if self.providers.internal.uses_async_provider() {
             return Err(Error::InvalidUserConfig {
                 error: format!(
                     "internal provider is invalid: {:?}",
@@ -162,18 +189,6 @@ impl LogsConfig {
             return Err(Error::InvalidUserConfig {
                 error: "admin provider cannot be 'console_async' (would create feedback loop); \
                         use 'console_direct' or another mode instead"
-                    .into(),
-            });
-        }
-        // Current implementation restriction: engine OpenTelemetry requires global OpenTelemetry.
-        // The SDK logger provider is only created when the global provider is OpenTelemetry.
-        // This could be lifted in the future by creating the logger provider independently.
-        if self.providers.engine == ProviderMode::OpenTelemetry
-            && self.providers.global != ProviderMode::OpenTelemetry
-        {
-            return Err(Error::InvalidUserConfig {
-                error: "engine provider 'opentelemetry' requires global provider to also be \
-                        'opentelemetry' (current implementation restriction)"
                     .into(),
             });
         }
@@ -288,7 +303,7 @@ mod tests {
             (ConsoleAsync, true),
         ];
         for (mode, expected) in cases {
-            assert_eq!(mode.needs_reporter(), expected, "{mode:?}");
+            assert_eq!(mode.uses_async_provider(), expected, "{mode:?}");
         }
     }
 

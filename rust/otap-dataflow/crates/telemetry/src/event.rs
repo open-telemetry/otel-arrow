@@ -4,34 +4,23 @@
 //! Definition of all signals/conditions that drive state transitions and log events.
 
 use crate::self_tracing::LogRecord;
-use otap_df_config::{
-    DeployedPipelineKey, NodeId, node::NodeKind, pipeline::service::telemetry::logs::ProviderMode,
-};
+use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
 use serde::ser::Serializer;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
 #[derive(Clone)]
 pub struct ObservedEventReporter {
-    timeout: Duration,
-    fallback_mode: ProviderMode,
+    policy: SendPolicy,
     sender: flume::Sender<ObservedEvent>,
 }
 
 impl ObservedEventReporter {
     /// Creates a new `ObservedEventReporter` with the given sender channel.
     #[must_use]
-    pub fn new(
-        timeout: Duration,
-        fallback_mode: ProviderMode,
-        sender: flume::Sender<ObservedEvent>,
-    ) -> Self {
-        Self {
-            timeout,
-            fallback_mode,
-            sender,
-        }
+    pub fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
+        Self { policy, sender }
     }
 
     /// Report an engine event.
@@ -45,19 +34,43 @@ impl ObservedEventReporter {
     }
 
     fn observe(&self, event: ObservedEvent) {
-        let sent = self.sender.send_timeout(event, self.timeout);
-        if self.fallback_mode != ProviderMode::ConsoleDirect {
-            // Valid: Noop or ConsoleDirect.
-            return;
-        }
-        match sent {
-            Err(flume::SendTimeoutError::Timeout(event)) => {
-                crate::raw_error!("Timeout sending observed event", event = ?event);
-            }
-            Err(flume::SendTimeoutError::Disconnected(event)) => {
-                crate::raw_error!("Disconnect sending observed event", event = ?event);
-            }
-            Ok(_) => {}
+        // Note: we expect fallback_mode is equal to providers.internal
+        // so it's in the set (Noop, ConsoleDirect, OpenTelemetry).
+        //
+        // OpenTelemetry is silently ignored in this location.
+        match self.policy.blocking_timeout {
+            None => match self.sender.try_send(event) {
+                Ok(_) => {}
+                Err(err) => {
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::TrySendError::Full(event) => {
+                            crate::raw_error!("Timeout sending observed event", event = ?event);
+                        }
+                        flume::TrySendError::Disconnected(event) => {
+                            crate::raw_error!("Disconnect sending observed event", event = ?event);
+                        }
+                    }
+                }
+            },
+            Some(timeout) => match self.sender.send_timeout(event, timeout) {
+                Ok(_) => {}
+                Err(err) => {
+                    if !self.policy.console_fallback {
+                        return;
+                    }
+                    match err {
+                        flume::SendTimeoutError::Timeout(event) => {
+                            crate::raw_error!("Timeout sending observed event", event = ?event);
+                        }
+                        flume::SendTimeoutError::Disconnected(event) => {
+                            crate::raw_error!("Disconnect sending observed event", event = ?event);
+                        }
+                    }
+                }
+            },
         };
     }
 }

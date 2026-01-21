@@ -10,8 +10,7 @@ use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
 use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
-use otap_df_config::observed_state::ObservedStateSettings;
-use otap_df_config::pipeline::service::telemetry::logs::ProviderMode;
+use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::{otel_error, otel_info};
@@ -29,12 +28,6 @@ const RECENT_EVENTS_CAPACITY: usize = 10;
 /// concurrently or read the current state.
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateStore {
-    #[serde(skip)]
-    config: ObservedStateSettings,
-
-    #[serde(skip)]
-    fallback_mode: ProviderMode,
-
     #[serde(skip)]
     default_health_policy: HealthPolicy,
 
@@ -81,12 +74,10 @@ impl ObservedStateHandle {
 impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
-    pub fn new(config: &ObservedStateSettings, fallback_mode: ProviderMode) -> Self {
+    pub fn new(config: &ObservedStateSettings) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
-            config: config.clone(),
-            fallback_mode,
             default_health_policy: HealthPolicy::default(),
             health_policies: Arc::new(Mutex::new(HashMap::new())),
             sender,
@@ -98,12 +89,8 @@ impl ObservedStateStore {
 
     /// Returns a reporter that can be used to send observed events to this store.
     #[must_use]
-    pub fn reporter(&self) -> ObservedEventReporter {
-        ObservedEventReporter::new(
-            self.config.reporting_timeout,
-            self.fallback_mode,
-            self.sender.clone(),
-        )
+    pub fn reporter(&self, policy: SendPolicy) -> ObservedEventReporter {
+        ObservedEventReporter::new(policy, self.sender.clone())
     }
 
     /// Registers or updates the health policy for a specific pipeline.

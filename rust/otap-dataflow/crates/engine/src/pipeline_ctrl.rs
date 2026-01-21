@@ -419,9 +419,8 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_config::observed_state::ObservedStateSettings;
+    use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
     use otap_df_config::pipeline::PipelineConfig;
-    use otap_df_config::pipeline::service::telemetry::logs::ProviderMode;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
@@ -462,8 +461,7 @@ mod tests {
         // Create a dummy MetricsReporter for testing using MetricsSystem
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
-        let observed_state_store =
-            ObservedStateStore::new(&ObservedStateSettings::default(), ProviderMode::Noop);
+        let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
         let pipeline_config =
@@ -495,7 +493,7 @@ mod tests {
             pipeline_context,
             pipeline_rx,
             control_senders,
-            observed_state_store.reporter(),
+            observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
             pipeline_config.pipeline_settings().telemetry.clone(),
             Vec::new(),
@@ -893,7 +891,7 @@ mod tests {
                 let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
                 let metrics_reporter = metrics_system.reporter();
                 let observed_state_store =
-                    ObservedStateStore::new(&ObservedStateSettings::default(), ProviderMode::Noop);
+                    ObservedStateStore::new(&ObservedStateSettings::default());
                 let pipeline_group_id: PipelineGroupId = Default::default();
                 let pipeline_id: PipelineId = Default::default();
                 let core_id = 0;
@@ -923,7 +921,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
-                    observed_state_store.reporter(),
+                    observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetrySettings::default(),
                     Vec::new(),

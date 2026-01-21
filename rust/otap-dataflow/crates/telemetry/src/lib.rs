@@ -30,6 +30,7 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::event::ObservedEventReporter;
 use crate::registry::TelemetryRegistryHandle;
+use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{
     LogLevel, LoggingProviders, ProviderMode,
@@ -103,10 +104,10 @@ pub struct InternalTelemetrySystem {
 
     // === OTel SDK Subsystem ===
     /// OTel SDK meter provider for metrics export.
-    meter_provider: SdkMeterProvider,
+    sdk_meter_provider: SdkMeterProvider,
 
     /// OTel SDK logger provider for logs export (optional, only for OpenTelemetry mode).
-    logger_provider: Option<SdkLoggerProvider>,
+    sdk_logger_provider: Option<SdkLoggerProvider>,
 
     /// Tokio runtime for OTLP exporters (kept alive).
     _otel_runtime: Option<tokio::runtime::Runtime>,
@@ -154,13 +155,11 @@ impl InternalTelemetrySystem {
         ));
 
         // 2. Create OTel SDK providers
-        // Logger provider is only needed for OpenTelemetry mode
-        let needs_logger_provider = config.logs.providers.global == ProviderMode::OpenTelemetry
-            || config.logs.providers.engine == ProviderMode::OpenTelemetry;
-
-        let otel_client = otel_sdk::OpentelemetryClient::new(config, needs_logger_provider)?;
-        let meter_provider = otel_client.meter_provider().clone();
-        let logger_provider = otel_client.logger_provider().cloned();
+        // OTel Logger is only needed for OpenTelemetry mode
+        let otel_client =
+            otel_sdk::OpentelemetryClient::new(config, config.logs.providers.uses_otel_provider())?;
+        let sdk_meter_provider = otel_client.meter_provider().clone();
+        let sdk_logger_provider = otel_client.logger_provider().cloned();
         let otel_runtime = otel_client.into_runtime();
 
         Ok(Self {
@@ -168,8 +167,8 @@ impl InternalTelemetrySystem {
             collector: Arc::new(collector),
             metrics_reporter,
             dispatcher,
-            meter_provider,
-            logger_provider,
+            sdk_meter_provider,
+            sdk_logger_provider,
             _otel_runtime: otel_runtime,
             log_level: config.logs.level,
             provider_modes: config.logs.providers.clone(),
@@ -208,7 +207,7 @@ impl InternalTelemetrySystem {
 
             ProviderMode::OpenTelemetry => {
                 let logger = self
-                    .logger_provider
+                    .sdk_logger_provider
                     .as_ref()
                     .expect("OpenTelemetry mode requires logger_provider");
                 ProviderSetup::OpenTelemetry {
@@ -270,9 +269,9 @@ impl InternalTelemetrySystem {
     }
 
     /// Shuts down the OpenTelemetry SDK providers.
-    pub fn shutdown(self) -> Result<(), Error> {
-        let meter_shutdown_result = self.meter_provider.shutdown();
-        let logger_shutdown_result = self.logger_provider.map(|p| p.shutdown()).transpose();
+    pub fn shutdown_otel(self) -> Result<(), Error> {
+        let meter_shutdown_result = self.sdk_meter_provider.shutdown();
+        let logger_shutdown_result = self.sdk_logger_provider.map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
@@ -290,11 +289,7 @@ impl Default for InternalTelemetrySystem {
         // Dummy channel for testing. Events will be dropped.
         let (sender, _receiver) = flume::bounded(1);
         let config = TelemetryConfig::default();
-        let dummy_reporter = ObservedEventReporter::new(
-            std::time::Duration::from_millis(0),
-            ProviderMode::Noop,
-            sender,
-        );
+        let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
         Self::new(&config, dummy_reporter).expect("default telemetry config should be valid")
     }

@@ -105,15 +105,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Create the observed state store first - the telemetry system needs its reporter
-        let obs_state_store =
-            ObservedStateStore::new(&engine_settings.observed_state, telemetry_config.logs.providers.engine);
-        let obs_evt_reporter = obs_state_store.reporter();
+        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
         let obs_state_handle = obs_state_store.handle();
+        let engine_evt_reporter =
+            obs_state_store.reporter(engine_settings.observed_state.engine_events);
+        let logging_evt_reporter =
+            obs_state_store.reporter(engine_settings.observed_state.logging_events);
 
         // Create the telemetry system, pass the observed state store
         // as the admin reporter for console_async support.
         let telemetry_system =
-            InternalTelemetrySystem::new(telemetry_config, obs_evt_reporter.clone())?;
+            InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
 
         telemetry_system.init_global_subscriber();
@@ -208,10 +210,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_id.as_ref(),
                         core_id.id
                     );
-                    let obs_evt_reporter = obs_evt_reporter.clone();
+
                     let group_id = pipeline_group_id.clone();
                     let pipeline_id = pipeline_id.clone();
                     let engine_tracing_setup = telemetry_system.engine_tracing_setup();
+                    let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
@@ -221,7 +224,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 pipeline_config,
                                 pipeline_factory,
                                 pipeline_handle,
-                                obs_evt_reporter,
+                                engine_evt_reporter,
                                 metrics_reporter,
                                 pipeline_ctrl_msg_tx,
                                 pipeline_ctrl_msg_rx,
@@ -283,11 +286,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
+                    engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
                     let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    obs_evt_reporter.report(EngineEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "Pipeline encountered a runtime error.",
                         err_summary,
@@ -300,7 +303,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         message: "The pipeline panicked during execution.".into(),
                         source: Some(format!("{e:?}")),
                     };
-                    obs_evt_reporter.report(EngineEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "The pipeline panicked during execution.",
                         err_summary,
@@ -335,7 +338,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        telemetry_system.shutdown()?;
+        telemetry_system.shutdown_otel()?;
 
         Ok(())
     }
