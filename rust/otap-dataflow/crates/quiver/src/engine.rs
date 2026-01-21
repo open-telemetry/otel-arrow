@@ -1113,7 +1113,6 @@ mod tests {
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
-    use std::time::SystemTime;
 
     /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
     fn test_budget() -> Arc<DiskBudget> {
@@ -1178,8 +1177,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> SystemTime {
-            SystemTime::now()
+        fn ingestion_time(&self) -> std::time::SystemTime {
+            std::time::SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -1818,8 +1817,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> SystemTime {
-            SystemTime::now()
+        fn ingestion_time(&self) -> std::time::SystemTime {
+            std::time::SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -2190,8 +2189,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> SystemTime {
-            SystemTime::now()
+        fn ingestion_time(&self) -> std::time::SystemTime {
+            std::time::SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
