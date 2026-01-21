@@ -161,22 +161,6 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
-    /// Sends a message to a specific named out port.
-    #[inline]
-    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
-    where
-        P: Into<PortName>,
-    {
-        let port_name: PortName = port.into();
-        match self.msg_senders.get(&port_name) {
-            Some(sender) => sender
-                .send(data)
-                .await
-                .map_err(TypedError::ChannelSendError),
-            None => Err(self.unknown_port_error(&port_name)),
-        }
-    }
-
     /// Attempts to send a message without awaiting.
     ///
     /// Unlike `send_message`, this method returns immediately if the downstream
@@ -192,6 +176,33 @@ impl<PData> EffectHandler<PData> {
         match &self.default_sender {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(self.no_default_port_error()),
+        }
+    }
+
+    /// Creates an error for when no default output port is configured.
+    fn no_default_port_error<T>(&self) -> TypedError<T> {
+        TypedError::Error(Error::ReceiverError {
+            receiver: self.receiver_id(),
+            kind: ReceiverErrorKind::Configuration,
+            error: "Ambiguous default out port: multiple ports connected and no default configured"
+                .to_string(),
+            source_detail: String::new(),
+        })
+    }
+
+    /// Sends a message to a specific named out port.
+    #[inline]
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        match self.msg_senders.get(&port_name) {
+            Some(sender) => sender
+                .send(data)
+                .await
+                .map_err(TypedError::ChannelSendError),
+            None => Err(self.unknown_port_error(&port_name)),
         }
     }
 
@@ -215,17 +226,6 @@ impl<PData> EffectHandler<PData> {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(self.unknown_port_error(&port_name)),
         }
-    }
-
-    /// Creates an error for when no default output port is configured.
-    fn no_default_port_error<T>(&self) -> TypedError<T> {
-        TypedError::Error(Error::ReceiverError {
-            receiver: self.receiver_id(),
-            kind: ReceiverErrorKind::Configuration,
-            error: "Ambiguous default out port: multiple ports connected and no default configured"
-                .to_string(),
-            source_detail: String::new(),
-        })
     }
 
     /// Creates an error for when an unknown output port is specified.

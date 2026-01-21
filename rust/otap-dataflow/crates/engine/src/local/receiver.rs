@@ -194,6 +194,35 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
+    /// Attempts to send a message without awaiting.
+    ///
+    /// Unlike `send_message`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if no default port is configured.
+    #[inline]
+    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
+        match &self.default_sender {
+            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
+            None => Err(self.no_default_port_error()),
+        }
+    }
+
+    /// Creates an error for when no default output port is configured.
+    fn no_default_port_error<T>(&self) -> TypedError<T> {
+        TypedError::Error(Error::ReceiverError {
+            receiver: self.receiver_id(),
+            kind: ReceiverErrorKind::Configuration,
+            error: "Ambiguous default out port: multiple ports connected and no default configured"
+                .to_string(),
+            source_detail: String::new(),
+        })
+    }
+
     /// Sends a message to a specific named out port.
     ///
     /// # Errors
@@ -212,24 +241,6 @@ impl<PData> EffectHandler<PData> {
                 .await
                 .map_err(TypedError::ChannelSendError),
             None => Err(self.unknown_port_error(&port_name)),
-        }
-    }
-
-    /// Attempts to send a message without awaiting.
-    ///
-    /// Unlike `send_message`, this method returns immediately if the downstream
-    /// channel is full, allowing the caller to handle backpressure without awaiting.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
-    /// channel is full, or [`SendError::Closed`] if the channel is closed.
-    /// Returns a [`TypedError::Error`] if no default port is configured.
-    #[inline]
-    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
-        match &self.default_sender {
-            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(self.no_default_port_error()),
         }
     }
 
@@ -253,17 +264,6 @@ impl<PData> EffectHandler<PData> {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(self.unknown_port_error(&port_name)),
         }
-    }
-
-    /// Creates an error for when no default output port is configured.
-    fn no_default_port_error<T>(&self) -> TypedError<T> {
-        TypedError::Error(Error::ReceiverError {
-            receiver: self.receiver_id(),
-            kind: ReceiverErrorKind::Configuration,
-            error: "Ambiguous default out port: multiple ports connected and no default configured"
-                .to_string(),
-            source_detail: String::new(),
-        })
     }
 
     /// Creates an error for when an unknown output port is specified.
