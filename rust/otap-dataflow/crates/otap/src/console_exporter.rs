@@ -102,8 +102,11 @@ impl Exporter<OtapPdata> for ConsoleExporter {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    self.export(&data);
-                    effect_handler.notify_ack(AckMsg::new(data)).await?;
+                    let (ctx, payload) = data.into_parts();
+                    self.export(&payload);
+                    effect_handler
+                        .notify_ack(AckMsg::new(OtapPdata::new(ctx, payload)))
+                        .await?;
                 }
                 _ => {
                     // do nothing
@@ -116,8 +119,7 @@ impl Exporter<OtapPdata> for ConsoleExporter {
 }
 
 impl ConsoleExporter {
-    fn export(&self, data: &OtapPdata) {
-        let (_, payload) = data.clone().into_parts();
+    fn export(&self, payload: &OtapPayload) {
         match payload.signal_type() {
             SignalType::Logs => self.export_logs(&payload),
             SignalType::Traces => self.export_traces(&payload),
@@ -367,9 +369,9 @@ impl HierarchicalFormatter {
                     cw.write_severity(w, severity);
                 },
                 |w, _| {
+                    // Event name prints space before itself
                     if let Some(name) = event_name {
                         let _ = w.write_all(name.as_bytes());
-                        let _ = w.write_all(b": ");
                     }
                 },
             );
@@ -418,13 +420,13 @@ mod tests {
         // - scope-alpha/1.0.0: INFO + WARN
         // - scope-beta/2.0.0: ERROR + DEBUG
         let expected = "\
-2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource:
-2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0:
-2025-01-15T10:30:00.000Z  │ ├─ INFO  first log in alpha
+2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource [res.id=self]
+2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0 [scopekey=scopeval]
+2025-01-15T10:30:00.000Z  │ ├─ INFO  event_1: first log in alpha
 2025-01-15T10:30:01.000Z  │ ├─ WARN  second log in alpha
-2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0:
+2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0
 2025-01-15T10:30:02.000Z  │ ├─ ERROR first log in beta
-2025-01-15T10:30:03.000Z  │ └─ DEBUG second log in beta
+2025-01-15T10:30:03.000Z  │ └─ DEBUG event_2: [detail=no body here]
 ";
         assert_eq!(text, expected);
     }

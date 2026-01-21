@@ -3,8 +3,8 @@
 
 //! An alternative to Tokio fmt::layer().
 
+use super::LogRecord;
 use super::encoder::level_to_severity_number;
-use super::{LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
@@ -150,9 +150,9 @@ impl ConsoleWriter {
             time,
             &view,
             |w, cw| cw.write_level(w, &level),
-            |w, _| {
-                Self::write_event_name(w, callsite);
-                let _ = w.write_all(b": ");
+            |w, cw| {
+                // Event name prints space before itself
+                cw.write_styled(w, AnsiCode::Bold, |w| Self::write_event_name(w, record));
             },
         );
 
@@ -161,7 +161,8 @@ impl ConsoleWriter {
 
     /// Write callsite details as event_name to buffer.
     #[inline]
-    pub(crate) fn write_event_name(w: &mut BufWriter<'_>, callsite: SavedCallsite) {
+    pub(crate) fn write_event_name(w: &mut BufWriter<'_>, record: &LogRecord) {
+        let callsite = record.callsite();
         let _ = w.write_all(callsite.target().as_bytes());
         let _ = w.write_all(b"::");
         let _ = w.write_all(callsite.name().as_bytes());
@@ -190,14 +191,37 @@ impl ConsoleWriter {
     }
 
     /// Write body and attributes from a LogRecordView to buffer.
-    fn write_body_and_attrs<V: LogRecordView>(w: &mut BufWriter<'_>, record: &V) {
+    /// - If has_event_name and body present: print ": " then body
+    /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
+    /// - Body prints directly
+    /// - Attributes print " [...]" before themselves
+    fn write_body_and_attrs<V: LogRecordView>(
+        w: &mut BufWriter<'_>,
+        record: &V,
+        has_event_name: bool,
+    ) {
+        let body = record.body();
+        let mut attrs = record.attributes().peekable();
+        let has_body = body.is_some();
+        let has_attrs = attrs.peek().is_some();
+
+        // Print separator after event_name if there's content following
+        if has_event_name && (has_body || has_attrs) {
+            if has_body {
+                let _ = w.write_all(b": ");
+            } else {
+                // No body, attrs will add " [" so just print ":"
+                let _ = w.write_all(b":");
+            }
+        }
+
         // Write body if present
-        if let Some(body) = record.body() {
+        if let Some(body) = body {
             Self::write_any_value(w, &body);
         }
 
-        // Write attributes if present
-        Self::write_attrs(w, record.attributes());
+        // Write attributes if present (with leading " [")
+        Self::write_attrs(w, attrs);
     }
 
     /// Write attributes from any AttributeView iterator to buffer.
@@ -233,7 +257,7 @@ impl ConsoleWriter {
         w.position() as usize >= w.get_ref().len()
     }
 
-    /// Write an AnyValue to buffer.
+    /// Write an AnyValue to buffer (strings unquoted).
     fn write_any_value<'a>(w: &mut BufWriter<'_>, value: &impl AnyValueView<'a>) {
         match value.value_type() {
             ValueType::String => {
@@ -339,43 +363,13 @@ impl ConsoleWriter {
         let _ = w.write_all(b" ");
     }
 
-    /// Format a header line (resource/scope) with attributes but no body.
-    pub fn format_header_line<A, L, E>(
-        &self,
-        w: &mut BufWriter<'_>,
-        time: Option<SystemTime>,
-        attrs: impl Iterator<Item = A>,
-        format_level: L,
-        format_event_name: E,
-    ) where
-        A: AttributeView,
-        L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
-        E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
-    {
-        // Timestamp (optional)
-        if let Some(time) = time {
-            self.write_styled(w, AnsiCode::Dim, |w| Self::write_timestamp(w, time));
-            let _ = w.write_all(b"  ");
-        }
-
-        // Custom level/prefix formatting (tree structure, severity, etc.)
-        format_level(w, self);
-
-        // Event name (callsite-based or string-based)
-        self.write_styled(w, AnsiCode::Bold, |w| format_event_name(w, self));
-        let _ = w.write_all(b":");
-
-        // Attributes only (no body)
-        Self::write_attrs(w, attrs);
-
-        let _ = w.write_all(b"\n");
-    }
-
     /// Format a log line from a LogRecordView with custom formatters.
     ///
-    /// The closures allow customizing:
-    /// - `format_level`: tree prefixes + severity/level coloring
-    /// - `format_event_name`: callsite-based or string-based event names
+    /// Spacing convention: each section adds its own leading separator.
+    /// - Level ends with a space
+    /// - Event name (if any) prints space before itself
+    /// - Body (if any) prints ": " before itself  
+    /// - Attributes (if any) print " [...]" before themselves
     pub fn format_log_line<V, L, E>(
         &self,
         w: &mut BufWriter<'_>,
@@ -397,11 +391,47 @@ impl ConsoleWriter {
         // Custom level/prefix formatting (tree structure, severity, etc.)
         format_level(w, self);
 
-        // Event name (callsite-based or string-based)
-        self.write_styled(w, AnsiCode::Bold, |w| format_event_name(w, self));
+        // Track position to detect if event_name was written
+        let pos_before = w.position();
+        format_event_name(w, self);
+        let has_event_name = w.position() > pos_before;
 
-        // Body and attributes
-        Self::write_body_and_attrs(w, record);
+        // Body and attributes (with ": " separator after event_name if needed)
+        Self::write_body_and_attrs(w, record, has_event_name);
+
+        let _ = w.write_all(b"\n");
+    }
+
+    /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
+    ///
+    /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
+    /// and doesn't print a body - just the header name and attributes.
+    pub fn format_header_line<A, L, E>(
+        &self,
+        w: &mut BufWriter<'_>,
+        time: Option<SystemTime>,
+        attrs: impl Iterator<Item = A>,
+        format_level: L,
+        format_event_name: E,
+    ) where
+        A: AttributeView,
+        L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+        E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+    {
+        // Timestamp (optional)
+        if let Some(time) = time {
+            self.write_styled(w, AnsiCode::Dim, |w| Self::write_timestamp(w, time));
+            let _ = w.write_all(b"  ");
+        }
+
+        // Custom level/prefix formatting (tree structure, type label, etc.)
+        format_level(w, self);
+
+        // Header name (e.g., "v1.Resource", "scope-name/version")
+        format_event_name(w, self);
+
+        // Attributes only (no body)
+        Self::write_attrs(w, attrs);
 
         let _ = w.write_all(b"\n");
     }
@@ -639,7 +669,7 @@ mod tests {
         // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123): \n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
         );
 
         let writer = ConsoleWriter::color();
@@ -648,7 +678,7 @@ mod tests {
         // With ANSI codes: dim timestamp, green INFO (padded to 5 chars), bold event name
         assert_eq!(
             output,
-            "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO \x1b[0m \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m: \n"
+            "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO \x1b[0m \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m\n"
         );
 
         // Verify full OTLP encoding with known callsite

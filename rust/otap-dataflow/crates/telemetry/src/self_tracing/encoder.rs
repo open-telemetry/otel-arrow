@@ -70,6 +70,7 @@ fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
     proto_encode_len_delimited_unknown_size!(
         LOG_RECORD_EVENT_NAME,
         {
+            // @@@ TODO can we consolidate this with write_event_name()?
             buf.extend_from_slice(callsite.target().as_bytes());
             buf.extend_from_slice(b"::");
             buf.extend_from_slice(callsite.name().as_bytes());
