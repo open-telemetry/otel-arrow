@@ -121,37 +121,24 @@ the channel is consumed.
 
 Logs are silently dropped. Useful for testing or disabling logging.
 
-```
-┌─────────────────────┐
-│  Application Code   │
-│  tracing::info!()   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐
-│   NoSubscriber      │
-│   (logs dropped)    │
-└─────────────────────┘
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["NoSubscriber<br/>(logs dropped)"]
+    A --> B
 ```
 
 ### ConsoleDirect Provider
 
 Synchronous console output. Simple but may block the producing thread.
 
-```
-┌─────────────────────┐
-│  Application Code   │
-│  tracing::info!()   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐
-│   RawLoggingLayer   │
-│   + EnvFilter       │
-└──────────┬──────────┘
-           │ (blocking)
-┌─────────────────────┐
-│      Console        │
-│      (stdout)       │
-└─────────────────────┘
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["RawLoggingLayer<br/>+ EnvFilter"]
+    C["Console<br/>(stdout)"]
+    A --> B
+    B -->|blocking| C
 ```
 
 ### ConsoleAsync Provider
@@ -159,47 +146,32 @@ Synchronous console output. Simple but may block the producing thread.
 Asynchronous console output via a bounded channel. Non-blocking for
 the producing thread; logs will be dropped if the channel is full.
 
-```
-┌─────────────────────┐
-│  Application Code   │
-│  tracing::info!()   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐
-│  AsyncLayer         │
-│   + EnvFilter       │
-└──────────┬──────────┘
-           │ (non-blocking send)
-┌─────────────────────┐
-│   Bounded Channel   │
-│   (flume::Sender)   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐     ┌─────────────────────┐
-│   LogsCollector     │────>│      Console        │
-│   (background task) │     │      (stdout)       │
-└─────────────────────┘     └─────────────────────┘
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["AsyncLayer<br/>+ EnvFilter"]
+    C["Bounded Channel<br/>(flume::Sender)"]
+    D["LogsCollector<br/>(background task)"]
+    E["Console<br/>(stdout)"]
+    A --> B
+    B -->|non-blocking send| C
+    C --> D
+    D --> E
 ```
 
 ### OpenTelemetry Provider
 
 Routes logs through the OpenTelemetry SDK for export to backends.
 
-```
-┌─────────────────────┐
-│  Application Code   │
-│  tracing::info!()   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐
-│  OTelTracingBridge  │
-│   + EnvFilter       │
-└──────────┬──────────┘
-           │ (non-blocking)
-┌─────────────────────┐     ┌─────────────────────┐
-│  SdkLoggerProvider  │────>│   OTLP Exporter     │
-│  (queue processor)  │     │   (to backend)      │
-└─────────────────────┘     └─────────────────────┘
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["OTelTracingBridge<br/>+ EnvFilter"]
+    C["SdkLoggerProvider<br/>(queue processor)"]
+    D["OTLP Exporter<br/>(to backend)"]
+    A --> B
+    B -->|non-blocking| C
+    C --> D
 ```
 
 ### ITS Provider (Internal Telemetry System)
@@ -208,28 +180,22 @@ Routes logs through the internal telemetry pipeline for self-hosted
 telemetry consumption. Uses the same channel mechanism as ConsoleAsync
 but consumed by the Internal Telemetry Receiver.
 
-```
-┌─────────────────────┐
-│  Application Code   │
-│  tracing::info!()   │
-└──────────┬──────────┘
-           │
-┌─────────────────────┐
-│  AsyncLayer         │
-│   + EnvFilter       │
-└──────────┬──────────┘
-           │ (non-blocking send)
-┌─────────────────────┐
-│   Bounded Channel   │
-│   (flume::Sender)   │
-└──────────┬──────────┘
-           │
-┌─────────────────────────────────────────────────┐
-│         Internal Telemetry Pipeline             │
-│  ┌───────────────┐  ┌───────────┐  ┌─────────┐  │
-│  │  ITR Receiver │─>│ Processor │─>│Exporter │  │
-│  └───────────────┘  └───────────┘  └─────────┘  │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["AsyncLayer<br/>+ EnvFilter"]
+    C["Bounded Channel<br/>(flume::Sender)"]
+
+    subgraph ITP["Internal Telemetry Pipeline"]
+        D["ITR Receiver"]
+        E["Processor"]
+        F["Exporter"]
+        D --> E --> F
+    end
+
+    A --> B
+    B -->|non-blocking send| C
+    C --> D
 ```
 
 ## Thread Model and Subscriber Scopes
@@ -241,37 +207,26 @@ The tracing subscriber can be configured at two scopes:
 2. Thread-local subscriber (`with_subscriber`): Temporarily sets
    a subscriber for the duration of a closure. Used by engine threads.
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Process                                     │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                   Global Subscriber                           │  │
-│  │         Applies to: main thread, misc threads                 │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-│  ┌───────────────────────┐  ┌───────────────────────┐               │
-│  │  Engine Thread 0      │  │  Engine Thread 1      │  ...          │
-│  │  ┌─────────────────┐  │  │  ┌─────────────────┐  │               │
-│  │  │ Thread-local    │  │  │  │ Thread-local    │  │               │
-│  │  │  Subscriber     │  │  │  │  Subscriber     │  │               │
-│  │  │(with_subscriber)│  │  │  │(with_subscriber)│  │               │
-│  │  └─────────────────┘  │  │  └─────────────────┘  │               │
-│  │                       │  │                       │               │
-│  │  Pipeline code runs   │  │  Pipeline code runs   │               │
-│  │  with thread-local    │  │  with thread-local    │               │
-│  │  tracing active       │  │  tracing active       │               │
-│  └───────────────────────┘  └───────────────────────┘               │
-│                                                                     │
-│  ┌───────────────────────────┐                                      │
-│  │  Admin                    │  (e.g., for ConsoleAsync mode)       │
-│  │  Observer Thread          │                                      │
-│  │  ┌─────────────────────┐  │                                      │
-│  │  │ Uses ConsoleDirect  │  │                                      │
-│  │  │ or Noop             │  │                                      │
-│  │  └─────────────────────┘  │                                      │
-│  └───────────────────────────┘                                      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Process
+        subgraph Global["Global Subscriber<br/>Applies to: main thread, misc threads"]
+        end
+
+        subgraph ET0["Engine Thread 0"]
+            TL0["Thread-local Subscriber<br/>(with_subscriber)"]
+            PC0["Pipeline code runs<br/>with thread-local<br/>tracing active"]
+        end
+
+        subgraph ET1["Engine Thread 1"]
+            TL1["Thread-local Subscriber<br/>(with_subscriber)"]
+            PC1["Pipeline code runs<br/>with thread-local<br/>tracing active"]
+        end
+
+        subgraph Admin["Admin Observer Thread<br/>(e.g., for ConsoleAsync mode)"]
+            AD["Uses ConsoleDirect<br/>or Noop"]
+        end
+    end
 ```
 
 ## Default configuration
