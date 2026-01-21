@@ -354,8 +354,7 @@ impl HierarchicalFormatter {
 
         let event_name = log_record
             .event_name()
-            .map(|s| String::from_utf8_lossy(s).into_owned())
-            .unwrap_or_else(|| "event".to_string());
+            .map(|s| String::from_utf8_lossy(s).into_owned());
 
         let severity = log_record.severity_number();
         let tree = self.tree;
@@ -377,7 +376,9 @@ impl HierarchicalFormatter {
                     cw.write_severity(w, severity);
                 },
                 |w, _| {
-                    let _ = w.write_all(event_name.as_bytes());
+                    if let Some(name) = event_name {
+                        let _ = w.write_all(name.as_bytes());
+                    }
                 },
             );
         });
