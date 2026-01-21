@@ -1,8 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::experimental::recordset_kql_processor::config::RecordsetKqlProcessorConfig;
-use crate::experimental::recordset_kql_processor::create_recordset_kql_processor;
+use crate::contrib::processor::recordset_kql_processor::config::RecordsetKqlProcessorConfig;
+use crate::contrib::processor::recordset_kql_processor::create_recordset_kql_processor;
 use crate::pdata::OtapPdata;
 
 use async_trait::async_trait;

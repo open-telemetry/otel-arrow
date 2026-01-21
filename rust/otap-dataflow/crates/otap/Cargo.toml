@@ -100,12 +100,12 @@ notify = { workspace = true, optional = true }
 
 [features]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
-# Base experimental feature - enabled by all experimental exporters
-experimental-exporters = []
-# Experimental exporters
-geneva-exporter = ["experimental-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
+# Base contrib feature - enabled by all contrib exporters
+contrib-exporters = []
+# Contrib exporters
+geneva-exporter = ["contrib-exporters", "dep:geneva-uploader", "dep:opentelemetry-proto"]
 azure-monitor-exporter = [
-    "experimental-exporters",
+    "contrib-exporters",
     "dep:opentelemetry-proto",
     "dep:azure_identity",
     "dep:reqwest",
@@ -113,11 +113,11 @@ azure-monitor-exporter = [
     "dep:ahash",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
-# Experimental processors
-experimental-processors = []
-condense-attributes-processor = ["experimental-processors"]
+# Contrib processors
+contrib-processors = []
+condense-attributes-processor = ["contrib-processors"]
 recordset-kql-processor = [
-    "experimental-processors",
+    "contrib-processors",
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset"
 ]

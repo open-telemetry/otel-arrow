@@ -209,12 +209,12 @@ unchecked-arithmetic = []
 quiver-persistence = ["quiver"]
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
-# Experimental exporters (opt-in)
-experimental-exporters = ["otap-df-otap/experimental-exporters"]
+# Contrib exporters (opt-in)
+contrib-exporters = ["otap-df-otap/contrib-exporters"]
 geneva-exporter = ["otap-df-otap/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
-# Experimental processors (opt-in)
-experimental-processors = ["otap-df-otap/experimental-processors"]
+# Contrib processors (opt-in)
+contrib-processors = ["otap-df-otap/contrib-processors"]
 condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-otap/recordset-kql-processor"]
 
