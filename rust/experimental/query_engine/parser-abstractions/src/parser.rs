@@ -190,19 +190,6 @@ impl ParserMapSchema {
             .unwrap_or(key)
     }
 
-    pub fn get_aliases_for_key(&self, canonical_key: &str) -> Vec<&str> {
-        self.aliases
-            .iter()
-            .filter_map(|(alias, key)| {
-                if key.as_ref() == canonical_key {
-                    Some(alias.as_ref())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
     pub fn get_all_key_names_for_canonical_key(&self, canonical_key: &str) -> Vec<Box<str>> {
         let mut names = vec![canonical_key.into()];
         names.extend(self.aliases.iter().filter_map(|(alias, key)| {
@@ -404,6 +391,21 @@ impl ParserResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ParserMapSchema {
+        fn get_aliases_for_key(&self, canonical_key: &str) -> Vec<&str> {
+            self.aliases
+                .iter()
+                .filter_map(|(alias, key)| {
+                    if key.as_ref() == canonical_key {
+                        Some(alias.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+    }
 
     #[test]
     fn test_parser_map_schema_aliases() {
