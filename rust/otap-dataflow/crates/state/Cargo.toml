@@ -23,4 +23,3 @@ flume = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
-log = { workspace = true }

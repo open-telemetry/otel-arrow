@@ -8,7 +8,7 @@
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
 
-use otap_df_config::observed_state::ObservedStateSettings;
+use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
@@ -61,9 +61,11 @@ fn test_telemetry_registries_cleanup() {
 
     assert_eq!(registry.entity_count(), expected_entities);
 
-    let pipeline_settings = config.pipeline_settings().clone();
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
+    let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(
+        config
+            .pipeline_settings()
+            .default_pipeline_ctrl_msg_channel_size,
+    );
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
     let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
 
@@ -73,7 +75,7 @@ fn test_telemetry_registries_cleanup() {
         core_id: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
-    let event_reporter = observed_state_store.reporter();
+    let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
     let shutdown_handle = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
