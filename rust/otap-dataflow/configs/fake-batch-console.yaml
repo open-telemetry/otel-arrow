@@ -32,6 +32,7 @@ nodes:
       otap:
         min_size: 1000
         sizer: items
+      format: otap
       flush_timeout: 3s
   console:
     kind: exporter

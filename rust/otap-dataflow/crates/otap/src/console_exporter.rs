@@ -24,9 +24,10 @@ use otap_df_pdata::OtapPayload;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::views::common::InstrumentationScopeView;
 use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
+use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
-use otap_df_telemetry::raw_error;
+use otap_df_telemetry::otel_error;
 use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE};
 use std::io::Write;
 use std::sync::Arc;
@@ -130,21 +131,25 @@ impl ConsoleExporter {
             OtapPayload::OtlpBytes(bytes) => {
                 self.formatter.format_logs_bytes(bytes);
             }
-            OtapPayload::OtapArrowRecords(_records) => {
-                // TODO: Support Arrow format using the Arrow view
-                raw_error!("Console exporter: Arrow format not yet supported for logs");
-            }
+            OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
+                Ok(logs_view) => {
+                    self.formatter.format_logs_arrow(&logs_view);
+                }
+                Err(e) => {
+                    otel_error!("Failed to create Arrow logs view", error = ?e);
+                }
+            },
         }
     }
 
     fn export_traces(&self, _payload: &OtapPayload) {
         // TODO: Implement traces formatting.
-        raw_error!("Console exporter: Traces formatting not yet implemented");
+        otel_error!("Traces formatting not yet implemented");
     }
 
     fn export_metrics(&self, _payload: &OtapPayload) {
         // TODO: Implement metrics formatting.
-        raw_error!("Console exporter: Metrics formatting not yet implemented");
+        otel_error!("Metrics formatting not yet implemented");
     }
 }
 
@@ -200,6 +205,13 @@ impl HierarchicalFormatter {
         let _ = std::io::stdout().write_all(&output);
     }
 
+    /// Format logs from Arrow format to stdout.
+    pub fn format_logs_arrow(&self, logs_view: &OtapLogsView<'_>) {
+        let mut output = Vec::new();
+        self.format_logs_data_to(logs_view, &mut output);
+        let _ = std::io::stdout().write_all(&output);
+    }
+
     /// Format logs from OTLP bytes to a writer.
     pub fn format_logs_bytes_to(&self, bytes: &OtlpProtoBytes, output: &mut Vec<u8>) {
         if let OtlpProtoBytes::ExportLogsRequest(data) = bytes {
@@ -216,7 +228,11 @@ impl HierarchicalFormatter {
     }
 
     /// Format a ResourceLogs with its nested scopes.
-    fn format_resource_logs_to<R: ResourceLogsView>(&self, resource_logs: &R, output: &mut Vec<u8>) {
+    fn format_resource_logs_to<R: ResourceLogsView>(
+        &self,
+        resource_logs: &R,
+        output: &mut Vec<u8>,
+    ) {
         let first_ts = self.get_first_log_timestamp(resource_logs);
 
         // Format resource header

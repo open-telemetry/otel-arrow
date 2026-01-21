@@ -19,7 +19,7 @@ use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, RawLoggingLayer, LOG_BUFFER_SIZE};
+pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
