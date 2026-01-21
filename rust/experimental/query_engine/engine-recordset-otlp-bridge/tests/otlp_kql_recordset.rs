@@ -173,14 +173,14 @@ fn test_summarize_count_and_group_by() {
 
     assert_summary(
         &summaries[0],
-        "33072fa213f92249f89e47b5c5a3959191dd8a72662068a2d44f5e66d579e09c",
+        "7d6d65513d07776c49e53cec3ab1a6cffb6115e2d0b163b4faf2f76c7cfbcb1c",
         "goodbye world",
         1,
     );
 
     assert_summary(
         &summaries[1],
-        "daa898d673bd24e7a11ff9724e4f549c88eaa763d12da08762fcb73e8337a37f",
+        "ce97b63c110999592ba6ea0552fcbea93eb39ec322391551377fca83c0b9ede5",
         "hello world",
         2,
     );
@@ -253,14 +253,14 @@ fn test_summarize_count_and_group_by_with_bin() {
 
     assert_summary(
         &summaries[0],
-        "c30d4945f0fe3cc96f677d1b25f280643af086c573bc78fe3972defb8814d0f2",
+        "b489979af2c5b27b64ad4b8d62da0ba3ceebdb5d5451482bf9883ddb2dca1c1c",
         Utc.with_ymd_and_hms(2025, 8, 25, 0, 0, 0).unwrap().into(),
         2,
     );
 
     assert_summary(
         &summaries[1],
-        "d282417f6a5af85ecc1f2490e7f58f519185139d6d6814d1209ec0ae0a94a639",
+        "d16015a6ceda2b50437eb2d5d5791c2a06cba8574b9d2141ee4b960e65a60b54",
         Utc.with_ymd_and_hms(2025, 8, 26, 0, 0, 0).unwrap().into(),
         1,
     );
@@ -331,7 +331,7 @@ fn test_summarize_with_pipeline() {
     let summary = results.summaries.included_summaries.first().unwrap();
 
     assert_eq!(
-        "2e05f69051ddb184b5e05ab16d5a36273f972b1a540889697cf27585110cae26",
+        "ba6acf76c601af4e8db421e9be150e15f66ebb5fe9c7cc28c5d71fe9cd44e3ee",
         summary.summary_id
     );
 
