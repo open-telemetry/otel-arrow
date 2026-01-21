@@ -464,6 +464,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
         tracing_setup: TracingSetup,
     ) -> Result<Vec<()>, Error> {
+        // Pin thread to specific core. As much as possible, we pin
+        // before allocating memory.
+        if !core_affinity::set_for_current(core_id) {
+            // Continue execution even if pinning fails.
+            // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
+            otel_warn!(
+                "core_affinity.set_failed",
+                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+            );
+        }
+
         // Run the pipeline with thread-local tracing subscriber active.
         tracing_setup.with_subscriber(|| {
             // Create a tracing span for this pipeline thread
@@ -477,16 +488,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             let pipeline_entity_key = pipeline_context.register_pipeline_entity();
             let _pipeline_entity_guard =
                 set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
-
-            // Pin thread to specific core
-            if !core_affinity::set_for_current(core_id) {
-                // Continue execution even if pinning fails.
-                // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
-                otel_warn!(
-                    "core_affinity.set_failed",
-                    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
-                );
-            }
 
             obs_evt_reporter.report(EngineEvent::admitted(
                 pipeline_key.clone(),
