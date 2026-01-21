@@ -8,20 +8,22 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
-    PrimitiveArray, PrimitiveBuilder, PrimitiveDictionaryBuilder, RecordBatch, StringArray,
-    StringDictionaryBuilder, UInt32Array,
+    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, concat};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, Float64Type, Int64Type, UInt8Type,
-    UInt16Type,
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type,
 };
 use arrow::row::{RowConverter, SortField};
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+};
+use crate::encode::record::array::{
+    ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, Float64ArrayBuilder,
+    Int64ArrayBuilder, StringArrayBuilder, dictionary::DictionaryOptions,
 };
 use crate::error::{Error, Result};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
@@ -620,8 +622,8 @@ impl AttributesTransform {
         }
 
         if let Some(insert) = &self.insert {
-            for (key, _) in &insert.entries {
-                if ! all_keys.insert(key) {
+            for key in insert.entries.keys() {
+                if !all_keys.insert(key) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in insert: {key}"),
                     });
@@ -3890,6 +3892,38 @@ fn get_key_at_index(key_col: &ArrayRef, idx: usize) -> Option<String> {
     }
 }
 
+/// Returns `ArrayOptions` configured to match the given `DataType`.
+/// For dictionary types, configures the appropriate dictionary options.
+/// For native types (Utf8, Int64, Float64), returns options with no dictionary.
+fn array_options_for_type(data_type: &DataType) -> ArrayOptions {
+    match data_type {
+        DataType::Dictionary(k, _) => match **k {
+            DataType::UInt8 => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict8()),
+                optional: false,
+                default_values_optional: false,
+            },
+            DataType::UInt16 => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict16()),
+                optional: false,
+                default_values_optional: false,
+            },
+            // Default to dict16 for other key types
+            _ => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict16()),
+                optional: false,
+                default_values_optional: false,
+            },
+        },
+        // Native types - no dictionary
+        _ => ArrayOptions {
+            dictionary_options: None,
+            optional: false,
+            default_values_optional: false,
+        },
+    }
+}
+
 /// Create a batch of inserted attributes.
 /// According to the OTel collector spec, `insert` only inserts if the key does NOT already exist.
 /// This function checks existing (parent_id, key) pairs in the current record batch and only
@@ -3974,7 +4008,7 @@ fn create_inserted_batch(
     }
     let new_types = Arc::new(new_types.finish()) as ArrayRef;
 
-    // Build Key column
+    // Build Key column using StringArrayBuilder
     let key_col_idx =
         schema
             .index_of(consts::ATTRIBUTE_KEY)
@@ -3982,47 +4016,17 @@ fn create_inserted_batch(
                 name: consts::ATTRIBUTE_KEY.into(),
             })?;
     let key_type = schema.field(key_col_idx).data_type();
+    let key_options = array_options_for_type(key_type);
 
-    let new_keys: ArrayRef = match key_type {
-        DataType::Utf8 => {
-            let mut builder =
-                arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
-            for (_, key, _) in &to_insert {
-                builder.append_value(*key);
-            }
-            Arc::new(builder.finish())
-        }
-        DataType::Dictionary(k, _v) => match **k {
-            DataType::UInt8 => {
-                let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
-                for (_, key, _) in &to_insert {
-                    builder.append_value(*key);
-                }
-                Arc::new(builder.finish())
-            }
-            DataType::UInt16 => {
-                let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-                for (_, key, _) in &to_insert {
-                    builder.append_value(*key);
-                }
-                Arc::new(builder.finish())
-            }
-            _ => {
-                return Err(Error::UnsupportedDictionaryKeyType {
-                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                    actual: *k.clone(),
-                });
-            }
-        },
-        _ => {
-            return Err(Error::InvalidListArray {
-                expect_oneof: vec![DataType::Utf8],
-                actual: key_type.clone(),
-            });
-        }
-    };
+    let mut key_builder = StringArrayBuilder::new(key_options);
+    for (_, key, _) in &to_insert {
+        key_builder.append_str(key);
+    }
+    let new_keys = key_builder
+        .finish()
+        .expect("key builder should produce array since optional=false");
 
-    // We collect columns into a map or vec matching schema order.
+    // We collect columns into a vec matching schema order.
     let mut columns = Vec::with_capacity(schema.fields().len());
 
     for field in schema.fields() {
@@ -4034,162 +4038,44 @@ fn create_inserted_batch(
         } else if name == consts::ATTRIBUTE_KEY {
             new_keys.clone()
         } else if name == consts::ATTRIBUTE_STR {
-            match field.data_type() {
-                DataType::Utf8 => {
-                    let mut builder =
-                        arrow::array::StringBuilder::with_capacity(total_rows, total_rows * 10);
-                    for (_, _, val) in &to_insert {
-                        if let LiteralValue::Str(s) = val {
-                            builder.append_value(s);
-                        } else {
-                            builder.append_null();
-                        }
-                    }
-                    Arc::new(builder.finish())
-                }
-                DataType::Dictionary(k, v) if **v == DataType::Utf8 => match **k {
-                    DataType::UInt8 => {
-                        let mut builder = StringDictionaryBuilder::<UInt8Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Str(s) = val {
-                                builder.append_value(s);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    DataType::UInt16 => {
-                        let mut builder = StringDictionaryBuilder::<UInt16Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Str(s) = val {
-                                builder.append_value(s);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                            actual: *k.clone(),
-                        });
-                    }
-                },
-                dt => {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: name.into(),
-                        expect: DataType::Utf8,
-                        actual: dt.clone(),
-                    });
+            let options = array_options_for_type(field.data_type());
+            let mut builder = StringArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Str(s) = val {
+                    builder.append_str(s);
+                } else {
+                    builder.append_null();
                 }
             }
+            builder
+                .finish()
+                .expect("str builder should produce array since optional=false")
         } else if name == consts::ATTRIBUTE_INT {
-            match field.data_type() {
-                DataType::Int64 => {
-                    let mut builder = PrimitiveBuilder::<Int64Type>::with_capacity(total_rows);
-                    for (_, _, val) in &to_insert {
-                        if let LiteralValue::Int(v) = val {
-                            builder.append_value(*v);
-                        } else {
-                            builder.append_null();
-                        }
-                    }
-                    Arc::new(builder.finish())
-                }
-                DataType::Dictionary(k, v) if **v == DataType::Int64 => match **k {
-                    DataType::UInt8 => {
-                        let mut builder = PrimitiveDictionaryBuilder::<UInt8Type, Int64Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Int(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    DataType::UInt16 => {
-                        let mut builder =
-                            PrimitiveDictionaryBuilder::<UInt16Type, Int64Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Int(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8],
-                            actual: *k.clone(),
-                        });
-                    }
-                },
-                dt => {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: name.into(),
-                        expect: DataType::Int64,
-                        actual: dt.clone(),
-                    });
+            let options = array_options_for_type(field.data_type());
+            let mut builder = Int64ArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Int(v) = val {
+                    builder.append_value(v);
+                } else {
+                    builder.append_null();
                 }
             }
+            builder
+                .finish()
+                .expect("int builder should produce array since optional=false")
         } else if name == consts::ATTRIBUTE_DOUBLE {
-            match field.data_type() {
-                DataType::Float64 => {
-                    let mut builder = PrimitiveBuilder::<Float64Type>::with_capacity(total_rows);
-                    for (_, _, val) in &to_insert {
-                        if let LiteralValue::Double(v) = val {
-                            builder.append_value(*v);
-                        } else {
-                            builder.append_null();
-                        }
-                    }
-                    Arc::new(builder.finish())
-                }
-                DataType::Dictionary(k, v) if **v == DataType::Float64 => match **k {
-                    DataType::UInt8 => {
-                        let mut builder =
-                            PrimitiveDictionaryBuilder::<UInt8Type, Float64Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Double(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    DataType::UInt16 => {
-                        let mut builder =
-                            PrimitiveDictionaryBuilder::<UInt16Type, Float64Type>::new();
-                        for (_, _, val) in &to_insert {
-                            if let LiteralValue::Double(v) = val {
-                                builder.append_value(*v);
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                        Arc::new(builder.finish())
-                    }
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8],
-                            actual: *k.clone(),
-                        });
-                    }
-                },
-                dt => {
-                    return Err(Error::ColumnDataTypeMismatch {
-                        name: name.into(),
-                        expect: DataType::Float64,
-                        actual: dt.clone(),
-                    });
+            let options = array_options_for_type(field.data_type());
+            let mut builder = Float64ArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Double(v) = val {
+                    builder.append_value(v);
+                } else {
+                    builder.append_null();
                 }
             }
+            builder
+                .finish()
+                .expect("double builder should produce array since optional=false")
         } else if name == consts::ATTRIBUTE_BOOL {
             // Note: Boolean Dictionaries are not standard/supported by simple builders
             let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
