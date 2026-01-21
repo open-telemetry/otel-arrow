@@ -595,6 +595,12 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
     }
 }
 
+/// Parses invocation of function
+///
+/// Currently we only support two known function `matches` and `contains`, both of which
+/// take two arguments and return a boolean value. In the future, our function library
+/// may be expanded to include more functions with various signatures and user defined
+/// functions, so the implementation of this function will be updated accordingly.
 fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, ParserError> {
     let query_location = to_query_location(&rule);
     let mut inner_rules = rule.into_inner();
@@ -1553,12 +1559,26 @@ mod test {
     }
 
     #[test]
+    fn test_parse_function_call_unknown_function_name() {
+        let input = "unknown_fn(severity_text, \"ERR\")";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("Unsupported function"));
+    }
+
+    #[test]
     fn test_parse_function_call_wrong_arity_one_arg_errors() {
         let input = "contains(severity_text)";
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        assert!(parse_member_expression(rules.next().unwrap()).is_err());
+        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Function 'contains' expects 2 arguments, got 1")
+        )
     }
 
     #[test]
@@ -1567,6 +1587,10 @@ mod test {
         let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
         assert_eq!(rules.len(), 1);
 
-        assert!(parse_member_expression(rules.next().unwrap()).is_err());
+        let err = parse_member_expression(rules.next().unwrap()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Function 'matches' expects 2 arguments, got 3")
+        )
     }
 }
