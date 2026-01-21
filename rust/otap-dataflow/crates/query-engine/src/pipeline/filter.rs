@@ -1904,7 +1904,12 @@ mod test {
         test_simple_attrs_filter::<OplParser>().await;
     }
 
-    async fn test_filter_text_contains<P: Parser>(q1: &str, q2: &str, q3: &str, q4: &str) {
+    async fn test_filter_text_contains<P: Parser>(
+        q_event_name_contains_error: &str,
+        q_1234_contains_event_name: &str,
+        q_attrs_username_contains_y: &str,
+        q_albert_contains_attrs_username: &str,
+    ) {
         let log_records = vec![
             LogRecord::build()
                 .event_name("error happen")
@@ -1926,28 +1931,44 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<P>(q1, to_logs_data(log_records.clone())).await;
+        let result = exec_logs_pipeline::<P>(
+            q_event_name_contains_error,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone(), log_records[1].clone()]
         );
 
         // check we could specify the column on the right
-        let result = exec_logs_pipeline::<P>(q2, to_logs_data(log_records.clone())).await;
+        let result = exec_logs_pipeline::<P>(
+            q_1234_contains_event_name,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()]
         );
 
         // also check we can filter by attributes using contains
-        let result = exec_logs_pipeline::<P>(q3, to_logs_data(log_records.clone())).await;
+        let result = exec_logs_pipeline::<P>(
+            q_attrs_username_contains_y,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()],
         );
 
         // check that we could also specify the column on the right for attributes
-        let result = exec_logs_pipeline::<P>(q4, to_logs_data(log_records.clone())).await;
+        let result = exec_logs_pipeline::<P>(
+            q_albert_contains_attrs_username,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()],
