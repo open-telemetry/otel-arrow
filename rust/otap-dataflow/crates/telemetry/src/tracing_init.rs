@@ -173,6 +173,8 @@ where
 mod tests {
     use super::*;
     use crate::event::ObservedEvent;
+    use crate::{otel_debug, otel_error, otel_info, otel_warn};
+    use opentelemetry_sdk::logs::SdkLoggerProvider;
     use otap_df_config::observed_state::SendPolicy;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
@@ -181,32 +183,76 @@ mod tests {
         (reporter, rx)
     }
 
-    /// Test that Noop provider runs without panicking.
+    #[test]
+    fn tracing_setup_new() {
+        let _ = TracingSetup::new(ProviderSetup::Noop, LogLevel::Info);
+        let _ = TracingSetup::new(ProviderSetup::ConsoleDirect, LogLevel::Debug);
+
+        let (reporter, _rx) = test_reporter();
+        let _ = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Warn);
+    }
+
     #[test]
     fn noop_provider_runs() {
         let setup = TracingSetup::new(ProviderSetup::Noop, LogLevel::Info);
         setup.with_subscriber(|| {
-            tracing::info!("this log is silently dropped");
+            otel_info!("log_dropped");
         });
     }
 
-    /// Test that ConsoleDirect provider runs without panicking.
+    #[test]
+    fn noop_provider_all_levels() {
+        for level in [
+            LogLevel::Off,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            let setup = TracingSetup::new(ProviderSetup::Noop, level);
+            setup.with_subscriber(|| {
+                otel_debug!("debug");
+                otel_info!("info");
+                otel_warn!("warn");
+                otel_error!("error");
+            });
+        }
+    }
+
     #[test]
     fn console_direct_provider_runs() {
         let setup = TracingSetup::new(ProviderSetup::ConsoleDirect, LogLevel::Info);
         setup.with_subscriber(|| {
-            tracing::info!("this log goes to console");
+            otel_info!("console_log");
         });
     }
 
-    /// Test that ConsoleAsync provider sends logs through the channel.
+    #[test]
+    fn console_direct_all_levels() {
+        for level in [
+            LogLevel::Off,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            let setup = TracingSetup::new(ProviderSetup::ConsoleDirect, level);
+            setup.with_subscriber(|| {
+                otel_debug!("debug");
+                otel_info!("info");
+                otel_warn!("warn");
+                otel_error!("error");
+            });
+        }
+    }
+
     #[test]
     fn console_async_provider_sends_logs() {
         let (reporter, receiver) = test_reporter();
         let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
-            tracing::info!("async log message");
+            otel_info!("async_log");
         });
 
         // Verify the log was sent through the channel
@@ -217,19 +263,231 @@ mod tests {
         );
     }
 
-    /// Test that debug logs are filtered out when log level is Info.
+    #[test]
+    fn console_async_all_levels() {
+        for level in [
+            LogLevel::Off,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            let (reporter, _receiver) = test_reporter();
+            let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, level);
+            setup.with_subscriber(|| {
+                otel_debug!("debug");
+                otel_info!("info");
+                otel_warn!("warn");
+                otel_error!("error");
+            });
+        }
+    }
+
+    #[test]
+    fn opentelemetry_provider_runs() {
+        let logger_provider = SdkLoggerProvider::builder().build();
+        let setup = TracingSetup::new(
+            ProviderSetup::OpenTelemetry { logger_provider },
+            LogLevel::Info,
+        );
+
+        setup.with_subscriber(|| {
+            otel_info!("otel_log");
+        });
+    }
+
+    #[test]
+    fn opentelemetry_provider_all_levels() {
+        for level in [
+            LogLevel::Off,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            let logger_provider = SdkLoggerProvider::builder().build();
+            let setup = TracingSetup::new(ProviderSetup::OpenTelemetry { logger_provider }, level);
+            setup.with_subscriber(|| {
+                otel_debug!("debug");
+                otel_info!("info");
+                otel_warn!("warn");
+                otel_error!("error");
+            });
+        }
+    }
+
     #[test]
     fn log_level_filters_debug() {
         let (reporter, receiver) = test_reporter();
         let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
-            tracing::debug!("this should be filtered out");
+            otel_debug!("filtered");
         });
 
         assert!(
             receiver.try_recv().is_err(),
             "debug log should not be received at Info level"
         );
+    }
+
+    #[test]
+    fn log_level_warn_filters_lower() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Warn);
+
+        setup.with_subscriber(|| {
+            otel_debug!("filtered");
+            otel_info!("filtered");
+            otel_warn!("not_filtered");
+        });
+
+        // Should only receive the warn
+        let event = receiver.try_recv().expect("should receive warn");
+        assert!(matches!(event, ObservedEvent::Log(_)));
+        assert!(receiver.try_recv().is_err(), "should only have one event");
+    }
+
+    #[test]
+    fn log_level_error_filters_lower() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Error);
+
+        setup.with_subscriber(|| {
+            otel_debug!("filtered");
+            otel_info!("filtered");
+            otel_warn!("filtered");
+            otel_error!("not_filtered");
+        });
+
+        let event = receiver.try_recv().expect("should receive error");
+        assert!(matches!(event, ObservedEvent::Log(_)));
+        assert!(receiver.try_recv().is_err(), "should only have one event");
+    }
+
+    #[test]
+    fn log_level_off_filters_all() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Off);
+
+        setup.with_subscriber(|| {
+            otel_debug!("filtered");
+            otel_info!("filtered");
+            otel_warn!("filtered");
+            otel_error!("filtered");
+        });
+
+        assert!(receiver.try_recv().is_err(), "all logs should be filtered");
+    }
+
+    #[test]
+    fn log_level_debug_allows_all() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Debug);
+
+        setup.with_subscriber(|| {
+            otel_debug!("d");
+            otel_info!("i");
+            otel_warn!("w");
+            otel_error!("e");
+        });
+
+        // Should receive all 4
+        for _ in 0..4 {
+            let _ = receiver.try_recv().expect("should receive log");
+        }
+    }
+
+    #[test]
+    fn console_async_layer_new() {
+        let (reporter, _rx) = test_reporter();
+        let _layer = ConsoleAsyncLayer::new(&reporter);
+    }
+
+    #[test]
+    fn console_async_layer_with_fields() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
+
+        setup.with_subscriber(|| {
+            otel_info!("structured", key = "value", number = 42);
+        });
+
+        let event = receiver.try_recv().expect("should receive log");
+        assert!(matches!(event, ObservedEvent::Log(_)));
+    }
+
+    #[test]
+    fn provider_setup_with_subscriber_all_variants() {
+        ProviderSetup::Noop.with_subscriber(LogLevel::Info, || {
+            otel_info!("noop");
+        });
+
+        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, || {
+            otel_info!("console_direct");
+        });
+
+        let (reporter, _rx) = test_reporter();
+        ProviderSetup::ConsoleAsync { reporter }.with_subscriber(LogLevel::Info, || {
+            otel_info!("console_async");
+        });
+
+        let logger_provider = SdkLoggerProvider::builder().build();
+        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(LogLevel::Info, || {
+            otel_info!("otel");
+        });
+    }
+
+    #[test]
+    fn provider_setup_clone() {
+        let _ = ProviderSetup::Noop.clone();
+        let _ = ProviderSetup::ConsoleDirect.clone();
+
+        let (reporter, _rx) = test_reporter();
+        let _ = ProviderSetup::ConsoleAsync { reporter }.clone();
+
+        let logger_provider = SdkLoggerProvider::builder().build();
+        let provider_setup = ProviderSetup::OpenTelemetry { logger_provider }.clone();
+
+        let setup = TracingSetup::new(provider_setup, LogLevel::Info);
+        let _cloned = setup.clone();
+    }
+
+    #[test]
+    fn nested_with_subscriber() {
+        let (reporter1, receiver1) = test_reporter();
+        let (reporter2, receiver2) = test_reporter();
+
+        let setup1 = TracingSetup::new(
+            ProviderSetup::ConsoleAsync {
+                reporter: reporter1,
+            },
+            LogLevel::Info,
+        );
+        let setup2 = TracingSetup::new(
+            ProviderSetup::ConsoleAsync {
+                reporter: reporter2,
+            },
+            LogLevel::Info,
+        );
+
+        let result = setup1.with_subscriber(|| {
+            otel_info!("outer");
+            setup2.with_subscriber(|| {
+                otel_info!("inner");
+            });
+            otel_info!("outer_again");
+            100
+        });
+
+        assert_eq!(result, 100);
+
+        // Outer should receive 2, inner should receive 1 and no more.
+        assert!(receiver1.try_recv().is_ok());
+        assert!(receiver2.try_recv().is_ok());
+        assert!(receiver1.try_recv().is_ok());
+
+        assert!(receiver1.try_recv().is_err());
+        assert!(receiver2.try_recv().is_err());
     }
 }
