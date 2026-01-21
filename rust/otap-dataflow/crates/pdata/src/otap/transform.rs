@@ -620,9 +620,8 @@ impl AttributesTransform {
         }
 
         if let Some(insert) = &self.insert {
-            // Check that insert keys don't overlap with rename or delete keys
-            for key in insert.entries.keys() {
-                if !all_keys.insert(key) {
+            for (key, _) in &insert.entries {
+                if ! all_keys.insert(key) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in insert: {key}"),
                     });
