@@ -695,7 +695,7 @@ pub fn transform_attributes_with_stats(
     let insert_needed =
         transform.insert.is_some() && schema.column_with_name(consts::PARENT_ID).is_some();
     let attrs_record_batch_cow = if insert_needed {
-        let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+        let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
         Cow::Owned(rb)
     } else {
         Cow::Borrowed(attrs_record_batch)
@@ -725,7 +725,7 @@ pub fn transform_attributes_with_stats(
             let should_materialize_parent_ids =
                 schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                 let schema = rb.schema();
                 (rb, schema)
             } else {
@@ -818,7 +818,7 @@ pub fn transform_attributes_with_stats(
                 let should_materialize_parent_ids =
                     schema.column_with_name(consts::PARENT_ID).is_some();
                 if should_materialize_parent_ids {
-                    let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                    let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                     let schema = rb.schema();
                     (rb, schema)
                 } else {
@@ -891,12 +891,27 @@ pub fn transform_attributes_with_stats(
             let (rb_extended, extended_schema) =
                 extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
 
-            let (new_rows, count) = create_inserted_batch(
-                &rb_extended,
-                original_parent_ids,
-                insert,
-                extended_schema.as_ref(),
-            )?;
+            let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
+                DataType::UInt16 => create_inserted_batch::<u16>(
+                    &rb_extended,
+                    original_parent_ids,
+                    insert,
+                    extended_schema.as_ref(),
+                )?,
+                DataType::UInt32 => create_inserted_batch::<u32>(
+                    &rb_extended,
+                    original_parent_ids,
+                    insert,
+                    extended_schema.as_ref(),
+                )?,
+                data_type => {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: consts::PARENT_ID.into(),
+                        expect: DataType::UInt16, // or UInt32
+                        actual: data_type,
+                    });
+                }
+            };
             if count > 0 {
                 let combined =
                     arrow::compute::concat_batches(&extended_schema, &[rb_extended, new_rows])
@@ -3847,6 +3862,68 @@ fn extend_schema_for_inserts(
     Ok((new_batch, new_schema))
 }
 
+/// Get the value type for a parent ID column, handling both primitive and dictionary-encoded arrays.
+/// Returns the underlying primitive type (UInt16 or UInt32).
+fn get_parent_id_value_type(arr: &ArrayRef) -> Result<DataType> {
+    match arr.data_type() {
+        DataType::UInt16 | DataType::UInt32 => Ok(arr.data_type().clone()),
+        DataType::Dictionary(_, v) => match **v {
+            DataType::UInt16 | DataType::UInt32 => Ok((**v).clone()),
+            _ => Err(Error::UnsupportedDictionaryValueType {
+                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
+                actual: (**v).clone(),
+            }),
+        },
+        _ => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: arr.data_type().clone(),
+        }),
+    }
+}
+
+/// Get the value type for a parent ID column from a schema field, handling both primitive and
+/// dictionary-encoded types.
+/// Returns the underlying primitive type (UInt16 or UInt32).
+fn get_parent_id_value_type_from_schema(
+    schema: &arrow::datatypes::Schema,
+) -> Result<Option<DataType>> {
+    let Some((_, field)) = schema.column_with_name(consts::PARENT_ID) else {
+        return Ok(None);
+    };
+    match field.data_type() {
+        DataType::UInt16 | DataType::UInt32 => Ok(Some(field.data_type().clone())),
+        DataType::Dictionary(_, v) => match **v {
+            DataType::UInt16 | DataType::UInt32 => Ok(Some((**v).clone())),
+            _ => Err(Error::UnsupportedDictionaryValueType {
+                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
+                actual: (**v).clone(),
+            }),
+        },
+        _ => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: field.data_type().clone(),
+        }),
+    }
+}
+
+/// Materialize parent IDs with automatic type dispatch based on schema.
+/// Returns the materialized batch or the original batch if no parent_id column exists.
+fn materialize_parent_id_for_attributes_auto(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    let schema = record_batch.schema();
+    match get_parent_id_value_type_from_schema(&schema)? {
+        Some(DataType::UInt16) => materialize_parent_id_for_attributes::<u16>(record_batch),
+        Some(DataType::UInt32) => materialize_parent_id_for_attributes::<u32>(record_batch),
+        Some(other) => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: other,
+        }),
+        None => Ok(record_batch.clone()),
+    }
+}
+
 /// Returns `ArrayOptions` configured to match the given `DataType`.
 /// For dictionary types, configures the appropriate dictionary options.
 /// For native types (Utf8, Int64, Float64), returns options with no dictionary.
@@ -3883,20 +3960,24 @@ fn array_options_for_type(data_type: &DataType) -> ArrayOptions {
 /// According to the OTel collector spec, `insert` only inserts if the key does NOT already exist.
 /// This function checks existing (parent_id, key) pairs in the current record batch and only
 /// inserts new keys.
-fn create_inserted_batch(
+///
+/// This function is generic over `T: ParentId` to handle different parent ID types (u16, u32)
+/// as well as dictionary-encoded parent IDs.
+fn create_inserted_batch<T>(
     current_batch: &RecordBatch,
     parent_ids: &ArrayRef,
     insert: &InsertTransform,
     schema: &arrow::datatypes::Schema,
-) -> Result<(RecordBatch, usize)> {
-    let parent_ids_arr = parent_ids
-        .as_any()
-        .downcast_ref::<PrimitiveArray<UInt16Type>>()
-        .ok_or_else(|| Error::ColumnDataTypeMismatch {
-            name: consts::PARENT_ID.into(),
-            expect: DataType::UInt16,
-            actual: parent_ids.data_type().clone(),
-        })?;
+) -> Result<(RecordBatch, usize)>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
+        Ord + std::hash::Hash + Copy + Default,
+{
+    // Use MaybeDictArrayAccessor to handle both primitive and dictionary-encoded parent IDs
+    let parent_ids_accessor =
+        MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(parent_ids)?;
 
     // Build a set of (parent_id, key) pairs that already exist using StringArrayAccessor
     let key_accessor = current_batch
@@ -3904,11 +3985,13 @@ fn create_inserted_batch(
         .map(MaybeDictArrayAccessor::<StringArray>::try_new)
         .transpose()?;
 
-    let mut existing_keys: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
+    let mut existing_keys: BTreeMap<
+        <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        BTreeSet<String>,
+    > = BTreeMap::new();
     if let Some(ref accessor) = key_accessor {
         for i in 0..current_batch.num_rows() {
-            if !parent_ids_arr.is_null(i) {
-                let parent = parent_ids_arr.value(i);
+            if let Some(parent) = parent_ids_accessor.value_at(i) {
                 if let Some(key) = accessor.str_at(i) {
                     let _ = existing_keys
                         .entry(parent)
@@ -3921,9 +4004,9 @@ fn create_inserted_batch(
 
     // Get unique parents
     let mut unique_parents = BTreeSet::new();
-    for i in 0..parent_ids_arr.len() {
-        if !parent_ids_arr.is_null(i) {
-            let _ = unique_parents.insert(parent_ids_arr.value(i));
+    for i in 0..parent_ids_accessor.len() {
+        if let Some(parent) = parent_ids_accessor.value_at(i) {
+            let _ = unique_parents.insert(parent);
         }
     }
 
@@ -3933,7 +4016,11 @@ fn create_inserted_batch(
 
     // Compute which (parent, key, value) tuples to actually insert
     // Only insert if the key doesn't already exist for that parent
-    let mut to_insert: Vec<(u16, &str, &LiteralValue)> = Vec::new();
+    let mut to_insert: Vec<(
+        <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        &str,
+        &LiteralValue,
+    )> = Vec::new();
     for &parent in &unique_parents {
         let parent_existing = existing_keys.get(&parent);
         for (key, val) in insert.entries.iter() {
@@ -3951,8 +4038,8 @@ fn create_inserted_batch(
         return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
     }
 
-    // Build Parent ID column
-    let mut new_parent_ids = PrimitiveBuilder::<UInt16Type>::with_capacity(total_rows);
+    // Build Parent ID column using the same primitive type
+    let mut new_parent_ids = PrimitiveBuilder::<T::ArrayType>::with_capacity(total_rows);
     for (parent, _, _) in &to_insert {
         new_parent_ids.append_value(*parent);
     }
@@ -4782,5 +4869,100 @@ mod insert_tests {
         // Should insert new_key for parent 0
         assert_eq!(stats.inserted_entries, 1);
         assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_u32_parent_ids() {
+        // Test that insert works with u32 parent IDs (used for metrics datapoint attributes,
+        // span link attributes, span event attributes).
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt32, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+            ],
+        )
+        .unwrap();
+
+        // Insert "env"="prod" - should be inserted for both parents
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "env".into(),
+                LiteralValue::Str("prod".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 2);
+        assert_eq!(result.num_rows(), 4);
+
+        // Verify parent ID column is still u32
+        let parent_col = result.column_by_name(consts::PARENT_ID).unwrap();
+        assert_eq!(parent_col.data_type(), &DataType::UInt32);
+    }
+
+    #[test]
+    fn test_insert_with_u32_parent_ids_respects_existing() {
+        // Test that insert with u32 parent IDs doesn't overwrite existing keys
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt32, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Parent 0 has "existing"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["original"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert "existing" with a different value - should be skipped
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "existing".into(),
+                LiteralValue::Str("should_not_overwrite".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts because key already exists
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 1);
+
+        // Verify original value is preserved
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(vals.value(0), "original");
     }
 }
