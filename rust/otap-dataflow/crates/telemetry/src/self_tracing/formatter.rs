@@ -302,9 +302,6 @@ impl ConsoleWriter {
     }
 
     /// Write content with ANSI styling, automatically resetting after.
-    ///
-    /// This is the safe public API for styled output - callers don't need to
-    /// manage reset codes manually.
     #[inline]
     pub fn write_styled<F>(&self, w: &mut BufWriter<'_>, code: AnsiCode, f: F)
     where
@@ -340,10 +337,6 @@ impl ConsoleWriter {
     }
 
     /// Format a header line (resource/scope) with attributes but no body.
-    ///
-    /// This is a simplified version of `format_log_line` for console-exporter-style
-    /// hierarchical output where we want to show attributes from a Resource or Scope
-    /// without wrapping them in a LogRecordView.
     pub fn format_header_line<A, L, E>(
         &self,
         w: &mut BufWriter<'_>,
@@ -377,8 +370,6 @@ impl ConsoleWriter {
 
     /// Format a log line from a LogRecordView with custom formatters.
     ///
-    /// This is the core formatting method used by both the RawLoggingLayer (for
-    /// Tokio tracing events) and the hierarchical console exporter (for OTLP data).
     /// The closures allow customizing:
     /// - `format_level`: tree prefixes + severity/level coloring
     /// - `format_event_name`: callsite-based or string-based event names

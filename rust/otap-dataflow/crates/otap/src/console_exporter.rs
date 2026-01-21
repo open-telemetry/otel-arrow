@@ -225,11 +225,7 @@ impl HierarchicalFormatter {
     }
 
     /// Print resource header with attributes.
-    fn print_resource_header<R: ResourceView>(
-        &self,
-        time: SystemTime,
-        resource: Option<R>,
-    ) {
+    fn print_resource_header<R: ResourceView>(&self, time: SystemTime, resource: Option<R>) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let mut w = std::io::Cursor::new(buf.as_mut_slice());
 
@@ -241,7 +237,7 @@ impl HierarchicalFormatter {
                 cw.write_styled(w, AnsiCode::Cyan, |w| {
                     let _ = w.write_all(b"RESOURCE");
                 });
-                let _ = w.write_all(b"  ");
+                let _ = w.write_all(b"   ");
             },
             |w, _| {
                 let _ = w.write_all(b"v1.Resource");
@@ -386,8 +382,13 @@ impl HierarchicalFormatter {
     }
 
     /// Print a line using the shared format_log_line.
-    fn print_line<V, L, E>(&self, time: SystemTime, record: &V, format_level: L, format_event_name: E)
-    where
+    fn print_line<V, L, E>(
+        &self,
+        time: SystemTime,
+        record: &V,
+        format_level: L,
+        format_event_name: E,
+    ) where
         V: LogRecordView,
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
