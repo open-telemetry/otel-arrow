@@ -494,12 +494,12 @@ pub enum LiteralValue {
 }
 
 pub struct InsertTransform {
-    pub(super) entries: Vec<(String, LiteralValue)>,
+    pub(super) entries: BTreeMap<String, LiteralValue>,
 }
 
 impl InsertTransform {
     #[must_use]
-    pub fn new(entries: Vec<(String, LiteralValue)>) -> Self {
+    pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
         Self { entries }
     }
 }
@@ -620,9 +620,9 @@ impl AttributesTransform {
         }
 
         if let Some(insert) = &self.insert {
-            let mut insert_keys = BTreeSet::new();
-            for (key, _) in &insert.entries {
-                if !insert_keys.insert(key) {
+            // Check that insert keys don't overlap with rename or delete keys
+            for key in insert.entries.keys() {
+                if !all_keys.insert(key) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in insert: {key}"),
                     });
@@ -3940,7 +3940,7 @@ fn create_inserted_batch(
     let mut to_insert: Vec<(u16, &str, &LiteralValue)> = Vec::new();
     for &parent in &unique_parents {
         let parent_existing = existing_keys.get(&parent);
-        for (key, val) in &insert.entries {
+        for (key, val) in insert.entries.iter() {
             let key_exists = parent_existing
                 .map(|keys| keys.contains(key))
                 .unwrap_or(false);
@@ -4251,10 +4251,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "env".into(),
                 LiteralValue::Str("prod".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) =
@@ -4325,10 +4325,10 @@ mod insert_tests {
             delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
                 "del_me".into(),
             ]))),
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "new".into(),
                 LiteralValue::Str("val".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4376,10 +4376,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "existing_key".into(),
                 LiteralValue::Str("new_value".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4437,10 +4437,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![
+            insert: Some(InsertTransform::new(BTreeMap::from([
                 ("a".into(), LiteralValue::Str("new_a".into())),
                 ("c".into(), LiteralValue::Str("cv".into())),
-            ])),
+            ]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4487,10 +4487,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "count".into(),
                 LiteralValue::Int(42),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4542,10 +4542,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "ratio".into(),
                 LiteralValue::Double(1.2345),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4595,10 +4595,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "enabled".into(),
                 LiteralValue::Bool(true),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4648,12 +4648,12 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![
+            insert: Some(InsertTransform::new(BTreeMap::from([
                 ("str_key".into(), LiteralValue::Str("str_val".into())),
                 ("int_key".into(), LiteralValue::Int(100)),
                 ("double_key".into(), LiteralValue::Double(2.5)),
                 ("bool_key".into(), LiteralValue::Bool(false)),
-            ])),
+            ]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4699,10 +4699,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "new_key".into(),
                 LiteralValue::Str("new_value".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4748,10 +4748,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "existing_key".into(),
                 LiteralValue::Str("new_value".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4798,13 +4798,13 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![
+            insert: Some(InsertTransform::new(BTreeMap::from([
                 (
                     "existing_key".into(),
                     LiteralValue::Str("should_skip".into()),
                 ),
                 ("new_key".into(), LiteralValue::Str("new_value".into())),
-            ])),
+            ]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4829,10 +4829,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "key".into(),
                 LiteralValue::Str("value".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4882,10 +4882,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![
+            insert: Some(InsertTransform::new(BTreeMap::from([
                 ("a".into(), LiteralValue::Str("inserted_a".into())),
                 ("new_key".into(), LiteralValue::Str("new_val".into())),
-            ])),
+            ]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
@@ -4923,10 +4923,10 @@ mod insert_tests {
         let tx = AttributesTransform {
             rename: None,
             delete: None,
-            insert: Some(InsertTransform::new(vec![(
+            insert: Some(InsertTransform::new(BTreeMap::from([(
                 "new_key".into(),
                 LiteralValue::Str("new_value".into()),
-            )])),
+            )]))),
         };
 
         let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();

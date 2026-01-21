@@ -150,7 +150,7 @@ impl AttributesProcessor {
     fn new(config: Config) -> Result<Self, otap_df_config::error::Error> {
         let mut renames = BTreeMap::new();
         let mut deletes = BTreeSet::new();
-        let mut inserts = Vec::new();
+        let mut inserts = BTreeMap::new();
 
         for action in config.actions {
             match action {
@@ -164,7 +164,7 @@ impl AttributesProcessor {
                     let _ = renames.insert(source_key, destination_key);
                 }
                 Action::Insert { key, value } => {
-                    inserts.push((key, value));
+                    let _ = inserts.insert(key, value);
                 }
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
