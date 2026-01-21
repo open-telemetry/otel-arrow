@@ -33,15 +33,10 @@ pub mod _private {
 /// ```
 // TODO: Remove `name` attribute duplication in logging macros below once `tracing::Fmt` supports displaying `name`.
 // See issue: https://github.com/tokio-rs/tracing/issues/2774
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_info {
-    ($name:expr $(,)?) => {
-        $crate::_private::info!( name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -59,18 +54,8 @@ macro_rules! otel_info {
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    ($name:expr $(,)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::warn!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -86,15 +71,10 @@ macro_rules! otel_warn {
 /// use otap_df_telemetry::otel_debug;
 /// otel_debug!("processing.batch", batch_size = 100);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, $($key = $value),+, "");
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -110,22 +90,10 @@ macro_rules! otel_debug {
 /// use otap_df_telemetry::otel_error;
 /// otel_error!("export.failure", error_code = 500);
 /// ```
-///
-/// TODO: Update to use valueset! for full `tracing` syntax, see raw_error!
 #[macro_export]
 macro_rules! otel_error {
-    ($name:expr $(,)?) => {
-        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), name = $name, "");
-    };
-    ($name:expr, $($key:ident = $value:expr),+ $(,)?) => {
-        $crate::_private::error!(name: $name,
-                        target: env!("CARGO_PKG_NAME"),
-                        name = $name,
-                        $($key = {
-                                $value
-                        }),+,
-                        ""
-                )
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -142,32 +110,47 @@ macro_rules! otel_error {
 #[macro_export]
 macro_rules! raw_error {
     ($name:expr $(, $($fields:tt)*)?) => {{
-        use $crate::self_tracing::{ConsoleWriter, RawLoggingLayer};
+        use $crate::self_tracing::ConsoleWriter;
+        let now = std::time::SystemTime::now();
+        let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
+        ConsoleWriter::no_color().print_log_record(now, &record);
+    }};
+}
+
+/// Internal macro that constructs a `LogRecord` from a static callsite.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __log_record_impl {
+    ($level:expr, $name:expr $(, $($fields:tt)*)?) => {{
         use $crate::_private::Callsite;
+        use $crate::self_tracing::LogRecord;
 
         static __CALLSITE: $crate::_private::DefaultCallsite = $crate::_private::callsite2! {
             name: $name,
             kind: $crate::_private::Kind::EVENT,
-            target: module_path!(),
-            level: $crate::_private::Level::ERROR,
+            target: env!("CARGO_PKG_NAME"),
+            level: $level,
             fields: $($($fields)*)?
         };
 
         let meta = __CALLSITE.metadata();
-        let layer = RawLoggingLayer::new(ConsoleWriter::no_color());
 
         // Use closure to extend valueset lifetime (same pattern as tracing::event!)
         (|valueset: $crate::_private::ValueSet<'_>| {
             let event = $crate::_private::Event::new(meta, &valueset);
-            layer.dispatch_event(&event);
-        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?));
+            LogRecord::new(&event)
+        })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
     }};
 }
 
+#[cfg(test)]
 mod tests {
+    use crate::error::Error;
+
     #[test]
     fn test_raw_error() {
-        let err = crate::error::Error::ConfigurationError("bad config".into());
+        let err = Error::ConfigurationError("bad config".into());
         raw_error!("raw error message", error = ?err);
+        raw_error!("simple error message");
     }
 }

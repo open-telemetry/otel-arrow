@@ -35,7 +35,7 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_error, otel_info};
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,7 +110,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
-            "Exporter.Start",
+            "exporter.start",
             grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
             message = "Starting OTAP Exporter"
         );
@@ -357,7 +357,7 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     Err(_e) => {
                         // there was an error initiating the streaming request
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
-                        log::error!("failed request, waiting {failed_request_backoff:?}");
+                        otel_error!("failed request, waiting", backoff = ?failed_request_backoff);
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }

@@ -13,7 +13,8 @@ pub mod formatter;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
-use std::time::{SystemTime, UNIX_EPOCH};
+use serde::Serialize;
+use serde::ser::Serializer;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
@@ -21,19 +22,26 @@ pub use encoder::DirectLogRecordEncoder;
 pub use formatter::{ConsoleWriter, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
+/// A SystemTime value for the event is presumed to be external.
 #[derive(Debug, Clone)]
 pub struct LogRecord {
     /// Callsite identifier used to look up cached callsite info.
     pub callsite_id: Identifier,
-
-    /// Timestamp in UNIX epoch nanoseconds.
-    pub timestamp_ns: u64,
 
     /// Pre-encoded body and attributes in OTLP bytes.  These bytes
     /// can be interrpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
+}
+
+impl Serialize for LogRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.format())
+    }
 }
 
 /// Saved callsite information. This is information that can easily be
@@ -99,16 +107,19 @@ impl LogRecord {
 
         Self {
             callsite_id: metadata.callsite(),
-            timestamp_ns: Self::get_timestamp_nanos(),
             body_attrs_bytes: buf.into_bytes(),
         }
     }
 
-    /// Get current timestamp in UNIX epoch nanoseconds.
-    fn get_timestamp_nanos() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
+    /// The callsite.
+    #[must_use]
+    pub fn callsite(&self) -> SavedCallsite {
+        SavedCallsite::new(self.callsite_id.0.metadata())
+    }
+
+    /// The format (without timestamp).
+    #[must_use]
+    pub fn format(&self) -> String {
+        ConsoleWriter::no_color().format_log_record(None, self)
     }
 }

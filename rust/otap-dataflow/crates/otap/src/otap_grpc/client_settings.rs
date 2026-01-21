@@ -251,7 +251,7 @@ impl GrpcClientSettings {
         if proxy.has_proxy() && !self.grpc_endpoint.trim_start().starts_with("https://") {
             let proxy_str = proxy.to_string();
             otap_df_telemetry::otel_info!(
-                "Proxy.Configured",
+                "proxy.configured",
                 endpoint = self.grpc_endpoint.as_str(),
                 proxy = proxy_str.as_str(),
                 message = "Proxy configured for http:// endpoint; using HTTP CONNECT tunneling. If your proxy does not support CONNECT for HTTP targets, consider using a transparent proxy or SOCKS proxy instead."

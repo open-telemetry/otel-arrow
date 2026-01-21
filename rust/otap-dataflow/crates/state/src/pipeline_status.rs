@@ -3,12 +3,12 @@
 
 //! Observed pipeline status and aggregation logic per core.
 
-use crate::CoreId;
 use crate::conditions::{
     Condition, ConditionKind, ConditionReason, ConditionState, ConditionStatus,
 };
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::PipelineRuntimeStatus;
+use otap_df_config::CoreId;
 use otap_df_config::health::{HealthPolicy, PhaseKind, Quorum};
 use serde::Serialize;
 use serde::ser::SerializeStruct;

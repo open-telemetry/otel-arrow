@@ -15,6 +15,7 @@ workspace = true
 [features]
 testing = []
 jemalloc-testing = []
+test-utils = []
 
 [dependencies]
 otap-df-channel = { path = "../channel" }
@@ -27,7 +28,6 @@ otap-df-telemetry-macros = { path = "../telemetry-macros" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-log = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
