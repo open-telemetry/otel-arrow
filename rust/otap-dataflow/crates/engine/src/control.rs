@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 /// A 8-byte context value. Supports conversion to and from plain data
 /// using bytemuck.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Context8u8([u8; 8]);
 
 impl<T: Pod> From<T> for Context8u8 {
