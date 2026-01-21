@@ -188,10 +188,10 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
-    /// Attempts to send a message without blocking.
+    /// Attempts to send a message without awaiting.
     ///
     /// Unlike `send_message`, this method returns immediately if the downstream
-    /// channel is full, allowing the caller to handle backpressure without blocking.
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
     ///
     /// # Errors
     ///
