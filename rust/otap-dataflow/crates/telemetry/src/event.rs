@@ -115,7 +115,7 @@ impl Serialize for LogRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct EngineEvent {
     // ---- Source identification ----
-    /// Unique key identifying the pipeline instance (None for global/controller-level events).
+    /// Unique key identifying the pipeline instance.
     pub key: DeployedPipelineKey,
     /// When reporting a node-level event, the node it applies to.
     #[serde(skip_serializing_if = "Option::is_none")]
