@@ -3899,13 +3899,17 @@ fn create_inserted_batch(
         })?;
 
     // Build a set of (parent_id, key) pairs that already exist using StringArrayAccessor
+    let key_accessor = current_batch
+        .column_by_name(consts::ATTRIBUTE_KEY)
+        .map(MaybeDictArrayAccessor::<StringArray>::try_new)
+        .transpose()?;
+
     let mut existing_keys: BTreeMap<u16, BTreeSet<String>> = BTreeMap::new();
-    if let Some(key_col) = current_batch.column_by_name(consts::ATTRIBUTE_KEY) {
-        let key_accessor = MaybeDictArrayAccessor::<StringArray>::try_new(key_col)?;
+    if let Some(ref accessor) = key_accessor {
         for i in 0..current_batch.num_rows() {
             if !parent_ids_arr.is_null(i) {
                 let parent = parent_ids_arr.value(i);
-                if let Some(key) = key_accessor.str_at(i) {
+                if let Some(key) = accessor.str_at(i) {
                     let _ = existing_keys
                         .entry(parent)
                         .or_default()
