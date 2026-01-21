@@ -251,11 +251,28 @@ impl QuiverEngine {
         ));
 
         // Scan for existing segments from previous runs (recovery)
-        if let Err(e) = segment_store.scan_existing() {
-            tracing::warn!(
-                error = %e,
-                "failed to scan existing segments during startup; continuing with empty store"
-            );
+        // We need to track the highest segment sequence found to avoid reusing IDs
+        let mut next_segment_seq = 0u64;
+        match segment_store.scan_existing() {
+            Ok(found_segments) => {
+                for (seq, _bundle_count) in &found_segments {
+                    // Next segment seq should be 1 + the highest found
+                    next_segment_seq = next_segment_seq.max(seq.raw() + 1);
+                }
+                if !found_segments.is_empty() {
+                    tracing::info!(
+                        segment_count = found_segments.len(),
+                        next_segment_seq,
+                        "recovered existing segments from previous run"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to scan existing segments during startup; continuing with empty store"
+                );
+            }
         }
 
         // Create subscriber registry with segment store as provider
@@ -269,7 +286,7 @@ impl QuiverEngine {
             wal_writer: TokioMutex::new(wal_writer),
             open_segment: Mutex::new(OpenSegment::new()),
             segment_cursor: Mutex::new(WalConsumerCursor::default()),
-            next_segment_seq: AtomicU64::new(0),
+            next_segment_seq: AtomicU64::new(next_segment_seq),
             cumulative_wal_bytes: AtomicU64::new(0),
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
