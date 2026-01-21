@@ -206,6 +206,36 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
+    /// Attempts to send a message to a specific named out port without awaiting.
+    ///
+    /// Unlike `send_message_to`, this method returns immediately if the downstream
+    /// channel is full, allowing the caller to handle backpressure without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TypedError::ChannelSendError`] containing [`SendError::Full`] if the
+    /// channel is full, or [`SendError::Closed`] if the channel is closed.
+    /// Returns a [`TypedError::Error`] if the port does not exist.
+    #[inline]
+    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName>,
+    {
+        let port_name: PortName = port.into();
+        match self.msg_senders.get(&port_name) {
+            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
+            None => Err(TypedError::Error(Error::ProcessorError {
+                processor: self.processor_id(),
+                kind: ProcessorErrorKind::Configuration,
+                error: format!(
+                    "Unknown out port '{port_name}' for node {}",
+                    self.processor_id()
+                ),
+                source_detail: String::new(),
+            })),
+        }
+    }
+
     /// Creates an error for when no default output port is configured.
     fn no_default_port_error<T>(&self) -> TypedError<T> {
         TypedError::Error(Error::ProcessorError {
@@ -452,6 +482,54 @@ mod tests {
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
+        assert!(matches!(result, Err(TypedError::Error(_))));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_success() {
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
+        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should succeed when sending to a specific port
+        assert!(eh.try_send_message_to("b", 42).is_ok());
+        assert_eq!(b_rx.try_recv().unwrap(), 42);
+        // Port 'a' should not have received anything
+        assert!(a_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_channel_full() {
+        let (tx, _rx) = channel::<u64>(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // First send should succeed
+        assert!(eh.try_send_message_to("out", 1).is_ok());
+        // Second send should fail with Full
+        let result = eh.try_send_message_to("out", 2);
+        assert!(matches!(
+            result,
+            Err(TypedError::ChannelSendError(SendError::Full(2)))
+        ));
+    }
+
+    #[test]
+    fn effect_handler_try_send_message_to_unknown_port() {
+        let (tx, _rx) = channel::<u64>(10);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+
+        // Should return error for unknown port
+        let result = eh.try_send_message_to("unknown", 99);
         assert!(matches!(result, Err(TypedError::Error(_))));
     }
 }
