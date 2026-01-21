@@ -22,6 +22,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::views::common::InstrumentationScopeView;
 use otap_df_pdata::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
@@ -192,60 +193,57 @@ impl HierarchicalFormatter {
         }
     }
 
-    /// Format logs from OTLP bytes.
+    /// Format logs from OTLP bytes to stdout.
     pub fn format_logs_bytes(&self, bytes: &OtlpProtoBytes) {
+        let mut output = Vec::new();
+        self.format_logs_bytes_to(bytes, &mut output);
+        let _ = std::io::stdout().write_all(&output);
+    }
+
+    /// Format logs from OTLP bytes to a writer.
+    pub fn format_logs_bytes_to(&self, bytes: &OtlpProtoBytes, output: &mut Vec<u8>) {
         if let OtlpProtoBytes::ExportLogsRequest(data) = bytes {
             let logs_data = RawLogsData::new(data.as_ref());
-            self.format_logs_data(&logs_data);
+            self.format_logs_data_to(&logs_data, output);
         }
     }
 
-    /// Format logs from a LogsDataView.
-    fn format_logs_data<L: LogsDataView>(&self, logs_data: &L) {
+    /// Format logs from a LogsDataView to a writer.
+    fn format_logs_data_to<L: LogsDataView>(&self, logs_data: &L, output: &mut Vec<u8>) {
         for resource_logs in logs_data.resources() {
-            self.format_resource_logs(&resource_logs);
+            self.format_resource_logs_to(&resource_logs, output);
         }
     }
 
     /// Format a ResourceLogs with its nested scopes.
-    fn format_resource_logs<R: ResourceLogsView>(&self, resource_logs: &R) {
-        // Get first timestamp from nested log records
+    fn format_resource_logs_to<R: ResourceLogsView>(&self, resource_logs: &R, output: &mut Vec<u8>) {
         let first_ts = self.get_first_log_timestamp(resource_logs);
 
-        // Format resource line with its attributes
-        self.print_resource_header(first_ts, resource_logs.resource());
+        // Format resource header
+        self.format_line(output, |w| {
+            self.writer.format_header_line(
+                w,
+                Some(first_ts),
+                resource_logs.resource().iter().flat_map(|r| r.attributes()),
+                |w, cw| {
+                    cw.write_styled(w, AnsiCode::Cyan, |w| {
+                        let _ = w.write_all(b"RESOURCE");
+                    });
+                    let _ = w.write_all(b"   ");
+                },
+                |w, _| {
+                    let _ = w.write_all(b"v1.Resource");
+                },
+            );
+        });
 
         // Format each scope
         let scopes: Vec<_> = resource_logs.scopes().collect();
         let scope_count = scopes.len();
         for (i, scope_logs) in scopes.into_iter().enumerate() {
             let is_last_scope = i == scope_count - 1;
-            self.format_scope_logs(&scope_logs, is_last_scope);
+            self.format_scope_logs_to(&scope_logs, is_last_scope, output);
         }
-    }
-
-    /// Print resource header with attributes.
-    fn print_resource_header<R: ResourceView>(&self, time: SystemTime, resource: Option<R>) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = std::io::Cursor::new(buf.as_mut_slice());
-
-        self.writer.format_header_line(
-            &mut w,
-            Some(time),
-            resource.iter().flat_map(|r| r.attributes()),
-            |w, cw| {
-                cw.write_styled(w, AnsiCode::Cyan, |w| {
-                    let _ = w.write_all(b"RESOURCE");
-                });
-                let _ = w.write_all(b"   ");
-            },
-            |w, _| {
-                let _ = w.write_all(b"v1.Resource");
-            },
-        );
-
-        let len = w.position() as usize;
-        let _ = std::io::stdout().write_all(&buf[..len]);
     }
 
     /// Get the first timestamp from log records in a ResourceLogs.
@@ -264,8 +262,12 @@ impl HierarchicalFormatter {
     }
 
     /// Format a ScopeLogs with its nested log records.
-    fn format_scope_logs<S: ScopeLogsView>(&self, scope_logs: &S, is_last_scope: bool) {
-        // Get first timestamp from log records
+    fn format_scope_logs_to<S: ScopeLogsView>(
+        &self,
+        scope_logs: &S,
+        is_last_scope: bool,
+        output: &mut Vec<u8>,
+    ) {
         let first_ts = scope_logs
             .log_records()
             .find_map(|lr| lr.time_unix_nano().or_else(|| lr.observed_time_unix_nano()))
@@ -273,29 +275,7 @@ impl HierarchicalFormatter {
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
         let prefix = format!("{} ", self.tree.vertical);
-
-        // Format scope line: show name/version inline, then attributes
-        self.print_scope_header(first_ts, &prefix, scope_logs.scope());
-
-        // Format each log record
-        let records: Vec<_> = scope_logs.log_records().collect();
-        let record_count = records.len();
-        for (i, log_record) in records.into_iter().enumerate() {
-            let is_last_record = i == record_count - 1;
-            self.print_log_record(&log_record, is_last_scope, is_last_record);
-        }
-    }
-
-    /// Print scope header: "SCOPE name/version [attributes]"
-    fn print_scope_header<S: otap_df_pdata::views::common::InstrumentationScopeView>(
-        &self,
-        time: SystemTime,
-        prefix: &str,
-        scope: Option<S>,
-    ) {
-        let prefix = prefix.to_string();
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = std::io::Cursor::new(buf.as_mut_slice());
+        let scope = scope_logs.scope();
 
         // Extract name/version for inline display
         let name = scope
@@ -307,20 +287,19 @@ impl HierarchicalFormatter {
             .and_then(|s| s.version())
             .map(|v| String::from_utf8_lossy(v).into_owned());
 
-        self.writer.format_header_line(
-            &mut w,
-            Some(time),
-            scope.iter().flat_map(|s| s.attributes()),
-            |w, cw| {
-                let _ = w.write_all(prefix.as_bytes());
-                cw.write_styled(w, AnsiCode::Magenta, |w| {
-                    let _ = w.write_all(b"SCOPE");
-                });
-                let _ = w.write_all(b"    ");
-            },
-            |w, _| {
-                // Format as "name/version" or just "name" or "v1.InstrumentationScope"
-                match (&name, &version) {
+        self.format_line(output, |w| {
+            self.writer.format_header_line(
+                w,
+                Some(first_ts),
+                scope.iter().flat_map(|s| s.attributes()),
+                |w, cw| {
+                    let _ = w.write_all(prefix.as_bytes());
+                    cw.write_styled(w, AnsiCode::Magenta, |w| {
+                        let _ = w.write_all(b"SCOPE");
+                    });
+                    let _ = w.write_all(b"    ");
+                },
+                |w, _| match (&name, &version) {
                     (Some(n), Some(v)) => {
                         let _ = write!(w, "{}/{}", n, v);
                     }
@@ -330,20 +309,26 @@ impl HierarchicalFormatter {
                     _ => {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
-                }
-            },
-        );
+                },
+            );
+        });
 
-        let len = w.position() as usize;
-        let _ = std::io::stdout().write_all(&buf[..len]);
+        // Format each log record
+        let records: Vec<_> = scope_logs.log_records().collect();
+        let record_count = records.len();
+        for (i, log_record) in records.into_iter().enumerate() {
+            let is_last_record = i == record_count - 1;
+            self.format_log_record_to(&log_record, is_last_scope, is_last_record, output);
+        }
     }
 
-    /// Print a single log record using format_log_line.
-    fn print_log_record<L: LogRecordView>(
+    /// Format a single log record.
+    fn format_log_record_to<L: LogRecordView>(
         &self,
         log_record: &L,
         is_last_scope: bool,
         is_last_record: bool,
+        output: &mut Vec<u8>,
     ) {
         let time = log_record
             .time_unix_nano()
@@ -359,48 +344,39 @@ impl HierarchicalFormatter {
         let severity = log_record.severity_number();
         let tree = self.tree;
 
-        self.print_line(
-            time,
-            log_record,
-            |w, cw| {
-                // Tree prefix
-                let _ = w.write_all(tree.vertical.as_bytes());
-                let _ = w.write_all(b" ");
-                if is_last_record && is_last_scope {
-                    let _ = w.write_all(tree.corner.as_bytes());
-                } else {
-                    let _ = w.write_all(tree.tee.as_bytes());
-                }
-                let _ = w.write_all(b" ");
-                // Severity with color
-                cw.write_severity(w, severity);
-            },
-            |w, _| {
-                let _ = w.write_all(event_name.as_bytes());
-            },
-        );
+        self.format_line(output, |w| {
+            self.writer.format_log_line(
+                w,
+                Some(time),
+                log_record,
+                |w, cw| {
+                    let _ = w.write_all(tree.vertical.as_bytes());
+                    let _ = w.write_all(b" ");
+                    if is_last_record && is_last_scope {
+                        let _ = w.write_all(tree.corner.as_bytes());
+                    } else {
+                        let _ = w.write_all(tree.tee.as_bytes());
+                    }
+                    let _ = w.write_all(b" ");
+                    cw.write_severity(w, severity);
+                },
+                |w, _| {
+                    let _ = w.write_all(event_name.as_bytes());
+                },
+            );
+        });
     }
 
-    /// Print a line using the shared format_log_line.
-    fn print_line<V, L, E>(
-        &self,
-        time: SystemTime,
-        record: &V,
-        format_level: L,
-        format_event_name: E,
-    ) where
-        V: LogRecordView,
-        L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
-        E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+    /// Format a line to the output buffer.
+    fn format_line<F>(&self, output: &mut Vec<u8>, f: F)
+    where
+        F: FnOnce(&mut BufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let mut w = std::io::Cursor::new(buf.as_mut_slice());
-
-        self.writer
-            .format_log_line(&mut w, Some(time), record, format_level, format_event_name);
-
+        f(&mut w);
         let len = w.position() as usize;
-        let _ = std::io::stdout().write_all(&buf[..len]);
+        output.extend_from_slice(&buf[..len]);
     }
 }
 
@@ -408,4 +384,37 @@ impl HierarchicalFormatter {
 #[inline]
 fn nanos_to_time(nanos: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_nanos(nanos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
+    use prost::Message;
+
+    #[test]
+    fn test_format_logs() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let bytes = OtlpProtoBytes::ExportLogsRequest(logs_data.encode_to_vec().into());
+        let formatter = HierarchicalFormatter::new(false, true);
+
+        let mut output = Vec::new();
+        formatter.format_logs_bytes_to(&bytes, &mut output);
+
+        let text = String::from_utf8_lossy(&output);
+
+        // The fixture creates two scopes with two logs each:
+        // - scope-alpha/1.0.0: INFO + WARN
+        // - scope-beta/2.0.0: ERROR + DEBUG
+        let expected = "\
+2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource:
+2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0:
+2025-01-15T10:30:00.000Z  │ ├─ INFO  event: first log in alpha
+2025-01-15T10:30:01.000Z  │ ├─ WARN  event: second log in alpha
+2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0:
+2025-01-15T10:30:02.000Z  │ ├─ ERROR event: first log in beta
+2025-01-15T10:30:03.000Z  │ └─ DEBUG event: second log in beta
+";
+        assert_eq!(text, expected);
+    }
 }
