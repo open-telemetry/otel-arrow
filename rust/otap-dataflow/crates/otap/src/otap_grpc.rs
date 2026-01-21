@@ -10,6 +10,7 @@
 //! ToDo: Handle Ack and Nack, return proper batch status
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
+use crate::pdata::{Context, OtapPdata};
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
 use otap_df_pdata::{
     Consumer,
@@ -20,13 +21,12 @@ use otap_df_pdata::{
         arrow_traces_service_server::ArrowTracesService,
     },
 };
+use otap_df_telemetry::otel_error;
 use std::pin::Pin;
 use tokio::sync::oneshot;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-
-use crate::pdata::{Context, OtapPdata};
 
 pub mod client_settings;
 pub mod common;
@@ -287,7 +287,7 @@ where
 {
     let batch_id = batch.batch_id;
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
-        log::error!("Error decoding OTAP Batch: {e:?}. Closing stream");
+        otel_error!("Error decoding OTAP Batch. Closing stream", error = ?e);
     })?;
 
     let batch = from_record_messages::<T>(batch);
@@ -302,7 +302,7 @@ where
             match guard_result {
                 Ok(mut guard) => guard.allocate(|| oneshot::channel()),
                 Err(_) => {
-                    log::error!("Mutex poisoned");
+                    otel_error!("Mutex poisoned");
                     return Err(());
                 }
             }
@@ -310,7 +310,7 @@ where
 
         let (key, rx) = match allocation_result {
             None => {
-                log::error!("Too many concurrent requests");
+                otel_error!("Too many concurrent requests");
 
                 // Send backpressure response
                 tx.send(Ok(BatchStatus {
@@ -323,7 +323,7 @@ where
                 }))
                 .await
                 .map_err(|e| {
-                    log::error!("Error sending BatchStatus response: {e:?}");
+                    otel_error!("Error sending BatchStatus response", error = ?e);
                 })?;
 
                 return Ok(());
@@ -346,7 +346,7 @@ where
     match effect_handler.send_message(otap_pdata).await {
         Ok(_) => {}
         Err(e) => {
-            log::error!("Failed to send to pipeline: {e}");
+            otel_error!("Failed to send to pipeline", error = ?e);
             return Err(());
         }
     };
@@ -372,13 +372,13 @@ where
                 }))
                 .await
                 .map_err(|e| {
-                    log::error!("Error sending BatchStatus response: {e:?}");
+                    otel_error!("Error sending BatchStatus response", error = ?e);
                 })?;
 
                 return Ok(());
             }
             Err(_) => {
-                log::error!("Response channel closed unexpectedly");
+                otel_error!("Response channel closed unexpectedly");
                 return Err(());
             }
         }
@@ -391,7 +391,7 @@ where
     }))
     .await
     .map_err(|e| {
-        log::error!("Error sending BatchStatus response: {e:?}");
+        otel_error!("Error sending BatchStatus response", error = ?e);
     })
 }
 
