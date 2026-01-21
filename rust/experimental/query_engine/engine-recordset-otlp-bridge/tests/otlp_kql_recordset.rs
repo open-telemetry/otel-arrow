@@ -151,7 +151,7 @@ fn test_summarize_count_and_group_by() {
         ),
     );
 
-    let query = "source | summarize Count = count() by Body";
+    let query = "source | summarize Count = count() by body";
 
     let pipeline =
         data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
@@ -192,7 +192,7 @@ fn test_summarize_count_and_group_by() {
 
         let (key, value) = &summary.group_by_values[0];
 
-        assert_eq!("Body", key.as_ref());
+        assert_eq!("body", key.as_ref());
 
         assert_eq!(
             OwnedValue::String(StringValueStorage::new(body.into())).to_value(),
@@ -231,7 +231,7 @@ fn test_summarize_count_and_group_by_with_bin() {
             ),
         );
 
-    let query = "source | summarize Count = count() by Timestamp=bin(Timestamp, 1d)";
+    let query = "source | summarize Count = count() by time_unix_nano=bin(time_unix_nano, 1d)";
 
     let pipeline =
         data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
@@ -277,7 +277,7 @@ fn test_summarize_count_and_group_by_with_bin() {
 
         let (key, value) = &summary.group_by_values[0];
 
-        assert_eq!("Timestamp", key.as_ref());
+        assert_eq!("time_unix_nano", key.as_ref());
 
         assert_eq!(
             OwnedValue::DateTime(DateTimeValueStorage::new(timestamp)).to_value(),
@@ -311,7 +311,7 @@ fn test_summarize_with_pipeline() {
         ),
     );
 
-    let query = "let BatchTime = now(); source | summarize Count = count() by Body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
+    let query = "let BatchTime = now(); source | summarize Count = count() by body | where Count > 1 | extend ProcessedTime = now(), BatchTime = BatchTime";
 
     let pipeline =
         data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
@@ -345,7 +345,7 @@ fn test_summarize_with_pipeline() {
         );
         assert_eq!(
             Some(OwnedValue::Null.to_value()),
-            map.get("Body").map(|v| v.to_value())
+            map.get("body").map(|v| v.to_value())
         );
 
         match (
@@ -377,7 +377,7 @@ fn test_strlen_function() {
         ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
     );
 
-    let query = "source\n | extend name_length = strlen(EventName), text_length = strlen(text)";
+    let query = "source\n | extend name_length = strlen(event_name), text_length = strlen(text)";
 
     let pipeline =
         data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
@@ -432,7 +432,7 @@ fn test_strcat_function() {
         ResourceLogs::new().with_scope_logs(ScopeLogs::new().with_log_record(log)),
     );
 
-    let query = "source\n | extend a = strcat('hello', EventName, text, Unknown)";
+    let query = "source\n | extend a = strcat('hello', event_name, text, Unknown)";
 
     let pipeline =
         data_engine_recordset_otlp_bridge::parse_kql_query_into_pipeline(query, None).unwrap();
@@ -479,7 +479,7 @@ fn test_replace_string_function() {
 
     let query = r#"source
  | extend
-     modified_name = replace_string(EventName, "cat", "hamster"),
+     modified_name = replace_string(event_name, "cat", "hamster"),
      modified_text = replace_string(text, "hello", "hi")"#;
 
     let pipeline =
@@ -562,8 +562,8 @@ fn test_substring_function() {
         );
     };
 
-    run_test("substring(Attributes['greeting'], 6)", "world");
-    run_test("substring(Attributes['greeting'], 0, 5)", "hello");
+    run_test("substring(attributes['greeting'], 6)", "world");
+    run_test("substring(attributes['greeting'], 0, 5)", "hello");
 }
 
 #[test]
@@ -607,17 +607,17 @@ fn test_coalesce_function() {
     };
 
     run_test("coalesce('hello', 'world')", "hello");
-    run_test("coalesce(Attributes['null_key1'], 'world')", "world");
+    run_test("coalesce(attributes['null_key1'], 'world')", "world");
     run_test(
-        "coalesce(Attributes['null_key1'], Attributes['null_key1'], 'world')",
+        "coalesce(attributes['null_key1'], attributes['null_key1'], 'world')",
         "world",
     );
     run_test(
-        "coalesce(Attributes['null_key1'], Attributes['null_key1'], Attributes['null_key1'])",
+        "coalesce(attributes['null_key1'], attributes['null_key1'], attributes['null_key1'])",
         "null",
     );
     run_test(
-        "coalesce(Attributes['null_key1'], Attributes['string_key1'])",
+        "coalesce(attributes['null_key1'], attributes['string_key1'])",
         "hello world",
     );
     run_test("coalesce(tolong('invalid'), 18)", "18");

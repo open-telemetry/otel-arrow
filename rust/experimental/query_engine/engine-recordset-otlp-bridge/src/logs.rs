@@ -65,16 +65,16 @@ impl MapValue for LogRecord {
 
     fn contains_key(&self, key: &str) -> bool {
         match get_log_record_schema().normalize_key(key) {
-            "Attributes" => true,
-            "Timestamp" => self.timestamp.is_some(),
-            "ObservedTimestamp" => self.observed_timestamp.is_some(),
-            "SeverityNumber" => self.severity_number.is_some(),
-            "SeverityText" => self.severity_text.is_some(),
-            "Body" => self.body.is_some(),
-            "TraceId" => self.trace_id.is_some(),
-            "SpanId" => self.span_id.is_some(),
-            "TraceFlags" => self.flags.is_some(),
-            "EventName" => self.event_name.is_some(),
+            "attributes" => true,
+            "time_unix_nano" => self.timestamp.is_some(),
+            "observed_time_unix_nano" => self.observed_timestamp.is_some(),
+            "severity_number" => self.severity_number.is_some(),
+            "severity_text" => self.severity_text.is_some(),
+            "body" => self.body.is_some(),
+            "trace_id" => self.trace_id.is_some(),
+            "span_id" => self.span_id.is_some(),
+            "flags" => self.flags.is_some(),
+            "event_name" => self.event_name.is_some(),
             _ => false,
         }
     }
@@ -85,76 +85,76 @@ impl MapValue for LogRecord {
 
     fn get_static(&self, key: &str) -> Result<Option<&(dyn AsStaticValue + 'static)>, String> {
         Ok(match get_log_record_schema().normalize_key(key) {
-            "Attributes" => Some(&self.attributes),
-            "Timestamp" => {
+            "attributes" => Some(&self.attributes),
+            "time_unix_nano" => {
                 self.timestamp.as_ref().map(|v| v as &dyn AsStaticValue)
             }
-            "ObservedTimestamp" => self
+            "observed_time_unix_nano" => self
                 .observed_timestamp
                 .as_ref()
                 .map(|v| v as &dyn AsStaticValue),
-            "SeverityNumber" => self
+            "severity_number" => self
                 .severity_number
                 .as_ref()
                 .map(|v| v as &dyn AsStaticValue),
-            "SeverityText" => {
+            "severity_text" => {
                 self.severity_text.as_ref().map(|v| v as &dyn AsStaticValue)
             }
-            "Body" => self.body.as_ref().map(|v| v as &dyn AsStaticValue),
-            "TraceId" => self.trace_id.as_ref().map(|v| v as &dyn AsStaticValue),
-            "SpanId" => self.span_id.as_ref().map(|v| v as &dyn AsStaticValue),
-            "TraceFlags" => self.flags.as_ref().map(|v| v as &dyn AsStaticValue),
-            "EventName" => self.event_name.as_ref().map(|v| v as &dyn AsStaticValue),
+            "body" => self.body.as_ref().map(|v| v as &dyn AsStaticValue),
+            "trace_id" => self.trace_id.as_ref().map(|v| v as &dyn AsStaticValue),
+            "span_id" => self.span_id.as_ref().map(|v| v as &dyn AsStaticValue),
+            "flags" => self.flags.as_ref().map(|v| v as &dyn AsStaticValue),
+            "event_name" => self.event_name.as_ref().map(|v| v as &dyn AsStaticValue),
             _ => None,
         })
     }
 
     fn get_items(&self, item_callback: &mut dyn KeyValueCallback) -> bool {
         if let Some(v) = &self.timestamp {
-            if !item_callback.next("Timestamp", Value::DateTime(v)) {
+            if !item_callback.next("time_unix_nano", Value::DateTime(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.observed_timestamp {
-            if !item_callback.next("ObservedTimestamp", Value::DateTime(v)) {
+            if !item_callback.next("observed_time_unix_nano", Value::DateTime(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.severity_number {
-            if !item_callback.next("SeverityNumber", Value::Integer(v)) {
+            if !item_callback.next("severity_number", Value::Integer(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.severity_text {
-            if !item_callback.next("SeverityText", Value::String(v)) {
+            if !item_callback.next("severity_text", Value::String(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.body {
-            if !item_callback.next("Body", v.to_value()) {
+            if !item_callback.next("body", v.to_value()) {
                 return false;
             }
         }
-        if !item_callback.next("Attributes", Value::Map(&self.attributes)) {
+        if !item_callback.next("attributes", Value::Map(&self.attributes)) {
             return false;
         }
         if let Some(v) = &self.flags {
-            if !item_callback.next("TraceFlags", Value::Integer(v)) {
+            if !item_callback.next("flags", Value::Integer(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.trace_id {
-            if !item_callback.next("TraceId", Value::Array(v)) {
+            if !item_callback.next("trace_id", Value::Array(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.span_id {
-            if !item_callback.next("SpanId", Value::Array(v)) {
+            if !item_callback.next("span_id", Value::Array(v)) {
                 return false;
             }
         }
         if let Some(v) = &self.event_name {
-            if !item_callback.next("EventName", Value::String(v)) {
+            if !item_callback.next("event_name", Value::String(v)) {
                 return false;
             }
         }
@@ -172,36 +172,36 @@ impl AsStaticValueMut for LogRecord {
 impl MapValueMut for LogRecord {
     fn get_mut(&mut self, key: &str) -> ValueMutGetResult<'_> {
         match get_log_record_schema().normalize_key(key) {
-            "Attributes" => ValueMutGetResult::Found(&mut self.attributes),
-            "Timestamp" => ValueMutGetResult::NotSupported(
-                "Timestamp cannot be modified in place on LogRecord".into(),
+            "attributes" => ValueMutGetResult::Found(&mut self.attributes),
+            "time_unix_nano" => ValueMutGetResult::NotSupported(
+                "time_unix_nano cannot be modified in place on LogRecord".into(),
             ),
-            "ObservedTimestamp" => ValueMutGetResult::NotSupported(
-                "ObservedTimestamp cannot be modified in place on LogRecord".into(),
+            "observed_time_unix_nano" => ValueMutGetResult::NotSupported(
+                "observed_time_unix_nano cannot be modified in place on LogRecord".into(),
             ),
-            "SeverityNumber" => ValueMutGetResult::NotSupported(
-                "SeverityNumber cannot be modified in place on LogRecord".into(),
+            "severity_number" => ValueMutGetResult::NotSupported(
+                "severity_number cannot be modified in place on LogRecord".into(),
             ),
-            "SeverityText" => match &mut self.severity_text {
+            "severity_text" => match &mut self.severity_text {
                 Some(s) => ValueMutGetResult::Found(s),
                 None => ValueMutGetResult::NotFound,
             },
-            "Body" => match &mut self.body {
+            "body" => match &mut self.body {
                 Some(b) => ValueMutGetResult::Found(b),
                 None => ValueMutGetResult::NotFound,
             },
-            "TraceId" => match &mut self.trace_id {
+            "trace_id" => match &mut self.trace_id {
                 Some(t) => ValueMutGetResult::Found(t),
                 None => ValueMutGetResult::NotFound,
             },
-            "SpanId" => match &mut self.span_id {
+            "span_id" => match &mut self.span_id {
                 Some(s) => ValueMutGetResult::Found(s),
                 None => ValueMutGetResult::NotFound,
             },
-            "TraceFlags" => ValueMutGetResult::NotSupported(
-                "TraceFlags cannot be modified in place on LogRecord".into(),
+            "flags" => ValueMutGetResult::NotSupported(
+                "flags cannot be modified in place on LogRecord".into(),
             ),
-            "EventName" => match &mut self.event_name {
+            "event_name" => match &mut self.event_name {
                 Some(e) => ValueMutGetResult::Found(e),
                 None => ValueMutGetResult::NotFound,
             },
@@ -215,17 +215,17 @@ impl MapValueMut for LogRecord {
         let any_value = Into::<OwnedValue>::into(value).into();
 
         match get_log_record_schema().normalize_key(key) {
-            "Attributes" => {
+            "attributes" => {
                 if let AnyValue::Native(OtlpAnyValue::KvlistValue(k)) = any_value {
                     let old = mem::replace(&mut self.attributes, k);
                     return ValueMutWriteResult::Updated(OwnedValue::Map(old.into()));
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "Attributes cannot be set to type '{value_type:?}' on LogRecord"
+                    "attributes cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "Timestamp" => {
+            "time_unix_nano" => {
                 if let AnyValue::Extended(ExtendedValue::DateTime(d)) = any_value {
                     return match self.timestamp.replace(d) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::DateTime(old)),
@@ -234,10 +234,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "Timestamp cannot be set to type '{value_type:?}' on LogRecord"
+                    "time_unix_nano cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "ObservedTimestamp" => {
+            "observed_time_unix_nano" => {
                 if let AnyValue::Extended(ExtendedValue::DateTime(d)) = any_value {
                     return match self.observed_timestamp.replace(d) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::DateTime(old)),
@@ -246,10 +246,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "ObservedTimestamp cannot be set to type '{value_type:?}' on LogRecord"
+                    "observed_time_unix_nano cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "SeverityNumber" => {
+            "severity_number" => {
                 if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = any_value {
                     let value = i.get_value();
                     if value >= i32::MIN as i64 && value <= i32::MAX as i64 {
@@ -266,10 +266,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "SeverityNumber cannot be set to type '{value_type:?}' on LogRecord"
+                    "severity_number cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "SeverityText" => {
+            "severity_text" => {
                 if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = any_value {
                     return match self.severity_text.replace(s) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::String(old)),
@@ -278,14 +278,14 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "SeverityText cannot be set to type '{value_type:?}' on LogRecord"
+                    "severity_text cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "Body" => match self.body.replace(any_value) {
+            "body" => match self.body.replace(any_value) {
                 Some(old) => ValueMutWriteResult::Updated(old.into()),
                 None => ValueMutWriteResult::Created,
             },
-            "TraceId" => {
+            "trace_id" => {
                 if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = any_value {
                     return match self.trace_id.replace(b) {
                         Some(old) => ValueMutWriteResult::Updated(
@@ -296,10 +296,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "TraceId cannot be set to type '{value_type:?}' on LogRecord"
+                    "trace_id cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "SpanId" => {
+            "span_id" => {
                 if let AnyValue::Native(OtlpAnyValue::BytesValue(b)) = any_value {
                     return match self.span_id.replace(b) {
                         Some(old) => ValueMutWriteResult::Updated(
@@ -310,10 +310,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "SpanId cannot be set to type '{value_type:?}' on LogRecord"
+                    "span_id cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "TraceFlags" => {
+            "flags" => {
                 if let AnyValue::Native(OtlpAnyValue::IntValue(i)) = any_value {
                     let value = i.get_value();
                     if value >= u32::MIN as i64 && value <= u32::MAX as i64 {
@@ -327,10 +327,10 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "TraceFlags cannot be set to type '{value_type:?}' on LogRecord"
+                    "flags cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
-            "EventName" => {
+            "event_name" => {
                 if let AnyValue::Native(OtlpAnyValue::StringValue(s)) = any_value {
                     return match self.event_name.replace(s) {
                         Some(old) => ValueMutWriteResult::Updated(OwnedValue::String(old)),
@@ -339,7 +339,7 @@ impl MapValueMut for LogRecord {
                 }
 
                 ValueMutWriteResult::NotSupported(format!(
-                    "EventName cannot be set to type '{value_type:?}' on LogRecord"
+                    "event_name cannot be set to type '{value_type:?}' on LogRecord"
                 ))
             }
             _ => ValueMutWriteResult::NotFound,
@@ -352,52 +352,52 @@ impl MapValueMut for LogRecord {
 
     fn remove(&mut self, key: &str) -> ValueMutRemoveResult {
         match get_log_record_schema().normalize_key(key) {
-            "Attributes" => {
+            "attributes" => {
                 let old = mem::replace(&mut self.attributes, MapValueStorage::new(HashMap::new()));
                 ValueMutRemoveResult::Removed(OwnedValue::Map(old.into()))
             }
-            "Timestamp" => match self.timestamp.take() {
+            "time_unix_nano" => match self.timestamp.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::DateTime(old)),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "ObservedTimestamp" => match self.observed_timestamp.take()
+            "observed_time_unix_nano" => match self.observed_timestamp.take()
             {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::DateTime(old)),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "SeverityNumber" => match self.severity_number.take() {
+            "severity_number" => match self.severity_number.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(
                     IntegerValueStorage::new(old.get_value()),
                 )),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "SeverityText" => match self.severity_text.take() {
+            "severity_text" => match self.severity_text.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::String(old)),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "Body" => match self.body.take() {
+            "body" => match self.body.take() {
                 Some(old) => ValueMutRemoveResult::Removed(old.into()),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "TraceId" => match self.trace_id.take() {
+            "trace_id" => match self.trace_id.take() {
                 Some(old) => ValueMutRemoveResult::Removed(
                     AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                 ),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "SpanId" => match self.span_id.take() {
+            "span_id" => match self.span_id.take() {
                 Some(old) => ValueMutRemoveResult::Removed(
                     AnyValue::Native(OtlpAnyValue::BytesValue(old)).into(),
                 ),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "TraceFlags" => match self.flags.take() {
+            "flags" => match self.flags.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::Integer(
                     IntegerValueStorage::new(old.get_value()),
                 )),
                 None => ValueMutRemoveResult::NotFound,
             },
-            "EventName" => match self.event_name.take() {
+            "event_name" => match self.event_name.take() {
                 Some(old) => ValueMutRemoveResult::Removed(OwnedValue::String(old)),
                 None => ValueMutRemoveResult::NotFound,
             },
@@ -407,50 +407,50 @@ impl MapValueMut for LogRecord {
 
     fn retain(&mut self, item_callback: &mut dyn KeyValueMutCallback) {
         if let Some(v) = &mut self.timestamp {
-            if !item_callback.next("Timestamp", v) {
+            if !item_callback.next("time_unix_nano", v) {
                 self.timestamp = None;
             }
         }
         if let Some(v) = &mut self.observed_timestamp {
-            if !item_callback.next("ObservedTimestamp", v) {
+            if !item_callback.next("observed_time_unix_nano", v) {
                 self.observed_timestamp = None;
             }
         }
         if let Some(v) = &mut self.severity_number {
-            if !item_callback.next("SeverityNumber", v) {
+            if !item_callback.next("severity_number", v) {
                 self.severity_number = None;
             }
         }
         if let Some(v) = &mut self.severity_text {
-            if !item_callback.next("SeverityText", v) {
+            if !item_callback.next("severity_text", v) {
                 self.severity_text = None;
             }
         }
         if let Some(v) = &mut self.body {
-            if !item_callback.next("Body", v) {
+            if !item_callback.next("body", v) {
                 self.body = None;
             }
         }
-        if !item_callback.next("Attributes", &mut self.attributes) {
+        if !item_callback.next("attributes", &mut self.attributes) {
             self.attributes = MapValueStorage::new(HashMap::new());
         }
         if let Some(v) = &mut self.flags {
-            if !item_callback.next("TraceFlags", v) {
+            if !item_callback.next("flags", v) {
                 self.flags = None;
             }
         }
         if let Some(v) = &mut self.trace_id {
-            if !item_callback.next("TraceId", v) {
+            if !item_callback.next("trace_id", v) {
                 self.trace_id = None;
             }
         }
         if let Some(v) = &mut self.span_id {
-            if !item_callback.next("SpanId", v) {
+            if !item_callback.next("span_id", v) {
                 self.span_id = None;
             }
         }
         if let Some(v) = &mut self.event_name {
-            if !item_callback.next("EventName", v) {
+            if !item_callback.next("event_name", v) {
                 self.event_name = None;
             }
         }

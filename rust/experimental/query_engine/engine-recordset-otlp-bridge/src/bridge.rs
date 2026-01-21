@@ -17,27 +17,27 @@ static EXPRESSIONS: LazyLock<RwLock<Vec<BridgePipeline>>> =
 
 static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
     ParserMapSchema::new()
-        .set_default_map_key("Attributes")
-        .with_key_definition("Timestamp", ParserMapKeySchema::DateTime)
-        .with_key_definition("ObservedTimestamp", ParserMapKeySchema::DateTime)
-        .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
-        .with_key_definition("SeverityText", ParserMapKeySchema::String)
-        .with_key_definition("Body", ParserMapKeySchema::Any)
-        .with_key_definition("TraceId", ParserMapKeySchema::Array)
-        .with_key_definition("SpanId", ParserMapKeySchema::Array)
-        .with_key_definition("TraceFlags", ParserMapKeySchema::Integer)
-        .with_key_definition("EventName", ParserMapKeySchema::String)
+        .set_default_map_key("attributes")
+        .with_key_definition("time_unix_nano", ParserMapKeySchema::DateTime)
+        .with_key_definition("observed_time_unix_nano", ParserMapKeySchema::DateTime)
+        .with_key_definition("severity_number", ParserMapKeySchema::Integer)
+        .with_key_definition("severity_text", ParserMapKeySchema::String)
+        .with_key_definition("body", ParserMapKeySchema::Any)
+        .with_key_definition("trace_id", ParserMapKeySchema::Array)
+        .with_key_definition("span_id", ParserMapKeySchema::Array)
+        .with_key_definition("flags", ParserMapKeySchema::Integer)
+        .with_key_definition("event_name", ParserMapKeySchema::String)
         .with_key_aliases([
-            ("attributes", "Attributes"),
-            ("time_unix_nano", "Timestamp"),
-            ("observed_time_unix_nano", "ObservedTimestamp"),
-            ("severity_number", "SeverityNumber"),
-            ("severity_text", "SeverityText"),
-            ("body", "Body"),
-            ("trace_id", "TraceId"),
-            ("span_id", "SpanId"),
-            ("flags", "TraceFlags"),
-            ("event_name", "EventName"),
+            ("Attributes", "attributes"),
+            ("Timestamp", "time_unix_nano"),
+            ("ObservedTimestamp", "observed_time_unix_nano"),
+            ("SeverityNumber", "severity_number"),
+            ("SeverityText", "severity_text"),
+            ("Body", "body"),
+            ("TraceId", "trace_id"),
+            ("SpanId", "span_id"),
+            ("TraceFlags", "flags"),
+            ("EventName", "event_name"),
         ])
 });
 
@@ -423,7 +423,7 @@ fn build_log_record_schema(
         let allow_undefined_keys = attributes_schema.get_allow_undefined_keys();
 
         log_record_schema = log_record_schema.with_key_definition(
-            "Attributes",
+            "attributes",
             ParserMapKeySchema::Map(Some(attributes_schema)),
         );
 
@@ -434,7 +434,7 @@ fn build_log_record_schema(
         }
 
         for (top_level_key, top_level_key_schema) in log_record_schema.get_schema() {
-            if top_level_key.as_ref() == "Attributes" {
+            if top_level_key.as_ref() == "attributes" {
                 if let ParserMapKeySchema::Map(Some(attributes_schema)) = top_level_key_schema {
                     for (top_level_key, top_level_key_schema) in attributes_schema.get_schema() {
                         summary_schema = summary_schema
@@ -697,7 +697,7 @@ mod tests {
                 Some(
                     BridgeOptions::new().with_attributes_schema(
                         ParserMapSchema::new()
-                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("body", ParserMapKeySchema::Any)
                             .with_key_definition("int_value", ParserMapKeySchema::Integer),
                     ),
                 ),
@@ -713,7 +713,7 @@ mod tests {
                 Some(
                     BridgeOptions::new().with_attributes_schema(
                         ParserMapSchema::new()
-                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("body", ParserMapKeySchema::Any)
                             .with_key_definition("int_value", ParserMapKeySchema::Integer),
                     ),
                 ),
@@ -747,9 +747,9 @@ mod tests {
             "source | summarize by int_value | extend int_value = 1 | summarize int_value = count() | extend Custom = 1234",
         );
 
-        run_test_success("source | extend Body = 'hello world'");
-        // Note: Body gets removed from Attributes schema because it is defined at the root
-        run_test_failure("source | extend Attributes.Body = 'hello world'");
+        run_test_success("source | extend body = 'hello world'");
+        // Note: body gets removed from attributes schema because it is defined at the root
+        run_test_failure("source | extend attributes.body = 'hello world'");
     }
 
     #[test]
@@ -796,7 +796,7 @@ mod tests {
                 Some(
                     BridgeOptions::new().with_attributes_schema(
                         ParserMapSchema::new()
-                            .with_key_definition("Body", ParserMapKeySchema::Any)
+                            .with_key_definition("body", ParserMapKeySchema::Any)
                             .with_key_definition("int_value", ParserMapKeySchema::Integer)
                             .set_allow_undefined_keys(),
                     ),
@@ -817,7 +817,7 @@ mod tests {
         let e = parse_kql_query_into_pipeline(
             "",
             Some(BridgeOptions::new().with_attributes_schema(
-                ParserMapSchema::new().with_key_definition("Body", ParserMapKeySchema::Map(None)),
+                ParserMapSchema::new().with_key_definition("body", ParserMapKeySchema::Map(None)),
             )),
         )
         .unwrap_err();
@@ -832,19 +832,19 @@ mod tests {
             parse_kql_query_into_pipeline(query, None).unwrap();
         };
 
-        // Test PascalCase canonical names
-        run_test("source | where SeverityText == 'Info'");
-        run_test("source | extend x = SeverityNumber");
-        run_test("source | project Timestamp, Body");
-
-        // Test snake_case aliases
+        // Test canonical names
         run_test("source | where severity_text == 'Info'");
         run_test("source | extend x = severity_number");
         run_test("source | project time_unix_nano, body");
 
+        // Test aliases
+        run_test("source | where SeverityText == 'Info'");
+        run_test("source | extend x = SeverityNumber");
+        run_test("source | project Timestamp, Body");
+
         // Test mixing aliases and canonical names
-        run_test("source | where severity_text == 'Info' and SeverityNumber > 0");
-        run_test("source | extend ts = time_unix_nano, sev = SeverityText");
+        run_test("source | where SeverityText == 'Info' and severity_number > 0");
+        run_test("source | extend ts = Timestamp, sev = severity_text");
 
         // Test default map key alias
         run_test("source | where attributes.custom_field == 'value'");
@@ -856,27 +856,27 @@ mod tests {
         // Test that when user provides an attributes schema with aliases
         // of top-level fields, they get removed properly
         let result = parse_kql_query_into_pipeline(
-            "source | extend severity_text = 'Debug'",
+            "source | extend SeverityText = 'Debug'",
             Some(
                 BridgeOptions::new().with_attributes_schema(
                     ParserMapSchema::new()
-                        // This should be removed because severity_text is an alias for SeverityText
-                        .with_key_definition("severity_text", ParserMapKeySchema::String)
+                        // This should be removed because SeverityText is an alias for severity_text
+                        .with_key_definition("SeverityText", ParserMapKeySchema::String)
                         .with_key_definition("custom_field", ParserMapKeySchema::Integer),
                 ),
             ),
         );
 
-        // Should succeed - severity_text should write to top-level field
+        // Should succeed - SeverityText should write to top-level field
         assert!(result.is_ok());
 
-        // Test with canonical name too
+        // Test with canonical name (snake_case) too
         let result = parse_kql_query_into_pipeline(
-            "source | extend SeverityText = 'Debug'",
+            "source | extend severity_text = 'Debug'",
             Some(
                 BridgeOptions::new().with_attributes_schema(
                     ParserMapSchema::new()
-                        .with_key_definition("SeverityText", ParserMapKeySchema::String)
+                        .with_key_definition("severity_text", ParserMapKeySchema::String)
                         .with_key_definition("custom_field", ParserMapKeySchema::Integer),
                 ),
             ),
@@ -900,20 +900,8 @@ mod tests {
             ))
         };
 
-        let pipeline_alias = parse_kql_query_into_pipeline(
-            "source | where severity_text == 'Info' and severity_number == 9",
-            None,
-        )
-        .unwrap();
-        let (result_alias, _) = process_export_logs_service_request_using_pipeline(
-            &pipeline_alias,
-            RecordSetEngineDiagnosticLevel::Error,
-            create_request(),
-        )
-        .unwrap();
-
         let pipeline_canonical = parse_kql_query_into_pipeline(
-            "source | where SeverityText == 'Info' and SeverityNumber == 9",
+            "source | where severity_text == 'Info' and severity_number == 9",
             None,
         )
         .unwrap();
@@ -924,22 +912,34 @@ mod tests {
         )
         .unwrap();
 
-        let alias_logs = &result_alias.unwrap().resource_logs[0].scope_logs[0].log_records;
-        let canonical_logs = &result_canonical.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let pipeline_with_aliases = parse_kql_query_into_pipeline(
+            "source | where SeverityText == 'Info' and SeverityNumber == 9",
+            None,
+        )
+        .unwrap();
+        let (result_with_aliases, _) = process_export_logs_service_request_using_pipeline(
+            &pipeline_with_aliases,
+            RecordSetEngineDiagnosticLevel::Error,
+            create_request(),
+        )
+        .unwrap();
 
-        assert_eq!(alias_logs.len(), 1);
+        let canonical_logs = &result_canonical.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let aliased_logs = &result_with_aliases.unwrap().resource_logs[0].scope_logs[0].log_records;
+
         assert_eq!(canonical_logs.len(), 1);
+        assert_eq!(aliased_logs.len(), 1);
         assert_eq!(
-            alias_logs[0].severity_text.as_ref().unwrap().get_value(),
-            canonical_logs[0]
+            canonical_logs[0].severity_text.as_ref().unwrap().get_value(),
+            aliased_logs[0]
                 .severity_text
                 .as_ref()
                 .unwrap()
                 .get_value()
         );
         assert_eq!(
-            alias_logs[0].severity_number.as_ref().unwrap().get_value(),
-            canonical_logs[0]
+            canonical_logs[0].severity_number.as_ref().unwrap().get_value(),
+            aliased_logs[0]
                 .severity_number
                 .as_ref()
                 .unwrap()
