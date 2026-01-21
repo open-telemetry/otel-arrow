@@ -54,11 +54,13 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
+use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{
+    InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
+};
+use std::sync::Arc;
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -101,13 +103,26 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .map(|group| group.pipelines.len())
                 .sum::<usize>()
         );
-        let telemetry_system = InternalTelemetrySystem::new(telemetry_config)?;
+
+        // Create the observed state store first - the telemetry system needs its reporter
+        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
+        let obs_state_handle = obs_state_store.handle();
+        let engine_evt_reporter =
+            obs_state_store.reporter(engine_settings.observed_state.engine_events);
+        let logging_evt_reporter =
+            obs_state_store.reporter(engine_settings.observed_state.logging_events);
+
+        // Create the telemetry system, pass the observed state store
+        // as the admin reporter for console_async support.
+        let telemetry_system =
+            InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
+        let admin_tracing_setup = telemetry_system.admin_tracing_setup();
+
+        telemetry_system.init_global_subscriber();
+
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
-        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
-        let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
-        let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
@@ -122,15 +137,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
-        let metrics_agg_handle =
-            spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
-                internal_collector.run(cancellation_token)
-            })?;
+        let metrics_agg_handle = spawn_thread_local_task(
+            "metrics-aggregator",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| internal_collector.run(cancellation_token),
+        )?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
         let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
+                admin_tracing_setup.clone(),
                 move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
             )?)
         } else {
@@ -138,10 +155,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         };
 
         // Start the observed state store background task
-        let obs_state_join_handle =
-            spawn_thread_local_task("observed-state-store", move |cancellation_token| {
-                obs_state_store.run(cancellation_token)
-            })?;
+        let obs_state_join_handle = spawn_thread_local_task(
+            "observed-state-store",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| obs_state_store.run(cancellation_token),
+        )?;
 
         let pipeline_count: usize = pipeline_groups
             .values()
@@ -192,9 +210,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_id.as_ref(),
                         core_id.id
                     );
-                    let obs_evt_reporter = obs_evt_reporter.clone();
+
                     let group_id = pipeline_group_id.clone();
                     let pipeline_id = pipeline_id.clone();
+                    let engine_tracing_setup = telemetry_system.engine_tracing_setup();
+                    let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
@@ -204,10 +224,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 pipeline_config,
                                 pipeline_factory,
                                 pipeline_handle,
-                                obs_evt_reporter,
+                                engine_evt_reporter,
                                 metrics_reporter,
                                 pipeline_ctrl_msg_tx,
                                 pipeline_ctrl_msg_rx,
+                                engine_tracing_setup,
                             )
                         })
                         .map_err(|e| Error::ThreadSpawnError {
@@ -231,18 +252,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Start the admin HTTP server
-        let admin_server_handle =
-            spawn_thread_local_task("http-admin", move |cancellation_token| {
+        let admin_server_handle = spawn_thread_local_task(
+            "http-admin",
+            admin_tracing_setup,
+            move |cancellation_token| {
                 // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<
-                    std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>,
-                > = ctrl_msg_senders
-                    .into_iter()
-                    .map(|sender| {
-                        std::sync::Arc::new(sender)
-                            as std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                    })
-                    .collect();
+                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
+                    ctrl_msg_senders
+                        .into_iter()
+                        .map(|sender| {
+                            Arc::new(sender)
+                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
+                        })
+                        .collect();
 
                 otap_df_admin::run(
                     admin_settings,
@@ -251,7 +273,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     telemetry_registry,
                     cancellation_token,
                 )
-            })?;
+            },
+        )?;
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
@@ -263,11 +286,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
+                    engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
                     let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "Pipeline encountered a runtime error.",
                         err_summary,
@@ -280,7 +303,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         message: "The pipeline panicked during execution.".into(),
                         source: Some(format!("{e:?}")),
                     };
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "The pipeline panicked during execution.",
                         err_summary,
@@ -315,7 +338,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        telemetry_system.shutdown()?;
+        telemetry_system.shutdown_otel()?;
 
         Ok(())
     }
@@ -439,20 +462,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        tracing_setup: TracingSetup,
     ) -> Result<Vec<()>, Error> {
-        // Create a tracing span for this pipeline thread
-        // so that all logs within this scope include pipeline context.
-        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
-        let _guard = span.enter();
-
-        // The controller creates a pipeline instance into a dedicated thread. The corresponding
-        // entity is registered here for proper context tracking and set into thread-local storage
-        // in order to be accessible by all components within this thread.
-        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let _pipeline_entity_guard =
-            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
-
-        // Pin thread to specific core
+        // Pin thread to specific core. As much as possible, we pin
+        // before allocating memory.
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
@@ -462,36 +475,51 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             );
         }
 
-        obs_evt_reporter.report(ObservedEvent::admitted(
-            pipeline_key.clone(),
-            Some("Pipeline admission successful.".to_owned()),
-        ));
+        // Run the pipeline with thread-local tracing subscriber active.
+        tracing_setup.with_subscriber(|| {
+            // Create a tracing span for this pipeline thread
+            // so that all logs within this scope include pipeline context.
+            let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+            let _guard = span.enter();
 
-        // Build the runtime pipeline from the configuration
-        let runtime_pipeline = pipeline_factory
-            .build(pipeline_context.clone(), pipeline_config.clone())
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })?;
+            // The controller creates a pipeline instance into a dedicated thread. The corresponding
+            // entity is registered here for proper context tracking and set into thread-local storage
+            // in order to be accessible by all components within this thread.
+            let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+            let _pipeline_entity_guard =
+                set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
-        obs_evt_reporter.report(ObservedEvent::ready(
-            pipeline_key.clone(),
-            Some("Pipeline initialization successful.".to_owned()),
-        ));
+            obs_evt_reporter.report(EngineEvent::admitted(
+                pipeline_key.clone(),
+                Some("Pipeline admission successful.".to_owned()),
+            ));
 
-        // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline
-            .run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })
+            // Build the runtime pipeline from the configuration
+            let runtime_pipeline = pipeline_factory
+                .build(pipeline_context.clone(), pipeline_config.clone())
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })?;
+
+            obs_evt_reporter.report(EngineEvent::ready(
+                pipeline_key.clone(),
+                Some("Pipeline initialization successful.".to_owned()),
+            ));
+
+            // Start the pipeline (this will use the current thread's Tokio runtime)
+            runtime_pipeline
+                .run_forever(
+                    pipeline_key,
+                    pipeline_context,
+                    obs_evt_reporter,
+                    metrics_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                )
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })
+        })
     }
 }
 
