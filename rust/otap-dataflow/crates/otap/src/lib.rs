@@ -7,57 +7,51 @@ use crate::pdata::OtapPdata;
 use otap_df_engine::{PipelineFactory, build_factory};
 use otap_df_engine_macros::pipeline_factory;
 
-/// Implementation of OTAP Exporter that implements the exporter trait
-pub mod otap_exporter;
-/// gRPC service implementation
-pub mod otap_grpc;
-/// Implementation of OTAP Receiver that implements the receiver trait
-pub mod otap_receiver;
+/// OTAP node components organized by type (receiver, processor, exporter)
+pub mod nodes;
 
-/// This receiver receives OTLP bytes from the grpc service request and
-/// produce for the pipeline OTAP PData
-pub mod otlp_receiver;
+/// Contributed components organized by type
+#[cfg(any(feature = "contrib-exporters", feature = "contrib-processors"))]
+pub mod contrib;
 
-/// Implementation of OTLP exporter that implements the exporter trait
-pub mod otlp_exporter;
+// Re-export node components at the top level for backward compatibility
+pub use nodes::exporter::error_exporter;
+pub use nodes::exporter::noop_exporter;
+pub use nodes::exporter::otap_exporter;
+pub use nodes::exporter::otlp_exporter;
+pub use nodes::exporter::parquet_exporter;
+pub use nodes::exporter::perf_exporter;
 
-/// Batch processor
-pub mod batch_processor;
+pub use nodes::processor::attributes_processor;
+pub use nodes::processor::batch_processor;
+pub use nodes::processor::debug_processor;
+pub use nodes::processor::filter_processor;
+pub use nodes::processor::retry_processor;
+pub use nodes::processor::signal_type_router;
+pub use nodes::processor::transform_processor;
 
-// Retry processor that is aware of the OTAP PData/context.
-pub mod retry_processor;
+pub use nodes::receiver::fake_data_generator;
+pub use nodes::receiver::otap_receiver;
+pub use nodes::receiver::otlp_receiver;
+pub use nodes::receiver::syslog_cef_receiver;
 
-/// Receiver that reads in syslog data
-pub mod syslog_cef_receiver;
+// Re-export contrib components for backward compatibility
+#[cfg(feature = "azure-monitor-exporter")]
+pub use contrib::exporter::azure_monitor_exporter;
+#[cfg(feature = "geneva-exporter")]
+pub use contrib::exporter::geneva_exporter;
+#[cfg(feature = "condense-attributes-processor")]
+pub use contrib::processor::condense_attributes_processor;
+#[cfg(feature = "recordset-kql-processor")]
+pub use contrib::processor::recordset_kql_processor;
 
 /// Common component accessories (e.g., context-state management).
 pub mod accessory;
 
 pub mod pdata;
 
-pub mod parquet_exporter;
-
-pub mod perf_exporter;
-
-pub mod fake_data_generator;
-
-/// Implementation of debug processor that outputs received signals in a string format for user view
-pub mod debug_processor;
-
-pub mod filter_processor;
-
-/// Implementation of a noop exporter that acts as a exporter placeholder
-pub mod noop_exporter;
-
-/// An error-exporter returns a static error.
-pub mod error_exporter;
-
-/// Experimental exporters and processors
-#[cfg(any(
-    feature = "experimental-exporters",
-    feature = "experimental-processors"
-))]
-pub mod experimental;
+/// gRPC service implementation
+pub mod otap_grpc;
 
 /// testing utilities
 #[cfg(test)]
@@ -74,14 +68,6 @@ pub mod testing;
 /// validation process to verify that encoding/decoding works properly with otlp request
 #[cfg(test)]
 pub mod validation;
-
-/// Signal-type router processor (OTAP-based)
-pub mod signal_type_router;
-
-/// Attributes processor (OTAP-based)
-pub mod attributes_processor;
-
-pub mod transform_processor;
 
 /// compression formats
 pub mod compression;
