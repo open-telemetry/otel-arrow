@@ -315,6 +315,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
+                            otel_info!(
+                                "receiver.shutdown"
+                            );
                             return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
                         Err(e) => {

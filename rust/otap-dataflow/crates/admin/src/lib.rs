@@ -20,6 +20,7 @@ use crate::error::Error;
 use otap_df_config::engine::HttpAdminSettings;
 use otap_df_engine::control::PipelineAdminSender;
 use otap_df_state::store::ObservedStateHandle;
+use otap_df_telemetry::{otel_warn, otel_info};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 
 /// Shared state for the HTTP admin server.
@@ -62,18 +63,44 @@ pub async fn run(
         config
             .bind_address
             .parse::<SocketAddr>()
-            .map_err(|e| Error::InvalidBindAddress {
-                bind_address: config.bind_address.clone(),
-                details: format!("{e}"),
+            .map_err(|e| {
+                let details = format!("{e}");
+                otel_warn!(
+                    "endpoint.parse_address_failed",
+                    bind_address = config.bind_address.as_str(),
+                    error = details.as_str(),
+                    message = "Failed to parse admin server bind address"
+                );
+                Error::InvalidBindAddress {
+                    bind_address: config.bind_address.clone(),
+                    details,
+                }
             })?;
 
     // Bind the TCP listener.
     let listener = TcpListener::bind(&addr)
         .await
-        .map_err(|e| Error::BindFailed {
-            addr: addr.to_string(),
-            details: format!("{e}"),
+        .map_err(|e| {
+            let addr_str = addr.to_string();
+            let details = format!("{e}");
+            otel_warn!(
+                "endpoint.bind_failed",
+                bind_address = addr_str.as_str(),
+                error = details.as_str(),
+                message = "Failed to bind admin server"
+            );
+            Error::BindFailed {
+                addr: addr_str,
+                details,
+            }
         })?;
+
+    let addr_str = addr.to_string();
+    otel_info!(
+        "endpoint.start",
+        bind_address = addr_str.as_str(),
+        message = "Admin HTTP server listening"
+    );
 
     // Start serving requests, with graceful shutdown on signal.
     axum::serve(listener, app)
