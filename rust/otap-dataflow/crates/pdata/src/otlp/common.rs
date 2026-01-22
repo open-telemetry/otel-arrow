@@ -451,6 +451,19 @@ impl AsMut<[u8]> for ProtoBuffer {
     }
 }
 
+impl std::io::Write for ProtoBuffer {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Helper for encoding with unknown length. Usage:
 /// ```ignore
 /// proto_encode_len_delimited_unknown_size!(
