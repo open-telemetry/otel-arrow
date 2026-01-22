@@ -565,10 +565,6 @@ impl PipelineConfig {
     }
 
     /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
-    ///
-    /// Returns None if no internal pipeline nodes are configured.
-    /// The extracted config uses the internal nodes as the main pipeline,
-    /// with hardcoded settings appropriate for internal telemetry.
     #[must_use]
     pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
         if self.internal.is_empty() {

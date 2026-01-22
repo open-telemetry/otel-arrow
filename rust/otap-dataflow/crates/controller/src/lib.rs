@@ -137,9 +137,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         // Spawn internal telemetry pipeline thread, if configured.
-        // We find the first pipeline with an internal config and spawn it.
-        // The internal pipeline must be running before we initialize the global
-        // subscriber, otherwise logs will fill the channel buffer.
         let _internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             &pipeline_groups,
             its_logs_receiver,
@@ -475,14 +472,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     /// Spawns the internal telemetry pipeline if any pipeline has an internal config.
     ///
-    /// Returns the thread handle if an internal pipeline was spawned, or None if
-    /// no internal pipeline is configured.
+    /// Returns the thread handle if an internal pipeline was spawned
+    /// and waits for it to start, or None.
     ///
-    /// This function:
-    /// 1. Finds the first pipeline with an `internal` config section
-    /// 2. Creates `InternalTelemetrySettings` from the ITS logs receiver
-    /// 3. Spawns a dedicated thread for the internal pipeline
-    /// 4. Waits for the pipeline to signal successful startup before returning
+    /// TODO: This uses the first internal pipeline it finds, assumes only one pipeline
+    /// group defines the internal pipeline.
     #[allow(clippy::too_many_arguments)]
     fn spawn_internal_pipeline_if_configured(
         pipeline_groups: &std::collections::HashMap<
@@ -673,12 +667,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Runs the internal telemetry pipeline in the current thread.
-    ///
-    /// This pipeline processes the engine's own logs and metrics. It differs from
-    /// regular pipeline threads in that:
-    /// - It is not pinned to a specific CPU core (lightweight workload)
-    /// - It receives `InternalTelemetrySettings` to inject into the ITR node
-    /// - It signals startup success/failure via a channel before running
     #[allow(clippy::too_many_arguments)]
     fn run_internal_pipeline_thread(
         pipeline_key: DeployedPipelineKey,

@@ -326,10 +326,6 @@ impl InternalTelemetrySystem {
     }
 
     /// Creates InternalTelemetrySettings from the ITS receiver and resource bytes.
-    ///
-    /// This is used by the controller to inject settings into the Internal
-    /// Telemetry Receiver (ITR). The receiver is passed in rather than stored
-    /// because it's already returned from `new()` to allow early validation.
     #[must_use]
     pub fn make_internal_telemetry_settings(
         &self,
