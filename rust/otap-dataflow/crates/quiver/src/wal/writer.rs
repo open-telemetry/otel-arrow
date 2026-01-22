@@ -461,7 +461,7 @@ impl WalWriter {
 
         options.validate()?;
 
-        let sidecar_path = cursor_sidecar_path(&options.path);
+        let sidecar_path = CursorSidecar::path_for(&options.path);
         let cursor_state = load_cursor_state(&sidecar_path).await?;
         let buffer_decay_rate = options.buffer_decay_rate;
 
@@ -1485,13 +1485,6 @@ pub(super) async fn sync_parent_dir(path: &Path) -> WalResult<()> {
     #[cfg(not(unix))]
     let _ = path; // silence unused warning
     Ok(())
-}
-
-fn cursor_sidecar_path(wal_path: &Path) -> PathBuf {
-    wal_path
-        .parent()
-        .map(|parent| parent.join("quiver.wal.cursor"))
-        .unwrap_or_else(|| PathBuf::from("quiver.wal.cursor"))
 }
 
 async fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
