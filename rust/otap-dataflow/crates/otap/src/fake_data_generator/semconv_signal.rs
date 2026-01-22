@@ -281,7 +281,7 @@ fn logs(signal_count: usize, registry: &ResolvedRegistry) -> Vec<LogRecord> {
         log_records.push(
             LogRecord::build()
                 .time_unix_nano(timestamp)
-                .severity_number(SeverityNumber::Unspecified)
+                .severity_number(SeverityNumber::Info)
                 .event_name(group.name.clone().unwrap_or("".to_owned()))
                 .attributes(
                     group
