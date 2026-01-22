@@ -102,7 +102,7 @@ impl Exporter<OtapPdata> for ConsoleExporter {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    self.export(data.payload_ref());
+                    self.export(data.payload_ref()).await;
                     effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
@@ -116,19 +116,19 @@ impl Exporter<OtapPdata> for ConsoleExporter {
 }
 
 impl ConsoleExporter {
-    fn export(&self, payload: &OtapPayload) {
+    async fn export(&self, payload: &OtapPayload) {
         match payload.signal_type() {
-            SignalType::Logs => self.export_logs(&payload),
-            SignalType::Traces => self.export_traces(&payload),
-            SignalType::Metrics => self.export_metrics(&payload),
+            SignalType::Logs => self.export_logs(&payload).await,
+            SignalType::Traces => self.export_traces(&payload).await,
+            SignalType::Metrics => self.export_metrics(&payload).await,
         }
     }
 
-    fn export_logs(&self, payload: &OtapPayload) {
+    async fn export_logs(&self, payload: &OtapPayload) {
         match payload {
             OtapPayload::OtlpBytes(bytes) => match RawLogsData::try_from(bytes) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view);
+                    self.formatter.print_logs_data(&logs_view).await;
                 }
                 Err(e) => {
                     otel_error!("Failed to create OTLP logs view", error = ?e);
@@ -136,7 +136,7 @@ impl ConsoleExporter {
             },
             OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
                 Ok(logs_view) => {
-                    self.formatter.print_logs_data(&logs_view);
+                    self.formatter.print_logs_data(&logs_view).await;
                 }
                 Err(e) => {
                     otel_error!("Failed to create OTAP logs view", error = ?e);
@@ -145,12 +145,12 @@ impl ConsoleExporter {
         }
     }
 
-    fn export_traces(&self, _payload: &OtapPayload) {
+    async fn export_traces(&self, _payload: &OtapPayload) {
         // TODO: Implement traces formatting.
         otel_error!("Traces formatting not yet implemented");
     }
 
-    fn export_metrics(&self, _payload: &OtapPayload) {
+    async fn export_metrics(&self, _payload: &OtapPayload) {
         // TODO: Implement metrics formatting.
         otel_error!("Metrics formatting not yet implemented");
     }
@@ -202,10 +202,13 @@ impl HierarchicalFormatter {
     }
 
     /// Format logs from OTLP bytes to a writer.
-    pub fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
+    pub async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
         let mut output = Vec::new();
         self.format_logs_data_to(logs_data, &mut output);
-        if let Err(err) = std::io::stdout().write_all(&output) {
+
+        use tokio::io::AsyncWriteExt;
+
+        if let Err(err) = tokio::io::stdout().write_all(&output).await {
             otel_error!("could not write to console", error = ?err);
         }
     }
