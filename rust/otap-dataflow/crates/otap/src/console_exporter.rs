@@ -282,15 +282,9 @@ impl HierarchicalFormatter {
         let prefix = self.tree.vertical;
         let scope = scope_logs.scope();
 
-        // Extract name/version for inline display
-        let name = scope
-            .as_ref()
-            .and_then(|s| s.name())
-            .map(|n| String::from_utf8_lossy(n).into_owned());
-        let version = scope
-            .as_ref()
-            .and_then(|s| s.version())
-            .map(|v| String::from_utf8_lossy(v).into_owned());
+        // Extract name/version for inline display (keep as raw bytes to avoid allocation)
+        let name = scope.as_ref().and_then(|s| s.name());
+        let version = scope.as_ref().and_then(|s| s.version());
 
         self.format_line(output, |w| {
             self.writer.format_header_line(
@@ -305,12 +299,14 @@ impl HierarchicalFormatter {
                     });
                     let _ = w.write_all(b"    ");
                 },
-                |w, _| match (&name, &version) {
+                |w, _| match (name, version) {
                     (Some(n), Some(v)) => {
-                        let _ = write!(w, "{}/{}", n, v);
+                        let _ = w.write_all(n);
+                        let _ = w.write_all(b"/");
+                        let _ = w.write_all(v);
                     }
                     (Some(n), None) => {
-                        let _ = w.write_all(n.as_bytes());
+                        let _ = w.write_all(n);
                     }
                     _ => {
                         let _ = w.write_all(b"v1.InstrumentationScope");
