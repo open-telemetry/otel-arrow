@@ -71,6 +71,7 @@ pub struct NodeTaskContext {
 
 impl NodeTaskContext {
     /// Task-local context for a node in the pipeline.
+    #[must_use]
     pub fn new(
         entity_key: Option<EntityKey>,
         telemetry_handle: Option<NodeTelemetryHandle>,
@@ -136,6 +137,7 @@ where
 }
 
 /// Returns the current node telemetry handle, if set.
+#[must_use]
 pub fn current_node_telemetry_handle() -> Option<NodeTelemetryHandle> {
     // Runtime code uses the task-local context.
     // Build-time code uses the thread-local fallback before node tasks are spawned.
@@ -185,6 +187,7 @@ struct NodeTelemetryState {
 
 impl NodeTelemetryHandle {
     /// Create a handle that owns registry access and per-node cleanup state.
+    #[must_use]
     pub fn new(registry: TelemetryRegistryHandle, entity_key: EntityKey) -> Self {
         Self {
             registry,
@@ -200,11 +203,13 @@ impl NodeTelemetryHandle {
     }
 
     /// Return the node entity key for associating metrics/entities.
+    #[must_use]
     pub fn entity_key(&self) -> EntityKey {
         self.state.borrow().entity_key
     }
 
     /// Register a metric set tied to this node entity and track it for cleanup.
+    #[must_use]
     pub fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
@@ -256,11 +261,13 @@ impl NodeTelemetryHandle {
     }
 
     /// Read the input channel entity key for task-local scoping.
+    #[must_use]
     pub fn input_channel_key(&self) -> Option<EntityKey> {
         self.state.borrow().input_channel_key
     }
 
     /// Read output channel entity keys for task-local scoping.
+    #[must_use]
     pub fn output_channel_keys(&self) -> Vec<(PortName, EntityKey)> {
         self.state.borrow().output_channel_keys.clone()
     }
@@ -295,20 +302,26 @@ impl NodeTelemetryHandle {
     }
 }
 
-#[doc(hidden)]
+/// A guard for node-level telemetry context.
 pub struct NodeTelemetryGuard {
     handle: NodeTelemetryHandle,
 }
 
 impl NodeTelemetryGuard {
+    /// Enter the guarded state.
+    #[must_use]
     pub fn new(handle: NodeTelemetryHandle) -> Self {
         Self { handle }
     }
 
+    /// Return the entity key.
+    #[must_use]
     pub fn entity_key(&self) -> EntityKey {
         self.handle.entity_key()
     }
 
+    /// Return the handle (for reporting, registration).
+    #[must_use]
     pub fn handle(&self) -> NodeTelemetryHandle {
         self.handle.clone()
     }

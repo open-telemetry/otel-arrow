@@ -790,7 +790,7 @@ mod jemalloc_tests {
         let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+        let _pipeline_entity_guard = otap_df_telemetry::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),
             pipeline_entity_key,
         );
