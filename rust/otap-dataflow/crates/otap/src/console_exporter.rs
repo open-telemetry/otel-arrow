@@ -46,11 +46,11 @@ pub struct ConsoleExporterConfig {
     pub unicode: bool,
 }
 
-fn default_color() -> bool {
+const fn default_color() -> bool {
     true
 }
 
-fn default_unicode() -> bool {
+const fn default_unicode() -> bool {
     true
 }
 
