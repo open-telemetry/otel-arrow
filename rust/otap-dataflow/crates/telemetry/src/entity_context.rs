@@ -266,7 +266,7 @@ impl NodeTelemetryHandle {
     }
 
     /// Unregister tracked metric sets and entities; safe to call once.
-    pub fn cleanup(&self) {
+    pub(crate) fn cleanup(&self) {
         let mut state = self.state.borrow_mut();
         if state.cleaned {
             return;
