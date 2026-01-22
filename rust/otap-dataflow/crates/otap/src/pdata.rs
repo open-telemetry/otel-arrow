@@ -201,6 +201,12 @@ impl OtapPdata {
         self.payload.take_payload()
     }
 
+    /// Borrow the payload.
+    #[must_use]
+    pub fn payload_ref(&self) -> &OtapPayload {
+        &self.payload
+    }
+
     /// Splits the context and payload from this request, consuming it.
     #[must_use]
     pub fn into_parts(self) -> (Context, OtapPayload) {

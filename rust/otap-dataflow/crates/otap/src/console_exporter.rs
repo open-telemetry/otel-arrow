@@ -102,11 +102,8 @@ impl Exporter<OtapPdata> for ConsoleExporter {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => break,
                 Message::PData(data) => {
-                    let (ctx, payload) = data.into_parts();
-                    self.export(&payload);
-                    effect_handler
-                        .notify_ack(AckMsg::new(OtapPdata::new(ctx, payload)))
-                        .await?;
+                    self.export(data.payload_ref());
+                    effect_handler.notify_ack(AckMsg::new(data)).await?;
                 }
                 _ => {
                     // do nothing

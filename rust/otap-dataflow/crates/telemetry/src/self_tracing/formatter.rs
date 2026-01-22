@@ -3,8 +3,8 @@
 
 //! An alternative to Tokio fmt::layer().
 
-use super::{LogRecord, SavedCallsite};
 use super::encoder::level_to_severity_number;
+use super::{LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
@@ -413,9 +413,15 @@ impl ConsoleWriter {
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
-        self.format_line_impl(w, time, format_level, format_event_name, |w, has_event_name| {
-            Self::write_body_and_attrs(w, record, has_event_name);
-        });
+        self.format_line_impl(
+            w,
+            time,
+            format_level,
+            format_event_name,
+            |w, has_event_name| {
+                Self::write_body_and_attrs(w, record, has_event_name);
+            },
+        );
     }
 
     /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
@@ -434,9 +440,15 @@ impl ConsoleWriter {
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
-        self.format_line_impl(w, time, format_level, format_event_name, |w, _has_event_name| {
-            Self::write_attrs(w, attrs);
-        });
+        self.format_line_impl(
+            w,
+            time,
+            format_level,
+            format_event_name,
+            |w, _has_event_name| {
+                Self::write_attrs(w, attrs);
+            },
+        );
     }
 
     /// Common implementation for formatting a line with timestamp, level, event name, and content.
