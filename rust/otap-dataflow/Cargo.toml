@@ -93,7 +93,6 @@ humantime-serde = "1.1.1"
 itertools = "0.14.0"
 linkme = "0.3.35"
 local-sync = "0.1.1"
-log = "0.4"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
 libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
