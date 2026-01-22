@@ -6,8 +6,8 @@
 //! This crate benchmarks OTLP.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use prost::bytes::BytesMut;
 use prost::Message;
+use prost::bytes::BytesMut;
 
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::OtlpProtoBytes;
