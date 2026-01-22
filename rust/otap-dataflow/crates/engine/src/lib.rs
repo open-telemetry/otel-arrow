@@ -306,13 +306,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
-        let mut receiver_names = HashMap::new();
-        let mut processor_names = HashMap::new();
-        let mut exporter_names = HashMap::new();
-        let mut node_contexts = HashMap::new();
-        let mut node_telemetry_handles = HashMap::new();
-        let mut nodes = NodeDefs::default();
-        let mut channel_metrics = ChannelMetricsRegistry::default();
+        let mut build_state = BuildState::new();
 
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -339,6 +333,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
+                    let node_id = build_state.next_node_id(
+                        name.clone(),
+                        NodeType::Receiver,
+                        PipeNode::new(receivers.len()),
+                    )?;
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
@@ -350,28 +349,33 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         || -> Result<ReceiverWrapper<PData>, Error> {
                             let wrapper = self.create_receiver(
                                 &base_ctx,
-                                &mut receiver_names,
-                                &mut nodes,
-                                receivers.len(),
-                                name.clone(),
+                                node_id.clone(),
                                 node_config.clone(),
                             )?;
                             Ok(wrapper.with_control_channel_metrics(
                                 &base_ctx,
-                                &mut channel_metrics,
+                                &mut build_state.channel_metrics,
                                 channel_metrics_enabled,
                             ))
                         },
+                    )?;
+                    build_state.register_node(
+                        NodeType::Receiver,
+                        node_id,
+                        base_ctx.clone(),
+                        node_telemetry_handle.clone(),
                     )?;
                     let wrapper = wrapper.with_node_telemetry_guard(
                         node_guard.take().expect("node telemetry guard missing"),
                     );
                     receivers.push(wrapper);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::Processor => {
+                    let node_id = build_state.next_node_id(
+                        name.clone(),
+                        NodeType::Processor,
+                        PipeNode::new(processors.len()),
+                    )?;
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
@@ -383,28 +387,33 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         || -> Result<ProcessorWrapper<PData>, Error> {
                             let wrapper = self.create_processor(
                                 &base_ctx,
-                                &mut processor_names,
-                                &mut nodes,
-                                processors.len(),
-                                name.clone(),
+                                node_id.clone(),
                                 node_config.clone(),
                             )?;
                             Ok(wrapper.with_control_channel_metrics(
                                 &base_ctx,
-                                &mut channel_metrics,
+                                &mut build_state.channel_metrics,
                                 channel_metrics_enabled,
                             ))
                         },
+                    )?;
+                    build_state.register_node(
+                        NodeType::Processor,
+                        node_id,
+                        base_ctx.clone(),
+                        node_telemetry_handle.clone(),
                     )?;
                     let wrapper = wrapper.with_node_telemetry_guard(
                         node_guard.take().expect("node telemetry guard missing"),
                     );
                     processors.push(wrapper);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::Exporter => {
+                    let node_id = build_state.next_node_id(
+                        name.clone(),
+                        NodeType::Exporter,
+                        PipeNode::new(exporters.len()),
+                    )?;
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
@@ -416,26 +425,26 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         || -> Result<ExporterWrapper<PData>, Error> {
                             let wrapper = self.create_exporter(
                                 &base_ctx,
-                                &mut exporter_names,
-                                &mut nodes,
-                                exporters.len(),
-                                name.clone(),
+                                node_id.clone(),
                                 node_config.clone(),
                             )?;
                             Ok(wrapper.with_control_channel_metrics(
                                 &base_ctx,
-                                &mut channel_metrics,
+                                &mut build_state.channel_metrics,
                                 channel_metrics_enabled,
                             ))
                         },
+                    )?;
+                    build_state.register_node(
+                        NodeType::Exporter,
+                        node_id,
+                        base_ctx.clone(),
+                        node_telemetry_handle.clone(),
                     )?;
                     let wrapper = wrapper.with_node_telemetry_guard(
                         node_guard.take().expect("node telemetry guard missing"),
                     );
                     exporters.push(wrapper);
-                    let _ =
-                        node_telemetry_handles.insert(name.clone(), node_telemetry_handle.clone());
-                    let _ = node_contexts.insert(name.clone(), base_ctx.clone());
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
@@ -448,106 +457,31 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let edges = collect_hyper_edges_runtime(&receivers, &processors);
 
+        let nodes = std::mem::take(&mut build_state.nodes);
         let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
 
         // First pass: collect all channel assignments to avoid multiple mutable borrows
-        let mut assignments = Vec::new();
-        for hyper_edge in edges {
-            let span = otel_debug_span!(
-                "hyper_edge.wireup",
-                pipeline_group_id = pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_id.as_ref(),
-                core_id = core_id,
-                source_ids = hyper_edge.source_ids_display(),
-                dest_ids = hyper_edge.destination_ids_display()
-            );
-            let _enter = span.enter();
-
-            let mut source_nodes = Vec::with_capacity(hyper_edge.sources.len());
-            let mut source_ports = Vec::with_capacity(hyper_edge.sources.len());
-            let mut source_contexts = Vec::with_capacity(hyper_edge.sources.len());
-            let mut source_telemetries = Vec::with_capacity(hyper_edge.sources.len());
-            for source in &hyper_edge.sources {
-                let src_node =
-                    pipeline
-                        .get_node(source.node_id.index)
-                        .ok_or_else(|| Error::UnknownNode {
-                            node: source.node_id.name.clone(),
-                        })?;
-                source_nodes.push(src_node);
-                source_ports.push(source.port.clone());
-                let ctx = node_contexts
-                    .get(&source.node_id.name)
-                    .ok_or_else(|| Error::UnknownNode {
-                        node: source.node_id.name.clone(),
-                    })?
-                    .clone();
-                source_contexts.push(ctx);
-                let telemetry = node_telemetry_handles
-                    .get(&source.node_id.name)
-                    .ok_or_else(|| Error::UnknownNode {
-                        node: source.node_id.name.clone(),
-                    })?
-                    .clone();
-                source_telemetries.push(telemetry);
-            }
-
-            // Get destination nodes: note the order of dest_nodes matches hyper_edge.destinations
-            // and preserved by select_channel_type(). The zip() below depends on both of these.
-            let mut dest_nodes = Vec::with_capacity(hyper_edge.destinations.len());
-            let mut dest_contexts = Vec::with_capacity(hyper_edge.destinations.len());
-            let mut dest_telemetries = Vec::with_capacity(hyper_edge.destinations.len());
-            for name in &hyper_edge.destinations {
-                let node = processor_names
-                    .get(name)
-                    .map(|id| pipeline.get_node(id.index).expect("ok"))
-                    .or_else(|| {
-                        exporter_names
-                            .get(name)
-                            .map(|id| pipeline.get_node(id.index).expect("ok"))
-                    })
-                    .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
-                dest_nodes.push(node);
-                let ctx = node_contexts
-                    .get(name)
-                    .ok_or_else(|| Error::UnknownNode { node: name.clone() })?
-                    .clone();
-                dest_contexts.push(ctx);
-                let telemetry = node_telemetry_handles
-                    .get(name)
-                    .ok_or_else(|| Error::UnknownNode { node: name.clone() })?
-                    .clone();
-                dest_telemetries.push(telemetry);
-            }
-
-            // Select channel type
-            let channel_id = hyper_edge_channel_id(&hyper_edge);
-            let (pdata_senders, pdata_receivers) = Self::select_channel_type(
-                &source_nodes,
-                &dest_nodes,
-                NonZeroUsize::new(1000).expect("Buffer size must be non-zero"),
-                channel_id,
-                &source_ports,
-                &source_contexts,
-                &source_telemetries,
-                &dest_contexts,
-                &dest_telemetries,
-                &mut channel_metrics,
-                channel_metrics_enabled,
-            )?;
-
-            // Prepare assignments
-            let destinations = dest_nodes
-                .into_iter()
-                .map(|n| n.node_id())
-                .zip(pdata_receivers.into_iter())
-                .collect();
-            assignments.push(ChannelAssignment {
-                sources: hyper_edge.sources,
-                senders: pdata_senders,
-                destinations,
-            });
-        }
+        let buffer_size = NonZeroUsize::new(1000).expect("Buffer size must be non-zero");
+        let assignments = edges
+            .into_iter()
+            .map(|hyper_edge| {
+                let span = otel_debug_span!(
+                    "hyper_edge.wireup",
+                    pipeline_group_id = pipeline_group_id.as_ref(),
+                    pipeline_id = pipeline_id.as_ref(),
+                    core_id = core_id,
+                    source_ids = hyper_edge.source_ids_display(),
+                    dest_ids = hyper_edge.destination_ids_display()
+                );
+                let _enter = span.enter();
+                hyper_edge.into_assignment(
+                    &pipeline,
+                    &mut build_state,
+                    buffer_size,
+                    channel_metrics_enabled,
+                )
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
 
         // Second pass: perform all assignments
         for assignment in assignments {
@@ -589,7 +523,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 dest_node.set_pdata_receiver(dest, receiver)?;
             }
         }
-        pipeline.set_channel_metrics(channel_metrics.into_handles());
+        pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
 
         Ok(pipeline)
     }
@@ -1047,15 +981,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     fn create_receiver(
         &self,
         pipeline_ctx: &PipelineContext,
-        names: &mut HashMap<NodeName, NodeId>,
-        nodes: &mut NodeDefs<PData, PipeNode>,
-        receiver_index: usize,
-        name: NodeName,
+        node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
         let core_id = pipeline_ctx.core_id();
+        let name = node_id.name.clone();
 
         otel_debug!(
             "receiver.create.start",
@@ -1081,18 +1013,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id = nodes.next(
-            name.clone(),
-            NodeType::Receiver,
-            PipeNode::new(receiver_index),
-        )?;
-        if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ReceiverAlreadyExists { receiver: node_id });
-        }
-
+        let node_id_for_create = node_id.clone();
         let receiver = create(
             (*pipeline_ctx).clone(),
-            node_id.clone(),
+            node_id_for_create,
             node_config,
             &runtime_config,
         )
@@ -1121,15 +1045,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     fn create_processor(
         &self,
         pipeline_ctx: &PipelineContext,
-        names: &mut HashMap<NodeName, NodeId>,
-        nodes: &mut NodeDefs<PData, PipeNode>,
-        processor_index: usize,
-        name: NodeName,
+        node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<ProcessorWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
         let core_id = pipeline_ctx.core_id();
+        let name = node_id.name.clone();
 
         otel_debug!(
             "processor.create.start",
@@ -1155,18 +1077,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id = nodes.next(
-            name.clone(),
-            NodeType::Processor,
-            PipeNode::new(processor_index),
-        )?;
-        if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ProcessorAlreadyExists { processor: node_id });
-        }
-
+        let node_id_for_create = node_id.clone();
         let processor = create(
             (*pipeline_ctx).clone(),
-            node_id.clone(),
+            node_id_for_create,
             node_config.clone(),
             &processor_config,
         )
@@ -1195,15 +1109,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     fn create_exporter(
         &self,
         pipeline_ctx: &PipelineContext,
-        names: &mut HashMap<NodeName, NodeId>,
-        nodes: &mut NodeDefs<PData, PipeNode>,
-        exporter_index: usize,
-        name: NodeName,
+        node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
         let core_id = pipeline_ctx.core_id();
+        let name = node_id.name.clone();
 
         otel_debug!(
             "exporter.create.start",
@@ -1229,18 +1141,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id = nodes.next(
-            name.clone(),
-            NodeType::Exporter,
-            PipeNode::new(exporter_index),
-        )?;
-
-        if names.insert(name.clone(), node_id.clone()).is_some() {
-            return Err(Error::ExporterAlreadyExists { exporter: node_id });
-        }
+        let node_id_for_create = node_id.clone();
         let exporter = create(
             (*pipeline_ctx).clone(),
-            node_id,
+            node_id_for_create,
             node_config,
             &exporter_config,
         )
@@ -1255,6 +1159,87 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         Ok(exporter)
+    }
+}
+
+struct NodeRegistration {
+    node_id: NodeId,
+    node_type: NodeType,
+    context: PipelineContext,
+    telemetry: NodeTelemetryHandle,
+}
+
+struct BuildState<PData> {
+    nodes: NodeDefs<PData, PipeNode>,
+    registry: HashMap<NodeName, NodeRegistration>,
+    channel_metrics: ChannelMetricsRegistry,
+}
+
+impl<PData> BuildState<PData> {
+    fn new() -> Self {
+        Self {
+            nodes: NodeDefs::default(),
+            registry: HashMap::new(),
+            channel_metrics: ChannelMetricsRegistry::default(),
+        }
+    }
+
+    fn next_node_id(
+        &mut self,
+        name: NodeName,
+        node_type: NodeType,
+        inner: PipeNode,
+    ) -> Result<NodeId, Error> {
+        self.nodes.next(name, node_type, inner)
+    }
+
+    fn register_node(
+        &mut self,
+        node_type: NodeType,
+        node_id: NodeId,
+        context: PipelineContext,
+        telemetry: NodeTelemetryHandle,
+    ) -> Result<(), Error> {
+        if self.registry.contains_key(&node_id.name) {
+            return Err(match node_type {
+                NodeType::Receiver => Error::ReceiverAlreadyExists { receiver: node_id },
+                NodeType::Processor => Error::ProcessorAlreadyExists { processor: node_id },
+                NodeType::Exporter => Error::ExporterAlreadyExists { exporter: node_id },
+            });
+        }
+
+        let _ = self.registry.insert(
+            node_id.name.clone(),
+            NodeRegistration {
+                node_id,
+                node_type,
+                context,
+                telemetry,
+            },
+        );
+        Ok(())
+    }
+
+    fn registration(&self, name: &NodeName) -> Result<&NodeRegistration, Error> {
+        self.registry
+            .get(name)
+            .ok_or_else(|| Error::UnknownNode { node: name.clone() })
+    }
+
+    fn node_context(&self, name: &NodeName) -> Result<PipelineContext, Error> {
+        Ok(self.registration(name)?.context.clone())
+    }
+
+    fn node_telemetry(&self, name: &NodeName) -> Result<NodeTelemetryHandle, Error> {
+        Ok(self.registration(name)?.telemetry.clone())
+    }
+
+    fn resolve_destination_id(&self, name: &NodeName) -> Result<NodeId, Error> {
+        let registration = self.registration(name)?;
+        match registration.node_type {
+            NodeType::Processor | NodeType::Exporter => Ok(registration.node_id.clone()),
+            NodeType::Receiver => Err(Error::UnknownNode { node: name.clone() }),
+        }
     }
 }
 
@@ -1293,23 +1278,115 @@ struct HyperEdgeKey {
 }
 impl HyperEdgeRuntime {
     fn source_ids_display(&self) -> String {
-        let mut source_ids = self
+        self.sources
+            .iter()
+            .map(|source| format!("{}:{}", source.node_id.name, source.port))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn destination_ids_display(&self) -> String {
+        self.destinations
+            .iter()
+            .map(|dest_name| dest_name.as_ref().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn channel_id(&self) -> Cow<'static, str> {
+        let sources = self
             .sources
             .iter()
             .map(|source| format!("{}:{}", source.node_id.name, source.port))
             .collect::<Vec<_>>();
-        source_ids.sort();
-        source_ids.join(", ")
-    }
-
-    fn destination_ids_display(&self) -> String {
-        let mut dest_names = self
+        let destinations = self
             .destinations
             .iter()
-            .map(|dest_name| dest_name.as_ref().to_string())
+            .map(|dest| dest.as_ref().to_string())
             .collect::<Vec<_>>();
-        dest_names.sort();
-        dest_names.join(", ")
+        let signature = format!(
+            "src:[{}]|dst:[{}]|dispatch:{}",
+            sources.join(","),
+            destinations.join(","),
+            dispatch_strategy_label(&self.dispatch_strategy)
+        );
+        let hash = stable_hash64(&signature);
+        format!("hyperedge:{:016x}", hash).into()
+    }
+
+    fn into_assignment<PData>(
+        self,
+        pipeline: &RuntimePipeline<PData>,
+        build_state: &mut BuildState<PData>,
+        buffer_size: NonZeroUsize,
+        channel_metrics_enabled: bool,
+    ) -> Result<ChannelAssignment<PData>, Error>
+    where
+        PData: 'static + Clone + Debug,
+    {
+        let channel_id = self.channel_id();
+        let HyperEdgeRuntime {
+            sources,
+            destinations,
+            dispatch_strategy: _,
+        } = self;
+
+        let mut source_nodes = Vec::with_capacity(sources.len());
+        let mut source_ports = Vec::with_capacity(sources.len());
+        let mut source_contexts = Vec::with_capacity(sources.len());
+        let mut source_telemetries = Vec::with_capacity(sources.len());
+        for source in &sources {
+            let src_node =
+                pipeline
+                    .get_node(source.node_id.index)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node: source.node_id.name.clone(),
+                    })?;
+            source_nodes.push(src_node);
+            source_ports.push(source.port.clone());
+            source_contexts.push(build_state.node_context(&source.node_id.name)?);
+            source_telemetries.push(build_state.node_telemetry(&source.node_id.name)?);
+        }
+
+        // Get destination nodes: note the order of dest_nodes matches destinations and is
+        // preserved by select_channel_type(). The zip() below depends on both of these.
+        let mut dest_nodes = Vec::with_capacity(destinations.len());
+        let mut dest_contexts = Vec::with_capacity(destinations.len());
+        let mut dest_telemetries = Vec::with_capacity(destinations.len());
+        for name in &destinations {
+            let node_id = build_state.resolve_destination_id(name)?;
+            let node = pipeline
+                .get_node(node_id.index)
+                .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
+            dest_nodes.push(node);
+            dest_contexts.push(build_state.node_context(name)?);
+            dest_telemetries.push(build_state.node_telemetry(name)?);
+        }
+
+        let (pdata_senders, pdata_receivers) = PipelineFactory::<PData>::select_channel_type(
+            &source_nodes,
+            &dest_nodes,
+            buffer_size,
+            channel_id,
+            &source_ports,
+            &source_contexts,
+            &source_telemetries,
+            &dest_contexts,
+            &dest_telemetries,
+            &mut build_state.channel_metrics,
+            channel_metrics_enabled,
+        )?;
+
+        let destinations = dest_nodes
+            .into_iter()
+            .map(|n| n.node_id())
+            .zip(pdata_receivers)
+            .collect();
+        Ok(ChannelAssignment {
+            sources,
+            senders: pdata_senders,
+            destinations,
+        })
     }
 }
 
@@ -1386,29 +1463,6 @@ fn collect_hyper_edges_runtime<PData>(
         });
     }
     edges
-}
-
-fn hyper_edge_channel_id(edge: &HyperEdgeRuntime) -> Cow<'static, str> {
-    let mut sources = edge
-        .sources
-        .iter()
-        .map(|source| format!("{}:{}", source.node_id.name, source.port))
-        .collect::<Vec<_>>();
-    sources.sort();
-    let mut destinations = edge
-        .destinations
-        .iter()
-        .map(|dest| dest.as_ref().to_string())
-        .collect::<Vec<_>>();
-    destinations.sort();
-    let signature = format!(
-        "src:[{}]|dst:[{}]|dispatch:{}",
-        sources.join(","),
-        destinations.join(","),
-        dispatch_strategy_label(&edge.dispatch_strategy)
-    );
-    let hash = stable_hash64(&signature);
-    format!("hyperedge:{:016x}", hash).into()
 }
 
 fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
