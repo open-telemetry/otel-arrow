@@ -1608,4 +1608,68 @@ mod tests {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
     }
+
+    #[test]
+    fn test_extract_internal_config_from_yaml() {
+        // Parse a config with internal nodes from YAML
+        let yaml = r#"
+            settings:
+              default_pipeline_ctrl_msg_channel_size: 100
+              default_node_ctrl_msg_channel_size: 100
+              default_pdata_channel_size: 100
+
+            nodes:
+              receiver:
+                kind: receiver
+                plugin_urn: "urn:test:receiver"
+                out_ports:
+                  out:
+                    destinations: [exporter]
+                    dispatch_strategy: round_robin
+                config: {}
+              exporter:
+                kind: exporter
+                plugin_urn: "urn:test:exporter"
+                config: {}
+
+            internal:
+              itr:
+                kind: receiver
+                plugin_urn: "urn:otel:otap:internal_telemetry:receiver"
+                out_ports:
+                  out_port:
+                    destinations: [console]
+                    dispatch_strategy: round_robin
+                config: {}
+              console:
+                kind: exporter
+                plugin_urn: "urn:otel:console:exporter"
+                config: {}
+        "#;
+
+        use super::PipelineConfig;
+        let config: PipelineConfig = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Verify the main pipeline has internal nodes
+        assert_eq!(config.internal_node_iter().count(), 2);
+
+        // Extract internal config
+        let internal_config = config.extract_internal_config();
+        assert!(internal_config.is_some(), "should extract internal config");
+
+        let internal = internal_config.unwrap();
+
+        // Should have the internal pipeline settings
+        assert_eq!(internal.settings.default_node_ctrl_msg_channel_size, 50);
+        assert_eq!(internal.settings.default_pdata_channel_size, 50);
+
+        // Should have the internal nodes as its main nodes
+        assert_eq!(internal.nodes.len(), 2);
+
+        // The extracted config's internal should be empty
+        assert!(internal.internal.is_empty());
+
+        // Telemetry should be disabled
+        assert!(!internal.settings.telemetry.pipeline_metrics);
+    }
 }

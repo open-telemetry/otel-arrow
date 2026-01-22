@@ -120,7 +120,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let (telemetry_system, its_logs_receiver) =
             InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
-        let internal_tracing_setup = telemetry_system.admin_tracing_setup(); // Use admin setup for internal
+        let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();

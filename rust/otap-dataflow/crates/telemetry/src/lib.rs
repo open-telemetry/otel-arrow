@@ -288,6 +288,15 @@ impl InternalTelemetrySystem {
         self.tracing_setup_for(self.provider_modes.admin)
     }
 
+    /// Returns a `TracingSetup` for internal telemetry pipeline threads.
+    ///
+    /// This defaults to `Noop` to avoid feedback loops where logs from
+    /// the internal pipeline would be sent back to itself.
+    #[must_use]
+    pub fn internal_tracing_setup(&self) -> TracingSetup {
+        self.tracing_setup_for(self.provider_modes.internal)
+    }
+
     /// Returns the configured log level.
     #[must_use]
     pub fn log_level(&self) -> LogLevel {
@@ -363,5 +372,73 @@ impl Default for InternalTelemetrySystem {
         let (system, _its_receiver) =
             Self::new(&config, dummy_reporter).expect("default telemetry config should be valid");
         system
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::pipeline::service::telemetry::logs::{LoggingProviders, ProviderMode};
+
+    fn test_reporter() -> ObservedEventReporter {
+        let (sender, _receiver) = flume::bounded(16);
+        ObservedEventReporter::new(SendPolicy::default(), sender)
+    }
+
+    fn config_with_providers(providers: LoggingProviders) -> TelemetryConfig {
+        TelemetryConfig {
+            logs: otap_df_config::pipeline::service::telemetry::logs::LogsConfig {
+                providers,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn its_receiver_presence_depends_on_provider_mode() {
+        // Default (no ITS) -> no receiver
+        let (_, rx) = InternalTelemetrySystem::new(&TelemetryConfig::default(), test_reporter())
+            .expect("should create");
+        assert!(rx.is_none(), "no ITS mode -> no receiver");
+
+        // ITS mode on engine -> receiver present and receives logs
+        let providers = LoggingProviders {
+            global: ProviderMode::Noop,
+            engine: ProviderMode::ITS,
+            internal: ProviderMode::Noop,
+            admin: ProviderMode::Noop,
+        };
+        let (system, rx) = InternalTelemetrySystem::new(&config_with_providers(providers), test_reporter())
+            .expect("should create");
+        let rx = rx.expect("ITS mode should provide receiver");
+        assert!(rx.is_empty(), "receiver starts empty");
+
+        // Emit a log using the engine tracing setup (which uses ITS)
+        system.engine_tracing_setup().with_subscriber(|| {
+            crate::otel_info!("test log message");
+        });
+
+        // Receiver should have the log
+        assert!(!rx.is_empty(), "receiver should have log after emit");
+    }
+
+    #[test]
+    fn resource_bytes_contain_configured_attributes() {
+        let mut config = TelemetryConfig::default();
+        let _ = config.resource.insert(
+            "service.name".to_string(),
+            otap_df_config::pipeline::service::telemetry::AttributeValue::String("my-test-service".into()),
+        );
+        let (system, _) = InternalTelemetrySystem::new(&config, test_reporter()).expect("should create");
+
+        // resource_bytes should contain our service name
+        let bytes = system.resource_bytes();
+        assert!(bytes.windows(15).any(|w| w == b"my-test-service"), "resource bytes should contain service name");
+
+        // make_internal_telemetry_settings passes through the same bytes
+        let (_tx, rx) = flume::bounded::<event::ObservedEvent>(1);
+        let settings = system.make_internal_telemetry_settings(rx);
+        assert_eq!(settings.resource_bytes, bytes);
     }
 }

@@ -446,10 +446,72 @@ mod tests {
             otel_info!("console_async");
         });
 
+        let (reporter, _rx) = test_reporter();
+        ProviderSetup::ITS { reporter }.with_subscriber(LogLevel::Info, || {
+            otel_info!("its");
+        });
+
         let logger_provider = SdkLoggerProvider::builder().build();
         ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(LogLevel::Info, || {
             otel_info!("otel");
         });
+    }
+
+    #[test]
+    fn its_provider_sends_logs() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, LogLevel::Info);
+
+        setup.with_subscriber(|| {
+            otel_info!("its_log");
+        });
+
+        // Verify the log was sent through the channel (same as ConsoleAsync)
+        let event = receiver.try_recv().expect("should receive log event");
+        assert!(
+            matches!(event, ObservedEvent::Log(_)),
+            "event should be a log"
+        );
+    }
+
+    #[test]
+    fn its_provider_all_levels() {
+        for level in [
+            LogLevel::Off,
+            LogLevel::Debug,
+            LogLevel::Info,
+            LogLevel::Warn,
+            LogLevel::Error,
+        ] {
+            let (reporter, _receiver) = test_reporter();
+            let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, level);
+            setup.with_subscriber(|| {
+                otel_debug!("debug");
+                otel_info!("info");
+                otel_warn!("warn");
+                otel_error!("error");
+            });
+        }
+    }
+
+    #[test]
+    fn its_provider_filters_correctly() {
+        let (reporter, receiver) = test_reporter();
+        let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, LogLevel::Warn);
+
+        setup.with_subscriber(|| {
+            otel_debug!("filtered");
+            otel_info!("filtered");
+            otel_warn!("not_filtered");
+            otel_error!("not_filtered");
+        });
+
+        // Should receive warn and error
+        let event1 = receiver.try_recv().expect("should receive warn");
+        assert!(matches!(event1, ObservedEvent::Log(_)));
+        let event2 = receiver.try_recv().expect("should receive error");
+        assert!(matches!(event2, ObservedEvent::Log(_)));
+        assert!(receiver.try_recv().is_err(), "should only have two events");
     }
 
     #[test]

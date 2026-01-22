@@ -412,3 +412,24 @@ pub fn encode_export_logs_request(
         buf
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::Resource;
+
+    #[test]
+    fn encode_resource_to_bytes_encodes_attributes() {
+        // Empty resource produces output
+        let empty = encode_resource_to_bytes(&Resource::builder_empty().build());
+        assert!(!empty.is_empty());
+
+        // Resource with attributes contains encoded values
+        let resource = Resource::builder_empty()
+            .with_attributes([KeyValue::new("service.name", "test-svc")])
+            .build();
+        let bytes = encode_resource_to_bytes(&resource);
+        assert!(bytes.windows(8).any(|w| w == b"test-svc"));
+    }
+}

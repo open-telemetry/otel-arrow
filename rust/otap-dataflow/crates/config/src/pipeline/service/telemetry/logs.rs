@@ -363,4 +363,15 @@ mod tests {
             assert!(config.validate().is_ok());
         }
     }
+
+    #[test]
+    fn test_uses_its_mode() {
+        use ProviderMode::*;
+        assert!(!providers(Noop, Noop, Noop, Noop).uses_its_mode());
+        assert!(!providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).uses_its_mode());
+        assert!(providers(ITS, Noop, Noop, Noop).uses_its_mode());
+        assert!(providers(Noop, ITS, Noop, Noop).uses_its_mode());
+        assert!(providers(Noop, Noop, Noop, ITS).uses_its_mode());
+        assert!(!providers(Noop, Noop, ITS, Noop).uses_its_mode());
+    }
 }
