@@ -319,7 +319,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let core_id = pipeline_ctx.core_id();
 
         let span = otel_debug_span!(
-            "pipeline.build.start",
+            "pipeline.build",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id
