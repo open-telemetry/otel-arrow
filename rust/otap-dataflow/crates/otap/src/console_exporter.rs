@@ -244,10 +244,9 @@ impl HierarchicalFormatter {
         });
 
         // Format each scope
-        let scopes: Vec<_> = resource_logs.scopes().collect();
-        let scope_count = scopes.len();
-        for (i, scope_logs) in scopes.into_iter().enumerate() {
-            let is_last_scope = i == scope_count - 1;
+        let mut scopes = resource_logs.scopes().peekable();
+        while let Some(scope_logs) = scopes.next() {
+            let is_last_scope = scopes.peek().is_none();
             self.format_scope_logs_to(&scope_logs, is_last_scope, output);
         }
     }
@@ -300,6 +299,7 @@ impl HierarchicalFormatter {
                 scope.iter().flat_map(|s| s.attributes()),
                 |w, cw| {
                     let _ = w.write_all(prefix.as_bytes());
+                    let _ = w.write_all(b" ");
                     cw.write_styled(w, AnsiCode::Magenta, |w| {
                         let _ = w.write_all(b"SCOPE");
                     });
@@ -320,10 +320,9 @@ impl HierarchicalFormatter {
         });
 
         // Format each log record
-        let records: Vec<_> = scope_logs.log_records().collect();
-        let record_count = records.len();
-        for (i, log_record) in records.into_iter().enumerate() {
-            let is_last_record = i == record_count - 1;
+        let mut records = scope_logs.log_records().peekable();
+        while let Some(log_record) = records.next() {
+            let is_last_record = records.peek().is_none();
             self.format_log_record_to(&log_record, is_last_scope, is_last_record, output);
         }
     }
@@ -347,6 +346,7 @@ impl HierarchicalFormatter {
             .map(|s| String::from_utf8_lossy(s).into_owned());
 
         let severity = log_record.severity_number();
+        let severity_text = log_record.severity_text();
         let tree = self.tree;
 
         self.format_line(output, |w| {
@@ -363,10 +363,9 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(tree.tee.as_bytes());
                     }
                     let _ = w.write_all(b" ");
-                    cw.write_severity(w, severity);
+                    cw.write_severity(w, severity, severity_text.as_ref().map(|s| s.as_ref()));
                 },
                 |w, _| {
-                    // Event name prints space before itself
                     if let Some(name) = event_name {
                         let _ = w.write_all(name.as_bytes());
                     }
