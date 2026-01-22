@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use super::auth::Auth;
 use super::error::Error;
 use azure_core::time::OffsetDateTime;
