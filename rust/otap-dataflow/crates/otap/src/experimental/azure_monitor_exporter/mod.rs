@@ -19,20 +19,24 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 
 mod auth;
+mod auth_header;
 mod client;
 mod config;
 mod error;
 mod exporter;
 mod gzip_batcher;
+mod heartbeat;
 mod in_flight_exports;
 mod state;
 mod stats;
 mod transformer;
 
+pub use auth_header::AuthHeader;
 pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureMonitorExporter;
+pub use heartbeat::Heartbeat;
 pub use stats::AzureMonitorExporterStats;
 pub use transformer::Transformer;
 
@@ -58,7 +62,11 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
         })?;
 
         Ok(ExporterWrapper::local(
-            AzureMonitorExporter::new(cfg)?,
+            AzureMonitorExporter::new(cfg).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
             node,
             node_config,
             exporter_config,

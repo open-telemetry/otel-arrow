@@ -9,12 +9,11 @@ use azure_identity::{
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::Instant;
 
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
 #[allow(clippy::print_stdout)]
 pub struct Auth {
@@ -22,7 +21,6 @@ pub struct Auth {
     scope: String,
     // Thread-safe shared token cache
     cached_token: Arc<RwLock<Option<AccessToken>>>,
-    pub token_valid_until: Instant,
 }
 
 // TODO: Remove print_stdout after logging is set up
@@ -35,7 +33,6 @@ impl Auth {
             credential,
             scope: auth_config.scope.clone(),
             cached_token: Arc::new(RwLock::new(None)),
-            token_valid_until: Instant::now(),
         })
     }
 
@@ -44,7 +41,6 @@ impl Auth {
             credential,
             scope,
             cached_token: Arc::new(RwLock::new(None)),
-            token_valid_until: Instant::now(),
         }
     }
 
@@ -104,7 +100,7 @@ impl Auth {
                 let credential = ManagedIdentityCredential::new(Some(options))
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?;
 
-                Ok(credential as Arc<dyn TokenCredential>)
+                Ok(credential)
             }
             AuthMethod::Development => {
                 println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
@@ -112,7 +108,7 @@ impl Auth {
                     DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
                         .map_err(|e| Error::create_credential(AuthMethod::Development, e))?;
 
-                Ok(credential as Arc<dyn TokenCredential>)
+                Ok(credential)
             }
         }
     }
@@ -183,10 +179,7 @@ mod tests {
             call_count: Arc::new(Mutex::new(0)),
         });
 
-        let auth = Auth::from_credential(
-            credential as Arc<dyn TokenCredential>,
-            "test_scope".to_string(),
-        );
+        let auth = Auth::from_credential(credential, "test_scope".to_string());
 
         assert!(auth.cached_token.read().await.is_none());
         assert_eq!(auth.scope, "test_scope");
@@ -252,8 +245,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call fetches from credential
         let token1 = auth.get_token().await.unwrap();
@@ -274,8 +266,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // First call
         let _ = auth.get_token().await.unwrap();
@@ -295,8 +286,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         let token1 = auth.get_token().await.unwrap();
         let token2 = auth.get_token().await.unwrap();
@@ -317,8 +307,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // Fetch and cache token
         let _ = auth.get_token().await.unwrap();
@@ -341,8 +330,7 @@ mod tests {
             call_count: Arc::new(Mutex::new(0)),
         });
 
-        let auth =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string());
 
         // Should not panic when invalidating empty cache
         auth.invalidate_token().await;
@@ -370,10 +358,7 @@ mod tests {
             }
         }
 
-        let auth = Auth::from_credential(
-            Arc::new(FailingCredential) as Arc<dyn TokenCredential>,
-            "scope".to_string(),
-        );
+        let auth = Auth::from_credential(Arc::new(FailingCredential), "scope".to_string());
 
         let result = auth.get_token().await;
         assert!(result.is_err());
@@ -421,7 +406,7 @@ mod tests {
         let auth = Auth::from_credential(
             Arc::new(FailOnceThenSucceed {
                 call_count: call_count.clone(),
-            }) as Arc<dyn TokenCredential>,
+            }),
             "scope".to_string(),
         );
 
@@ -447,10 +432,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth = Arc::new(Auth::from_credential(
-            credential as Arc<dyn TokenCredential>,
-            "scope".to_string(),
-        ));
+        let auth = Arc::new(Auth::from_credential(credential, "scope".to_string()));
 
         // Spawn multiple concurrent token requests
         let mut handles = vec![];
@@ -486,8 +468,7 @@ mod tests {
             call_count: call_count.clone(),
         });
 
-        let auth1 =
-            Auth::from_credential(credential as Arc<dyn TokenCredential>, "scope".to_string());
+        let auth1 = Auth::from_credential(credential, "scope".to_string());
         let auth2 = auth1.clone();
 
         // Fetch via auth1

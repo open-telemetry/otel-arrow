@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
-use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
@@ -26,6 +25,7 @@ use super::config::Config;
 use super::error::Error;
 use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
+use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
 use super::stats::AzureMonitorExporterStats;
@@ -35,6 +35,7 @@ use crate::pdata::{Context, OtapPdata};
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const STATS_PRINT_INTERVAL: u64 = 3;
+const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -53,13 +54,11 @@ pub struct AzureMonitorExporter {
 #[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(config: Config) -> Result<Self, ConfigError> {
+    pub fn new(config: Config) -> Result<Self, Error> {
         // Validate configuration
         config
             .validate()
-            .map_err(|e| ConfigError::InvalidUserConfig {
-                error: e.to_string(),
-            })?;
+            .map_err(|e| Error::Config(e.to_string()))?;
 
         // Create log transformer
         let transformer = Transformer::new(&config);
@@ -157,6 +156,7 @@ impl AzureMonitorExporter {
         Ok(())
     }
 
+    #[inline]
     fn get_next_token_refresh(token: AccessToken) -> tokio::time::Instant {
         let now = azure_core::time::OffsetDateTime::now_utc();
         let duration_remaining = if token.expires_on > now {
@@ -479,12 +479,25 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     message: error.to_string(),
                 }
             })?;
+        let mut heartbeat = Heartbeat::new(&self.config.api, auth.clone()).map_err(|e| {
+            EngineError::InternalError {
+                message: e.to_string(),
+            }
+        })?;
+        heartbeat
+            .auth_header
+            .ensure_valid_token()
+            .await
+            .map_err(|e| EngineError::InternalError {
+                message: e.to_string(),
+            })?;
 
         let mut next_token_refresh = Self::get_next_token_refresh(token);
         let mut next_stats_print =
             tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
+        let mut next_heartbeat_send = tokio::time::Instant::now();
 
         loop {
             // Determine if we should accept new messages
@@ -496,6 +509,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_token_refresh) => {
                     let new_token = self.try_refresh_token(&auth).await;
                     next_token_refresh = Self::get_next_token_refresh(new_token);
+                }
+
+                _ = tokio::time::sleep_until(next_heartbeat_send) => {
+                    next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                    match heartbeat.send().await {
+                        Ok(_) => println!("[AzureMonitorExporter] Heartbeat sent"),
+                        Err(e) => println!("[AzureMonitorExporter] Heartbeat send failed: {:?}", e),
+                    }
                 }
 
                 completed = self.in_flight_exports.next_completion() => {
