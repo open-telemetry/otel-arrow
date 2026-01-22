@@ -16,6 +16,7 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceR
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::{
     LogsService, LogsServiceServer,
 };
+use otap_df_telemetry::otel_debug;
 use prost::Message;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -192,7 +193,7 @@ async fn start_tls_logs_server() -> (
 ) {
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         // It's fine if the provider is already installed (e.g. by another test)
-        log::debug!("rustls default provider installation failed in test: {err:?}");
+        otel_debug!("rustls default provider installation failed in test", error = ?err);
     }
 
     let (ca, ca_issuer) = new_ca();
