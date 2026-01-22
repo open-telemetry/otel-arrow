@@ -141,6 +141,9 @@ pub struct InternalTelemetrySystem {
     /// Event reporter for ITS mode (Internal Telemetry System).
     /// Only created when any provider uses ITS mode.
     its_reporter: Option<ObservedEventReporter>,
+
+    /// Pre-encoded resource bytes for OTLP log encoding (for ITR).
+    resource_bytes: bytes::Bytes,
 }
 
 impl InternalTelemetrySystem {
@@ -194,6 +197,9 @@ impl InternalTelemetrySystem {
             (None, None)
         };
 
+        // 4. Pre-encode resource bytes for internal telemetry (ITR)
+        let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
+
         Ok((
             Self {
                 registry: telemetry_registry,
@@ -207,6 +213,7 @@ impl InternalTelemetrySystem {
                 provider_modes: config.logs.providers.clone(),
                 admin_reporter,
                 its_reporter,
+                resource_bytes,
             },
             its_receiver,
         ))
@@ -310,6 +317,28 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn dispatcher(&self) -> Arc<metrics::dispatcher::MetricsDispatcher> {
         self.dispatcher.clone()
+    }
+
+    /// Returns the pre-encoded resource bytes for internal telemetry.
+    #[must_use]
+    pub fn resource_bytes(&self) -> bytes::Bytes {
+        self.resource_bytes.clone()
+    }
+
+    /// Creates InternalTelemetrySettings from the ITS receiver and resource bytes.
+    ///
+    /// This is used by the controller to inject settings into the Internal
+    /// Telemetry Receiver (ITR). The receiver is passed in rather than stored
+    /// because it's already returned from `new()` to allow early validation.
+    #[must_use]
+    pub fn make_internal_telemetry_settings(
+        &self,
+        logs_receiver: flume::Receiver<event::ObservedEvent>,
+    ) -> InternalTelemetrySettings {
+        InternalTelemetrySettings {
+            logs_receiver,
+            resource_bytes: self.resource_bytes.clone(),
+        }
     }
 
     /// Shuts down the OpenTelemetry SDK providers.

@@ -496,8 +496,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             ));
 
             // Build the runtime pipeline from the configuration
+            // Note: internal_telemetry is None for main pipelines; it's only used for
+            // the internal telemetry pipeline where the ITR node consumes engine logs.
             let runtime_pipeline = pipeline_factory
-                .build(pipeline_context.clone(), pipeline_config.clone())
+                .build(pipeline_context.clone(), pipeline_config.clone(), None)
                 .map_err(|e| Error::PipelineRuntimeError {
                     source: Box::new(e),
                 })?;

@@ -32,6 +32,8 @@ use otap_df_config::{
     pipeline::PipelineConfig,
 };
 use otap_df_telemetry::otel_debug;
+use otap_df_telemetry::InternalTelemetrySettings;
+use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -298,10 +300,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///   the hyper-edges between them to determine the best channel type.
     /// - Assign channels to the source nodes and their destination nodes based on the previous
     ///   analysis.
+    ///
+    /// The `internal_telemetry` settings are injected into any receiver with the
+    /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs
+    /// from the Internal Telemetry System.
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         config: PipelineConfig,
+        internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
@@ -344,7 +351,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     // Create the guard before any fallible work so failed builds still clean up.
                     let mut node_guard =
                         Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
-                    let wrapper = with_node_telemetry_handle(
+                    let mut wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
                         || -> Result<ReceiverWrapper<PData>, Error> {
                             let wrapper = self.create_receiver(
@@ -362,6 +369,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             ))
                         },
                     )?;
+
+                    // Inject internal telemetry settings if this is the ITR node
+                    if let Some(ref settings) = internal_telemetry {
+                        if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                            wrapper.set_internal_telemetry(settings.clone());
+                        }
+                    }
+
                     let wrapper = wrapper.with_node_telemetry_guard(
                         node_guard.take().expect("node telemetry guard missing"),
                     );

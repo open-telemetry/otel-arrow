@@ -63,7 +63,8 @@ impl OpentelemetryClient {
         })
     }
 
-    fn configure_resource(
+    /// Creates an SDK Resource from config attributes.
+    pub(crate) fn configure_resource(
         resource_attributes: &std::collections::HashMap<String, AttributeValue>,
     ) -> Resource {
         let mut sdk_resource_builder = Resource::builder_empty();
@@ -140,6 +141,18 @@ impl OpentelemetryClient {
         }
         Ok(())
     }
+}
+
+/// Pre-encode resource bytes from config for internal telemetry (ITR).
+///
+/// This creates an SDK Resource from the config attributes and encodes it
+/// to bytes using the OTLP protobuf format.
+#[must_use]
+pub fn encode_resource_bytes(
+    resource_attributes: &std::collections::HashMap<String, AttributeValue>,
+) -> bytes::Bytes {
+    let sdk_resource = OpentelemetryClient::configure_resource(resource_attributes);
+    crate::self_tracing::encode_resource_to_bytes(&sdk_resource)
 }
 
 #[cfg(test)]

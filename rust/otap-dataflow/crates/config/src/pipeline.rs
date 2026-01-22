@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
-/// - "Hyper" because the edges connecting the nodes can be hyper-edges.  
-/// - A node can be connected to multiple outgoing nodes.  
+/// - "Hyper" because the edges connecting the nodes can be hyper-edges.
+/// - A node can be connected to multiple outgoing nodes.
 /// - The way messages are dispatched over each hyper-edge is defined by a dispatch strategy representing
 ///   different communication model semantics. For example, it could be a broadcast channel that sends
 ///   the same message to all destination nodes, or it might have a round-robin or least-loaded semantic,
@@ -562,6 +562,45 @@ impl PipelineConfig {
     /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
     pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.internal.iter()
+    }
+
+    /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
+    ///
+    /// Returns None if no internal pipeline nodes are configured.
+    /// The extracted config uses the internal nodes as the main pipeline,
+    /// with hardcoded settings appropriate for internal telemetry.
+    #[must_use]
+    pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
+        if self.internal.is_empty() {
+            return None;
+        }
+
+        Some(PipelineConfig {
+            r#type: self.r#type.clone(),
+            settings: Self::internal_pipeline_settings(),
+            quota: Quota::default(),
+            nodes: self.internal.clone(),
+            internal: PipelineNodes::default(),
+            service: ServiceConfig::default(),
+        })
+    }
+
+    /// Returns hardcoded settings for the internal telemetry pipeline.
+    ///
+    /// TODO: these are hard-coded, add configurability.
+    #[must_use]
+    pub fn internal_pipeline_settings() -> PipelineSettings {
+        PipelineSettings {
+            default_node_ctrl_msg_channel_size: 50,
+            default_pipeline_ctrl_msg_channel_size: 50,
+            default_pdata_channel_size: 50,
+            health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                channel_metrics: false,
+            },
+        }
     }
 
     /// Validate the pipeline specification.
