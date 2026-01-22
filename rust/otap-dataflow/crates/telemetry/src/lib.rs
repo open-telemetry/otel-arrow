@@ -76,7 +76,7 @@ pub use tracing::warn_span as otel_warn_span;
 
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otap:receiver:internal_telemetry";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:otap:internal_telemetry:receiver";
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
