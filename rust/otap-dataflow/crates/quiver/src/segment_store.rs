@@ -799,9 +799,11 @@ mod tests {
         let err = std::io::Error::new(std::io::ErrorKind::Other, "test error");
         assert!(!SegmentStore::is_sharing_violation(&err));
 
-        let err = std::io::Error::from_raw_os_error(32); // Would be sharing violation on Windows
         #[cfg(not(windows))]
-        assert!(!SegmentStore::is_sharing_violation(&err));
+        {
+            let err = std::io::Error::from_raw_os_error(32); // Would be sharing violation on Windows
+            assert!(!SegmentStore::is_sharing_violation(&err));
+        }
     }
 
     #[cfg(windows)]
