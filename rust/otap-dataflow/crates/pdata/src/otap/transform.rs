@@ -3967,6 +3967,7 @@ fn wider_type(t1: &DataType, t2: &DataType) -> Option<DataType> {
 /// If column types differ due to dictionary overflow in the new_batch, this will:
 /// 1. Determine the wider type that can accommodate both
 /// 2. Cast the narrower batch's column to the wider type
+///
 /// Returns (original_batch, new_batch, unified_schema) ready for concat_batches.
 fn reconcile_batches_for_concat(
     original: RecordBatch,
