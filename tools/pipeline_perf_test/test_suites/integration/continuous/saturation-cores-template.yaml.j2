@@ -78,15 +78,4 @@ tests:
         observation_interval: 60
         signals_per_second: null # Using null means loadgen don't self-cap the rate.
         max_batch_size: {{max_batch_size}}
-  - name: OTAP-ATTR-OTAP
-    from_template:
-      path: test_suites/integration/templates/test_steps/df-loadgen-steps-docker.yaml
-      variables:
-        result_dir: "continuous_saturation_{{num_cores}}core_otap"
-        engine_config_template: test_suites/integration/templates/configs/engine/continuous/otap-attr-otap.yaml
-        loadgen_exporter_type: otap
-        backend_receiver_type: otap
-        observation_interval: 60
-        signals_per_second: null # Using null means loadgen don't self-cap the rate.
-        max_batch_size: {{max_batch_size}}
 
