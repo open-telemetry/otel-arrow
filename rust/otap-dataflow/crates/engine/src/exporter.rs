@@ -15,7 +15,6 @@ use crate::channel_metrics::{
 use crate::config::ExporterConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
 use crate::error::{Error, ExporterErrorKind};
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -28,6 +27,7 @@ use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_telemetry::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
 

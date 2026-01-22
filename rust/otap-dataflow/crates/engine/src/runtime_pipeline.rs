@@ -8,7 +8,6 @@ use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
-use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
@@ -16,6 +15,7 @@ use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_telemetry::entity_context::{NodeTaskContext, instrument_with_node_context};
 use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;

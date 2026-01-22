@@ -12,7 +12,6 @@ use crate::{
     },
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
-    entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::Error,
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
@@ -30,6 +29,9 @@ use otap_df_config::{
     PortName,
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
+};
+use otap_df_telemetry::entity_context::{
+    NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle,
 };
 use otap_df_telemetry::otel_debug;
 use std::borrow::Cow;
@@ -50,7 +52,6 @@ pub mod config;
 pub mod context;
 pub mod control;
 pub mod effect_handler;
-pub mod entity_context;
 pub mod local;
 pub mod node;
 pub mod pipeline_ctrl;

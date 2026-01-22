@@ -458,7 +458,7 @@ impl PipelineMetricsMonitor {
             .ok()
             .map(|handle| handle.metrics());
 
-        let entity_key = crate::entity_context::pipeline_entity_key().expect(
+        let entity_key = otap_df_telemetry::entity_context::pipeline_entity_key().expect(
             "pipeline entity key not set; ensure pipeline entity is registered and instrumented",
         );
         let metrics = pipeline_ctx.register_metric_set_for_entity::<PipelineMetrics>(entity_key);
@@ -861,7 +861,7 @@ mod non_jemalloc_tests {
         let controller = ControllerContext::new(telemetry_registry);
         let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+        let _pipeline_entity_guard = otap_df_telemetry::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),
             pipeline_entity_key,
         );

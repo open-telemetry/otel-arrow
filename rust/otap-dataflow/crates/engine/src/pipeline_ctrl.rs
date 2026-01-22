@@ -444,7 +444,7 @@ mod tests {
         crate::control::PipelineCtrlMsgSender<PData>,
         HashMap<usize, Receiver<NodeControlMsg<PData>>>,
         Vec<NodeId>,
-        crate::entity_context::PipelineEntityScope,
+        otap_df_telemetry::entity_context::PipelineEntityScope,
     ) {
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
         let mut control_senders = ControlSenders::new();
@@ -479,7 +479,7 @@ mod tests {
         );
 
         let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
+        let pipeline_entity_guard = otap_df_telemetry::entity_context::set_pipeline_entity_key(
             pipeline_context.metrics_registry(),
             pipeline_entity_key,
         );
@@ -910,10 +910,11 @@ mod tests {
                     thread_id,
                 );
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-                let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
-                    pipeline_context.metrics_registry(),
-                    pipeline_entity_key,
-                );
+                let _pipeline_entity_guard =
+                    otap_df_telemetry::entity_context::set_pipeline_entity_key(
+                        pipeline_context.metrics_registry(),
+                        pipeline_entity_key,
+                    );
 
                 // Create manager with empty control_senders map (no registered nodes)
                 let manager = PipelineCtrlMsgManager::<()>::new(

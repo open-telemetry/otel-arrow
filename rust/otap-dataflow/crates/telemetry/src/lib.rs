@@ -39,6 +39,7 @@ use otap_df_config::pipeline::service::telemetry::logs::{
 pub mod attributes;
 pub mod collector;
 pub mod descriptor;
+pub mod entity_context;
 pub mod error;
 /// Event types for lifecycle and log events.
 pub mod event;
