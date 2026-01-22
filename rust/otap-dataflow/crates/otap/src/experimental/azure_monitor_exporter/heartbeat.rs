@@ -143,6 +143,7 @@ impl Heartbeat {
 
     /// Create a Heartbeat from individual components (for testing).
     #[cfg(test)]
+    #[must_use]
     pub fn from_parts(client: Client, endpoint: String, auth: Auth) -> Self {
         Self {
             client,
