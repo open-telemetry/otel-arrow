@@ -3,7 +3,7 @@
 
 //! An alternative to Tokio fmt::layer().
 
-use super::LogRecord;
+use super::{LogRecord, SavedCallsite};
 use super::encoder::level_to_severity_number;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
@@ -142,8 +142,7 @@ impl ConsoleWriter {
 
         // Create a view over the pre-encoded body+attrs bytes
         let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
-        let callsite = record.callsite();
-        let level = *callsite.level();
+        let level = *record.callsite().level();
 
         self.format_log_line(
             &mut w,
@@ -151,7 +150,6 @@ impl ConsoleWriter {
             &view,
             |w, cw| cw.write_level(w, &level),
             |w, cw| {
-                // Event name prints space before itself
                 cw.write_styled(w, AnsiCode::Bold, |w| Self::write_event_name(w, record));
             },
         );
@@ -162,15 +160,25 @@ impl ConsoleWriter {
     /// Write callsite details as event_name to buffer.
     #[inline]
     pub(crate) fn write_event_name(w: &mut BufWriter<'_>, record: &LogRecord) {
-        let callsite = record.callsite();
-        let _ = w.write_all(callsite.target().as_bytes());
-        let _ = w.write_all(b"::");
-        let _ = w.write_all(callsite.name().as_bytes());
-        if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-            let _ = write!(w, " ({}:{})", file, line);
-        }
+        write_event_name_to(w, &record.callsite());
     }
+}
 
+/// Write callsite details as event_name to any `io::Write` target.
+///
+/// Format: `target::name (file:line)` or `target::name` if no file/line.
+/// This is used by both the text formatter and the OTLP encoder.
+#[inline]
+pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
+    let _ = w.write_all(callsite.target().as_bytes());
+    let _ = w.write_all(b"::");
+    let _ = w.write_all(callsite.name().as_bytes());
+    if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
+        let _ = write!(w, " ({}:{})", file, line);
+    }
+}
+
+impl ConsoleWriter {
     /// Write a SystemTime timestamp as ISO 8601 (UTC) to buffer.
     #[inline]
     pub fn write_timestamp(w: &mut BufWriter<'_>, time: SystemTime) {
@@ -342,25 +350,48 @@ impl ConsoleWriter {
     /// Write a tracing Level with appropriate color and padding.
     #[inline]
     pub fn write_level(&self, w: &mut BufWriter<'_>, level: &Level) {
-        self.write_severity(w, Some(level_to_severity_number(level) as i32));
+        self.write_severity(w, Some(level_to_severity_number(level) as i32), None);
     }
 
-    /// Write severity number with appropriate color and padding.
+    /// Write severity with appropriate color and padding.
     /// Severity numbers follow OTLP conventions (1-24, where INFO=9).
+    /// If severity_text is provided, it overrides the default text derived from the number.
     #[inline]
-    pub fn write_severity(&self, w: &mut BufWriter<'_>, severity: Option<i32>) {
-        let (text, code) = match severity {
-            Some(s) if s >= 17 => ("ERROR", AnsiCode::Red), // FATAL/ERROR
-            Some(s) if s >= 13 => ("WARN ", AnsiCode::Yellow), // WARN
-            Some(s) if s >= 9 => ("INFO ", AnsiCode::Green), // INFO
-            Some(s) if s >= 5 => ("DEBUG", AnsiCode::Blue), // DEBUG
-            Some(s) if s >= 1 => ("TRACE", AnsiCode::Magenta), // TRACE
-            _ => ("     ", AnsiCode::Reset),
+    pub fn write_severity(
+        &self,
+        w: &mut BufWriter<'_>,
+        severity: Option<i32>,
+        severity_text: Option<&[u8]>,
+    ) {
+        // Determine text: use provided text if non-empty, otherwise derive from number
+        let (text, code): (&[u8], _) = match severity_text.filter(|t| !t.is_empty()) {
+            Some(t) => (t, Self::severity_to_color(severity)),
+            None => match severity {
+                Some(s) if s >= 17 => (b"ERROR", AnsiCode::Red),
+                Some(s) if s >= 13 => (b"WARN ", AnsiCode::Yellow),
+                Some(s) if s >= 9 => (b"INFO ", AnsiCode::Green),
+                Some(s) if s >= 5 => (b"DEBUG", AnsiCode::Blue),
+                Some(s) if s >= 1 => (b"TRACE", AnsiCode::Magenta),
+                _ => (b"     ", AnsiCode::Reset),
+            },
         };
         self.write_styled(w, code, |w| {
-            let _ = w.write_all(text.as_bytes());
+            let _ = w.write_all(text);
         });
         let _ = w.write_all(b" ");
+    }
+
+    /// Map severity number to ANSI color code.
+    #[inline]
+    fn severity_to_color(severity: Option<i32>) -> AnsiCode {
+        match severity {
+            Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
+            Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
+            Some(s) if s >= 9 => AnsiCode::Green,   // INFO
+            Some(s) if s >= 5 => AnsiCode::Blue,    // DEBUG
+            Some(s) if s >= 1 => AnsiCode::Magenta, // TRACE
+            _ => AnsiCode::Reset,
+        }
     }
 
     /// Format a log line from a LogRecordView with custom formatters.
@@ -368,7 +399,7 @@ impl ConsoleWriter {
     /// Spacing convention: each section adds its own leading separator.
     /// - Level ends with a space
     /// - Event name (if any) prints space before itself
-    /// - Body (if any) prints ": " before itself  
+    /// - Body (if any) prints ": " before itself
     /// - Attributes (if any) print " [...]" before themselves
     pub fn format_log_line<V, L, E>(
         &self,
@@ -382,24 +413,9 @@ impl ConsoleWriter {
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
-        // Timestamp (optional)
-        if let Some(time) = time {
-            self.write_styled(w, AnsiCode::Dim, |w| Self::write_timestamp(w, time));
-            let _ = w.write_all(b"  ");
-        }
-
-        // Custom level/prefix formatting (tree structure, severity, etc.)
-        format_level(w, self);
-
-        // Track position to detect if event_name was written
-        let pos_before = w.position();
-        format_event_name(w, self);
-        let has_event_name = w.position() > pos_before;
-
-        // Body and attributes (with ": " separator after event_name if needed)
-        Self::write_body_and_attrs(w, record, has_event_name);
-
-        let _ = w.write_all(b"\n");
+        self.format_line_impl(w, time, format_level, format_event_name, |w, has_event_name| {
+            Self::write_body_and_attrs(w, record, has_event_name);
+        });
     }
 
     /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
@@ -418,20 +434,40 @@ impl ConsoleWriter {
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
+        self.format_line_impl(w, time, format_level, format_event_name, |w, _has_event_name| {
+            Self::write_attrs(w, attrs);
+        });
+    }
+
+    /// Common implementation for formatting a line with timestamp, level, event name, and content.
+    fn format_line_impl<L, E, C>(
+        &self,
+        w: &mut BufWriter<'_>,
+        time: Option<SystemTime>,
+        format_level: L,
+        format_event_name: E,
+        write_content: C,
+    ) where
+        L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+        E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+        C: FnOnce(&mut BufWriter<'_>, bool),
+    {
         // Timestamp (optional)
         if let Some(time) = time {
             self.write_styled(w, AnsiCode::Dim, |w| Self::write_timestamp(w, time));
             let _ = w.write_all(b"  ");
         }
 
-        // Custom level/prefix formatting (tree structure, type label, etc.)
+        // Custom level/prefix formatting (tree structure, severity, etc.)
         format_level(w, self);
 
-        // Header name (e.g., "v1.Resource", "scope-name/version")
+        // Track position to detect if event_name was written
+        let pos_before = w.position();
         format_event_name(w, self);
+        let has_event_name = w.position() > pos_before;
 
-        // Attributes only (no body)
-        Self::write_attrs(w, attrs);
+        // Write content (body+attrs or just attrs)
+        write_content(w, has_event_name);
 
         let _ = w.write_all(b"\n");
     }
