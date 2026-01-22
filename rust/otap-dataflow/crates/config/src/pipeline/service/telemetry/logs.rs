@@ -70,6 +70,14 @@ pub struct LoggingProviders {
 }
 
 impl LoggingProviders {
+    /// Returns true if any provider uses ITS mode.
+    #[must_use]
+    pub const fn uses_its_mode(&self) -> bool {
+        matches!(self.global, ProviderMode::ITS)
+            || matches!(self.engine, ProviderMode::ITS)
+            || matches!(self.admin, ProviderMode::ITS)
+    }
+
     /// Returns true if this uses an OTel logs provider.
     #[must_use]
     pub const fn uses_otel_provider(&self) -> bool {

@@ -114,7 +114,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Create the telemetry system, pass the observed state store
         // as the admin reporter for console_async support.
-        let telemetry_system =
+        // The ITS logs receiver is returned if any provider uses ITS mode.
+        let (telemetry_system, _its_logs_receiver) =
             InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
 

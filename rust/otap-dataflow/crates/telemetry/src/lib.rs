@@ -135,8 +135,12 @@ pub struct InternalTelemetrySystem {
     /// The logging providers.
     provider_modes: LoggingProviders,
 
-    /// Event reporter for asynchronous internal logging modes.
+    /// Event reporter for asynchronous internal logging modes (ConsoleAsync).
     admin_reporter: ObservedEventReporter,
+
+    /// Event reporter for ITS mode (Internal Telemetry System).
+    /// Only created when any provider uses ITS mode.
+    its_reporter: Option<ObservedEventReporter>,
 }
 
 impl InternalTelemetrySystem {
@@ -145,16 +149,19 @@ impl InternalTelemetrySystem {
     /// This creates:
     /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
     /// 2. The OpenTelemetry SDK providers (meter, and optionally logger)
+    /// 3. If any provider uses ITS mode, a dedicated logs channel for the ITR
     ///
-    /// The `admin_reporter` is required for async logging modes (`ConsoleAsync`, future `ITS`).
+    /// The `admin_reporter` is required for async logging modes (`ConsoleAsync`).
     /// Create the `ObservedStateStore` first and pass its reporter here.
+    ///
+    /// Returns the system and optionally the ITS logs receiver if any provider uses ITS mode.
     ///
     /// **Note:** The global tracing subscriber is NOT initialized here. Call
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
         admin_reporter: ObservedEventReporter,
-    ) -> Result<Self, Error> {
+    ) -> Result<(Self, Option<flume::Receiver<event::ObservedEvent>>), Error> {
         // Validate logs config
         config
             .logs
@@ -178,18 +185,31 @@ impl InternalTelemetrySystem {
         let sdk_logger_provider = otel_client.logger_provider().cloned();
         let otel_runtime = otel_client.into_runtime();
 
-        Ok(Self {
-            registry: telemetry_registry,
-            collector: Arc::new(collector),
-            metrics_reporter,
-            dispatcher,
-            sdk_meter_provider,
-            sdk_logger_provider,
-            _otel_runtime: otel_runtime,
-            log_level: config.logs.level,
-            provider_modes: config.logs.providers.clone(),
-            admin_reporter,
-        })
+        // 3. Create ITS channel if any provider uses ITS mode
+        let (its_reporter, its_receiver) = if config.logs.providers.uses_its_mode() {
+            let (sender, receiver) = flume::bounded(config.reporting_channel_size);
+            let reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
+            (Some(reporter), Some(receiver))
+        } else {
+            (None, None)
+        };
+
+        Ok((
+            Self {
+                registry: telemetry_registry,
+                collector: Arc::new(collector),
+                metrics_reporter,
+                dispatcher,
+                sdk_meter_provider,
+                sdk_logger_provider,
+                _otel_runtime: otel_runtime,
+                log_level: config.logs.level,
+                provider_modes: config.logs.providers.clone(),
+                admin_reporter,
+                its_reporter,
+            },
+            its_receiver,
+        ))
     }
 
     /// Initialize the global tracing subscriber.
@@ -232,9 +252,17 @@ impl InternalTelemetrySystem {
             }
 
             ProviderMode::ITS => {
-                // ITS mode not yet implemented - fall back to Noop
-                raw_error!("ITS provider mode not yet implemented, falling back to Noop");
-                ProviderSetup::Noop
+                match &self.its_reporter {
+                    Some(reporter) => ProviderSetup::ITS {
+                        reporter: reporter.clone(),
+                    },
+                    None => {
+                        // ITS mode configured but no reporter available - this shouldn't happen
+                        // if uses_its_mode() returned true during construction
+                        raw_error!("ITS provider mode configured but no ITS reporter available, falling back to Noop");
+                        ProviderSetup::Noop
+                    }
+                }
             }
         };
 
@@ -307,6 +335,8 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        Self::new(&config, dummy_reporter).expect("default telemetry config should be valid")
+        let (system, _its_receiver) =
+            Self::new(&config, dummy_reporter).expect("default telemetry config should be valid");
+        system
     }
 }

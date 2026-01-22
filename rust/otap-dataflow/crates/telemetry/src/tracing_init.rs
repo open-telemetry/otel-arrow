@@ -91,6 +91,13 @@ pub enum ProviderSetup {
         reporter: ObservedEventReporter,
     },
 
+    /// Internal Telemetry System mode: logs go through internal telemetry pipeline.
+    /// Uses the same mechanism as ConsoleAsync but the receiver goes to the ITR.
+    ITS {
+        /// Reporter to send log events to the Internal Telemetry Receiver.
+        reporter: ObservedEventReporter,
+    },
+
     /// OpenTelemetry SDK logging via `OpenTelemetryTracingBridge`.
     OpenTelemetry {
         /// OpenTelemetry SDK logger provider.
@@ -113,6 +120,13 @@ impl ProviderSetup {
             ),
 
             ProviderSetup::ConsoleAsync { reporter } => {
+                let layer = ConsoleAsyncLayer::new(reporter);
+                Dispatch::new(Registry::default().with(filter()).with(layer))
+            }
+
+            ProviderSetup::ITS { reporter } => {
+                // ITS uses the same async layer as ConsoleAsync, but the
+                // receiver is consumed by the Internal Telemetry Receiver
                 let layer = ConsoleAsyncLayer::new(reporter);
                 Dispatch::new(Registry::default().with(filter()).with(layer))
             }
