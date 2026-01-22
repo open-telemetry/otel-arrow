@@ -19,14 +19,14 @@ pipeline_groups:
       # ======================================================================
       # Pipeline generating traffic
       # ======================================================================
-      traffic_gen:
+      traffic_gen1:
         quota:
           core_allocation:
             type: core_set
             set:
               - type: CoreRange
                 start: 10
-                end: 35
+                end: 20
 
         nodes:
           receiver:
@@ -50,6 +50,37 @@ pipeline_groups:
             plugin_urn: "urn:otel:otlp:exporter"
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
+      traffic_gen2:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 21
+                end: 35
+
+        nodes:
+          receiver:
+            kind: receiver
+            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            out_ports:
+              out_port:
+                destinations:
+                  - exporter
+                dispatch_strategy: round_robin
+            config:
+              traffic_config:
+                signals_per_second: 100000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:otlp:exporter"
+            config:
+              grpc_endpoint: "http://127.0.0.1:4337"
 
       # ======================================================================
       # System Under Test pipeline
@@ -63,7 +94,7 @@ pipeline_groups:
                 start: 0
                 end: 0
         nodes:
-          otlp_recv:
+          otlp_recv1:
             kind: receiver
             plugin_urn: "urn:otel:otlp:receiver"
             out_ports:
@@ -74,18 +105,17 @@ pipeline_groups:
             config:
               listening_addr: "127.0.0.1:4327"
               wait_for_result: true
-
-          otap_recv:
+          otlp_recv2:
             kind: receiver
-            plugin_urn: "urn:otel:otap:receiver"
+            plugin_urn: "urn:otel:otlp:receiver"
             out_ports:
               out_port:
                 destinations:
-                  - otap_exporter
+                  - router
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "127.0.0.1:4329"
-              response_stream_channel_size: 256
+              listening_addr: "127.0.0.1:4337"
+              wait_for_result: true
 
           router:
             kind: processor
@@ -133,10 +163,6 @@ pipeline_groups:
             plugin_urn: "urn:otel:noop:exporter"
             config:
 
-          otap_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
-            config:
 
       # ======================================================================
       # Performance No-Op pipeline to measure receiver performance
