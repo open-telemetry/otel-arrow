@@ -448,7 +448,10 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Auth { kind, .. } => {
-                assert!(matches!(kind, super::super::error::AuthErrorKind::Unauthorized));
+                assert!(matches!(
+                    kind,
+                    super::super::error::AuthErrorKind::Unauthorized
+                ));
             }
             e => panic!("Expected Auth/Unauthorized error, got: {:?}", e),
         }
@@ -472,7 +475,10 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Auth { kind, .. } => {
-                assert!(matches!(kind, super::super::error::AuthErrorKind::Forbidden));
+                assert!(matches!(
+                    kind,
+                    super::super::error::AuthErrorKind::Forbidden
+                ));
             }
             e => panic!("Expected Auth/Forbidden error, got: {:?}", e),
         }
@@ -581,8 +587,11 @@ mod tests {
     #[test]
     fn test_from_parts_creates_heartbeat() {
         let auth = create_mock_auth("test_token", 3600);
-        let heartbeat =
-            Heartbeat::from_parts(create_test_client(), "https://example.com".to_string(), auth);
+        let heartbeat = Heartbeat::from_parts(
+            create_test_client(),
+            "https://example.com".to_string(),
+            auth,
+        );
 
         assert_eq!(heartbeat.endpoint, "https://example.com");
         assert_eq!(heartbeat.heartbeat_row.version, "test-version");
