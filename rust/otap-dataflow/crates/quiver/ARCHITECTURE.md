@@ -1190,7 +1190,7 @@ nodes:
         max_size: 128MB
         flush_interval: 25ms
       retention:
-        max_retain_after_ingestion_hours: 72
+        max_age: 72h
         size_cap: 500GB
         # or backpressure
         size_cap_policy: drop_oldest
