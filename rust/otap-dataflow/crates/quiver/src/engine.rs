@@ -255,9 +255,9 @@ impl QuiverEngine {
         let mut next_segment_seq = 0u64;
         match segment_store.scan_existing() {
             Ok(found_segments) => {
-                for (seq, _bundle_count) in &found_segments {
-                    // Next segment seq should be 1 + the highest found
-                    next_segment_seq = next_segment_seq.max(seq.raw() + 1);
+                // scan_existing returns segments sorted by sequence, so last is highest
+                if let Some((seq, _bundle_count)) = found_segments.last() {
+                    next_segment_seq = seq.raw() + 1;
                 }
                 if !found_segments.is_empty() {
                     tracing::info!(
