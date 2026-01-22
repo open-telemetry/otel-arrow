@@ -31,7 +31,7 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
-use otap_df_telemetry::otel_debug;
+use otap_df_telemetry::{otel_debug, otel_debug_span};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -450,26 +450,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
 
         // First pass: collect all channel assignments to avoid multiple mutable borrows
-        struct ChannelAssignment<PData> {
-            sources: Vec<NodeIdPortName>,
-            senders: Vec<Sender<PData>>,
-            destinations: Vec<(NodeId, Receiver<PData>)>,
-        }
         let mut assignments = Vec::new();
         for hyper_edge in edges {
-            let source_nodes_debug = hyper_edge
-                .sources
-                .iter()
-                .map(|source| format!("{}:{}", source.node_id.name, source.port))
-                .collect::<Vec<_>>();
-            otel_debug!(
-                "hyper_edge.wireup.start",
+            let span = otel_debug_span!(
+                "hyper_edge.wireup",
                 pipeline_group_id = pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_id.as_ref(),
                 core_id = core_id,
-                source_nodes = format!("{:?}", source_nodes_debug),
-                dest_node_ids = format!("{:?}", hyper_edge.destinations),
+                source_ids = hyper_edge.source_ids_display(),
+                dest_ids = hyper_edge.destination_ids_display()
             );
+            let _enter = span.enter();
 
             let mut source_nodes = Vec::with_capacity(hyper_edge.sources.len());
             let mut source_ports = Vec::with_capacity(hyper_edge.sources.len());
@@ -555,14 +546,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 senders: pdata_senders,
                 destinations,
             });
-
-            otel_debug!(
-                "hyper_edge.wireup.complete",
-                pipeline_group_id = pipeline_group_id.as_ref(),
-                pipeline_id = pipeline_id.as_ref(),
-                core_id = core_id,
-                source_nodes = format!("{:?}", source_nodes_debug),
-            );
         }
 
         // Second pass: perform all assignments
@@ -1287,6 +1270,16 @@ struct NodeIdPortName {
     port: PortName,
 }
 
+/// Represents the channel assignments for a hyper-edge in the runtime graph.
+struct ChannelAssignment<PData> {
+    /// All the source endpoints for this hyper-edge.
+    sources: Vec<NodeIdPortName>,
+    /// The senders assigned to the sources.
+    senders: Vec<Sender<PData>>,
+    /// The destinations and their assigned receivers.
+    destinations: Vec<(NodeId, Receiver<PData>)>,
+}
+
 /// Represents a hyper-edge in the runtime graph, corresponding to one or more source ports,
 /// its dispatch strategy, and the set of destination node ids connected to those ports.
 struct HyperEdgeRuntime {
@@ -1303,6 +1296,27 @@ struct HyperEdgeRuntime {
 struct HyperEdgeKey {
     dispatch_strategy: std::mem::Discriminant<DispatchStrategy>,
     destinations: Vec<NodeName>,
+}
+impl HyperEdgeRuntime {
+    fn source_ids_display(&self) -> String {
+        let mut source_ids = self
+            .sources
+            .iter()
+            .map(|source| format!("{}:{}", source.node_id.name, source.port))
+            .collect::<Vec<_>>();
+        source_ids.sort();
+        source_ids.join(", ")
+    }
+
+    fn destination_ids_display(&self) -> String {
+        let mut dest_names = self
+            .destinations
+            .iter()
+            .map(|dest_name| dest_name.as_ref().to_string())
+            .collect::<Vec<_>>();
+        dest_names.sort();
+        dest_names.join(", ")
+    }
 }
 
 /// Returns a vector of all hyper-edges in the runtime graph.
