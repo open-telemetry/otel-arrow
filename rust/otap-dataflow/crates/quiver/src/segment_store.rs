@@ -823,6 +823,7 @@ mod tests {
     #[test]
     fn delete_segment_defers_on_sharing_violation_windows() {
         use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
 
         let dir = tempdir().unwrap();
         let segment_dir = dir.path().join("segments");
