@@ -1117,6 +1117,7 @@ impl WalCoordinator {
         }
         let mut reader = WalReader::open(path)?;
         let header_size = reader.header_size();
+        let wal_position_start = reader.wal_position_start();
         let iter = reader.iter_from(0)?;
         let mut last_seq = None;
         let mut last_valid_offset = header_size;
@@ -1125,8 +1126,11 @@ impl WalCoordinator {
             match entry {
                 Ok(bundle) => {
                     last_seq = Some(bundle.sequence);
-                    // Convert WAL position back to file offset for internal use
-                    last_valid_offset = bundle.next_offset + header_size;
+                    // bundle.next_offset is now a global WAL position
+                    // Convert back to file offset for internal use:
+                    // file_offset = (global_position - wal_position_start) + header_size
+                    let position_in_file = bundle.next_offset.saturating_sub(wal_position_start);
+                    last_valid_offset = position_in_file + header_size;
                     boundaries.push(last_valid_offset);
                 }
                 Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {

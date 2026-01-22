@@ -38,7 +38,7 @@ use crate::subscriber::{
 };
 use crate::telemetry::PersistenceMetrics;
 use crate::wal::{
-    CursorSidecar, ReplayBundle, WalConsumerCursor, WalReader, WalWriter, WalWriterOptions,
+    CursorSidecar, MultiFileWalReader, ReplayBundle, WalConsumerCursor, WalWriter, WalWriterOptions,
 };
 
 /// WAL statistics for observability.
@@ -552,20 +552,21 @@ impl QuiverEngine {
             }
         };
 
-        // Try to open the WAL reader
-        let mut reader = match WalReader::open(&wal_path) {
+        // Try to open the multi-file WAL reader (handles both rotated and active files)
+        let reader = match MultiFileWalReader::open(&wal_path) {
             Ok(r) => r,
             Err(e) => {
                 // WAL file doesn't exist or is invalid - this is fine on first run
                 tracing::debug!(
                     error = %e,
-                    "no WAL file found for replay, starting fresh"
+                    "no WAL files found for replay, starting fresh"
                 );
                 return Ok(0);
             }
         };
 
         // Iterate from the cursor position (skip already-finalized entries)
+        // The multi-file reader handles finding the right file(s) to start from
         let iter = match reader.iter_from(cursor_position) {
             Ok(iter) => iter,
             Err(e) => {
@@ -3575,6 +3576,96 @@ mod tests {
                 segments_written > 0,
                 "WAL replay should have finalized at least one segment, but got {}",
                 segments_written
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_reads_from_rotated_files() {
+        // Test that WAL replay correctly reads entries from rotated WAL files
+        // This simulates a crash that happens after WAL rotation but before
+        // cursor advancement.
+        let dir = tempdir().expect("tempdir");
+
+        // Use a very small WAL rotation target to force rotation
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .wal(WalConfig {
+                rotation_target_bytes: NonZeroU64::new(1024).unwrap(), // 1KB - will trigger rotation
+                max_size_bytes: NonZeroU64::new(1024 * 1024).unwrap(), // 1MB total
+                max_rotated_files: 10,
+                ..Default::default()
+            })
+            .segment(SegmentConfig {
+                // Large segment size so nothing gets finalized to segments
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 20;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest enough bundles to trigger multiple WAL rotations
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Verify WAL has data
+            let wal_bytes = engine.wal_bytes_written();
+            assert!(wal_bytes > 0, "WAL should have data written");
+
+            // Verify NO segments were finalized
+            assert_eq!(
+                engine.total_segments_written(),
+                0,
+                "no segments should be finalized"
+            );
+
+            // Engine dropped here - simulates crash/shutdown
+        }
+
+        // Verify we have rotated WAL files
+        let wal_dir = dir.path().join("wal");
+        let rotated_files: Vec<_> = fs::read_dir(&wal_dir)
+            .expect("read wal dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("quiver.wal."))
+            })
+            .collect();
+
+        // We should have at least one rotated file given the small rotation target
+        assert!(
+            !rotated_files.is_empty(),
+            "should have at least one rotated WAL file, found {:?}",
+            fs::read_dir(&wal_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .collect::<Vec<_>>()
+        );
+
+        // Second run: reopen engine and verify WAL replay reads from ALL files
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            // Check open segment has all replayed bundles
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                open_segment_bundles, bundles_ingested,
+                "open segment should have all {} replayed bundles after recovery from rotated files, got {}",
+                bundles_ingested, open_segment_bundles
             );
         }
     }

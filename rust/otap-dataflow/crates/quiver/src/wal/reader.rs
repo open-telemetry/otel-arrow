@@ -99,6 +99,11 @@ pub(crate) struct WalReader {
     /// Header size in bytes (from the file's header_size field).
     /// Used for coordinate conversions between WAL positions and file offsets.
     header_size: u64,
+    /// WAL stream position at the start of this file (from the header).
+    /// This is 0 for the very first WAL file created. After rotation, both
+    /// rotated files and the new active file have non-zero values representing
+    /// the cumulative position in the logical WAL stream.
+    wal_position_start: u64,
 }
 
 impl WalReader {
@@ -111,6 +116,7 @@ impl WalReader {
         let mut file = File::open(&path)?;
         let header = WalHeader::read_from_sync(&mut file)?;
         let header_size = header.header_size as u64;
+        let wal_position_start = header.wal_position_start;
         let _ = file.seek(SeekFrom::Start(header_size))?;
 
         Ok(Self {
@@ -118,6 +124,7 @@ impl WalReader {
             path,
             segment_cfg_hash: header.segment_cfg_hash,
             header_size,
+            wal_position_start,
         })
     }
 
@@ -136,13 +143,43 @@ impl WalReader {
         self.header_size
     }
 
+    /// Returns the WAL stream position at the start of this file.
+    ///
+    /// This value is read from the file header. It is 0 only for the very first
+    /// WAL file ever created. After any rotation, both rotated files and the
+    /// new active file have non-zero values representing their position in the
+    /// logical WAL stream.
+    pub fn wal_position_start(&self) -> u64 {
+        self.wal_position_start
+    }
+
+    /// Returns the WAL stream position at the end of this file (exclusive).
+    ///
+    /// This is computed from the file length and header, representing the
+    /// position where the next entry would start if appended to this file.
+    pub fn wal_position_end(&self) -> WalResult<u64> {
+        let file_len = self.file.metadata()?.len();
+        let data_bytes = file_len.saturating_sub(self.header_size);
+        Ok(self.wal_position_start.saturating_add(data_bytes))
+    }
+
     /// Returns an iterator that starts at the given WAL position.
     ///
-    /// WAL positions exclude the WAL header; pass 0 to start from the first entry.
-    /// The position is converted to a file offset internally.
+    /// WAL positions are logical coordinates that span across rotated files.
+    /// Pass 0 to start from the first entry in this file (regardless of
+    /// wal_position_start).
+    ///
+    /// If the requested position is before this file's `wal_position_start`,
+    /// the iterator starts from the beginning of this file.
+    /// If the requested position is beyond this file's content, the iterator
+    /// will be empty (will immediately return `None`).
     pub fn iter_from(&mut self, wal_position: u64) -> WalResult<WalEntryIter<'_>> {
-        // Convert WAL position to file offset (add header length)
-        let file_offset = wal_position.saturating_add(self.header_size);
+        // Calculate the position within this file's data section
+        // If wal_position is before this file starts, begin at the start
+        let position_in_file = wal_position.saturating_sub(self.wal_position_start);
+
+        // Convert to file offset (add header length)
+        let file_offset = position_in_file.saturating_add(self.header_size);
         let start = file_offset.max(self.header_size);
         let file_len = self.file.metadata()?.len();
         let _ = self.file.seek(SeekFrom::Start(start))?;
@@ -151,6 +188,7 @@ impl WalReader {
             start,
             file_len,
             self.header_size,
+            self.wal_position_start,
         ))
     }
 
@@ -172,17 +210,26 @@ pub(crate) struct WalEntryIter<'a> {
     file_len: u64,
     /// Header size in bytes, used for coordinate conversions.
     header_size: u64,
+    /// WAL position at the start of this file, used for computing global positions.
+    wal_position_start: u64,
     finished: bool,
 }
 
 impl<'a> WalEntryIter<'a> {
-    fn new(file: &'a mut File, offset: u64, file_len: u64, header_size: u64) -> Self {
+    fn new(
+        file: &'a mut File,
+        offset: u64,
+        file_len: u64,
+        header_size: u64,
+        wal_position_start: u64,
+    ) -> Self {
         Self {
             file,
             buffer: Vec::new(),
             next_offset: offset,
             file_len,
             header_size,
+            wal_position_start,
             finished: false,
         }
     }
@@ -271,7 +318,13 @@ impl<'a> Iterator for WalEntryIter<'a> {
 
         self.next_offset = next_offset;
 
-        match decode_entry(entry_start, next_offset, &self.buffer, self.header_size) {
+        match decode_entry(
+            entry_start,
+            next_offset,
+            &self.buffer,
+            self.header_size,
+            self.wal_position_start,
+        ) {
             Ok(entry) => Some(Ok(entry)),
             Err(err) => {
                 self.finished = true;
@@ -414,20 +467,27 @@ fn read_entry_crc(file: &mut File, buffer: &mut [u8; 4]) -> std::io::Result<()> 
 /// Decodes a WAL entry body into a `WalRecordBundle`.
 ///
 /// The `file_offset_start` and `file_offset_end` parameters are file offsets (including header).
-/// They are converted to WAL positions (excluding header) for the returned `WalOffset`.
+/// They are converted to global WAL positions for the returned `WalOffset` by:
+/// 1. Subtracting the header size to get position within file data
+/// 2. Adding `wal_position_start` to get the global WAL stream position
 fn decode_entry(
     file_offset_start: u64,
     file_offset_end: u64,
     body: &[u8],
     header_size: u64,
+    wal_position_start: u64,
 ) -> WalResult<WalRecordBundle> {
     if body.len() < ENTRY_HEADER_LEN {
         return Err(WalError::InvalidEntry("body shorter than header"));
     }
 
-    // Convert file offsets to WAL positions (subtract header length)
-    let wal_position = file_offset_start.saturating_sub(header_size);
-    let wal_next_position = file_offset_end.saturating_sub(header_size);
+    // Convert file offsets to global WAL positions:
+    // file_offset - header_size = position within file's data section
+    // + wal_position_start = global WAL stream position
+    let position_in_file = file_offset_start.saturating_sub(header_size);
+    let next_position_in_file = file_offset_end.saturating_sub(header_size);
+    let wal_position = wal_position_start.saturating_add(position_in_file);
+    let wal_next_position = wal_position_start.saturating_add(next_position_in_file);
 
     let mut cursor = 0;
     let entry_type = body[cursor];
@@ -528,6 +588,281 @@ fn read_i64(body: &[u8], cursor: &mut usize, ctx: &'static str) -> WalResult<i64
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(slice_bytes(body, cursor, 8, ctx)?);
     Ok(i64::from_le_bytes(bytes))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-File WAL Reader
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Metadata about a WAL file discovered during scan.
+#[derive(Debug, Clone)]
+struct WalFileInfo {
+    /// Path to the WAL file.
+    path: PathBuf,
+    /// Rotation ID (None for active file, Some(n) for rotated files).
+    rotation_id: Option<u64>,
+    /// WAL position at the start of this file.
+    wal_position_start: u64,
+    /// WAL position at the end of this file (exclusive).
+    wal_position_end: u64,
+}
+
+/// A reader that iterates across multiple WAL files (rotated + active) in order.
+///
+/// This is used during WAL replay to read entries that may span across rotated
+/// files and the active file. Files are read in order from oldest to newest.
+///
+/// # Usage
+///
+/// ```ignore
+/// let reader = MultiFileWalReader::open("/path/to/wal/quiver.wal")?;
+/// for entry in reader.iter_from(cursor_position)? {
+///     let bundle = entry?;
+///     // ... process bundle ...
+/// }
+/// ```
+pub(crate) struct MultiFileWalReader {
+    /// WAL files sorted by wal_position_start (oldest first).
+    files: Vec<WalFileInfo>,
+}
+
+impl MultiFileWalReader {
+    /// Opens all WAL files (rotated + active) at the given base path.
+    ///
+    /// Discovers rotated files by scanning for `<base>.N` pattern and reads
+    /// headers to determine WAL position ranges for each file.
+    pub fn open(base_path: impl Into<PathBuf>) -> WalResult<Self> {
+        let base_path = base_path.into();
+        let mut files = Vec::new();
+
+        // Discover rotated files
+        let rotated = discover_rotated_wal_files(&base_path)?;
+        for (rotation_id, path) in rotated {
+            match WalReader::open(&path) {
+                Ok(reader) => {
+                    let wal_position_end = reader.wal_position_end()?;
+                    files.push(WalFileInfo {
+                        path,
+                        rotation_id: Some(rotation_id),
+                        wal_position_start: reader.wal_position_start(),
+                        wal_position_end,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        rotation_id,
+                        error = %e,
+                        "failed to open rotated WAL file, skipping"
+                    );
+                }
+            }
+        }
+
+        // Open active file if it exists
+        if base_path.exists() {
+            match WalReader::open(&base_path) {
+                Ok(reader) => {
+                    let wal_position_end = reader.wal_position_end()?;
+                    files.push(WalFileInfo {
+                        path: base_path,
+                        rotation_id: None,
+                        wal_position_start: reader.wal_position_start(),
+                        wal_position_end,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %base_path.display(),
+                        error = %e,
+                        "failed to open active WAL file"
+                    );
+                    // If we have no files at all, return the error
+                    if files.is_empty() {
+                        return Err(e);
+                    }
+                }
+            }
+        } else if files.is_empty() {
+            return Err(WalError::Io(std::io::Error::new(
+                ErrorKind::NotFound,
+                format!("WAL file not found: {}", base_path.display()),
+            )));
+        }
+
+        // Sort by wal_position_start to ensure correct ordering
+        files.sort_by_key(|f| f.wal_position_start);
+
+        Ok(Self { files })
+    }
+
+    /// Returns an iterator that reads entries starting at the given WAL position.
+    ///
+    /// The iterator will read from the appropriate file(s) based on where the
+    /// position falls, and automatically transition to the next file when needed.
+    pub fn iter_from(self, wal_position: u64) -> WalResult<MultiFileWalIter> {
+        // Find the first file that contains or comes after the requested position
+        let start_idx = self
+            .files
+            .iter()
+            .position(|f| f.wal_position_end > wal_position)
+            .unwrap_or(self.files.len());
+
+        Ok(MultiFileWalIter {
+            files: self.files,
+            current_idx: start_idx,
+            current_reader: None,
+            current_iter: None,
+            start_position: wal_position,
+        })
+    }
+}
+
+/// Discovers rotated WAL files by scanning the directory for files matching
+/// `<base>.N` pattern. Returns a list of (rotation_id, path) tuples
+/// sorted by rotation_id (oldest first).
+fn discover_rotated_wal_files(base_path: &Path) -> WalResult<Vec<(u64, PathBuf)>> {
+    let parent = match base_path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+
+    let base_name = base_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            WalError::Io(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "WAL path has invalid filename",
+            ))
+        })?;
+
+    let prefix = format!("{base_name}.");
+    let mut discovered = Vec::new();
+
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(discovered),
+        Err(err) => return Err(WalError::Io(err)),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
+            continue;
+        };
+        let Some(suffix) = name_str.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Ok(rotation_id) = suffix.parse::<u64>() else {
+            continue;
+        };
+        discovered.push((rotation_id, entry.path()));
+    }
+
+    // Sort by rotation_id (oldest first)
+    discovered.sort_by_key(|(id, _)| *id);
+    Ok(discovered)
+}
+
+/// Iterator that reads WAL entries across multiple files.
+pub(crate) struct MultiFileWalIter {
+    /// All WAL files, sorted by wal_position_start.
+    files: Vec<WalFileInfo>,
+    /// Index of the current file being read.
+    current_idx: usize,
+    /// The current file's reader (owned to extend lifetime).
+    current_reader: Option<WalReader>,
+    /// Placeholder for tracking iteration state.
+    /// We can't store the iterator directly due to lifetime issues,
+    /// so we re-create it for each file.
+    current_iter: Option<()>,
+    /// The WAL position we started iterating from.
+    start_position: u64,
+}
+
+impl Iterator for MultiFileWalIter {
+    type Item = WalResult<WalRecordBundle>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // If we've exhausted all files, we're done
+            if self.current_idx >= self.files.len() {
+                return None;
+            }
+
+            // Open the current file if we haven't yet
+            if self.current_reader.is_none() {
+                let file_info = &self.files[self.current_idx];
+                match WalReader::open(&file_info.path) {
+                    Ok(reader) => {
+                        self.current_reader = Some(reader);
+                        self.current_iter = Some(());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %file_info.path.display(),
+                            error = %e,
+                            "failed to open WAL file during iteration, skipping"
+                        );
+                        self.current_idx += 1;
+                        continue;
+                    }
+                }
+            }
+
+            // Get the next entry from the current file
+            // Safety: we just ensured current_reader is Some above
+            let reader = self
+                .current_reader
+                .as_mut()
+                .expect("current_reader was set above");
+            let file_info = &self.files[self.current_idx];
+
+            // Create iterator for current file, starting from appropriate position
+            let iter_start = if self.start_position > file_info.wal_position_start {
+                self.start_position
+            } else {
+                file_info.wal_position_start
+            };
+
+            let mut iter = match reader.iter_from(iter_start) {
+                Ok(iter) => iter,
+                Err(e) => {
+                    // Error creating iterator, move to next file
+                    tracing::warn!(
+                        path = %file_info.path.display(),
+                        error = %e,
+                        "failed to create WAL iterator, skipping file"
+                    );
+                    self.current_reader = None;
+                    self.current_iter = None;
+                    self.current_idx += 1;
+                    continue;
+                }
+            };
+
+            match iter.next() {
+                Some(Ok(entry)) => {
+                    // Update start_position so next call starts after this entry
+                    self.start_position = entry.next_offset;
+                    return Some(Ok(entry));
+                }
+                Some(Err(e)) => {
+                    // Error reading entry
+                    return Some(Err(e));
+                }
+                None => {
+                    // Current file exhausted, move to next
+                    self.current_reader = None;
+                    self.current_iter = None;
+                    self.current_idx += 1;
+                    // Loop will try the next file
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -75,7 +75,10 @@ mod writer;
 // Reader exports for WAL iteration and replay.
 #[cfg(test)]
 pub(super) use reader::WalRecordBundle;
-pub(crate) use reader::{WalConsumerCursor, WalReader};
+pub(crate) use reader::{MultiFileWalReader, WalConsumerCursor};
+// WalReader is used internally by MultiFileWalReader and by tests
+#[cfg(test)]
+pub(crate) use reader::WalReader;
 // ReplayBundle is used by engine to decode WAL entries during replay.
 pub(crate) use replay::ReplayBundle;
 // Writer is used for WAL append operations.
