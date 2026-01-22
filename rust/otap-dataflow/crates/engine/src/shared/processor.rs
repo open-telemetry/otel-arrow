@@ -33,7 +33,7 @@
 
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
-use crate::error::{Error, ProcessorErrorKind, TypedError};
+use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedSender;
@@ -150,7 +150,9 @@ impl<PData> EffectHandler<PData> {
                 .send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
-            None => Err(self.no_default_port_error()),
+            None => Err(TypedError::Error(Error::NoDefaultOutPort {
+                node: self.processor_id(),
+            })),
         }
     }
 
@@ -168,19 +170,10 @@ impl<PData> EffectHandler<PData> {
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(self.no_default_port_error()),
+            None => Err(TypedError::Error(Error::NoDefaultOutPort {
+                node: self.processor_id(),
+            })),
         }
-    }
-
-    /// Creates an error for when no default output port is configured.
-    fn no_default_port_error<T>(&self) -> TypedError<T> {
-        TypedError::Error(Error::ProcessorError {
-            processor: self.processor_id(),
-            kind: ProcessorErrorKind::Configuration,
-            error: "Ambiguous default out port: multiple ports connected and no default configured"
-                .to_string(),
-            source_detail: String::new(),
-        })
     }
 
     /// Sends a message to a specific named out port.
@@ -195,7 +188,10 @@ impl<PData> EffectHandler<PData> {
                 .send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
-            None => Err(self.unknown_port_error(&port_name)),
+            None => Err(TypedError::Error(Error::UnknownOutPort {
+                node: self.processor_id(),
+                port: port_name,
+            })),
         }
     }
 
@@ -217,21 +213,11 @@ impl<PData> EffectHandler<PData> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(self.unknown_port_error(&port_name)),
+            None => Err(TypedError::Error(Error::UnknownOutPort {
+                node: self.processor_id(),
+                port: port_name,
+            })),
         }
-    }
-
-    /// Creates an error for when an unknown output port is specified.
-    fn unknown_port_error<T>(&self, port_name: &PortName) -> TypedError<T> {
-        TypedError::Error(Error::ProcessorError {
-            processor: self.processor_id(),
-            kind: ProcessorErrorKind::Configuration,
-            error: format!(
-                "Unknown out port '{port_name}' for node {}",
-                self.processor_id()
-            ),
-            source_detail: String::new(),
-        })
     }
 
     /// Print an info message to stdout.
