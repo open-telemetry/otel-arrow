@@ -141,6 +141,24 @@ impl Heartbeat {
         })
     }
 
+    /// Create a Heartbeat from individual components (for testing).
+    #[cfg(test)]
+    pub fn from_parts(client: Client, endpoint: String, auth: Auth) -> Self {
+        Self {
+            client,
+            endpoint,
+            heartbeat_row: HeartbeatRow {
+                time: Utc::now().to_rfc3339(),
+                version: "test-version".to_string(),
+                os_name: "test-os".to_string(),
+                computer: "test-computer".to_string(),
+                os_major_version: "1".to_string(),
+                os_minor_version: "0".to_string(),
+            },
+            auth_header: AuthHeader::new(auth),
+        }
+    }
+
     /// Send a heartbeat to the Azure Monitor Logs Ingestion endpoint.
     pub async fn send(&mut self) -> Result<(), Error> {
         self.heartbeat_row.time = Utc::now().to_rfc3339();
@@ -190,5 +208,385 @@ impl Heartbeat {
             }),
             _ => Err(Error::UnexpectedStatus { status, body }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
+    use azure_core::time::OffsetDateTime;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ==================== Test Helpers ====================
+
+    #[derive(Debug)]
+    struct MockCredential {
+        token: String,
+        expires_in_secs: i64,
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl TokenCredential for MockCredential {
+        async fn get_token(
+            &self,
+            _scopes: &[&str],
+            _options: Option<TokenRequestOptions<'_>>,
+        ) -> azure_core::Result<AccessToken> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+
+            Ok(AccessToken {
+                token: self.token.clone().into(),
+                expires_on: OffsetDateTime::now_utc()
+                    + azure_core::time::Duration::seconds(self.expires_in_secs),
+            })
+        }
+    }
+
+    fn create_mock_auth(token: &str, expires_in_secs: i64) -> Auth {
+        let credential = Arc::new(MockCredential {
+            token: token.to_string(),
+            expires_in_secs,
+            call_count: Arc::new(Mutex::new(0)),
+        });
+        Auth::from_credential(credential, "test_scope".to_string())
+    }
+
+    fn create_test_client() -> Client {
+        Client::builder().build().unwrap()
+    }
+
+    // ==================== parse_os_version Tests ====================
+
+    #[test]
+    fn test_parse_os_version_semver() {
+        // Can't mock System::os_version, but we can test the parsing logic
+        // by checking the function returns reasonable values
+        let (major, minor) = parse_os_version();
+        // Should return some string (either parsed or "Unknown")
+        assert!(!major.is_empty());
+        assert!(!minor.is_empty());
+    }
+
+    // ==================== HeartbeatRow Serialization Tests ====================
+
+    #[test]
+    fn test_heartbeat_row_serialization() {
+        let row = HeartbeatRow {
+            time: "2026-01-22T10:00:00Z".to_string(),
+            version: "1.0.0".to_string(),
+            os_name: "Linux".to_string(),
+            computer: "test-computer".to_string(),
+            os_major_version: "22".to_string(),
+            os_minor_version: "04".to_string(),
+        };
+
+        let json = serde_json::to_value(&row).unwrap();
+
+        assert_eq!(json["Time"], "2026-01-22T10:00:00Z");
+        assert_eq!(json["Version"], "1.0.0");
+        assert_eq!(json["OSName"], "Linux");
+        assert_eq!(json["Computer"], "test-computer");
+        assert_eq!(json["OSMajorVersion"], "22");
+        assert_eq!(json["OSMinorVersion"], "04");
+    }
+
+    #[test]
+    fn test_heartbeat_row_serialization_field_names() {
+        let row = HeartbeatRow {
+            time: "".to_string(),
+            version: "".to_string(),
+            os_name: "".to_string(),
+            computer: "".to_string(),
+            os_major_version: "".to_string(),
+            os_minor_version: "".to_string(),
+        };
+
+        let json = serde_json::to_string(&row).unwrap();
+
+        // Verify PascalCase field names
+        assert!(json.contains("\"Time\""));
+        assert!(json.contains("\"Version\""));
+        assert!(json.contains("\"OSName\""));
+        assert!(json.contains("\"Computer\""));
+        assert!(json.contains("\"OSMajorVersion\""));
+        assert!(json.contains("\"OSMinorVersion\""));
+
+        // Verify no snake_case field names
+        assert!(!json.contains("\"time\""));
+        assert!(!json.contains("\"version\""));
+        assert!(!json.contains("\"os_name\""));
+    }
+
+    #[test]
+    fn test_heartbeat_payload_is_array() {
+        let row = HeartbeatRow {
+            time: "2026-01-22T10:00:00Z".to_string(),
+            version: "1.0.0".to_string(),
+            os_name: "Linux".to_string(),
+            computer: "test".to_string(),
+            os_major_version: "22".to_string(),
+            os_minor_version: "04".to_string(),
+        };
+
+        let payload = serde_json::json!([row]);
+        assert!(payload.is_array());
+        assert_eq!(payload.as_array().unwrap().len(), 1);
+    }
+
+    // ==================== Endpoint Construction Tests ====================
+
+    #[test]
+    fn test_endpoint_format() {
+        let config = ApiConfig {
+            dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
+            dcr: "dcr-abc123".to_string(),
+            stream_name: "Custom-Logs".to_string(),
+            schema: super::super::config::SchemaConfig {
+                resource_mapping: HashMap::new(),
+                scope_mapping: HashMap::new(),
+                log_record_mapping: HashMap::new(),
+            },
+        };
+
+        let expected = format!(
+            "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",
+            config.dcr_endpoint, config.dcr, HEARTBEAT_STREAM_NAME
+        );
+
+        assert_eq!(
+            expected,
+            "https://test.ingest.monitor.azure.com/dataCollectionRules/dcr-abc123/streams/HEALTH_ASSESSMENT_BLOB?api-version=2021-11-01-preview"
+        );
+    }
+
+    // ==================== Default Value Tests ====================
+
+    #[test]
+    fn test_default_heartbeat_version_fallback() {
+        // When IMAGE env var is not set, should use CARGO_PKG_VERSION
+        let version = default_heartbeat_version();
+        assert!(!version.is_empty());
+    }
+
+    #[test]
+    fn test_default_heartbeat_os_name_returns_value() {
+        let os_name = default_heartbeat_os_name();
+        assert!(!os_name.is_empty());
+    }
+
+    #[test]
+    fn test_default_heartbeat_computer_fallback() {
+        let computer = default_heartbeat_computer();
+        assert!(!computer.is_empty());
+    }
+
+    #[test]
+    fn test_default_heartbeat_os_major_version_returns_value() {
+        let major = default_heartbeat_os_major_version();
+        assert!(!major.is_empty());
+    }
+
+    #[test]
+    fn test_default_heartbeat_os_minor_version_returns_value() {
+        let minor = default_heartbeat_os_minor_version();
+        assert!(!minor.is_empty());
+    }
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn test_heartbeat_stream_name() {
+        assert_eq!(HEARTBEAT_STREAM_NAME, "HEALTH_ASSESSMENT_BLOB");
+    }
+
+    #[test]
+    fn test_max_idle_connections() {
+        assert_eq!(MAX_IDLE_CONNECTIONS_PER_HOST, 2);
+    }
+
+    // ==================== Send Method Tests ====================
+
+    #[tokio::test]
+    async fn test_send_success() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_unauthorized_invalidates_token() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Auth { kind, .. } => {
+                assert!(matches!(kind, super::super::error::AuthErrorKind::Unauthorized));
+            }
+            e => panic!("Expected Auth/Unauthorized error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_forbidden() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Auth { kind, .. } => {
+                assert!(matches!(kind, super::super::error::AuthErrorKind::Forbidden));
+            }
+            e => panic!("Expected Auth/Forbidden error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_rate_limited() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .set_body_string("Too Many Requests")
+                    .insert_header("Retry-After", "60"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::RateLimited { retry_after, .. } => {
+                assert_eq!(retry_after, Some(Duration::from_secs(60)));
+            }
+            e => panic!("Expected RateLimited error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_server_error() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::ServerError { status, .. } => {
+                assert_eq!(status.as_u16(), 500);
+            }
+            e => panic!("Expected ServerError, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_payload_too_large() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(413))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::PayloadTooLarge => {}
+            e => panic!("Expected PayloadTooLarge error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_unexpected_status() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(418).set_body_string("I'm a teapot"))
+            .mount(&mock_server)
+            .await;
+
+        let auth = create_mock_auth("test_token", 3600);
+        let mut heartbeat = Heartbeat::from_parts(create_test_client(), mock_server.uri(), auth);
+
+        heartbeat.auth_header.refresh_token().await.unwrap();
+        let result = heartbeat.send().await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::UnexpectedStatus { status, .. } => {
+                assert_eq!(status.as_u16(), 418);
+            }
+            e => panic!("Expected UnexpectedStatus error, got: {:?}", e),
+        }
+    }
+
+    // ==================== from_parts Tests ====================
+
+    #[test]
+    fn test_from_parts_creates_heartbeat() {
+        let auth = create_mock_auth("test_token", 3600);
+        let heartbeat =
+            Heartbeat::from_parts(create_test_client(), "https://example.com".to_string(), auth);
+
+        assert_eq!(heartbeat.endpoint, "https://example.com");
+        assert_eq!(heartbeat.heartbeat_row.version, "test-version");
+        assert_eq!(heartbeat.heartbeat_row.os_name, "test-os");
+        assert_eq!(heartbeat.heartbeat_row.computer, "test-computer");
     }
 }
