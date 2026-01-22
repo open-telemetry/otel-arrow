@@ -44,8 +44,18 @@ impl ReplayBundle {
     /// Returns `None` if any slot payload fails to decode, along with the
     /// slot ID that failed for diagnostic purposes.
     ///
-    /// Note: The original slot names are not preserved in the WAL format,
-    /// so all recovered slots use the placeholder name "recovered".
+    /// # Slot Names
+    ///
+    /// The WAL format does not store slot names (labels like "Logs", "LogAttrs"),
+    /// only the numeric `slot_id` and `schema_fingerprint`. This has **no semantic
+    /// impact** because:
+    ///
+    /// - Stream routing uses `(slot_id, schema_fingerprint)` as the key, not names
+    /// - Segment storage indexes by `slot_id`, not names
+    /// - Names are purely for human debugging/observability
+    ///
+    /// All recovered slots use the placeholder name "recovered". This is only
+    /// visible in debug logs during the brief replay window at startup.
     pub(crate) fn from_wal_entry(entry: &WalRecordBundle) -> Option<Self> {
         let mut slots = Vec::with_capacity(entry.slots.len());
         let mut descriptors = Vec::with_capacity(entry.slots.len());
@@ -63,7 +73,8 @@ impl ReplayBundle {
                     return None;
                 }
             };
-            // Note: slot names are not preserved in WAL format
+            // Slot names are not in WAL; "recovered" is a placeholder with no semantic impact
+            // (routing uses slot_id + schema_fingerprint, not the label)
             descriptors.push(SlotDescriptor::new(wal_slot.slot_id, "recovered"));
             slots.push(ReplaySlot {
                 slot_id: wal_slot.slot_id,
