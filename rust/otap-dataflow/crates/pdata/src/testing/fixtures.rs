@@ -71,6 +71,7 @@ pub fn logs_with_full_resource_and_scope() -> LogsData {
                         .time_unix_nano(BASE_TIME + 2 * ONE_SEC)
                         .observed_time_unix_nano(BASE_TIME + 2 * ONE_SEC + 100_000_000)
                         .severity_number(SeverityNumber::Error as i32)
+                        .severity_text("HOTHOT")
                         .body(AnyValue::new_string("first log in beta"))
                         .finish(),
                     LogRecord::build()

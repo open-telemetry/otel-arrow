@@ -420,7 +420,7 @@ mod tests {
 2025-01-15T10:30:00.000Z  │ ├─ INFO  event_1: first log in alpha
 2025-01-15T10:30:01.000Z  │ ├─ WARN  second log in alpha
 2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0
-2025-01-15T10:30:02.000Z  │ ├─ ERROR first log in beta
+2025-01-15T10:30:02.000Z  │ ├─ HOTHOT first log in beta
 2025-01-15T10:30:03.000Z  │ └─ DEBUG event_2: [detail=no body here]
 ";
         assert_eq!(text, expected);
