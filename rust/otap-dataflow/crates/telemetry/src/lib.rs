@@ -121,6 +121,10 @@ pub struct InternalTelemetrySystem {
 
     /// Event reporter for asynchronous internal logging modes.
     admin_reporter: ObservedEventReporter,
+
+    /// Entity key providers for associating logs with pipeline/node context.
+    /// Set via `set_entity_providers()` before spawning pipeline threads.
+    entity_providers: Option<EntityKeyProviders>,
 }
 
 impl InternalTelemetrySystem {
@@ -173,6 +177,7 @@ impl InternalTelemetrySystem {
             log_level: config.logs.level,
             provider_modes: config.logs.providers.clone(),
             admin_reporter,
+            entity_providers: None,
         })
     }
 
@@ -180,12 +185,22 @@ impl InternalTelemetrySystem {
     ///
     /// This sets up the global subscriber based on the configured `global` provider mode.
     /// The event reporter passed to `new()` is used internally for async modes.
+    /// If entity providers have been set, they will be used to associate logs with context.
     pub fn init_global_subscriber(&self) {
         let setup = self.tracing_setup_for(self.provider_modes.global);
 
         if let Err(err) = setup.try_init_global() {
             raw_error!("tracing.subscriber.init", error = err.to_string());
         }
+    }
+
+    /// Set entity key providers for associating logs with pipeline/node context.
+    ///
+    /// This should be called before spawning pipeline threads. Once set, all
+    /// tracing setups (global, engine, admin) will use these providers to
+    /// capture entity context when creating log records.
+    pub fn set_entity_providers(&mut self, providers: EntityKeyProviders) {
+        self.entity_providers = Some(providers);
     }
 
     /// Returns a `TracingSetup` for the given provider mode.
@@ -223,19 +238,7 @@ impl InternalTelemetrySystem {
         };
 
         TracingSetup::new(provider, self.log_level)
-    }
-
-    /// Returns a `TracingSetup` for engine threads with entity context providers.
-    ///
-    /// The entity providers allow the tracing layer to capture pipeline and node
-    /// entity keys when creating log records, associating logs with their context.
-    #[must_use]
-    pub fn engine_tracing_setup_with_providers(
-        &self,
-        entity_providers: EntityKeyProviders,
-    ) -> TracingSetup {
-        self.tracing_setup_for(self.provider_modes.engine)
-            .with_entity_providers(entity_providers)
+            .with_entity_providers_opt(self.entity_providers)
     }
 
     /// Returns a `TracingSetup` for engine threads.

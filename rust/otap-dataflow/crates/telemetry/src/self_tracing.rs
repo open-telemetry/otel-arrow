@@ -19,7 +19,7 @@ use tracing::{Event, Level, Metadata};
 use crate::registry::EntityKey;
 
 pub use encoder::DirectLogRecordEncoder;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
+pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, ScopeMode};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -133,5 +133,11 @@ impl LogRecord {
     #[must_use]
     pub fn format_without_timestamp(&self) -> String {
         ConsoleWriter::no_color().format_log_record(None, self)
+    }
+
+    /// Returns true if this log record has any entity context (pipeline or node).
+    #[must_use]
+    pub fn has_entity_context(&self) -> bool {
+        self.pipeline_entity_key.is_some() || self.node_entity_key.is_some()
     }
 }

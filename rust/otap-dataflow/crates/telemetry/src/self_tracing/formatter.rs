@@ -54,6 +54,19 @@ pub enum ColorMode {
     NoColor,
 }
 
+/// Scope printing mode for log records with entity context.
+#[derive(Debug, Clone, Copy, Default)]
+pub enum ScopeMode {
+    /// Print scope attributes on a continuation line after the log message.
+    /// Used when printing individual log records.
+    #[default]
+    Inline,
+    /// Do not print scope attributes with individual log records.
+    /// Used when log records are grouped by scope and the scope header
+    /// is printed once before multiple log records.
+    Grouped,
+}
+
 impl ColorMode {
     /// Write an ANSI escape sequence (no-op for NoColor).
     #[inline]
@@ -118,25 +131,59 @@ impl ConsoleWriter {
     ///
     /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
     pub fn format_log_record(&self, time: Option<SystemTime>, record: &LogRecord) -> String {
+        self.format_log_record_with_mode(time, record, ScopeMode::Inline)
+    }
+
+    /// Format a LogRecord with configurable scope printing mode.
+    pub fn format_log_record_with_mode(
+        &self,
+        time: Option<SystemTime>,
+        record: &LogRecord,
+        scope_mode: ScopeMode,
+    ) -> String {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into(&mut buf, time, record);
+        let len = self.format_log_record_into_with_mode(&mut buf, time, record, scope_mode);
         // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
     /// Print a LogRecord directly to stdout or stderr (based on level).
     pub fn print_log_record(&self, time: SystemTime, record: &LogRecord) {
+        self.print_log_record_with_mode(time, record, ScopeMode::Inline);
+    }
+
+    /// Print a LogRecord with configurable scope printing mode.
+    pub fn print_log_record_with_mode(
+        &self,
+        time: SystemTime,
+        record: &LogRecord,
+        scope_mode: ScopeMode,
+    ) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into(&mut buf, Some(time), record);
+        let len = self.format_log_record_into_with_mode(&mut buf, Some(time), record, scope_mode);
         self.write_line(record.callsite().level(), &buf[..len]);
     }
 
     /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
+    /// Uses `ScopeMode::Inline` by default.
+    #[allow(dead_code)]
     fn format_log_record_into(
         &self,
         buf: &mut [u8],
         time: Option<SystemTime>,
         record: &LogRecord,
+    ) -> usize {
+        self.format_log_record_into_with_mode(buf, time, record, ScopeMode::Inline)
+    }
+
+    /// Encode a LogRecord to a byte buffer with configurable scope mode.
+    /// Returns the number of bytes written.
+    fn format_log_record_into_with_mode(
+        &self,
+        buf: &mut [u8],
+        time: Option<SystemTime>,
+        record: &LogRecord,
+        scope_mode: ScopeMode,
     ) -> usize {
         let mut w = Cursor::new(buf);
 
@@ -154,7 +201,37 @@ impl ConsoleWriter {
             },
         );
 
+        // Add scope continuation line if entity context is present (Inline mode only)
+        if matches!(scope_mode, ScopeMode::Inline) && record.has_entity_context() {
+            self.format_scope_continuation_into(&mut w, record);
+        }
+
         w.position() as usize
+    }
+
+    /// Format a scope continuation line showing entity context.
+    /// This prints on a new line without timestamp/level/name prefix.
+    /// Format: `  └─ scope [pipeline=<key>, node=<key>]`
+    fn format_scope_continuation_into(&self, w: &mut BufWriter<'_>, record: &LogRecord) {
+        // Indent to align with the log message (past timestamp and level)
+        let _ = w.write_all(b"                                ");
+        self.write_styled(w, AnsiCode::Dim, |w| {
+            let _ = w.write_all(b"scope");
+        });
+        let _ = w.write_all(b" [");
+
+        let mut first = true;
+        if let Some(key) = record.pipeline_entity_key {
+            let _ = write!(w, "pipeline={:?}", key);
+            first = false;
+        }
+        if let Some(key) = record.node_entity_key {
+            if !first {
+                let _ = w.write_all(b", ");
+            }
+            let _ = write!(w, "node={:?}", key);
+        }
+        let _ = w.write_all(b"]\n");
     }
 
     /// Write callsite details as event_name to buffer.
@@ -804,6 +881,109 @@ mod tests {
         assert!(
             output.contains("attribute_key_010=value_010"),
             "got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_scope_continuation_line() {
+        use crate::registry::EntityKey;
+        use slotmap::SlotMap;
+
+        // Create entity keys for testing
+        let mut slot_map: SlotMap<EntityKey, ()> = SlotMap::with_key();
+        let pipeline_key = slot_map.insert(());
+        let node_key = slot_map.insert(());
+
+        // Create a specific timestamp: 2024-01-15T12:30:45.678Z
+        let timestamp_ns: u64 = 1_705_321_845_678_000_000;
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
+
+        // Test with both entity keys
+        let record = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            body_attrs_bytes: Bytes::new(),
+            pipeline_entity_key: Some(pipeline_key),
+            node_entity_key: Some(node_key),
+        };
+
+        let writer = ConsoleWriter::no_color();
+        let output = writer.format_log_record(Some(time), &record);
+
+        // Should have two lines
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines, got: {:?}", lines);
+
+        // First line is the normal log line
+        assert!(
+            lines[0].starts_with("2024-01-15T12:30:45.678Z"),
+            "got: {}",
+            lines[0]
+        );
+
+        // Second line is the scope continuation with entity keys
+        assert!(
+            lines[1].contains("scope"),
+            "second line should contain 'scope', got: {}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains("pipeline="),
+            "should contain pipeline key, got: {}",
+            lines[1]
+        );
+        assert!(
+            lines[1].contains("node="),
+            "should contain node key, got: {}",
+            lines[1]
+        );
+
+        // Test with only pipeline key
+        let record_pipeline_only = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            body_attrs_bytes: Bytes::new(),
+            pipeline_entity_key: Some(pipeline_key),
+            node_entity_key: None,
+        };
+
+        let output = writer.format_log_record(Some(time), &record_pipeline_only);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "expected 2 lines with pipeline only");
+        assert!(
+            lines[1].contains("pipeline=") && !lines[1].contains("node="),
+            "should only have pipeline, got: {}",
+            lines[1]
+        );
+
+        // Test with no entity keys (should be single line)
+        let record_no_entity = LogRecord {
+            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
+            body_attrs_bytes: Bytes::new(),
+            pipeline_entity_key: None,
+            node_entity_key: None,
+        };
+
+        let output = writer.format_log_record(Some(time), &record_no_entity);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "expected 1 line without entity context, got: {:?}",
+            lines
+        );
+
+        // Test Grouped mode - scope continuation should be suppressed
+        let output = writer.format_log_record_with_mode(Some(time), &record, ScopeMode::Grouped);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "Grouped mode should produce 1 line even with entity context, got: {:?}",
+            lines
+        );
+        assert!(
+            !output.contains("scope"),
+            "Grouped mode should not contain scope line, got: {}",
             output
         );
     }

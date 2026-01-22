@@ -12,8 +12,10 @@ use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
-use otap_df_telemetry::self_tracing::ConsoleWriter;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::{ConsoleWriter, ScopeMode};
 use otap_df_telemetry::{otel_error, otel_info};
+use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,6 +47,10 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     console: ConsoleWriter,
 
+    /// Telemetry registry for resolving entity keys to attributes.
+    #[serde(skip)]
+    registry: Arc<RwLock<Option<TelemetryRegistryHandle>>>,
+
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
 
@@ -75,6 +81,15 @@ impl ObservedStateStore {
     /// Creates a new `ObservedStateStore` with the given configuration.
     #[must_use]
     pub fn new(config: &ObservedStateSettings) -> Self {
+        Self::with_registry(config, None)
+    }
+
+    /// Creates a new `ObservedStateStore` with a telemetry registry for resolving entity keys.
+    #[must_use]
+    pub fn with_registry(
+        config: &ObservedStateSettings,
+        registry: Option<TelemetryRegistryHandle>,
+    ) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
@@ -83,8 +98,16 @@ impl ObservedStateStore {
             sender,
             receiver,
             console: ConsoleWriter::color(),
+            registry: Arc::new(RwLock::new(registry)),
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Sets the telemetry registry for resolving entity keys to attributes.
+    /// This should be called after the telemetry system is created but before
+    /// the store is started.
+    pub fn set_registry(&self, registry: TelemetryRegistryHandle) {
+        *self.registry.write() = Some(registry);
     }
 
     /// Returns a reporter that can be used to send observed events to this store.
@@ -124,10 +147,75 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                self.console.print_log_record(log.time, &log.record);
+                // Print the log record first (without inline scope)
+                self.console
+                    .print_log_record_with_mode(log.time, &log.record, ScopeMode::Grouped);
+
+                // If we have a registry and entity context, print scope attributes
+                if let Some(ref registry) = *self.registry.read() {
+                    self.print_scope_from_registry(&log.record, registry);
+                }
             }
         }
         Ok(())
+    }
+
+    /// Print scope attributes by looking up entity keys in the registry.
+    fn print_scope_from_registry(
+        &self,
+        record: &otap_df_telemetry::self_tracing::LogRecord,
+        registry: &TelemetryRegistryHandle,
+    ) {
+        use std::io::Write;
+
+        if !record.has_entity_context() {
+            return;
+        }
+
+        // Build scope line with resolved attributes
+        let mut scope_parts = Vec::new();
+
+        if let Some(pipeline_key) = record.pipeline_entity_key {
+            registry.visit_entity(pipeline_key, |attrs| {
+                let desc = attrs.descriptor();
+                let values = attrs.attribute_values();
+                // Include all non-empty pipeline attributes
+                for (i, field) in desc.fields.iter().enumerate() {
+                    if let Some(val) = values.get(i) {
+                        let s = val.to_string_value();
+                        if !s.is_empty() {
+                            scope_parts.push(format!("{}={}", field.key, s));
+                        }
+                    }
+                }
+            });
+        }
+
+        if let Some(node_key) = record.node_entity_key {
+            registry.visit_entity(node_key, |attrs| {
+                let desc = attrs.descriptor();
+                let values = attrs.attribute_values();
+                // Include all non-empty node attributes (skip duplicates from pipeline)
+                for (i, field) in desc.fields.iter().enumerate() {
+                    // Skip fields already in scope_parts (node inherits from pipeline)
+                    if scope_parts.iter().any(|p| p.starts_with(&format!("{}=", field.key))) {
+                        continue;
+                    }
+                    if let Some(val) = values.get(i) {
+                        let s = val.to_string_value();
+                        if !s.is_empty() {
+                            scope_parts.push(format!("{}={}", field.key, s));
+                        }
+                    }
+                }
+            });
+        }
+
+        if !scope_parts.is_empty() {
+            // Print scope line (indented, no timestamp/level)
+            let scope_line = format!("                                scope [{}]\n", scope_parts.join(", "));
+            let _ = std::io::stderr().write_all(scope_line.as_bytes());
+        }
     }
 
     /// Reports a new observed event in the store.
@@ -222,5 +310,117 @@ impl ObservedStateHandle {
             .lock()
             .ok()
             .is_some_and(|pipelines| pipelines.get(pipeline_key).is_some_and(|ps| ps.readiness()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    // A mock attribute set that mimics PipelineAttributeSet
+    #[derive(Debug)]
+    struct MockPipelineAttrs {
+        values: Vec<AttributeValue>,
+    }
+
+    static PIPELINE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "pipeline.attrs",
+        fields: &[AttributeField {
+            key: "pipeline.id",  // Macro converts pipeline_id -> pipeline.id
+            r#type: AttributeValueType::String,
+            brief: "Pipeline identifier",
+        }],
+    };
+
+    impl MockPipelineAttrs {
+        fn new(pipeline_id: &str) -> Self {
+            Self {
+                values: vec![AttributeValue::String(pipeline_id.to_string())],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for MockPipelineAttrs {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &PIPELINE_DESCRIPTOR
+        }
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    // A mock attribute set that mimics NodeAttributeSet
+    #[derive(Debug)]
+    struct MockNodeAttrs {
+        values: Vec<AttributeValue>,
+    }
+
+    static NODE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "node.attrs",
+        fields: &[AttributeField {
+            key: "node.id",  // Macro converts node_id -> node.id
+            r#type: AttributeValueType::String,
+            brief: "Node identifier",
+        }],
+    };
+
+    impl MockNodeAttrs {
+        fn new(node_id: &str) -> Self {
+            Self {
+                values: vec![AttributeValue::String(node_id.to_string())],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for MockNodeAttrs {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &NODE_DESCRIPTOR
+        }
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    #[test]
+    fn test_entity_key_lookup() {
+        // Create a registry and register some entities
+        let registry = TelemetryRegistryHandle::new();
+
+        // Register a pipeline entity
+        let pipeline_key = registry.register_entity(MockPipelineAttrs::new("my-pipeline"));
+
+        // Register a node entity
+        let node_key = registry.register_entity(MockNodeAttrs::new("my-node"));
+
+        // Verify we can look them up
+        let mut found_pipeline_id = None;
+        registry.visit_entity(pipeline_key, |attrs| {
+            let desc = attrs.descriptor();
+            let values = attrs.attribute_values();
+            for (i, field) in desc.fields.iter().enumerate() {
+                if field.key == "pipeline.id" {
+                    if let Some(val) = values.get(i) {
+                        found_pipeline_id = Some(val.to_string_value());
+                    }
+                }
+            }
+        });
+        assert_eq!(found_pipeline_id, Some("my-pipeline".to_string()));
+
+        let mut found_node_id = None;
+        registry.visit_entity(node_key, |attrs| {
+            let desc = attrs.descriptor();
+            let values = attrs.attribute_values();
+            for (i, field) in desc.fields.iter().enumerate() {
+                if field.key == "node.id" {
+                    if let Some(val) = values.get(i) {
+                        found_node_id = Some(val.to_string_value());
+                    }
+                }
+            }
+        });
+        assert_eq!(found_node_id, Some("my-node".to_string()));
     }
 }

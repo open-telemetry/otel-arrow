@@ -87,6 +87,13 @@ impl TracingSetup {
         self
     }
 
+    /// Add optional entity key providers to this setup.
+    #[must_use]
+    pub fn with_entity_providers_opt(mut self, providers: Option<EntityKeyProviders>) -> Self {
+        self.entity_providers = providers;
+        self
+    }
+
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider

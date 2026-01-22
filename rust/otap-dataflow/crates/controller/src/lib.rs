@@ -114,8 +114,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Create the telemetry system, pass the observed state store
         // as the admin reporter for console_async support.
-        let telemetry_system =
+        let mut telemetry_system =
             InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
+
+        // Set entity key providers so all tracing setups can associate logs
+        // with pipeline/node context. The function pointers read thread-local
+        // and task-local state, so they work correctly on any thread.
+        telemetry_system.set_entity_providers(EntityKeyProviders {
+            pipeline: pipeline_entity_key,
+            node: node_entity_key,
+        });
+
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
 
         telemetry_system.init_global_subscriber();
@@ -136,6 +145,11 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
+
+        // Set the registry on the observed state store so it can resolve entity keys
+        // to displayable attributes when printing log records.
+        obs_state_store.set_registry(telemetry_registry.clone());
+
         let internal_collector = telemetry_system.collector();
         let metrics_agg_handle = spawn_thread_local_task(
             "metrics-aggregator",
@@ -213,15 +227,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                     let group_id = pipeline_group_id.clone();
                     let pipeline_id = pipeline_id.clone();
-                    // Create engine tracing setup with entity context providers.
-                    // The function pointers read thread-local/task-local state,
-                    // allowing logs to be associated with the correct pipeline/node.
-                    let entity_providers = EntityKeyProviders {
-                        pipeline: pipeline_entity_key,
-                        node: node_entity_key,
-                    };
-                    let engine_tracing_setup =
-                        telemetry_system.engine_tracing_setup_with_providers(entity_providers);
+                    let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                     let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
