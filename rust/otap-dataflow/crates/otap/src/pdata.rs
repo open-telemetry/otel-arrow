@@ -23,7 +23,7 @@ use otap_df_engine::{
 use otap_df_pdata::OtapPayload;
 
 /// Context for OTAP requests
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
 }
@@ -120,7 +120,7 @@ impl Context {
 }
 
 /// Per-node interests, context, and identity.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
     /// Declares the set of interests this node has (Acks, Nacks, ...)
     pub interests: Interests,

@@ -17,8 +17,7 @@ use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::TelemetrySettings;
-use otap_df_state::reporter::ObservedEventReporter;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
+use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cmp::Reverse;
@@ -246,7 +245,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         PipelineControlMsg::Shutdown { deadline, reason } => {
                             match self.control_senders.shutdown_receivers(deadline, reason.clone()).await {
                                 Ok(()) => {
-                                    self.event_reporter.report(ObservedEvent::shutdown_requested(self.pipeline_key, Some(reason)))
+                                    self.event_reporter.report(EngineEvent::shutdown_requested(self.pipeline_key, Some(reason)))
                                 }
                                 Err(_) => {
                                     let err_summary = ErrorSummary::Pipeline {
@@ -254,7 +253,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                         message: "Shutdown request failed".to_owned(),
                                         source: None,
                                     };
-                                    self.event_reporter.report(ObservedEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
+                                    self.event_reporter.report(EngineEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
                                 }
                             }
                             break;
@@ -420,8 +419,8 @@ mod tests {
     use crate::node::{NodeId, NodeType};
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
-    use otap_df_config::observed_state::ObservedStateSettings;
-    use otap_df_config::pipeline::PipelineSettings;
+    use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
+    use otap_df_config::pipeline::PipelineConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
@@ -462,10 +461,12 @@ mod tests {
         // Create a dummy MetricsReporter for testing using MetricsSystem
         let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
         let metrics_reporter = metrics_system.reporter();
-        let pipeline_settings = PipelineSettings::default();
         let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
+        let pipeline_config =
+            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), "")
+                .expect("valid");
         let core_id = 0;
         let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -492,9 +493,9 @@ mod tests {
             pipeline_context,
             pipeline_rx,
             control_senders,
-            observed_state_store.reporter(),
+            observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
-            pipeline_settings.telemetry.clone(),
+            pipeline_config.pipeline_settings().telemetry.clone(),
             Vec::new(),
         );
         (
@@ -891,14 +892,14 @@ mod tests {
                 let metrics_reporter = metrics_system.reporter();
                 let observed_state_store =
                     ObservedStateStore::new(&ObservedStateSettings::default());
-                let pipeline_key = DeployedPipelineKey {
-                    pipeline_group_id: Default::default(),
-                    pipeline_id: Default::default(),
-                    core_id: 0,
-                };
                 let pipeline_group_id: PipelineGroupId = Default::default();
                 let pipeline_id: PipelineId = Default::default();
                 let core_id = 0;
+                let pipeline_key = DeployedPipelineKey {
+                    pipeline_group_id: pipeline_group_id.clone(),
+                    pipeline_id: pipeline_id.clone(),
+                    core_id,
+                };
                 let thread_id = 0;
                 let controller_context = ControllerContext::new(metrics_system.registry());
                 let pipeline_context = PipelineContext::new(
@@ -920,7 +921,7 @@ mod tests {
                     pipeline_context,
                     pipeline_rx,
                     ControlSenders::new(),
-                    observed_state_store.reporter(),
+                    observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
                     TelemetrySettings::default(),
                     Vec::new(),
