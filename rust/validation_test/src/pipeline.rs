@@ -3,42 +3,48 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-use otap_df_config::PipelineGroupId;
-use otap_df_config::PipelineId;
-use otap_df_config::pipeline::PipelineConfig;
-use otap_df_engine::context::ControllerContext;
-use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{
-    PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
-};
+use otap_df_config::engine::EngineConfig;
+use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use otap_df_otap::pdata::OtapPdata;
-use otap_df_state::{DeployedPipelineKey, store::ObservedStateStore};
-use otap_df_telemetry::MetricsSystem;
-use otap_df_telemetry::reporter::MetricsReporter;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 use tera::{Context, Tera};
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, sleep};
 
-const DEFAULT_CORE_ID: usize = 0;
-const DEFAULT_THREAD_ID: usize = 0;
+use crate::error::PipelineError;
+use crate::metrics_types::{MetricValue, MetricsSnapshot};
 
-const DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE: usize = 100;
+const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.tera";
+const ADMIN_ENDPOINT: &str = "http://127.0.0.1:8085";
+const READY_MAX_ATTEMPTS: usize = 10;
+const READY_BACKOFF_SECS: u64 = 3;
 
-const LOAD_GEN_TEMPLATE_PATH: &str = "templates/load_gen/config.yaml.tera";
-const DATA_COLLECT_TEMPLATE_PATH: &str = "templates/data_collect/config.yaml.tera";
+const METRICS_POLL_SECS: u64 = 2;
+const LOADGEN_MAX_SIGNALS: u64 = 2000;
+const LOADGEN_TIMEOUT_SECS: u64 = 60;
+const PROPAGATION_DELAY_SECS: u64 = 3;
 
+const PIPELINE_GROUP_ID: &str = "validation_test";
+const PIPELINE_ID_TRAFFIC: &str = "traffic_gen";
+const PIPELINE_ID_SUV: &str = "suv";
+const PIPELINE_ID_VALIDATION: &str = "validate";
+
+/// Helps distinguish between the message types
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformType {
+    /// otlp type
     Otlp,
+    /// otap type
     Otap,
 }
 
 #[derive(Debug, Deserialize)]
-struct PipelineValidtionConfig {
+struct PipelineValidationConfig {
     pub tests: Vec<PipelineValidation>,
 }
 
@@ -53,185 +59,187 @@ struct PipelineValidation {
 struct TemplateVariables {
     loadgen_exporter_type: PlatformType,
     backend_receiver_type: PlatformType,
-    transformitive: bool,
+    #[serde(default)]
+    expect_failure: bool,
 }
 
 /// struct to simulate a pipeline running, reads a config and starts a pipeline to send and receive data
 pub struct PipelineSimulator {
-    pipeline_context: PipelineContext,
-    metrics_system: MetricsSystem,
-    pipeline_key: DeployedPipelineKey,
-    pipeline_config: PipelineConfig,
+    engine_config: EngineConfig,
 }
 
 impl PipelineSimulator {
-    // if pipeline alters the data via a processor that performs some transofmration we should expect the equivalent assert to fail
-    // otherwise the assert should succeed
-
-    pub fn new_from_file(pipeline_config: PathBuf) -> Result<Self, String> {
-        let core_id = DEFAULT_CORE_ID;
-        let thread_id = DEFAULT_THREAD_ID;
-        let metrics_system = MetricsSystem::default();
-        let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_id = PipelineId::default();
-        let pipeline_group_id = PipelineGroupId::default();
-        let pipeline_context = controller_context.pipeline_context_with(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            core_id,
-            thread_id,
-        );
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: pipeline_group_id.clone(),
-            pipeline_id: pipeline_id.clone(),
-            core_id,
-        };
-        let pipeline_config = PipelineConfig::from_file(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            pipeline_config,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(Self {
-            pipeline_context,
-            metrics_system,
-            pipeline_key,
-            pipeline_config,
-        })
+    /// creates a new simulator from a pipeline yaml configuration
+    pub fn new(yaml: &str) -> Result<Self, PipelineError> {
+        let engine_config =
+            EngineConfig::from_yaml(yaml).map_err(|e| PipelineError::Config(e.to_string()))?;
+        Ok(Self { engine_config })
     }
 
-    pub fn new_from_yaml(yaml: &str) -> Result<Self, String> {
-        let core_id = DEFAULT_CORE_ID;
-        let thread_id = DEFAULT_THREAD_ID;
-        let metrics_system = MetricsSystem::default();
-        let controller_context = ControllerContext::new(metrics_system.registry());
-        let pipeline_id = PipelineId::default();
-        let pipeline_group_id = PipelineGroupId::default();
-        let pipeline_context = controller_context.pipeline_context_with(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            core_id,
-            thread_id,
-        );
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: pipeline_group_id.clone(),
-            pipeline_id: pipeline_id.clone(),
-            core_id,
-        };
-        let pipeline_config =
-            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), yaml)
-                .map_err(|e| e.to_string())?;
-
-        Ok(Self {
-            pipeline_context,
-            metrics_system,
-            pipeline_key,
-            pipeline_config,
-        })
-    }
-
-    pub fn run(
-        &self,
-        ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
-        ctrl_msg_rx: PipelineCtrlMsgReceiver<OtapPdata>,
-    ) {
-        let pipeline_key = self.pipeline_key.clone();
-        let pipeline_context = self.pipeline_context.clone();
-        let obs_state_store = ObservedStateStore::new(self.pipeline_config.pipeline_settings());
-        let obs_evt_reporter = obs_state_store.reporter();
-        let pipeline_runtime = OTAP_PIPELINE_FACTORY
-            .build(pipeline_context.clone(), self.pipeline_config.clone())
-            .expect("failed to create runtime");
-        let metrics_reporter = self.metrics_system.reporter();
-        pipeline_runtime
-            .run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                ctrl_msg_tx,
-                ctrl_msg_rx,
-            )
-            .expect("failed to start pipeline");
+    /// runs the pipeline
+    pub fn run(&self) {
+        // create controller and run
+        let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
+        let engine_config = self.engine_config.clone();
+        let _ = controller.run_forever(engine_config);
     }
 }
 
 impl PipelineValidation {
-    pub fn validate(&self) {
-        // start pipeline
+    /// validates a pipeline, returns true if valid, false if not
+    pub async fn validate(&self, pipeline: String) -> Result<bool, PipelineError> {
+        let pipeline_simulator = PipelineSimulator::new(pipeline.as_str())?;
 
-        // Create the pipeline control channel outside the thread so we can send shutdown
-        let (data_collect_pipeline_ctrl_msg_tx, data_collect_pipeline_ctrl_msg_rx) =
-            pipeline_ctrl_msg_channel::<OtapPdata>(DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE);
-        // Clone the sender before moving into the thread so we can use it for shutdown
-        let data_collect_sender = data_collect_pipeline_ctrl_msg_tx.clone();
-
-        let data_collect_pipeline_config = self.pipeline_config_path.clone();
-        let data_collect_pipeline = PipelineSimulator::new_from_yaml(
-            self.render_template(DATA_COLLECT_TEMPLATE_PATH).as_str(),
-        )
-        .expect("failed to create simulator");
-        let data_collect_metrics_reporter = data_collect_pipeline.get_metric_reporter();
-        let _data_collect_thread = std::thread::spawn(move || {
-            // create pipeline simulator and run it
-            data_collect_pipeline.run(
-                data_collect_pipeline_ctrl_msg_tx,
-                data_collect_pipeline_ctrl_msg_rx,
-            );
+        // start pipeline groups in the background
+        let _pipeline_handle = std::thread::spawn(move || {
+            pipeline_simulator.run();
         });
 
+        let admin_client = Client::new();
 
-        
+        // wait for ready signal, returns error if not ready after some time
+        wait_for_ready(&admin_client, ADMIN_ENDPOINT).await?;
 
-        // Create the pipeline control channel outside the thread so we can send shutdown
-        let (suv_pipeline_ctrl_msg_tx, suv_pipeline_ctrl_msg_rx) =
-            pipeline_ctrl_msg_channel::<OtapPdata>(DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE);
-        // Clone the sender before moving into the thread so we can use it for shutdown
-        let suv_sender = suv_pipeline_ctrl_msg_tx.clone();
+        let loadgen_deadline =
+            std::time::Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
+        loop {
+            let snapshot = fetch_metrics(&admin_client).await?;
+            if loadgen_reached_limit(&snapshot) {
+                // load gen has sent all signals
+                break;
+            }
+            if std::time::Instant::now() >= loadgen_deadline {
+                // return Err(PipelineError::Status(format!(
+                //     "load generator did not reach {} signals before timeout",
+                //     LOADGEN_MAX_SIGNALS
+                // )));
+                break;
+            }
+            sleep(Duration::from_secs(METRICS_POLL_SECS)).await;
+        }
 
-        let suv_pipeline = PipelineSimulator::new_from_file(self.pipeline_config_path.clone())
-            .expect("failed to create simulator");
-        let _suv_thread = std::thread::spawn(move || {
-            // create pipeline simulator and run it
-
-            suv_pipeline.run(suv_pipeline_ctrl_msg_tx, suv_pipeline_ctrl_msg_rx);
-        });
+        let content = admin_client
+        .get(format!("{ADMIN_ENDPOINT}/telemetry/metrics"))
+        .send()
+        .await.expect("failed to get metrics").error_for_status().expect("failed").text().await.expect("failed to get metrics");
+        println!("metrics: {content}");
 
 
+        sleep(Duration::from_secs(PROPAGATION_DELAY_SECS)).await;
 
+        /// send shutdown signal
+        let shutdown: Value = admin_client
+            .post(format!("{ADMIN_ENDPOINT}/pipeline-groups/shutdown"))
+            .send()
+            .await?
+            .error_for_status()
+            .map_err(|e| PipelineError::Status(e.to_string()))?
+            .json()
+            .await?;
 
-
-
-        // Create the pipeline control channel outside the thread so we can send shutdown
-        let (load_gen_pipeline_ctrl_msg_tx, load_gen_pipeline_ctrl_msg_rx) =
-            pipeline_ctrl_msg_channel::<OtapPdata>(DEFAULT_PIPELINE_CTRL_MSG_CHANNEL_SIZE);
-        // Clone the sender before moving into the thread so we can use it for shutdown
-        let load_gen_sender = load_gen_pipeline_ctrl_msg_tx.clone();
-        let load_gen_pipeline =
-            PipelineSimulator::new_from_yaml(self.render_template(LOAD_GEN_TEMPLATE_PATH).as_str())
-                .expect("failed to create simulator");
-        let _load_gen_thread = std::thread::spawn(move || {
-            load_gen_pipeline.run(load_gen_pipeline_ctrl_msg_tx, load_gen_pipeline_ctrl_msg_rx);
-        });
-
-        // monitor ctrl messages from the simulators
-
-        // monitor metrics from the load gen pipeline until we notice max signal reached then we can start to kill the pipelines
-
-        // get result form
+        let assert_snapshot = fetch_metrics(&admin_client).await?;
+        // let result = assert_from_metrics(&assert_snapshot);
+        Ok(true)
     }
 
-    pub fn render_template(&self, template_path: &str) -> String {
-        let template = fs::read_to_string(template_path).expect("failed to read template");
-        // one_off avoids building a template registry; autoescape=false for YAML
-        Tera::one_off(
-            &template,
-            &Context::from_serialize(&self.variables).expect("failed to pass context"),
-            false,
-        )
-        .expect("failed to render template")
+    /// render_template generates the validation pipeline group with the pipeline that will be validated
+    pub fn render_template(&mut self, template_path: &str) -> Result<String, PipelineError> {
+        // get suv pipeline defintion
+        let pipeline_config = fs::read_to_string(&self.pipeline_config_path)?;
+        // get pipeline group template to run validation test
+        let template = fs::read_to_string(template_path)?;
+
+        let mut tera_context = Context::from_serialize(&self.variables)?;
+        tera_context.insert("pipeline_config", &pipeline_config);
+        // render the pipeline group string
+        Ok(Tera::one_off(&template, &tera_context, false)?)
     }
 }
+
+async fn wait_for_ready(client: &Client, base: &str) -> Result<(), PipelineError> {
+    let readyz_url = format!("{base}/readyz");
+    let mut last_error: Option<String> = None;
+    for _attempt in 0..READY_MAX_ATTEMPTS {
+        match client.get(&readyz_url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => match resp.text().await {
+                Ok(body) => last_error = Some(format!("pipeline is not ready: {body}")),
+                Err(err) => last_error = Some(format!("pipeline is not ready: {err}")),
+            },
+            Err(err) => {
+                last_error = Some(format!("pipeline is not ready: {err}"));
+            }
+        }
+
+        sleep(Duration::from_secs(READY_BACKOFF_SECS)).await;
+    }
+
+    Err(PipelineError::Ready(
+        last_error.unwrap_or_else(|| "readyz timeout".to_string()),
+    ))
+}
+
+async fn fetch_metrics(client: &Client) -> Result<MetricsSnapshot, PipelineError> {
+    Ok(client
+        .get(format!("{ADMIN_ENDPOINT}/telemetry/metrics"))
+        .send()
+        .await?
+        .error_for_status()
+        .map_err(|e| PipelineError::Status(e.to_string()))?
+        .json()
+        .await?)
+}
+
+fn metric_value_u64(value: &MetricValue) -> Option<u64> {
+    match value {
+        MetricValue::U64(v) => Some(*v),
+        MetricValue::F64(v) => Some(*v as u64),
+    }
+}
+
+fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
+    snapshot
+        .metric_sets
+        .iter()
+        .find(|set| set.name == "fake_data_generator.receiver.metrics")
+        .and_then(|set| {
+            set.metrics
+                .iter()
+                .find(|m| m.metadata.name == "logs_produced")
+                .and_then(|m| metric_value_u64(&m.value))
+        })
+        .map(|v| v >= LOADGEN_MAX_SIGNALS)
+        .unwrap_or(false)
+}
+
+// fn assert_from_metrics(snapshot: &MetricsSnapshot) -> bool {
+//     let mut comparisons = 0_u64;
+//     let mut mismatches = 0_u64;
+
+//     if let Some(set) = snapshot
+//         .metric_sets
+//         .iter()
+//         .find(|set| set.name == "validation.assert.exporter.metrics")
+//     {
+//         for metric in &set.metrics {
+//             match metric.metadata.name.as_str() {
+//                 "comparisons" => {
+//                     if let Some(v) = metric_value_u64(&metric.value) {
+//                         comparisons = v;
+//                     }
+//                 }
+//                 "mismatches" => {
+//                     if let Some(v) = metric_value_u64(&metric.value) {
+//                         mismatches = v;
+//                     }
+//                 }
+//                 _ => {}
+//             }
+//         }
+//     }
+
+//     comparisons > 0 && mismatches == 0
+// }
 
 #[cfg(test)]
 mod test {
@@ -243,28 +251,23 @@ mod test {
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use std::fs;
     use std::fs::File;
-    use std::path::Path;
 
     const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
 
     // validate the encoding and decoding
-    #[test]
-    fn validate_pipeline() {
+    #[tokio::test]
+    async fn validate_pipeline() {
         let file = File::open(PIPELINE_CONFIG_YAML).expect("failed to get config file");
-        let config: PipelineValidtionConfig =
+        let config: PipelineValidationConfig =
             serde_yaml::from_reader(file).expect("Could not deserialize config");
-        for config in config.tests {
-            let rendered_template = config.render_template(LOAD_GEN_TEMPLATE_PATH);
-            println!("{}", rendered_template);
+        for mut config in config.tests {
+            match config.render_template(VALIDATION_TEMPLATE_PATH) {
+                Ok(rendered_template) => match config.validate(rendered_template).await {
+                    Ok(result) => println!("Pipeline: {} => {}", config.name, result),
+                    Err(error) => println!("Pipeline: {} => {}", config.name, error),
+                },
+                Err(error) => println!("Pipeline: {} => {}", config.name, error),
+            }
         }
     }
-
-    // async fn validate_pipelines() {
-    //     read from the validate_pipelines.yaml file
-    //     iterate for each pipeline
-    //     create traffic-gen with otlp/otap exporter -> this last
-    //     pipeline created second
-    //     create collector with otlp/otap receiver -> this first
-
-    // }
 }

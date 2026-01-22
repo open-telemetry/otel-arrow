@@ -3,8 +3,9 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-// ToDo: Support transformative processors in a pipeline,
-// we should be able to know when the assert equivalent will fail
-
+// pub mod assert_exporter;
 pub mod encode_decode;
+pub mod error;
+// pub mod fanout_processor;
+pub mod metrics_types;
 pub mod pipeline;

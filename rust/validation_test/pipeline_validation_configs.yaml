@@ -4,10 +4,10 @@ tests:
     variables:
       loadgen_exporter_type: otlp
       backend_receiver_type: otlp
-      transformitive: false
+      expect_failure: false
   - name: "Debug Processor"
     pipeline_config_path: ./validation_pipelines/debug-processor.yaml
     variables:
       loadgen_exporter_type: otap
       backend_receiver_type: otlp
-      transformitive: false
+      expect_failure: false
