@@ -918,11 +918,13 @@ pub fn transform_attributes_with_stats(
                 let (reconciled_orig, reconciled_new, unified_schema) =
                     reconcile_batches_for_concat(rb_extended, new_rows)?;
 
-                let combined =
-                    arrow::compute::concat_batches(&unified_schema, &[reconciled_orig, reconciled_new])
-                        .map_err(|e| Error::Format {
-                            error: e.to_string(),
-                        })?;
+                let combined = arrow::compute::concat_batches(
+                    &unified_schema,
+                    &[reconciled_orig, reconciled_new],
+                )
+                .map_err(|e| Error::Format {
+                    error: e.to_string(),
+                })?;
                 stats.inserted_entries = count as u64;
                 return Ok((combined, stats));
             }
@@ -3942,10 +3944,7 @@ fn wider_type(t1: &DataType, t2: &DataType) -> Option<DataType> {
         (a, b) if a == b => Some(a.clone()),
 
         // Dict<UInt8, V> vs Dict<UInt16, V> -> Dict<UInt16, V>
-        (
-            DataType::Dictionary(k1, v1),
-            DataType::Dictionary(k2, v2),
-        ) if v1 == v2 => {
+        (DataType::Dictionary(k1, v1), DataType::Dictionary(k2, v2)) if v1 == v2 => {
             match (k1.as_ref(), k2.as_ref()) {
                 (DataType::UInt8, DataType::UInt8) => Some(t1.clone()),
                 (DataType::UInt8, DataType::UInt16) | (DataType::UInt16, DataType::UInt8) => {
@@ -3996,28 +3995,37 @@ fn reconcile_batches_for_concat(
         }
 
         // Types differ - find the wider type
-        let wide_type = wider_type(orig_field.data_type(), new_field.data_type()).ok_or_else(
-            || Error::Format {
-                error: format!(
-                    "Cannot reconcile column '{}': incompatible types {:?} and {:?}",
-                    orig_field.name(),
-                    orig_field.data_type(),
-                    new_field.data_type()
-                ),
-            },
-        )?;
+        let wide_type =
+            wider_type(orig_field.data_type(), new_field.data_type()).ok_or_else(|| {
+                Error::Format {
+                    error: format!(
+                        "Cannot reconcile column '{}': incompatible types {:?} and {:?}",
+                        orig_field.name(),
+                        orig_field.data_type(),
+                        new_field.data_type()
+                    ),
+                }
+            })?;
 
         // Update unified field with wider type
         unified_fields.push(
-            Field::new(orig_field.name(), wide_type.clone(), orig_field.is_nullable())
-                .with_metadata(orig_field.metadata().clone()),
+            Field::new(
+                orig_field.name(),
+                wide_type.clone(),
+                orig_field.is_nullable(),
+            )
+            .with_metadata(orig_field.metadata().clone()),
         );
 
         // Cast columns if needed
         if orig_field.data_type() != &wide_type {
             orig_columns[i] =
                 arrow::compute::cast(&orig_columns[i], &wide_type).map_err(|e| Error::Format {
-                    error: format!("Failed to cast original column '{}': {}", orig_field.name(), e),
+                    error: format!(
+                        "Failed to cast original column '{}': {}",
+                        orig_field.name(),
+                        e
+                    ),
                 })?;
             needs_cast = true;
         }
@@ -4037,16 +4045,15 @@ fn reconcile_batches_for_concat(
 
     let unified_schema = Arc::new(arrow::datatypes::Schema::new(unified_fields));
 
-    let reconciled_original = RecordBatch::try_new(unified_schema.clone(), orig_columns)
-        .map_err(|e| Error::Format {
+    let reconciled_original =
+        RecordBatch::try_new(unified_schema.clone(), orig_columns).map_err(|e| Error::Format {
             error: format!("Failed to create reconciled original batch: {}", e),
         })?;
 
-    let reconciled_new = RecordBatch::try_new(unified_schema.clone(), new_columns).map_err(|e| {
-        Error::Format {
+    let reconciled_new =
+        RecordBatch::try_new(unified_schema.clone(), new_columns).map_err(|e| Error::Format {
             error: format!("Failed to create reconciled new batch: {}", e),
-        }
-    })?;
+        })?;
 
     Ok((reconciled_original, reconciled_new, unified_schema))
 }
@@ -5135,15 +5142,21 @@ mod insert_tests {
         // Test widening from Dict<UInt8> to Dict<UInt16>
         use super::reconcile_batches_for_concat;
 
-        let dict8_type =
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict8_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
         let dict16_type =
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
 
-        let schema1 = Arc::new(Schema::new(vec![Field::new("key", dict8_type.clone(), false)]));
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict8_type.clone(),
+            false,
+        )]));
 
-        let schema2 =
-            Arc::new(Schema::new(vec![Field::new("key", dict16_type.clone(), false)]));
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict16_type.clone(),
+            false,
+        )]));
 
         // Create a Dict<UInt8> array
         let mut dict8_builder = StringDictionaryBuilder::<UInt8Type>::new();
@@ -5183,10 +5196,13 @@ mod insert_tests {
         // Test widening from Dict<UInt8, Utf8> to native Utf8
         use super::reconcile_batches_for_concat;
 
-        let dict8_type =
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict8_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
 
-        let schema1 = Arc::new(Schema::new(vec![Field::new("key", dict8_type.clone(), false)]));
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict8_type.clone(),
+            false,
+        )]));
 
         let schema2 = Arc::new(Schema::new(vec![Field::new("key", DataType::Utf8, false)]));
 
@@ -5217,8 +5233,14 @@ mod insert_tests {
         use super::wider_type;
 
         // Same types
-        assert_eq!(wider_type(&DataType::Utf8, &DataType::Utf8), Some(DataType::Utf8));
-        assert_eq!(wider_type(&DataType::Int64, &DataType::Int64), Some(DataType::Int64));
+        assert_eq!(
+            wider_type(&DataType::Utf8, &DataType::Utf8),
+            Some(DataType::Utf8)
+        );
+        assert_eq!(
+            wider_type(&DataType::Int64, &DataType::Int64),
+            Some(DataType::Int64)
+        );
 
         // Dict<UInt8> vs Dict<UInt16> -> Dict<UInt16>
         let dict8 = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
