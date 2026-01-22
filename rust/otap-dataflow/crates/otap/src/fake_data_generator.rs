@@ -233,7 +233,11 @@ impl BatchCache {
         Some(batch)
     }
 
-    /// Get the next pre-generated logs batch (cycles through the pool)
+    /// Get the next pre-generated logs batch (cycles through the pool).
+    ///
+    /// Note: Clone is O(1) here because `OtapPdata` contains `OtapPayload::OtlpBytes`,
+    /// which wraps `bytes::Bytes` - a reference-counted byte buffer. Cloning only
+    /// increments an atomic reference count, no data is copied.
     fn next_logs(&mut self) -> Option<OtapPdata> {
         if self.logs.is_empty() {
             return None;
