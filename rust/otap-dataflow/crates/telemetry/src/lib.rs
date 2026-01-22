@@ -56,7 +56,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use tracing_init::TracingSetup;
+pub use tracing_init::{EntityKeyProviders, TracingSetup};
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -223,6 +223,19 @@ impl InternalTelemetrySystem {
         };
 
         TracingSetup::new(provider, self.log_level)
+    }
+
+    /// Returns a `TracingSetup` for engine threads with entity context providers.
+    ///
+    /// The entity providers allow the tracing layer to capture pipeline and node
+    /// entity keys when creating log records, associating logs with their context.
+    #[must_use]
+    pub fn engine_tracing_setup_with_providers(
+        &self,
+        entity_providers: EntityKeyProviders,
+    ) -> TracingSetup {
+        self.tracing_setup_for(self.provider_modes.engine)
+            .with_entity_providers(entity_providers)
     }
 
     /// Returns a `TracingSetup` for engine threads.

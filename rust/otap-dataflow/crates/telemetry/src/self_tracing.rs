@@ -16,6 +16,8 @@ use otap_df_pdata::otlp::ProtoBuffer;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
+use crate::registry::EntityKey;
+
 pub use encoder::DirectLogRecordEncoder;
 pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
 
@@ -31,6 +33,14 @@ pub struct LogRecord {
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
+
+    /// The pipeline entity key at the time this log record was created.
+    /// Used to associate the log with the correct pipeline for telemetry.
+    pub pipeline_entity_key: Option<EntityKey>,
+
+    /// The node entity key at the time this log record was created.
+    /// Used to associate the log with the correct node for telemetry.
+    pub node_entity_key: Option<EntityKey>,
 }
 
 /// Saved callsite information. This is information that can easily be
@@ -82,8 +92,19 @@ impl SavedCallsite {
 
 impl LogRecord {
     /// Construct a log record, partially encoding its dynamic content.
+    /// Entity keys are not captured; use `new_with_context` for that.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
+        Self::new_with_context(event, None, None)
+    }
+
+    /// Construct a log record with entity context, partially encoding its dynamic content.
+    #[must_use]
+    pub fn new_with_context(
+        event: &Event<'_>,
+        pipeline_entity_key: Option<EntityKey>,
+        node_entity_key: Option<EntityKey>,
+    ) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
@@ -97,6 +118,8 @@ impl LogRecord {
         Self {
             callsite_id: metadata.callsite(),
             body_attrs_bytes: buf.into_bytes(),
+            pipeline_entity_key,
+            node_entity_key,
         }
     }
 

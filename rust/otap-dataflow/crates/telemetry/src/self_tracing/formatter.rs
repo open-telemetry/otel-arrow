@@ -708,6 +708,8 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
+            pipeline_entity_key: None,
+            node_entity_key: None,
         };
 
         let writer = ConsoleWriter::no_color();
@@ -770,6 +772,8 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
+            pipeline_entity_key: None,
+            node_entity_key: None,
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];

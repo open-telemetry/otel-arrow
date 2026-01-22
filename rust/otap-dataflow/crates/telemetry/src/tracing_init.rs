@@ -8,6 +8,7 @@
 //! subscriber determines how log events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
+use crate::registry::EntityKey;
 use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
@@ -18,6 +19,20 @@ use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
+
+/// Function pointers for retrieving entity keys from the engine's context.
+///
+/// These are injected by the controller at startup and allow the telemetry
+/// layer to capture pipeline and node entity keys when creating log records.
+/// The functions read thread-local/task-local state, so they work correctly
+/// on any thread where entity context has been established.
+#[derive(Clone, Copy)]
+pub struct EntityKeyProviders {
+    /// Returns the current pipeline entity key for this thread, if set.
+    pub pipeline: fn() -> Option<EntityKey>,
+    /// Returns the current node entity key for this task, if set.
+    pub node: fn() -> Option<EntityKey>,
+}
 
 /// Creates an `EnvFilter` for the given log level.
 ///
@@ -50,6 +65,8 @@ pub struct TracingSetup {
     pub provider: ProviderSetup,
     /// The log level for filtering.
     pub log_level: LogLevel,
+    /// Optional entity key providers for capturing context in log records.
+    pub entity_providers: Option<EntityKeyProviders>,
 }
 
 impl TracingSetup {
@@ -59,12 +76,21 @@ impl TracingSetup {
         Self {
             provider,
             log_level,
+            entity_providers: None,
         }
+    }
+
+    /// Add entity key providers to this setup.
+    #[must_use]
+    pub fn with_entity_providers(mut self, providers: EntityKeyProviders) -> Self {
+        self.entity_providers = Some(providers);
+        self
     }
 
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
-        self.provider.try_init_global(self.log_level)
+        self.provider
+            .try_init_global(self.log_level, self.entity_providers)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -72,7 +98,8 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
-        self.provider.with_subscriber(self.log_level, f)
+        self.provider
+            .with_subscriber(self.log_level, self.entity_providers, f)
     }
 }
 
@@ -100,7 +127,11 @@ pub enum ProviderSetup {
 
 impl ProviderSetup {
     /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(&self, log_level: LogLevel) -> Dispatch {
+    fn build_dispatch(
+        &self,
+        log_level: LogLevel,
+        entity_providers: Option<EntityKeyProviders>,
+    ) -> Dispatch {
         let filter = || create_env_filter(log_level);
 
         match self {
@@ -113,7 +144,7 @@ impl ProviderSetup {
             ),
 
             ProviderSetup::ConsoleAsync { reporter } => {
-                let layer = ConsoleAsyncLayer::new(reporter);
+                let layer = ConsoleAsyncLayer::new(reporter, entity_providers);
                 Dispatch::new(Registry::default().with(filter()).with(layer))
             }
 
@@ -128,17 +159,23 @@ impl ProviderSetup {
     pub fn try_init_global(
         &self,
         log_level: LogLevel,
+        entity_providers: Option<EntityKeyProviders>,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
-        let dispatch = self.build_dispatch(log_level);
+        let dispatch = self.build_dispatch(log_level, entity_providers);
         tracing::dispatcher::set_global_default(dispatch)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    pub fn with_subscriber<F, R>(&self, log_level: LogLevel, f: F) -> R
+    pub fn with_subscriber<F, R>(
+        &self,
+        log_level: LogLevel,
+        entity_providers: Option<EntityKeyProviders>,
+        f: F,
+    ) -> R
     where
         F: FnOnce() -> R,
     {
-        let dispatch = self.build_dispatch(log_level);
+        let dispatch = self.build_dispatch(log_level, entity_providers);
         tracing::dispatcher::with_default(&dispatch, f)
     }
 }
@@ -146,14 +183,19 @@ impl ProviderSetup {
 /// A tracing layer that sends log records asynchronously via a channel.
 pub struct ConsoleAsyncLayer {
     reporter: ObservedEventReporter,
+    entity_providers: Option<EntityKeyProviders>,
 }
 
 impl ConsoleAsyncLayer {
     /// Create a new async logging layer.
     #[must_use]
-    pub fn new(reporter: &ObservedEventReporter) -> Self {
+    pub fn new(
+        reporter: &ObservedEventReporter,
+        entity_providers: Option<EntityKeyProviders>,
+    ) -> Self {
         Self {
             reporter: reporter.clone(),
+            entity_providers,
         }
     }
 }
@@ -164,7 +206,11 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
-        let record = LogRecord::new(event);
+        let (pipeline_entity_key, node_entity_key) = match self.entity_providers {
+            Some(providers) => ((providers.pipeline)(), (providers.node)()),
+            None => (None, None),
+        };
+        let record = LogRecord::new_with_context(event, pipeline_entity_key, node_entity_key);
         self.reporter.log(LogEvent { time, record });
     }
 }
@@ -401,7 +447,7 @@ mod tests {
     #[test]
     fn console_async_layer_new() {
         let (reporter, _rx) = test_reporter();
-        let _layer = ConsoleAsyncLayer::new(&reporter);
+        let _layer = ConsoleAsyncLayer::new(&reporter, None);
     }
 
     #[test]
@@ -419,21 +465,21 @@ mod tests {
 
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
-        ProviderSetup::Noop.with_subscriber(LogLevel::Info, || {
+        ProviderSetup::Noop.with_subscriber(LogLevel::Info, None, || {
             otel_info!("noop");
         });
 
-        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, || {
+        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, None, || {
             otel_info!("console_direct");
         });
 
         let (reporter, _rx) = test_reporter();
-        ProviderSetup::ConsoleAsync { reporter }.with_subscriber(LogLevel::Info, || {
+        ProviderSetup::ConsoleAsync { reporter }.with_subscriber(LogLevel::Info, None, || {
             otel_info!("console_async");
         });
 
         let logger_provider = SdkLoggerProvider::builder().build();
-        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(LogLevel::Info, || {
+        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(LogLevel::Info, None, || {
             otel_info!("otel");
         });
     }

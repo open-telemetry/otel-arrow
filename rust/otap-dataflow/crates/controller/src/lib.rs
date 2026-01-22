@@ -52,13 +52,13 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
+use otap_df_engine::entity_context::{node_entity_key, pipeline_entity_key, set_pipeline_entity_key};
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
+    EntityKeyProviders, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
 };
 use std::sync::Arc;
 use std::thread;
@@ -213,7 +213,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                     let group_id = pipeline_group_id.clone();
                     let pipeline_id = pipeline_id.clone();
-                    let engine_tracing_setup = telemetry_system.engine_tracing_setup();
+                    // Create engine tracing setup with entity context providers.
+                    // The function pointers read thread-local/task-local state,
+                    // allowing logs to be associated with the correct pipeline/node.
+                    let entity_providers = EntityKeyProviders {
+                        pipeline: pipeline_entity_key,
+                        node: node_entity_key,
+                    };
+                    let engine_tracing_setup =
+                        telemetry_system.engine_tracing_setup_with_providers(entity_providers);
                     let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
