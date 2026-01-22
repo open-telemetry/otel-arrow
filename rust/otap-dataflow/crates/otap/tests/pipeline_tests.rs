@@ -56,7 +56,7 @@ fn test_telemetry_registries_cleanup() {
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx.clone(), config.clone())
+        .build(pipeline_ctx.clone(), config.clone(), None)
         .expect("failed to build runtime pipeline");
 
     assert_eq!(registry.entity_count(), expected_entities);
