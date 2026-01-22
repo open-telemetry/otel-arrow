@@ -318,12 +318,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let pipeline_id = pipeline_ctx.pipeline_id();
         let core_id = pipeline_ctx.core_id();
 
-        otel_debug!(
+        let span = otel_debug_span!(
             "pipeline.build.start",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id
         );
+        let _enter = span.enter();
 
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
 
@@ -589,13 +590,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
         pipeline.set_channel_metrics(channel_metrics.into_handles());
-
-        otel_debug!(
-            "pipeline.build.complete",
-            pipeline_group_id = pipeline_group_id.as_ref(),
-            pipeline_id = pipeline_id.as_ref(),
-            core_id = core_id
-        );
 
         Ok(pipeline)
     }
