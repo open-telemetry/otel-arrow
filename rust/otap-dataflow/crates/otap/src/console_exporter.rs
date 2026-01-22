@@ -280,7 +280,7 @@ impl HierarchicalFormatter {
             .map(nanos_to_time)
             .unwrap_or(SystemTime::UNIX_EPOCH);
 
-        let prefix = format!("{} ", self.tree.vertical);
+        let prefix = self.tree.vertical;
         let scope = scope_logs.scope();
 
         // Extract name/version for inline display
