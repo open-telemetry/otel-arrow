@@ -913,8 +913,13 @@ pub fn transform_attributes_with_stats(
                 }
             };
             if count > 0 {
+                // Reconcile batches in case adaptive builders caused type changes
+                // (e.g., dictionary overflow from Dict<UInt8> to Dict<UInt16> or native)
+                let (reconciled_orig, reconciled_new, unified_schema) =
+                    reconcile_batches_for_concat(rb_extended, new_rows)?;
+
                 let combined =
-                    arrow::compute::concat_batches(&extended_schema, &[rb_extended, new_rows])
+                    arrow::compute::concat_batches(&unified_schema, &[reconciled_orig, reconciled_new])
                         .map_err(|e| Error::Format {
                             error: e.to_string(),
                         })?;
@@ -3924,6 +3929,128 @@ fn materialize_parent_id_for_attributes_auto(record_batch: &RecordBatch) -> Resu
     }
 }
 
+/// Compare two data types and return the "wider" one that can accommodate both.
+/// This handles dictionary type widening (Dict<UInt8> -> Dict<UInt16> -> native).
+/// Returns None if the types are incompatible.
+fn wider_type(t1: &DataType, t2: &DataType) -> Option<DataType> {
+    if t1 == t2 {
+        return Some(t1.clone());
+    }
+
+    match (t1, t2) {
+        // Same non-dict types
+        (a, b) if a == b => Some(a.clone()),
+
+        // Dict<UInt8, V> vs Dict<UInt16, V> -> Dict<UInt16, V>
+        (
+            DataType::Dictionary(k1, v1),
+            DataType::Dictionary(k2, v2),
+        ) if v1 == v2 => {
+            match (k1.as_ref(), k2.as_ref()) {
+                (DataType::UInt8, DataType::UInt8) => Some(t1.clone()),
+                (DataType::UInt8, DataType::UInt16) | (DataType::UInt16, DataType::UInt8) => {
+                    Some(DataType::Dictionary(Box::new(DataType::UInt16), v1.clone()))
+                }
+                (DataType::UInt16, DataType::UInt16) => Some(t1.clone()),
+                _ => None,
+            }
+        }
+
+        // Dict<K, V> vs V (native) -> V (native is wider, can hold any value)
+        (DataType::Dictionary(_, v), native) if v.as_ref() == native => Some(native.clone()),
+        (native, DataType::Dictionary(_, v)) if v.as_ref() == native => Some(native.clone()),
+
+        _ => None,
+    }
+}
+
+/// Reconcile two record batches so they can be concatenated.
+/// If column types differ due to dictionary overflow in the new_batch, this will:
+/// 1. Determine the wider type that can accommodate both
+/// 2. Cast the narrower batch's column to the wider type
+/// Returns (original_batch, new_batch, unified_schema) ready for concat_batches.
+fn reconcile_batches_for_concat(
+    original: RecordBatch,
+    new_batch: RecordBatch,
+) -> Result<(RecordBatch, RecordBatch, Arc<arrow::datatypes::Schema>)> {
+    let orig_schema = original.schema();
+    let new_schema = new_batch.schema();
+
+    // Fast path: schemas match exactly
+    if orig_schema == new_schema {
+        return Ok((original, new_batch, orig_schema));
+    }
+
+    // Check each field for type mismatches
+    let mut unified_fields = Vec::with_capacity(orig_schema.fields().len());
+    let mut orig_columns: Vec<ArrayRef> = original.columns().to_vec();
+    let mut new_columns: Vec<ArrayRef> = new_batch.columns().to_vec();
+    let mut needs_cast = false;
+
+    for (i, orig_field) in orig_schema.fields().iter().enumerate() {
+        let new_field = new_schema.field(i);
+
+        if orig_field.data_type() == new_field.data_type() {
+            unified_fields.push(orig_field.as_ref().clone());
+            continue;
+        }
+
+        // Types differ - find the wider type
+        let wide_type = wider_type(orig_field.data_type(), new_field.data_type()).ok_or_else(
+            || Error::Format {
+                error: format!(
+                    "Cannot reconcile column '{}': incompatible types {:?} and {:?}",
+                    orig_field.name(),
+                    orig_field.data_type(),
+                    new_field.data_type()
+                ),
+            },
+        )?;
+
+        // Update unified field with wider type
+        unified_fields.push(
+            Field::new(orig_field.name(), wide_type.clone(), orig_field.is_nullable())
+                .with_metadata(orig_field.metadata().clone()),
+        );
+
+        // Cast columns if needed
+        if orig_field.data_type() != &wide_type {
+            orig_columns[i] =
+                arrow::compute::cast(&orig_columns[i], &wide_type).map_err(|e| Error::Format {
+                    error: format!("Failed to cast original column '{}': {}", orig_field.name(), e),
+                })?;
+            needs_cast = true;
+        }
+        if new_field.data_type() != &wide_type {
+            new_columns[i] =
+                arrow::compute::cast(&new_columns[i], &wide_type).map_err(|e| Error::Format {
+                    error: format!("Failed to cast new column '{}': {}", new_field.name(), e),
+                })?;
+            needs_cast = true;
+        }
+    }
+
+    if !needs_cast {
+        // No casting was needed, use original schema
+        return Ok((original, new_batch, orig_schema));
+    }
+
+    let unified_schema = Arc::new(arrow::datatypes::Schema::new(unified_fields));
+
+    let reconciled_original = RecordBatch::try_new(unified_schema.clone(), orig_columns)
+        .map_err(|e| Error::Format {
+            error: format!("Failed to create reconciled original batch: {}", e),
+        })?;
+
+    let reconciled_new = RecordBatch::try_new(unified_schema.clone(), new_columns).map_err(|e| {
+        Error::Format {
+            error: format!("Failed to create reconciled new batch: {}", e),
+        }
+    })?;
+
+    Ok((reconciled_original, reconciled_new, unified_schema))
+}
+
 /// Returns `ArrayOptions` configured to match the given `DataType`.
 /// For dictionary types, configures the appropriate dictionary options.
 /// For native types (Utf8, Int64, Float64), returns options with no dictionary.
@@ -4964,5 +5091,149 @@ mod insert_tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(vals.value(0), "original");
+    }
+
+    #[test]
+    fn test_reconcile_batches_same_schema() {
+        // Test that reconcile_batches_for_concat handles identical schemas efficiently
+        use super::reconcile_batches_for_concat;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Utf8, false),
+            Field::new("b", DataType::Int64, true),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["x", "y"])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(2)])),
+            ],
+        )
+        .unwrap();
+
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["z"])),
+                Arc::new(Int64Array::from(vec![Some(3)])),
+            ],
+        )
+        .unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1.clone(), batch2.clone()).unwrap();
+
+        // Should be unchanged
+        assert_eq!(reconciled1, batch1);
+        assert_eq!(reconciled2, batch2);
+        assert_eq!(unified_schema, schema);
+    }
+
+    #[test]
+    fn test_reconcile_batches_dict_widening() {
+        // Test widening from Dict<UInt8> to Dict<UInt16>
+        use super::reconcile_batches_for_concat;
+
+        let dict8_type =
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict16_type =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+
+        let schema1 = Arc::new(Schema::new(vec![Field::new("key", dict8_type.clone(), false)]));
+
+        let schema2 =
+            Arc::new(Schema::new(vec![Field::new("key", dict16_type.clone(), false)]));
+
+        // Create a Dict<UInt8> array
+        let mut dict8_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        dict8_builder.append_value("a");
+        dict8_builder.append_value("b");
+        let dict8_arr = Arc::new(dict8_builder.finish());
+
+        // Create a Dict<UInt16> array
+        let mut dict16_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        dict16_builder.append_value("c");
+        let dict16_arr = Arc::new(dict16_builder.finish());
+
+        let batch1 = RecordBatch::try_new(schema1.clone(), vec![dict8_arr]).unwrap();
+
+        let batch2 = RecordBatch::try_new(schema2.clone(), vec![dict16_arr]).unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1, batch2).unwrap();
+
+        // Both should now be Dict<UInt16>
+        assert_eq!(
+            unified_schema.field(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        assert_eq!(
+            reconciled1.column(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        assert_eq!(
+            reconciled2.column(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+    }
+
+    #[test]
+    fn test_reconcile_batches_dict_to_native() {
+        // Test widening from Dict<UInt8, Utf8> to native Utf8
+        use super::reconcile_batches_for_concat;
+
+        let dict8_type =
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+
+        let schema1 = Arc::new(Schema::new(vec![Field::new("key", dict8_type.clone(), false)]));
+
+        let schema2 = Arc::new(Schema::new(vec![Field::new("key", DataType::Utf8, false)]));
+
+        // Create a Dict<UInt8> array
+        let mut dict8_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        dict8_builder.append_value("a");
+        dict8_builder.append_value("b");
+        let dict8_arr = Arc::new(dict8_builder.finish());
+
+        // Create a native Utf8 array
+        let utf8_arr = Arc::new(StringArray::from_iter_values(vec!["c"]));
+
+        let batch1 = RecordBatch::try_new(schema1.clone(), vec![dict8_arr]).unwrap();
+
+        let batch2 = RecordBatch::try_new(schema2.clone(), vec![utf8_arr]).unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1, batch2).unwrap();
+
+        // Both should now be native Utf8 (wider type)
+        assert_eq!(unified_schema.field(0).data_type(), &DataType::Utf8);
+        assert_eq!(reconciled1.column(0).data_type(), &DataType::Utf8);
+        assert_eq!(reconciled2.column(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn test_wider_type_function() {
+        use super::wider_type;
+
+        // Same types
+        assert_eq!(wider_type(&DataType::Utf8, &DataType::Utf8), Some(DataType::Utf8));
+        assert_eq!(wider_type(&DataType::Int64, &DataType::Int64), Some(DataType::Int64));
+
+        // Dict<UInt8> vs Dict<UInt16> -> Dict<UInt16>
+        let dict8 = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict16 = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        assert_eq!(wider_type(&dict8, &dict16), Some(dict16.clone()));
+        assert_eq!(wider_type(&dict16, &dict8), Some(dict16.clone()));
+
+        // Dict vs native -> native
+        assert_eq!(wider_type(&dict8, &DataType::Utf8), Some(DataType::Utf8));
+        assert_eq!(wider_type(&DataType::Utf8, &dict8), Some(DataType::Utf8));
+        assert_eq!(wider_type(&dict16, &DataType::Utf8), Some(DataType::Utf8));
+
+        // Incompatible types
+        assert_eq!(wider_type(&DataType::Utf8, &DataType::Int64), None);
+        let dict_int = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int64));
+        assert_eq!(wider_type(&dict8, &dict_int), None); // Different value types
     }
 }
