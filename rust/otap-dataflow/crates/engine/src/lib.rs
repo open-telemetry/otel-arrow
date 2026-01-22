@@ -534,7 +534,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 &source_nodes,
                 &dest_nodes,
                 NonZeroUsize::new(1000).expect("Buffer size must be non-zero"),
-                channel_id.into(),
+                channel_id,
                 &source_ports,
                 &source_contexts,
                 &source_telemetries,
@@ -573,12 +573,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .into_iter()
                 .zip(assignment.senders.into_iter())
             {
-                let src_node =
-                    pipeline
-                        .get_mut_node_with_pdata_sender(source.node_id.index)
-                        .ok_or_else(|| Error::UnknownNode {
-                            node: source.node_id.name.clone(),
-                        })?;
+                let src_node = pipeline
+                    .get_mut_node_with_pdata_sender(source.node_id.index)
+                    .ok_or_else(|| Error::UnknownNode {
+                        node: source.node_id.name.clone(),
+                    })?;
                 otel_debug!(
                     "pdata.sender.set",
                     pipeline_group_id = pipeline_group_id.as_ref(),
@@ -1343,7 +1342,8 @@ fn collect_hyper_edges_runtime<PData>(
                 for &index in indexes {
                     let edge = &edges[index];
                     let has_conflict = edge.sources.iter().any(|source| {
-                        source.node_id.index == node_id.index && source.port.as_ref() != port.as_ref()
+                        source.node_id.index == node_id.index
+                            && source.port.as_ref() != port.as_ref()
                     });
                     if !has_conflict {
                         match_index = Some(index);
