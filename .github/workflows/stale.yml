@@ -22,20 +22,20 @@ jobs:
           # Issue settings
           stale-issue-message: >
             This issue has been marked as stale due to lack of recent activity.
-            It will be closed in 7 days if no further activity occurs.
+            It will be closed in 30 days if no further activity occurs.
             If this issue is still relevant, please comment or remove the stale label.
-          stale-issue-label: 'Stale'
-          days-before-issue-stale: 60
-          days-before-issue-close: 7
+          stale-issue-label: 'stale'
+          days-before-issue-stale: 180
+          days-before-issue-close: 30 
           exempt-issue-labels: 'do-not-stale'
           # Pull request settings
           stale-pr-message: >
             This pull request has been marked as stale due to lack of recent activity.
-            It will be closed in 14 days if no further activity occurs.
+            It will be closed in 30 days if no further activity occurs.
             If this PR is still relevant, please comment or push new commits to keep it active.
-          stale-pr-label: 'Stale'
-          days-before-pr-stale: 60
-          days-before-pr-close: 14
+          stale-pr-label: 'stale'
+          days-before-pr-stale: 180 
+          days-before-pr-close: 30
           exempt-pr-labels: 'do-not-stale'
           # General settings
           operations-per-run: 100
