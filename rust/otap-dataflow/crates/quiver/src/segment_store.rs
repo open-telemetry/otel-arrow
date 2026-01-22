@@ -537,12 +537,12 @@ impl SegmentStore {
 
     /// Checks if a file is older than `max_age` based on its modification time.
     ///
-    /// Returns `true` if the file should be considered expired, or if the
+    /// Returns `true` if the file should be considered expired, or `false` if the
     /// metadata cannot be read (fail-safe: don't delete if we can't check).
     fn is_file_expired(path: &Path, max_age: Duration, now: SystemTime) -> bool {
         match std::fs::metadata(path) {
             Ok(metadata) => match metadata.modified() {
-                Ok(mtime) => now.duration_since(mtime).map_or(false, |age| age > max_age),
+                Ok(mtime) => now.duration_since(mtime).is_ok_and(|age| age > max_age),
                 Err(_) => false, // Can't determine age, don't expire
             },
             Err(_) => false, // Can't read metadata, don't expire
@@ -893,5 +893,27 @@ mod tests {
         let result = SegmentStore::delete_segment_file(&file_path, &None);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Test that future mtime (clock skew) does not cause spurious expiration.
+    ///
+    /// If a file's mtime is in the future (e.g., due to clock skew during creation),
+    /// duration_since() will fail, and we should treat the file as NOT expired.
+    #[test]
+    fn is_file_expired_future_mtime_not_expired() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "test").unwrap();
+
+        // Simulate a "now" that is before the file's actual mtime
+        // (as if the file was created with a clock that was ahead)
+        let past = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+
+        // Even with a tiny max_age, the file should NOT be considered expired
+        // because duration_since() will return Err when mtime > now
+        assert!(
+            !SegmentStore::is_file_expired(&file_path, Duration::from_secs(1), past),
+            "file with mtime in the future should not be considered expired"
+        );
     }
 }

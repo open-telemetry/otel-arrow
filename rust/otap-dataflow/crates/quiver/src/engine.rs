@@ -103,6 +103,8 @@ pub struct QuiverEngine {
     force_dropped_segments: AtomicU64,
     /// Count of bundles lost due to force-dropped segments.
     force_dropped_bundles: AtomicU64,
+    /// Count of bundles lost due to expired segments (max_age retention).
+    expired_bundles: AtomicU64,
     /// Segment store for finalized segment files.
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
@@ -298,6 +300,7 @@ impl QuiverEngine {
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
+            expired_bundles: AtomicU64::new(0),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -401,6 +404,17 @@ impl QuiverEngine {
     /// the disk budget.
     pub fn force_dropped_bundles(&self) -> u64 {
         self.force_dropped_bundles.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of bundles lost due to expired segments.
+    ///
+    /// This counter tracks data loss from segments deleted because they
+    /// exceeded the [`RetentionConfig::max_age`]. Unlike `force_dropped_bundles()`
+    /// which tracks DropOldest policy, this tracks time-based retention.
+    ///
+    /// [`RetentionConfig::max_age`]: crate::config::RetentionConfig::max_age
+    pub fn expired_bundles(&self) -> u64 {
+        self.expired_bundles.load(Ordering::Relaxed)
     }
 
     /// Returns WAL statistics (rotation count, purge count).
@@ -906,10 +920,10 @@ impl QuiverEngine {
             self.registry.cleanup_segments_before(max_deleted.next());
         }
 
-        // Track expired bundles in the force-dropped counter (they're similarly "lost")
+        // Track expired bundles in the dedicated counter
         if bundles_expired > 0 {
             let _ = self
-                .force_dropped_bundles
+                .expired_bundles
                 .fetch_add(bundles_expired, Ordering::Relaxed);
         }
 
@@ -3592,6 +3606,128 @@ mod tests {
             "maintain should report expired segments: got {}, expected >= {}",
             stats.expired,
             initial_segment_count
+        );
+    }
+
+    /// Test that expired segments are deleted during startup scan without loading them.
+    ///
+    /// This verifies that `scan_existing_with_max_age()` deletes expired segments
+    /// based on file mtime alone, without the overhead of opening and parsing them.
+    #[tokio::test]
+    async fn startup_deletes_expired_segments_without_loading() {
+        let dir = tempdir().expect("tempdir");
+
+        // Phase 1: Create segments with a long max_age config
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+        let config_long_age = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config.clone())
+            .retention(RetentionConfig {
+                max_age: Duration::from_secs(3600), // 1 hour - won't expire yet
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let segments_created;
+        {
+            let engine = QuiverEngine::open(config_long_age, test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest data to create multiple segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush");
+
+            segments_created = engine.segment_store().segment_count();
+            assert!(segments_created >= 1, "should create at least one segment");
+        }
+
+        // Wait for segments to become "old" enough for our short max_age
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Phase 2: Create new engine with very short max_age
+        let config_short_age = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Duration::from_millis(10), // Very short - segments should be expired
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine2 = QuiverEngine::open(config_short_age, test_budget())
+            .await
+            .expect("engine");
+
+        // The expired segments should have been deleted during startup scan
+        assert_eq!(
+            engine2.segment_store().segment_count(),
+            0,
+            "expired segments should be deleted during startup, not loaded"
+        );
+    }
+
+    /// Test that the expired_bundles counter is tracked separately from force_dropped_bundles.
+    #[tokio::test]
+    async fn expired_bundles_counter_is_separate() {
+        let dir = tempdir().expect("tempdir");
+
+        let retention = RetentionConfig {
+            max_age: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .retention(retention)
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Initially both counters should be zero
+        assert_eq!(engine.force_dropped_bundles(), 0);
+        assert_eq!(engine.expired_bundles(), 0);
+
+        // Ingest data to create segments
+        for _ in 0..3 {
+            let bundle = DummyBundle::with_rows(50);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        engine.flush().await.expect("flush");
+
+        let initial_segment_count = engine.segment_store().segment_count();
+        assert!(initial_segment_count >= 1, "should have at least one segment");
+
+        // Wait for segments to exceed max_age
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Cleanup expired segments
+        let expired_count = engine.cleanup_expired_segments().expect("cleanup");
+        assert!(expired_count > 0, "should have expired some segments");
+
+        // expired_bundles should be incremented, force_dropped_bundles should still be zero
+        assert_eq!(
+            engine.force_dropped_bundles(),
+            0,
+            "force_dropped_bundles should not be affected by expired segments"
+        );
+        assert!(
+            engine.expired_bundles() > 0,
+            "expired_bundles should be incremented"
         );
     }
 }
