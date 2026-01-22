@@ -45,7 +45,7 @@ while still exporting high-fidelity operational data.
 
 ![Architecture Phase 1](assets/Metrics%20Phase%201.svg)
 
-## Macros
+## Metric Macros
 
 The `#[metric_set]` macro generates a strongly typed metric set from a Rust
 struct definition.
@@ -55,9 +55,61 @@ Rust struct definition.
 
 See the [telemetry-macros crate](../telemetry-macros) for details.
 
+## Logging Macros
+
+There are internal macros defined in `otal_df_telemetry` with names
+`otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These 
+macros all require a constant event-name string as the first argument,
+otherwise, they follow Tokio `tracing` syntax for key-value expressions.
+
+For example:
+
+```rust
+use otap_df_telemetry::otel_error;
+
+otel_error!("bad configuration", error = ?err);
+```
+
+## Internal telemetry collection
+
+The dataflow engine supports multiple ways to configure internal
+logging, with a number of provider modes that determine how logging is
+configured in different parts of the code.
+
+All modes configure the [Rust-standard `env_logger`
+crate](https://docs.rs/env_logger/latest/env_logger/), making the
+`RUST_LOG` environment variable available for controlling internal
+logging.
+
+There are four aspects that can be configured:
+
+- `engine`: configure logging for main engine threads
+- `global`: configure logging for the global `tracing` subscriber
+- `admin`: configure logging for the engine administrative threads
+- `internal`: configure logging for components involved in internal logging.
+
+These modes are configured through the `service::telemetry::logs::providers`
+field, with the following choices:
+
+- `its`: configure the Internal Telemetry System using nodes
+  defined in the pipeline's `internal` nodes section. These nodes
+  are configured in a dedicated engine thread.
+- `console_async`: configure asynchronous console logging. In this
+  mode log records are printed to the console from the administrative
+  component.
+- `console_direct`: configure synchronous logging. In this mode, logging
+  interrupts the calling thread to print each log statement.
+- `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
+  supports more extensive diagnostics, including support for
+  distributed tracing events.
+- `noop`: disables logging.
+
+For more on this design, see the [self-tracing architecture
+document](../../docs/self_tracing_architecture.md). See a sample
+configuration in [configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
+
 ## Roadmap
 
-- OTLP (push) export via Rust OpenTelemetry SDK.
 - Generate OpenTelemetry Semantic Registry from the schema.
 - Generate Telemetry client SDK from custom registry and Weaver.
 - Structured events and spans.
