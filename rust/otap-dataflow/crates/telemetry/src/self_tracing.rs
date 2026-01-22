@@ -20,7 +20,7 @@ pub use encoder::DirectLogRecordEncoder;
 pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
-pub use formatter::{ConsoleWriter, RawLoggingLayer};
+pub use formatter::{ConsoleWriter, RawLoggingLayer, AnsiCode, BufWriter, LOG_BUFFER_SIZE};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.

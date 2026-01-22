@@ -3,7 +3,6 @@
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
-use std::fmt::Write as FmtWrite;
 use std::time::SystemTime;
 
 use otap_df_pdata::otlp::ProtoBuffer;
@@ -73,26 +72,10 @@ fn encode_event_name(buf: &mut ProtoBuffer, callsite: SavedCallsite) {
     proto_encode_len_delimited_unknown_size!(
         LOG_RECORD_EVENT_NAME,
         {
-            buf.extend_from_slice(callsite.target().as_bytes());
-            buf.extend_from_slice(b"::");
-            buf.extend_from_slice(callsite.name().as_bytes());
-            if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-                let _ = write!(ProtoWriter(buf), " ({}:{})", file, line);
-            }
+            super::formatter::write_event_name_to(buf, &callsite);
         },
         buf
     );
-}
-
-/// Wrapper that implements fmt::Write for a ProtoBuffer.
-struct ProtoWriter<'a>(&'a mut ProtoBuffer);
-
-impl FmtWrite for ProtoWriter<'_> {
-    #[inline]
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        self.0.extend_from_slice(s.as_bytes());
-        Ok(())
-    }
 }
 
 /// Visitor that directly encodes tracing fields to protobuf.
@@ -236,10 +219,11 @@ impl<'buf> DirectFieldVisitor<'buf> {
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
 fn encode_debug_string(buf: &mut ProtoBuffer, value: &dyn std::fmt::Debug) {
+    use std::io::Write;
     proto_encode_len_delimited_unknown_size!(
         ANY_VALUE_STRING_VALUE,
         {
-            let _ = write!(ProtoWriter(buf), "{:?}", value);
+            let _ = write!(buf, "{:?}", value);
         },
         buf
     );
