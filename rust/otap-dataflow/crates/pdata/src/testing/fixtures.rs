@@ -32,18 +32,25 @@ pub fn logs_with_full_resource_and_scope() -> LogsData {
     const ONE_SEC: u64 = 1_000_000_000;
 
     LogsData::new(vec![ResourceLogs::new(
-        Resource::build().finish(),
+        Resource::build()
+            .attributes(vec![KeyValue::new("res.id", AnyValue::new_string("self"))])
+            .finish(),
         vec![
             ScopeLogs::new(
                 InstrumentationScope::build()
                     .name("scope-alpha".to_string())
                     .version("1.0.0".to_string())
+                    .attributes(vec![KeyValue::new(
+                        "scopekey",
+                        AnyValue::new_string("scopeval"),
+                    )])
                     .finish(),
                 vec![
                     LogRecord::build()
                         .time_unix_nano(BASE_TIME)
                         .observed_time_unix_nano(BASE_TIME + 100_000_000)
                         .severity_number(SeverityNumber::Info as i32)
+                        .event_name("event_1")
                         .body(AnyValue::new_string("first log in alpha"))
                         .finish(),
                     LogRecord::build()
@@ -70,7 +77,11 @@ pub fn logs_with_full_resource_and_scope() -> LogsData {
                         .time_unix_nano(BASE_TIME + 3 * ONE_SEC)
                         .observed_time_unix_nano(BASE_TIME + 3 * ONE_SEC + 100_000_000)
                         .severity_number(SeverityNumber::Debug as i32)
-                        .body(AnyValue::new_string("second log in beta"))
+                        .event_name("event_2")
+                        .attributes(vec![KeyValue::new(
+                            "detail",
+                            AnyValue::new_string("no body here"),
+                        )])
                         .finish(),
                 ],
             ),
