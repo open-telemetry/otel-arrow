@@ -92,6 +92,12 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
             .logs_receiver()
             .expect("InternalTelemetryReceiver requires a logs_receiver to be configured");
 
+        // Get the pre-encoded resource bytes
+        let resource_bytes = effect_handler
+            .resource_bytes()
+            .expect("InternalTelemetryReceiver requires resource_bytes to be configured")
+            .clone();
+
         // Start periodic telemetry collection
         let _ = effect_handler
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
@@ -111,7 +117,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    self.send_log_event(&effect_handler, log_event, &mut buf).await?;
+                                    self.send_log_event(&effect_handler, log_event, &mut buf, &resource_bytes).await?;
                                 }
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
@@ -132,7 +138,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            self.send_log_event(&effect_handler, log_event, &mut buf).await?;
+                            self.send_log_event(&effect_handler, log_event, &mut buf, &resource_bytes).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed
@@ -155,8 +161,9 @@ impl InternalTelemetryReceiver {
         effect_handler: &local::EffectHandler<OtapPdata>,
         log_event: LogEvent,
         buf: &mut ProtoBuffer,
+        resource_bytes: &Bytes,
     ) -> Result<(), Error> {
-        encode_export_logs_request(buf, &log_event, effect_handler.resource_bytes());
+        encode_export_logs_request(buf, &log_event, resource_bytes);
 
         let pdata = OtapPdata::new(
             Context::default(),

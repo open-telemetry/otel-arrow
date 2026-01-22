@@ -78,6 +78,18 @@ pub use tracing::warn_span as otel_warn_span;
 /// Defined here so it can be used by controller, engine, otap, and other crates.
 pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otap:receiver:internal_telemetry";
 
+/// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
+///
+/// This bundles the receiver end of the logs channel and pre-encoded resource bytes
+/// for injection into the ITR via the EffectHandler.
+#[derive(Clone)]
+pub struct InternalTelemetrySettings {
+    /// Receiver end of the logs channel for `ObservedEvent::Log` events.
+    pub logs_receiver: flume::Receiver<event::ObservedEvent>,
+    /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
+    pub resource_bytes: bytes::Bytes,
+}
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.
