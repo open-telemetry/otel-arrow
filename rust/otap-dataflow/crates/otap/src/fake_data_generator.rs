@@ -196,10 +196,22 @@ impl BatchCache {
 
         // Pre-generate log batches
         if log_count > 0 {
+            let count = log_count.min(batch_size);
             for _ in 0..pool_size {
-                let count = log_count.min(batch_size);
                 let pdata: OtapPdata = generator.generate_logs(count).try_into()?;
                 logs.push(pdata);
+            }
+            // Log the size of the first batch (all batches are identical structure)
+            if let Some(first) = logs.first() {
+                let (_, payload) = first.clone().into_parts();
+                let size = payload.num_bytes().unwrap_or(0);
+                otel_info!(
+                    "batch_cache.logsize",
+                    log_record_count = count,
+                    batch_size_bytes = size,
+                    pool_size = pool_size,
+                    message = "Pre-generated log batches ready"
+                );
             }
         }
 

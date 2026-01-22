@@ -49,13 +49,59 @@ fn static_metric_attributes() -> Vec<KeyValue> {
     ]
 }
 
-/// Static log attributes
+/// Static log attributes for load testing.
+/// Sized to produce approximately 1 KB per log record.
 fn static_log_attributes() -> Vec<KeyValue> {
     vec![
-        KeyValue::new("log.level", AnyValue::new_string("INFO")),
-        KeyValue::new("code.function", AnyValue::new_string("handle_request")),
-        KeyValue::new("code.filepath", AnyValue::new_string("src/handler.rs")),
-        KeyValue::new("code.lineno", AnyValue::new_int(42)),
+        KeyValue::new(
+            "cloud.resource_id",
+            AnyValue::new_string(
+                "/subscriptions/12345678-1234-1234-1234-123456789abc/resourceGroups/my-resource-group/providers/Microsoft.Web/sites/my-function-app",
+            ),
+        ),
+        KeyValue::new(
+            "service.instance.id",
+            AnyValue::new_string("i-1234567890abcdef0"),
+        ),
+        KeyValue::new(
+            "service.namespace",
+            AnyValue::new_string("production-us-west-2"),
+        ),
+        KeyValue::new(
+            "host.name",
+            AnyValue::new_string("ip-172-31-24-56.us-west-2.compute.internal"),
+        ),
+        KeyValue::new("host.ip", AnyValue::new_string("172.31.24.56")),
+        KeyValue::new(
+            "container.id",
+            AnyValue::new_string(
+                "3f4b8c2d1a9e5f6b7c8d9e0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c",
+            ),
+        ),
+        KeyValue::new(
+            "container.image.name",
+            AnyValue::new_string("myregistry.azurecr.io/services/order-processor"),
+        ),
+        KeyValue::new(
+            "container.image.tag",
+            AnyValue::new_string("v2.15.3-alpine"),
+        ),
+        KeyValue::new("process.pid", AnyValue::new_int(28547)),
+        KeyValue::new(
+            "process.executable.name",
+            AnyValue::new_string("order-processor"),
+        ),
+        KeyValue::new("thread.id", AnyValue::new_int(14073)),
+        KeyValue::new("thread.name", AnyValue::new_string("async-worker-pool-7")),
+        KeyValue::new(
+            "code.filepath",
+            AnyValue::new_string("/app/src/services/order_processor.rs"),
+        ),
+        KeyValue::new(
+            "code.function",
+            AnyValue::new_string("process_incoming_order"),
+        ),
+        KeyValue::new("code.lineno", AnyValue::new_int(247)),
     ]
 }
 
@@ -190,7 +236,8 @@ fn static_metrics(signal_count: usize) -> Vec<Metric> {
         .collect()
 }
 
-/// Generate static log records
+/// Generate static log records for load testing.
+/// Produces approximately 1 KB per log record.
 fn static_logs(signal_count: usize) -> Vec<LogRecord> {
     let attributes = static_log_attributes();
 
@@ -203,7 +250,13 @@ fn static_logs(signal_count: usize) -> Vec<LogRecord> {
                 .observed_time_unix_nano(timestamp)
                 .severity_number(SeverityNumber::Info)
                 .severity_text("INFO")
-                .body(AnyValue::new_string("Request processed successfully"))
+                .body(AnyValue::new_string(
+                    "Successfully processed order #ORD-2024-0847291 for customer cust_8a7b6c5d4e3f2a1b. \
+                     Items: 3, Total: $142.99 USD. Payment method: credit_card ending in 4242. \
+                     Shipping address validated and inventory reserved. \
+                     Estimated delivery: 2024-01-25. Fulfillment center: FC-SEA-03. \
+                     Correlation ID: corr-f8e7d6c5-b4a3-9281-7654-321fedcba098."
+                ))
                 .attributes(attributes.clone())
                 .finish()
         })
