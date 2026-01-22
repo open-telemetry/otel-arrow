@@ -17,6 +17,9 @@ use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
+pub use encoder::encode_export_logs_request;
+pub use encoder::encode_resource;
+pub use encoder::encode_resource_to_bytes;
 pub use formatter::{ConsoleWriter, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.

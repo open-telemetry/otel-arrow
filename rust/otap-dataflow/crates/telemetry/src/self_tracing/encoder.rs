@@ -7,11 +7,14 @@ use std::fmt::Write as FmtWrite;
 use std::time::SystemTime;
 
 use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_pdata::proto::consts::{field_num::common::*, field_num::logs::*, wire_types};
+use otap_df_pdata::proto::consts::{
+    field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
+};
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
 use tracing::Level;
 
 use super::{LogRecord, SavedCallsite};
+use crate::event::LogEvent;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf> {
@@ -306,4 +309,122 @@ pub fn level_to_severity_number(level: &Level) -> u8 {
         Level::WARN => 13,
         Level::ERROR => 17,
     }
+}
+
+/// Encode an SDK Resource as OTLP Resource bytes (field 1 of ResourceLogs).
+///
+/// The buffer is NOT cleared; bytes are appended.
+pub fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
+where
+    I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
+{
+    // ResourceLogs.resource (field 1, Resource message)
+    proto_encode_len_delimited_unknown_size!(
+        RESOURCE_LOGS_RESOURCE,
+        {
+            // Encode each attribute as a KeyValue
+            for (key, value) in attrs {
+                encode_resource_attribute(buf, key.as_str(), value);
+            }
+        },
+        buf
+    );
+
+    // ResourceLogs.schema_url (field 3, string)
+    if let Some(url) = schema_url {
+        buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, url);
+    }
+}
+
+/// Encode an SDK Resource to bytes for later reuse.
+#[must_use]
+pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> bytes::Bytes {
+    let mut buf = ProtoBuffer::with_capacity(256);
+    encode_resource(&mut buf, resource.iter(), resource.schema_url());
+    bytes::Bytes::copy_from_slice(buf.as_ref())
+}
+
+/// Encode a single resource attribute as a KeyValue message.
+#[inline]
+fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelemetry::Value) {
+    use opentelemetry::Value;
+
+    proto_encode_len_delimited_unknown_size!(
+        RESOURCE_ATTRIBUTES,
+        {
+            buf.encode_string(KEY_VALUE_KEY, key);
+            proto_encode_len_delimited_unknown_size!(
+                KEY_VALUE_VALUE,
+                {
+                    match value {
+                        Value::String(s) => {
+                            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
+                        }
+                        Value::Bool(b) => {
+                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                            buf.encode_varint(u64::from(*b));
+                        }
+                        Value::I64(i) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*i as u64);
+                        }
+                        Value::F64(f) => {
+                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                            buf.extend_from_slice(&f.to_le_bytes());
+                        }
+                        _ => {
+                            // TODO: share the encoding logic used somewhere else, somehow.
+                            crate::raw_error!("cannot encode SDK resource value", value = ?value);
+                        }
+                    }
+                },
+                buf
+            );
+        },
+        buf
+    );
+}
+
+// Field numbers for ExportLogsServiceRequest and related messages
+const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
+
+/// Encode a LogEvent as a complete ExportLogsServiceRequest.
+pub fn encode_export_logs_request(
+    buf: &mut ProtoBuffer,
+    event: &LogEvent,
+    resource_bytes: &bytes::Bytes,
+) {
+    buf.clear();
+
+    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
+    proto_encode_len_delimited_unknown_size!(
+        EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+        {
+            // ResourceLogs.resource (field 1, Resource message)
+            // Copy pre-encoded resource bytes directly
+            buf.extend_from_slice(resource_bytes);
+
+            // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
+            proto_encode_len_delimited_unknown_size!(
+                RESOURCE_LOGS_SCOPE_LOGS,
+                {
+                    // ScopeLogs.scope: TODO: add scope attributes referring to
+                    // component identity or somehow produce instrumentation scope.
+
+                    // ScopeLogs.log_records (field 2, repeated LogRecord)
+                    proto_encode_len_delimited_unknown_size!(
+                        SCOPE_LOGS_LOG_RECORDS,
+                        {
+                            // Encode the LogRecord fields
+                            let mut encoder = DirectLogRecordEncoder::new(buf);
+                            let _ = encoder.encode_log_record(event.time, &event.record);
+                        },
+                        buf
+                    );
+                },
+                buf
+            );
+        },
+        buf
+    );
 }

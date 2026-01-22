@@ -9,6 +9,7 @@
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::pdata::{Context, OtapPdata};
 use async_trait::async_trait;
+use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
@@ -20,18 +21,17 @@ use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
-use bytes::Bytes;
-use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::OtlpProtoBytes;
-use otap_df_telemetry::logs::LogPayload;
+use otap_df_pdata::otlp::ProtoBuffer;
+use otap_df_telemetry::event::{LogEvent, ObservedEvent};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::self_tracing::{SavedCallsite, encode_export_logs_request};
+use otap_df_telemetry::self_tracing::encode_export_logs_request;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
 /// The URN for the internal telemetry receiver.
-pub use otap_df_config::pipeline::service::telemetry::logs::INTERNAL_TELEMETRY_RECEIVER_URN;
+pub use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Configuration for the internal telemetry receiver.
 #[derive(Clone, Deserialize, Serialize, Default)]
@@ -109,8 +109,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                     match ctrl_msg {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             // Drain any remaining logs from channel before shutdown
-                            while let Ok(payload) = logs_receiver.try_recv() {
-                                self.send_payload(&effect_handler, payload, &mut buf).await?;
+                            while let Ok(event) = logs_receiver.try_recv() {
+                                if let ObservedEvent::Log(log_event) = event {
+                                    self.send_log_event(&effect_handler, log_event, &mut buf).await?;
+                                }
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                         }
@@ -121,7 +123,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             return Err(Error::ChannelRecvError(e));
                         }
                         _ => {
-                            // Ignore other control messages
+                             // Ignore other control messages
                         }
                     }
                 }
@@ -129,8 +131,11 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 // Receive logs from the channel
                 result = logs_receiver.recv_async() => {
                     match result {
-                        Ok(payload) => {
-                            self.send_payload(&effect_handler, payload, &mut buf).await?;
+                        Ok(ObservedEvent::Log(log_event)) => {
+                            self.send_log_event(&effect_handler, log_event, &mut buf).await?;
+                        }
+                        Ok(ObservedEvent::Engine(_)) => {
+                            // Engine events are not yet processed
                         }
                         Err(_) => {
                             // Channel closed, exit gracefully
@@ -144,30 +149,20 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 }
 
 impl InternalTelemetryReceiver {
-    /// Send a log payload as OTLP logs.
-    async fn send_payload(
+    /// Send a log event as OTLP logs.
+    async fn send_log_event(
         &self,
         effect_handler: &local::EffectHandler<OtapPdata>,
-        payload: LogPayload,
+        log_event: LogEvent,
         buf: &mut ProtoBuffer,
     ) -> Result<(), Error> {
-        match payload {
-            LogPayload::Singleton(record) => {
-                let callsite = SavedCallsite::new(record.callsite_id.0.metadata());
-                encode_export_logs_request(
-                    buf,
-                    record,
-                    &callsite,
-                    effect_handler.resource_bytes(),
-                );
+        encode_export_logs_request(buf, &log_event, effect_handler.resource_bytes());
 
-                let pdata = OtapPdata::new(
-                    Context::default(),
-                    OtlpProtoBytes::ExportLogsRequest(Bytes::copy_from_slice(buf.as_ref())).into(),
-                );
-                effect_handler.send_message(pdata).await?;
-            }
-        }
+        let pdata = OtapPdata::new(
+            Context::default(),
+            OtlpProtoBytes::ExportLogsRequest(Bytes::copy_from_slice(buf.as_ref())).into(),
+        );
+        effect_handler.send_message(pdata).await?;
         Ok(())
     }
 }
