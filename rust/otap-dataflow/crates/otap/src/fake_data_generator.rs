@@ -146,117 +146,79 @@ impl SignalGenerator {
 }
 
 /// Pre-generated batch cache for high-throughput load testing.
-/// Batches are generated once at startup and cycled through at runtime.
+/// A single batch is generated once at startup and cloned at runtime.
+/// Clone is O(1) since OtapPdata contains Bytes which is ref-counted.
 struct BatchCache {
-    /// Pre-generated metric batches
-    metrics: Vec<OtapPdata>,
-    /// Pre-generated trace batches
-    traces: Vec<OtapPdata>,
-    /// Pre-generated log batches
-    logs: Vec<OtapPdata>,
-    /// Current index for metrics
-    metrics_idx: usize,
-    /// Current index for traces
-    traces_idx: usize,
-    /// Current index for logs
-    logs_idx: usize,
+    /// Pre-generated metrics batch
+    metrics: Option<OtapPdata>,
+    /// Pre-generated traces batch
+    traces: Option<OtapPdata>,
+    /// Pre-generated logs batch
+    logs: Option<OtapPdata>,
 }
 
 impl BatchCache {
-    /// Create a new batch cache by pre-generating batches
+    /// Create a new batch cache by pre-generating a single batch for each signal type
     fn new(
         generator: &SignalGenerator,
-        pool_size: usize,
         batch_size: usize,
         metric_count: usize,
         trace_count: usize,
         log_count: usize,
     ) -> Result<Self, Error> {
-        let mut metrics = Vec::with_capacity(pool_size);
-        let mut traces = Vec::with_capacity(pool_size);
-        let mut logs = Vec::with_capacity(pool_size);
+        // Pre-generate single metrics batch
+        let metrics = if metric_count > 0 {
+            let count = metric_count.min(batch_size);
+            Some(generator.generate_metrics(count).try_into()?)
+        } else {
+            None
+        };
 
-        // Pre-generate metric batches
-        if metric_count > 0 {
-            for _ in 0..pool_size {
-                let count = metric_count.min(batch_size);
-                let pdata: OtapPdata = generator.generate_metrics(count).try_into()?;
-                metrics.push(pdata);
-            }
-        }
+        // Pre-generate single traces batch
+        let traces = if trace_count > 0 {
+            let count = trace_count.min(batch_size);
+            Some(generator.generate_traces(count).try_into()?)
+        } else {
+            None
+        };
 
-        // Pre-generate trace batches
-        if trace_count > 0 {
-            for _ in 0..pool_size {
-                let count = trace_count.min(batch_size);
-                let pdata: OtapPdata = generator.generate_traces(count).try_into()?;
-                traces.push(pdata);
-            }
-        }
-
-        // Pre-generate log batches
-        if log_count > 0 {
+        // Pre-generate single logs batch
+        let logs = if log_count > 0 {
             let count = log_count.min(batch_size);
-            for _ in 0..pool_size {
-                let pdata: OtapPdata = generator.generate_logs(count).try_into()?;
-                logs.push(pdata);
-            }
-            // Log the size of the first batch (all batches are identical structure)
-            if let Some(first) = logs.first() {
-                let (_, payload) = first.clone().into_parts();
-                let size = payload.num_bytes().unwrap_or(0);
-                otel_info!(
-                    "batch_cache.logsize",
-                    log_record_count = count,
-                    batch_size_bytes = size,
-                    pool_size = pool_size,
-                    message = "Pre-generated log batches ready"
-                );
-            }
-        }
+            let pdata: OtapPdata = generator.generate_logs(count).try_into()?;
+            let (_, payload) = pdata.clone().into_parts();
+            let size = payload.num_bytes().unwrap_or(0);
+            otel_info!(
+                "batch_cache.logsize",
+                log_record_count = count,
+                batch_size_bytes = size,
+                message = "Pre-generated log batch ready"
+            );
+            Some(pdata)
+        } else {
+            None
+        };
 
         Ok(Self {
             metrics,
             traces,
             logs,
-            metrics_idx: 0,
-            traces_idx: 0,
-            logs_idx: 0,
         })
     }
 
-    /// Get the next pre-generated metrics batch (cycles through the pool)
-    fn next_metrics(&mut self) -> Option<OtapPdata> {
-        if self.metrics.is_empty() {
-            return None;
-        }
-        let batch = self.metrics[self.metrics_idx].clone();
-        self.metrics_idx = (self.metrics_idx + 1) % self.metrics.len();
-        Some(batch)
+    /// Get the pre-generated metrics batch (clone is O(1))
+    fn get_metrics(&self) -> Option<OtapPdata> {
+        self.metrics.clone()
     }
 
-    /// Get the next pre-generated traces batch (cycles through the pool)
-    fn next_traces(&mut self) -> Option<OtapPdata> {
-        if self.traces.is_empty() {
-            return None;
-        }
-        let batch = self.traces[self.traces_idx].clone();
-        self.traces_idx = (self.traces_idx + 1) % self.traces.len();
-        Some(batch)
+    /// Get the pre-generated traces batch (clone is O(1))
+    fn get_traces(&self) -> Option<OtapPdata> {
+        self.traces.clone()
     }
 
-    /// Get the next pre-generated logs batch (cycles through the pool).
-    ///
-    /// Note: Clone is O(1) here because `OtapPdata` contains `OtapPayload::OtlpBytes`,
-    /// which wraps `bytes::Bytes` - a reference-counted byte buffer. Cloning only
-    /// increments an atomic reference count, no data is copied.
-    fn next_logs(&mut self) -> Option<OtapPdata> {
-        if self.logs.is_empty() {
-            return None;
-        }
-        let batch = self.logs[self.logs_idx].clone();
-        self.logs_idx = (self.logs_idx + 1) % self.logs.len();
-        Some(batch)
+    /// Get the pre-generated logs batch (clone is O(1))
+    fn get_logs(&self) -> Option<OtapPdata> {
+        self.logs.clone()
     }
 }
 
@@ -272,7 +234,6 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         let traffic_config = self.config.get_traffic_config();
         let data_source = self.config.data_source().clone();
         let generation_strategy = self.config.generation_strategy().clone();
-        let pool_size = self.config.pool_size();
 
         // Create the appropriate signal generator based on data source
         let signal_generator = match data_source {
@@ -313,17 +274,15 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
         );
 
         // Create batch cache if using PreGenerated strategy
-        let mut batch_cache = match generation_strategy {
+        let batch_cache = match generation_strategy {
             GenerationStrategy::PreGenerated => {
                 otel_info!(
                     "receiver.pre_generate",
-                    pool_size = pool_size,
-                    message = "Pre-generating batches for high-throughput mode"
+                    message = "Pre-generating batch for high-throughput mode"
                 );
                 Some(
                     BatchCache::new(
                         &signal_generator,
-                        pool_size,
                         max_batch_size,
                         metric_count,
                         trace_count,
@@ -332,7 +291,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     .map_err(|e| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
                         kind: ReceiverErrorKind::Configuration,
-                        error: format!("Failed to pre-generate batches: {}", e),
+                        error: format!("Failed to pre-generate batch: {}", e),
                         source_detail: String::new(),
                     })?,
                 )
@@ -380,7 +339,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     trace_count,
                     log_count,
                     &signal_generator,
-                    &mut batch_cache,
+                    &batch_cache,
                 ), if max_signal_count.is_none_or(|max| max > signal_count) => {
                     // if signals per second is set then we should rate limit
                     match signal_status {
@@ -435,7 +394,7 @@ async fn send_signals(
     trace_count: usize,
     log_count: usize,
     generator: &SignalGenerator,
-    batch_cache: &mut Option<BatchCache>,
+    batch_cache: &Option<BatchCache>,
 ) -> Result<(), Error> {
     match batch_cache {
         Some(cache) => {
@@ -474,7 +433,7 @@ async fn send_cached_signals(
     metric_count: usize,
     trace_count: usize,
     log_count: usize,
-    cache: &mut BatchCache,
+    cache: &BatchCache,
 ) -> Result<(), Error> {
     let total_per_iteration = (metric_count + trace_count + log_count) as u64;
 
@@ -487,21 +446,21 @@ async fn send_cached_signals(
 
     // Send cached metrics
     if metric_count > 0 {
-        if let Some(batch) = cache.next_metrics() {
+        if let Some(batch) = cache.get_metrics() {
             effect_handler.send_message(batch).await?;
         }
     }
 
     // Send cached traces
     if trace_count > 0 {
-        if let Some(batch) = cache.next_traces() {
+        if let Some(batch) = cache.get_traces() {
             effect_handler.send_message(batch).await?;
         }
     }
 
     // Send cached logs
     if log_count > 0 {
-        if let Some(batch) = cache.next_logs() {
+        if let Some(batch) = cache.get_logs() {
             effect_handler.send_message(batch).await?;
         }
     }
@@ -1210,7 +1169,7 @@ mod tests {
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path)
             .with_data_source(DataSource::Static)
-            .with_generation_strategy(GenerationStrategy::PreGenerated, 5);
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(

@@ -74,10 +74,6 @@ pub struct Config {
     /// Strategy for generating telemetry batches
     #[serde(default)]
     generation_strategy: GenerationStrategy,
-
-    /// Number of batches/templates to pre-generate (only used with PreGenerated or Templates strategy)
-    #[serde(default = "default_pool_size")]
-    pool_size: usize,
 }
 
 /// Configuration to describe the traffic being sent
@@ -107,7 +103,6 @@ impl Config {
             registry_path,
             data_source: DataSource::default(),
             generation_strategy: GenerationStrategy::default(),
-            pool_size: default_pool_size(),
         }
     }
 
@@ -120,13 +115,8 @@ impl Config {
 
     /// Builder-style method to set generation strategy
     #[must_use]
-    pub fn with_generation_strategy(
-        mut self,
-        generation_strategy: GenerationStrategy,
-        pool_size: usize,
-    ) -> Self {
+    pub fn with_generation_strategy(mut self, generation_strategy: GenerationStrategy) -> Self {
         self.generation_strategy = generation_strategy;
-        self.pool_size = pool_size;
         self
     }
 
@@ -140,12 +130,6 @@ impl Config {
     #[must_use]
     pub fn generation_strategy(&self) -> &GenerationStrategy {
         &self.generation_strategy
-    }
-
-    /// Get the pool size for pre-generation
-    #[must_use]
-    pub fn pool_size(&self) -> usize {
-        self.pool_size
     }
 
     /// Provide a reference to the traffic config
@@ -279,10 +263,6 @@ impl TrafficConfig {
     pub fn get_max_batch_size(&self) -> usize {
         self.max_batch_size
     }
-}
-
-fn default_pool_size() -> usize {
-    10
 }
 
 fn default_signals_per_second() -> Option<usize> {
