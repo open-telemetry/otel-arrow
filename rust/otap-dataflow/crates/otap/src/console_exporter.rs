@@ -118,9 +118,9 @@ impl Exporter<OtapPdata> for ConsoleExporter {
 impl ConsoleExporter {
     async fn export(&self, payload: &OtapPayload) {
         match payload.signal_type() {
-            SignalType::Logs => self.export_logs(&payload).await,
-            SignalType::Traces => self.export_traces(&payload).await,
-            SignalType::Metrics => self.export_metrics(&payload).await,
+            SignalType::Logs => self.export_logs(payload).await,
+            SignalType::Traces => self.export_traces(payload).await,
+            SignalType::Metrics => self.export_metrics(payload).await,
         }
     }
 
