@@ -155,10 +155,18 @@ struct BatchCache {
     traces: Option<OtapPdata>,
     /// Pre-generated logs batch
     logs: Option<OtapPdata>,
+    /// Number of records in the metrics batch
+    metrics_batch_size: usize,
+    /// Number of records in the traces batch
+    traces_batch_size: usize,
+    /// Number of records in the logs batch
+    logs_batch_size: usize,
 }
 
 impl BatchCache {
-    /// Create a new batch cache by pre-generating a single batch for each signal type
+    /// Create a new batch cache by pre-generating a single batch for each signal type.
+    /// The batch contains up to `batch_size` records, which will be sent multiple times
+    /// per iteration to match the total signal count.
     fn new(
         generator: &SignalGenerator,
         batch_size: usize,
@@ -167,30 +175,30 @@ impl BatchCache {
         log_count: usize,
     ) -> Result<Self, Error> {
         // Pre-generate single metrics batch
+        let metrics_batch_size = metric_count.min(batch_size);
         let metrics = if metric_count > 0 {
-            let count = metric_count.min(batch_size);
-            Some(generator.generate_metrics(count).try_into()?)
+            Some(generator.generate_metrics(metrics_batch_size).try_into()?)
         } else {
             None
         };
 
         // Pre-generate single traces batch
+        let traces_batch_size = trace_count.min(batch_size);
         let traces = if trace_count > 0 {
-            let count = trace_count.min(batch_size);
-            Some(generator.generate_traces(count).try_into()?)
+            Some(generator.generate_traces(traces_batch_size).try_into()?)
         } else {
             None
         };
 
         // Pre-generate single logs batch
+        let logs_batch_size = log_count.min(batch_size);
         let logs = if log_count > 0 {
-            let count = log_count.min(batch_size);
-            let pdata: OtapPdata = generator.generate_logs(count).try_into()?;
+            let pdata: OtapPdata = generator.generate_logs(logs_batch_size).try_into()?;
             let (_, payload) = pdata.clone().into_parts();
             let size = payload.num_bytes().unwrap_or(0);
             otel_info!(
                 "batch_cache.logsize",
-                log_record_count = count,
+                log_record_count = logs_batch_size,
                 batch_size_bytes = size,
                 message = "Pre-generated log batch ready"
             );
@@ -203,22 +211,10 @@ impl BatchCache {
             metrics,
             traces,
             logs,
+            metrics_batch_size,
+            traces_batch_size,
+            logs_batch_size,
         })
-    }
-
-    /// Get the pre-generated metrics batch (clone is O(1))
-    fn get_metrics(&self) -> Option<OtapPdata> {
-        self.metrics.clone()
-    }
-
-    /// Get the pre-generated traces batch (clone is O(1))
-    fn get_traces(&self) -> Option<OtapPdata> {
-        self.traces.clone()
-    }
-
-    /// Get the pre-generated logs batch (clone is O(1))
-    fn get_logs(&self) -> Option<OtapPdata> {
-        self.logs.clone()
     }
 }
 
@@ -425,7 +421,8 @@ async fn send_signals(
     }
 }
 
-/// Send signals from pre-generated cache (PreGenerated strategy)
+/// Send signals from pre-generated cache (PreGenerated strategy).
+/// Sends the cached batch multiple times to match the total signal count.
 async fn send_cached_signals(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
@@ -444,24 +441,33 @@ async fn send_cached_signals(
         }
     }
 
-    // Send cached metrics
-    if metric_count > 0 {
-        if let Some(batch) = cache.get_metrics() {
-            effect_handler.send_message(batch).await?;
+    // Send cached metrics (multiple times if needed)
+    if metric_count > 0 && cache.metrics_batch_size > 0 {
+        if let Some(batch) = &cache.metrics {
+            let send_count = metric_count / cache.metrics_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
         }
     }
 
-    // Send cached traces
-    if trace_count > 0 {
-        if let Some(batch) = cache.get_traces() {
-            effect_handler.send_message(batch).await?;
+    // Send cached traces (multiple times if needed)
+    if trace_count > 0 && cache.traces_batch_size > 0 {
+        if let Some(batch) = &cache.traces {
+            let send_count = trace_count / cache.traces_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
         }
     }
 
-    // Send cached logs
-    if log_count > 0 {
-        if let Some(batch) = cache.get_logs() {
-            effect_handler.send_message(batch).await?;
+    // Send cached logs (multiple times if needed)
+    if log_count > 0 && cache.logs_batch_size > 0 {
+        if let Some(batch) = &cache.logs {
+            let send_count = log_count / cache.logs_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
         }
     }
 
