@@ -14,7 +14,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_otap::fake_data_generator::config::{Config, TrafficConfig};
-use otap_df_otap::fake_data_generator::fake_signal::fake_otlp_logs;
+use otap_df_otap::fake_data_generator::semconv_signal::semconv_otlp_logs;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
@@ -54,8 +54,11 @@ fn gen_fake_logs_batch(batch_size: usize) {
 
     let traffic_config = TrafficConfig::new(None, None, 10000, 1, 1, 1);
     let config = Config::new(traffic_config, registry_path);
-    let registry = config.get_registry().expect("registry");
-    let logs = fake_otlp_logs(batch_size, &registry);
+    let registry = config
+        .get_registry()
+        .expect("registry init OK")
+        .expect("registry exist");
+    let logs = semconv_otlp_logs(batch_size, &registry);
     let mut bytes = Vec::new();
     logs.encode(&mut bytes).expect("can encode logs");
     let mut file = std::fs::File::create(&file_path).expect("can create tmp file");
