@@ -145,25 +145,34 @@ pub struct InternalTelemetrySystem {
     resource_bytes: bytes::Bytes,
 }
 
+/// Represents the channel receiver of the internal telemetry pipeline
+/// before it is used to initialize the internal telemetry engine.
+pub struct InternalReceiver {
+    channel: flume::Receiver<event::ObservedEvent>,
+}
+
 impl InternalTelemetrySystem {
     /// Creates a new [`InternalTelemetrySystem`] initialized with the given configuration.
     ///
-    /// This creates:
-    /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
-    /// 2. The OpenTelemetry SDK providers (meter, and optionally logger)
-    /// 3. If any provider uses ITS mode, a dedicated logs channel for the ITR
+    /// Depending on logging provider mode choices, multiple telemetry backends can be
+    /// initialized:
     ///
-    /// The `console_async_reporter` is optional for async logging modes (`ConsoleAsync`).
-    /// Create the `ObservedStateStore` first and pass its reporter here.
+    /// OpenTelemetry: the OTel logging provider is created if any
+    /// service::telemetry::logs::providers uses this choice.  Note: the OTel meter
+    /// provider is created unconditionally.
     ///
-    /// Returns the system and optionally the ITS logs receiver if any provider uses ITS mode.
+    /// ConsoleAsync: the ObservedEventReporer is passed in, having been created for
+    /// use by the admin component unconditionally, to support the ConsoleAsync mode.
+    ///
+    /// ITS: if any logging provider is configured with for the internal telemetry system,
+    /// an InternalReceiver will be returned.
     ///
     /// **Note:** The global tracing subscriber is NOT initialized here. Call
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
         console_async_reporter: Option<ObservedEventReporter>,
-    ) -> Result<(Self, Option<flume::Receiver<event::ObservedEvent>>), Error> {
+    ) -> Result<(Self, Option<InternalReceiver>), Error> {
         // Validate logs config
         config
             .logs
