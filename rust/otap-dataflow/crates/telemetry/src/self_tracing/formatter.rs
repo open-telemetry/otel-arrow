@@ -552,6 +552,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
     use prost::Message;
+    use smallvec::smallvec;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tracing_subscriber::prelude::*;
@@ -735,8 +736,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            pipeline_entity_key: None,
-            node_entity_key: None,
+            context: smallvec![],
         };
 
         let writer = ConsoleWriter::no_color();
@@ -799,8 +799,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
-            pipeline_entity_key: None,
-            node_entity_key: None,
+            context: smallvec![],
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
@@ -853,8 +852,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            pipeline_entity_key: Some(pipeline_key),
-            node_entity_key: Some(node_key),
+            context: smallvec![pipeline_key, node_key],
         };
 
         let writer = ConsoleWriter::no_color();
@@ -892,8 +890,7 @@ mod tests {
         let record_pipeline_only = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            pipeline_entity_key: Some(pipeline_key),
-            node_entity_key: None,
+            context: smallvec![pipeline_key],
         };
 
         let output = writer.format_log_record(Some(time), &record_pipeline_only);
@@ -909,7 +906,7 @@ mod tests {
         let record_no_entity = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            pipeline_entity_key: None,
+            context: None,
             node_entity_key: None,
         };
 

@@ -13,7 +13,7 @@ use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{ConsoleWriter, ScopeMode};
+use otap_df_telemetry::self_tracing::ConsoleWriter;
 use otap_df_telemetry::{otel_error, otel_info};
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -147,9 +147,8 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                // Print the log record first (without inline scope)
-                self.console
-                    .print_log_record_with_mode(log.time, &log.record, ScopeMode::Grouped);
+                // Print the log record first
+                self.console.print_log_record(log.time, &log.record);
 
                 // If we have a registry and entity context, print scope attributes
                 if let Some(ref registry) = *self.registry.read() {
@@ -161,16 +160,8 @@ impl ObservedStateStore {
     }
 
     /// Print scope attributes by looking up entity keys in the registry.
-    fn print_scope_from_registry(
-        &self,
-        record: &otap_df_telemetry::self_tracing::LogRecord,
-        registry: &TelemetryRegistryHandle,
-    ) {
+    fn print_scope_from_registry(&self, context: &LogContext, registry: &TelemetryRegistryHandle) {
         use std::io::Write;
-
-        if !record.has_entity_context() {
-            return;
-        }
 
         // Build scope line with resolved attributes
         let mut scope_parts = Vec::new();
@@ -198,7 +189,10 @@ impl ObservedStateStore {
                 // Include all non-empty node attributes (skip duplicates from pipeline)
                 for (i, field) in desc.fields.iter().enumerate() {
                     // Skip fields already in scope_parts (node inherits from pipeline)
-                    if scope_parts.iter().any(|p| p.starts_with(&format!("{}=", field.key))) {
+                    if scope_parts
+                        .iter()
+                        .any(|p| p.starts_with(&format!("{}=", field.key)))
+                    {
                         continue;
                     }
                     if let Some(val) = values.get(i) {
@@ -213,7 +207,10 @@ impl ObservedStateStore {
 
         if !scope_parts.is_empty() {
             // Print scope line (indented, no timestamp/level)
-            let scope_line = format!("                                scope [{}]\n", scope_parts.join(", "));
+            let scope_line = format!(
+                "                                scope [{}]\n",
+                scope_parts.join(", ")
+            );
             let _ = std::io::stderr().write_all(scope_line.as_bytes());
         }
     }
@@ -328,7 +325,7 @@ mod tests {
     static PIPELINE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
         name: "pipeline.attrs",
         fields: &[AttributeField {
-            key: "pipeline.id",  // Macro converts pipeline_id -> pipeline.id
+            key: "pipeline.id", // Macro converts pipeline_id -> pipeline.id
             r#type: AttributeValueType::String,
             brief: "Pipeline identifier",
         }],
@@ -360,7 +357,7 @@ mod tests {
     static NODE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
         name: "node.attrs",
         fields: &[AttributeField {
-            key: "node.id",  // Macro converts node_id -> node.id
+            key: "node.id", // Macro converts node_id -> node.id
             r#type: AttributeValueType::String,
             brief: "Node identifier",
         }],

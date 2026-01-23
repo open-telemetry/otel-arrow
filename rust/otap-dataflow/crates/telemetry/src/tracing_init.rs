@@ -12,7 +12,7 @@ use crate::self_tracing::{ConsoleWriter, LogContext, LogRecord, RawLoggingLayer}
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
-use smallvec::smallvec;
+use smallvec::SmallVec;
 use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
@@ -29,7 +29,7 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 #[derive(Clone, Copy)]
 pub struct EntityKeyProviders {
     /// Returns the current pipeline entity key for this thread, if set.
-    pub context: fn() -> Option<LogContext>,
+    pub context: fn() -> LogContext,
 }
 
 /// Creates an `EnvFilter` for the given log level.
@@ -213,7 +213,7 @@ where
         let time = SystemTime::now();
         let context = match self.entity_providers {
             Some(providers) => (providers.context)(),
-            None => smallvec![],
+            None => SmallVec::new(),
         };
         let record = LogRecord::new_with_context(event, context);
         self.reporter.log(LogEvent { time, record });
