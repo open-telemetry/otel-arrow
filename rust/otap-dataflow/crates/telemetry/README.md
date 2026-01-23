@@ -93,7 +93,7 @@ field, with the following choices:
 
 - `its`: configure the Internal Telemetry System using nodes
   defined in the pipeline's `internal` nodes section. These nodes
-  are configured in a dedicated engine thread.
+  are configured in a dedicated thread.
 - `console_async`: configure asynchronous console logging. In this
   mode log records are printed to the console from the administrative
   component.
