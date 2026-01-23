@@ -55,9 +55,9 @@ fn test_persistence_processor_data_flow() {
         pipeline_id.clone(),
         persistence_path,
         // Generate a small bounded amount of data
-        Some(10),   // max_signal_count
-        5,          // max_batch_size
-        Some(100),  // signals_per_second
+        Some(10),  // max_signal_count
+        5,         // max_batch_size
+        Some(100), // signals_per_second
     );
 
     let telemetry_system = InternalTelemetrySystem::default();
@@ -153,9 +153,9 @@ fn test_persistence_processor_recovery() {
             pipeline_group_id.clone(),
             pipeline_id.clone(),
             persistence_path.clone(),
-            Some(20),   // Generate more signals
-            10,         // Larger batches
-            Some(500),  // Faster rate
+            Some(20),  // Generate more signals
+            10,        // Larger batches
+            Some(500), // Faster rate
         );
 
         let telemetry_system = InternalTelemetrySystem::default();

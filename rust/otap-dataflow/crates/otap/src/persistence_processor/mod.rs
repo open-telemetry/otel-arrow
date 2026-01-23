@@ -49,9 +49,9 @@ use crate::pdata::OtapPdata;
 use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
 pub use config::{OtlpHandling, PersistenceProcessorConfig, SizeCapPolicy};
 
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::SignalType;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
@@ -89,7 +89,6 @@ const SUBSCRIBER_ID: &str = "persistence-processor";
 #[derive(Debug, Default, Clone)]
 pub struct PersistenceProcessorMetrics {
     // ─── Bundle-level metrics ───────────────────────────────────────────────
-
     /// Number of bundles ingested to Quiver.
     #[metric(unit = "{bundle}")]
     pub bundles_ingested: Counter<u64>,
@@ -107,7 +106,6 @@ pub struct PersistenceProcessorMetrics {
     pub bundles_nacked: Counter<u64>,
 
     // ─── Consumed item metrics (per signal type) ────────────────────────────
-
     /// Number of log records consumed (ingested to WAL).
     #[metric(unit = "{log}")]
     pub consumed_items_logs: Counter<u64>,
@@ -121,7 +119,6 @@ pub struct PersistenceProcessorMetrics {
     pub consumed_items_traces: Counter<u64>,
 
     // ─── Produced item metrics (per signal type) ────────────────────────────
-
     /// Number of log records produced (sent downstream).
     #[metric(unit = "{log}")]
     pub produced_items_logs: Counter<u64>,
@@ -135,7 +132,6 @@ pub struct PersistenceProcessorMetrics {
     pub produced_items_traces: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
-
     /// Number of ingest errors.
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
@@ -145,7 +141,6 @@ pub struct PersistenceProcessorMetrics {
     pub read_errors: Counter<u64>,
 
     // ─── Quiver storage metrics (updated on telemetry collection) ───────────
-
     /// Current bytes used by Quiver storage (WAL + segments).
     #[metric(unit = "By")]
     pub storage_bytes_used: Gauge<u64>,
@@ -457,10 +452,7 @@ impl PersistenceProcessor {
 
                 // ACK upstream after successful WAL write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
-                let ack_pdata = OtapPdata::new(
-                    context,
-                    OtapPayload::empty(SignalType::Logs),
-                );
+                let ack_pdata = OtapPdata::new(context, OtapPayload::empty(SignalType::Logs));
                 effect_handler.notify_ack(AckMsg::new(ack_pdata)).await?;
                 Ok(())
             }
@@ -468,10 +460,7 @@ impl PersistenceProcessor {
                 self.metrics.ingest_errors.add(1);
                 error!(error = %e, "failed to ingest bundle to Quiver");
 
-                let nack_pdata = OtapPdata::new(
-                    context,
-                    OtapPayload::empty(SignalType::Logs),
-                );
+                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(SignalType::Logs));
                 effect_handler
                     .notify_nack(NackMsg::new(
                         format!("persistence failed: {}", e),

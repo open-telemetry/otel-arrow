@@ -163,7 +163,10 @@ mod tests {
         // Test decimal values
         let json = r#"{"path": "/tmp/test", "retention_size_cap": "1.5 GiB"}"#;
         let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.size_cap_bytes(), (1.5 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            config.size_cap_bytes(),
+            (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
     }
 
     #[test]
