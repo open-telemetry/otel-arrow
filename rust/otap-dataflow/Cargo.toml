@@ -285,14 +285,14 @@ debug = "line-tables-only"  # minimum required for profiling
 [profile.bench]
 inherits = "release"
 opt-level = 3
-debug = false
+# debug = false
 incremental = false
 lto = "thin"
 codegen-units = 1
 # Potentially override lto for faster builds:
 # lto = "thin"
 # Potentially override debug/strip for easier debugging:
-# debug = true
+debug = true
 strip = "none"
 
 # cargo build --profile release-debug
