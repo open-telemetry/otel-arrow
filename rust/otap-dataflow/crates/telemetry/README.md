@@ -83,22 +83,26 @@ logging.
 
 There are four aspects that can be configured:
 
-- `engine`: logging for pipeline threads that run dataflow processing (receivers, processors, exporters)
-- `global`: fallback logging for code outside engine/admin contexts (e.g., libraries, startup code)
-- `admin`: logging for administrative threads (metrics aggregation, observed state store, controller tasks)
-- `internal`: logging for the internal telemetry pipeline itself; restricted to `console_direct` or `noop` to avoid feedback loops
+- `engine`: logging for pipeline threads that run dataflow processing
+  (receivers, processors, exporters)
+- `global`: fallback logging for code outside engine/admin contexts
+  (e.g., libraries, startup code)
+- `admin`: logging for administrative threads (metrics aggregation,
+  observed state store, controller tasks)
+- `internal`: logging for the internal telemetry pipeline itself;
+  restricted to `console_direct` or `noop` to avoid feedback loops
 
 These modes are configured through the `service::telemetry::logs::providers`
 field, with the following choices:
 
-- `its`: configure the Internal Telemetry System using nodes
-  defined in the pipeline's `internal` nodes section. These nodes
-  are configured in a dedicated thread.
+- `its`: configure the Internal Telemetry System using nodes defined
+  in the pipeline's `internal` nodes section. These nodes are
+  configured in a dedicated thread.
 - `console_async`: configure asynchronous console logging. In this
-  mode log records are printed to the console by the observed-state-store thread, avoiding
-  blocking the caller.
-- `console_direct`: configure synchronous logging. This mode blocks the calling
-  thread to print each log statement immediately.
+  mode log records are printed to the console by the
+  observed-state-store thread, avoiding blocking the caller.
+- `console_direct`: configure synchronous logging. This mode blocks
+  the calling thread to print each log statement immediately.
 - `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
   supports more extensive diagnostics, including support for
   distributed tracing events.
@@ -106,7 +110,8 @@ field, with the following choices:
 
 For more on this design, see the [self-tracing architecture
 document](../../docs/self_tracing_architecture.md). See a sample
-configuration in [configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
+configuration in
+[configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
 
 ## Roadmap
 
@@ -115,7 +120,8 @@ configuration in [configs/internal-telemetry.yaml](../../configs/internal-teleme
 - Structured events and spans.
 - NUMA-aware aggregation.
 
-The Internal Telemetry System (ITS) is moving in the direction depicted below:
+The Internal Telemetry System (ITS) is moving in the direction
+depicted below:
 
 ![Architecture Phase 2](assets/ITS.svg)
 
@@ -124,4 +130,5 @@ telemetry streams, and will be used to export to external backends such as
 Prometheus, OTLP-compatible systems, or OTAP-compatible systems.
 
 Note: The recent telemetry guidelines defined in `/docs/telemetry` are
-still being implemented in this SDK. Expect changes and improvements over time.
+still being implemented in this SDK. Expect changes and improvements
+over time.

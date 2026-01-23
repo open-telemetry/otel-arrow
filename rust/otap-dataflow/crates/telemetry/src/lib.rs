@@ -348,9 +348,7 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        let system = Self::new(&config, Some(dummy_reporter))
-            .expect("default telemetry config should be valid");
-        system
+        Self::new(&config, Some(dummy_reporter)).expect("default telemetry config should be valid")
     }
 }
 
