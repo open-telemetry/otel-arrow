@@ -13,7 +13,7 @@ nodes:
           - exporter
         dispatch_strategy: round_robin
     config:
-      data_source: static
+      data_source: semantic_conventions
       generation_strategy: pre_generated
       traffic_config:
         max_batch_size: {{ max_batch_size | default(1000) }}
