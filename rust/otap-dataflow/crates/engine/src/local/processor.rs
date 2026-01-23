@@ -288,6 +288,9 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets the pipeline control message sender for this effect handler.
+    ///
+    /// Primarily used by tests and manual harnesses that construct an EffectHandler directly;
+    /// the engine wiring sets this automatically in `prepare_runtime`.
     pub fn set_pipeline_ctrl_msg_sender(
         &mut self,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
