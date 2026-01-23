@@ -172,6 +172,34 @@ destinations:
 | `nacked` | Requests nacked upstream |
 | `timed_out` | Destinations that timed out |
 
+## Cloning and Mutability
+
+Each destination receives an independent **clone** of the incoming PData.
+
+### Clone Cost
+
+Cloning is cheap for both data formats:
+
+| Format | Storage | Clone Cost |
+|--------|---------|------------|
+| OTLP (OtlpProtoBytes) | `bytes::Bytes` | O(1) refcount bump |
+| OTAP (OtapArrowRecords) | `Arc` per column | O(columns) refcount bumps |
+
+No telemetry data is deep-copied during fan-out. Only reference counts are
+incremented.
+
+### Mutability
+
+- Downstream processors and exporters may mutate their copy freely
+- Mutations do not affect other destinations
+- Underlying buffers are copy-on-write (deep copy only when modified)
+
+### Context Stack
+
+Each clone gets its own Context (subscription stack) for independent ack/nack
+routing per destination. The context is small (typically 1-3 frames) and is
+copied during clone.
+
 ## Quick Reference
 
 | Mode | await_ack | Behavior |
