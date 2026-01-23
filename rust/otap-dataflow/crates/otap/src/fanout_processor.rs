@@ -8,8 +8,8 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::error::Error as ConfigError;
 use otap_df_config::PortName;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::{SmallVec, smallvec};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
@@ -84,7 +84,10 @@ struct FanoutConfig {
     #[serde(default)]
     pub destinations: Vec<DestinationConfig>,
     /// Interval for timeout checks when any destination declares a timeout.
-    #[serde(with = "humantime_serde", default = "FanoutConfig::default_timeout_interval")]
+    #[serde(
+        with = "humantime_serde",
+        default = "FanoutConfig::default_timeout_interval"
+    )]
     pub timeout_check_interval: Duration,
 }
 
@@ -93,10 +96,7 @@ impl FanoutConfig {
         Duration::from_millis(200)
     }
 
-    fn validate(
-        mut self,
-        node_config: &NodeUserConfig,
-    ) -> Result<ValidatedConfig, ConfigError> {
+    fn validate(mut self, node_config: &NodeUserConfig) -> Result<ValidatedConfig, ConfigError> {
         if self.destinations.is_empty() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "fanout: at least one destination is required".into(),
@@ -115,12 +115,11 @@ impl FanoutConfig {
         let mut origins: HashSet<PortName> = HashSet::new();
 
         for (idx, dest) in self.destinations.iter().enumerate() {
-            let out_port_cfg = node_config
-                .out_ports
-                .get(&dest.port)
-                .ok_or_else(|| ConfigError::InvalidUserConfig {
+            let out_port_cfg = node_config.out_ports.get(&dest.port).ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
                     error: format!("fanout: unknown out_port `{}`", dest.port),
-                })?;
+                }
+            })?;
 
             if out_port_cfg.destinations.len() != 1 {
                 return Err(ConfigError::InvalidUserConfig {
@@ -172,9 +171,12 @@ impl FanoutConfig {
         let mut fallback_map = HashMap::new();
         for (idx, dest) in self.destinations.iter().enumerate() {
             if let Some(fb) = &dest.fallback_for {
-                let origin_idx = *port_index.get(fb).ok_or_else(|| ConfigError::InvalidUserConfig {
-                    error: format!("fanout: fallback_for `{}` not found", fb),
-                })?;
+                let origin_idx =
+                    *port_index
+                        .get(fb)
+                        .ok_or_else(|| ConfigError::InvalidUserConfig {
+                            error: format!("fanout: fallback_for `{}` not found", fb),
+                        })?;
                 let _ = fallback_map.insert(idx, origin_idx);
             }
         }
@@ -251,7 +253,10 @@ pub struct FanoutProcessor {
 }
 
 fn build_calldata(request_id: u64, dest_index: usize) -> CallData {
-    smallvec![Context8u8::from(request_id), Context8u8::from(dest_index as u64)]
+    smallvec![
+        Context8u8::from(request_id),
+        Context8u8::from(dest_index as u64)
+    ]
 }
 
 fn parse_calldata(calldata: &CallData) -> Option<(u64, usize)> {
@@ -328,11 +333,7 @@ impl FanoutProcessor {
             effect_handler.subscribe_to(interests, calldata, &mut dest_data);
 
             let timeout_at = dest.timeout.map(|d| now + d);
-            let origin = *self
-                .config
-                .fallback_map
-                .get(&idx)
-                .unwrap_or(&idx);
+            let origin = *self.config.fallback_map.get(&idx).unwrap_or(&idx);
 
             // Fallback destinations are only sent when triggered.
             let is_fallback = dest.fallback_for.is_some();
@@ -441,12 +442,11 @@ impl FanoutProcessor {
         inflight.endpoints[dest_index].status = DestStatus::Nacked;
 
         // Trigger fallback if configured.
-        if let Some((fb_idx, _)) = inflight
-            .endpoints
-            .iter()
-            .enumerate()
-            .find(|(idx, ep)| ep.origin == origin && ep.status == DestStatus::PendingSend && self.config.destinations[*idx].fallback_for.is_some())
-        {
+        if let Some((fb_idx, _)) = inflight.endpoints.iter().enumerate().find(|(idx, ep)| {
+            ep.origin == origin
+                && ep.status == DestStatus::PendingSend
+                && self.config.destinations[*idx].fallback_for.is_some()
+        }) {
             inflight.endpoints[fb_idx].status = DestStatus::InFlight;
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.clear();
@@ -536,7 +536,9 @@ impl FanoutProcessor {
                         .endpoints
                         .iter()
                         .enumerate()
-                        .find(|(_, ep)| ep.status == DestStatus::PendingSend && ep.payload.is_some())
+                        .find(|(_, ep)| {
+                            ep.status == DestStatus::PendingSend && ep.payload.is_some()
+                        })
                         .map(|(idx, _)| idx)
                     {
                         inflight.endpoints[next_idx].status = DestStatus::InFlight;
@@ -544,12 +546,7 @@ impl FanoutProcessor {
                     }
                 }
             }
-            (
-                origin,
-                inflight.await_ack,
-                inflight.primary,
-                inflight.mode,
-            )
+            (origin, inflight.await_ack, inflight.primary, inflight.mode)
         };
 
         if matches!(await_ack, AwaitAck::None) {
@@ -655,8 +652,12 @@ impl Processor<OtapPdata> for FanoutProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::Control(NodeControlMsg::Ack(ack)) => self.process_ack(ack, effect_handler).await,
-            Message::Control(NodeControlMsg::Nack(nack)) => self.process_nack(nack, effect_handler).await,
+            Message::Control(NodeControlMsg::Ack(ack)) => {
+                self.process_ack(ack, effect_handler).await
+            }
+            Message::Control(NodeControlMsg::Nack(nack)) => {
+                self.process_nack(nack, effect_handler).await
+            }
             Message::Control(NodeControlMsg::TimerTick { .. }) => {
                 for nack in self.handle_timeout(effect_handler).await? {
                     self.metrics.timed_out.add(1);
@@ -664,7 +665,9 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 }
                 Ok(())
             }
-            Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+            Message::Control(NodeControlMsg::CollectTelemetry {
+                mut metrics_reporter,
+            }) => {
                 _ = metrics_reporter.report(&mut self.metrics);
                 Ok(())
             }
@@ -674,18 +677,22 @@ impl Processor<OtapPdata> for FanoutProcessor {
             Message::PData(pdata) => {
                 // Fast-path for await_ack = None: Ack immediately after dispatch.
                 let await_ack_none = matches!(self.config.await_ack, AwaitAck::None);
-                let request_id = self.register_inflight(pdata.clone(), effect_handler).await?;
-                let inflight = self.inflight.get_mut(&request_id).expect("inflight just inserted");
+                let request_id = self
+                    .register_inflight(pdata.clone(), effect_handler)
+                    .await?;
+                let inflight = self
+                    .inflight
+                    .get_mut(&request_id)
+                    .expect("inflight just inserted");
                 Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
                 self.metrics.sent.add(1);
 
                 if await_ack_none {
-                    let pdata_for_ack = inflight
-                        .ack_payload
-                        .take()
-                        .unwrap_or(pdata);
+                    let pdata_for_ack = inflight.ack_payload.take().unwrap_or(pdata);
                     let _ = self.inflight.remove(&request_id);
-                    effect_handler.notify_ack(AckMsg::new(pdata_for_ack)).await?;
+                    effect_handler
+                        .notify_ack(AckMsg::new(pdata_for_ack))
+                        .await?;
                 }
                 Ok(())
             }
@@ -700,7 +707,8 @@ pub fn create_fanout_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let fanout = FanoutProcessor::from_config(pipeline_ctx.clone(), &node_config, &node_config.config)?;
+    let fanout =
+        FanoutProcessor::from_config(pipeline_ctx.clone(), &node_config, &node_config.config)?;
     Ok(ProcessorWrapper::local(
         fanout,
         node,
@@ -726,19 +734,17 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
 mod tests {
     use super::*;
     use crate::pdata::Context;
-    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
     use otap_df_config::SignalType;
-    use otap_df_engine::control::{
-        NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
-    };
+    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::local::processor::EffectHandler;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
     use otap_df_engine::testing::test_node;
+    use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
     use otap_df_telemetry::InternalTelemetrySystem;
-    use otap_df_pdata::{OtlpProtoBytes, OtapPayload};
     use serde_json::{Value, json};
     use std::collections::HashMap;
     use std::time::Duration;
@@ -764,9 +770,7 @@ mod tests {
         fanout: FanoutProcessor,
         effect: EffectHandler<OtapPdata>,
         outputs: HashMap<String, LocalReceiver<OtapPdata>>,
-        pipeline_rx: otap_df_engine::shared::message::SharedReceiver<
-            PipelineControlMsg<OtapPdata>,
-        >,
+        pipeline_rx: otap_df_engine::shared::message::SharedReceiver<PipelineControlMsg<OtapPdata>>,
     }
 
     fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
@@ -849,10 +853,14 @@ mod tests {
             kind: NodeKind::Processor,
             plugin_urn: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [(TEST_OUT_PORT_NAME.into(), HyperEdgeConfig {
-                destinations: [test_node("downstream").name.clone()].into_iter().collect(),
-                dispatch_strategy: DispatchStrategy::Broadcast,
-            })].into(),
+            out_ports: [(
+                TEST_OUT_PORT_NAME.into(),
+                HyperEdgeConfig {
+                    destinations: [test_node("downstream").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                },
+            )]
+            .into(),
             default_out_port: None,
             config: json!({
                 "destinations": [
@@ -902,14 +910,20 @@ mod tests {
             plugin_urn: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
-                ("p1".into(), HyperEdgeConfig {
-                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
-                ("p2".into(), HyperEdgeConfig {
-                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
+                (
+                    "p1".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "p2".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
             ]
             .into(),
             default_out_port: None,
@@ -942,14 +956,20 @@ mod tests {
             plugin_urn: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
-                ("p1".into(), HyperEdgeConfig {
-                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
-                ("p2".into(), HyperEdgeConfig {
-                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
+                (
+                    "p1".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "p2".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
             ]
             .into(),
             default_out_port: None,
@@ -970,11 +990,7 @@ mod tests {
             .process(Message::PData(data), &mut h.effect)
             .await
             .expect("process ok");
-        let mut sent = drain(
-            h.outputs
-                .get_mut(TEST_OUT_PORT_NAME)
-                .expect("out port"),
-        );
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
         assert_eq!(sent.len(), 1);
         let mut ack = AckMsg::new(sent.pop().unwrap());
         ack.calldata = ack.accepted.current_calldata().unwrap();
@@ -992,14 +1008,20 @@ mod tests {
             plugin_urn: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
-                ("p1".into(), HyperEdgeConfig {
-                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
-                ("p2".into(), HyperEdgeConfig {
-                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                }),
+                (
+                    "p1".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "p2".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
             ]
             .into(),
             default_out_port: None,
@@ -1091,7 +1113,10 @@ mod tests {
         let mut ack_first = AckMsg::new(first.into_iter().next().unwrap());
         ack_first.calldata = ack_first.accepted.current_calldata().unwrap();
         h.fanout
-            .process(Message::Control(NodeControlMsg::Ack(ack_first)), &mut h.effect)
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_first)),
+                &mut h.effect,
+            )
             .await
             .expect("ack ok");
 
@@ -1101,7 +1126,10 @@ mod tests {
         let mut ack_second = AckMsg::new(next.into_iter().next().unwrap());
         ack_second.calldata = ack_second.accepted.current_calldata().unwrap();
         h.fanout
-            .process(Message::Control(NodeControlMsg::Ack(ack_second)), &mut h.effect)
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_second)),
+                &mut h.effect,
+            )
             .await
             .expect("ack ok");
         assert!(h.fanout.inflight.is_empty());
@@ -1276,7 +1304,10 @@ mod tests {
         let mut ack_first = AckMsg::new(s1_msgs[0].clone());
         ack_first.calldata = s1_msgs[0].current_calldata().unwrap();
         h.fanout
-            .process(Message::Control(NodeControlMsg::Ack(ack_first)), &mut h.effect)
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_first)),
+                &mut h.effect,
+            )
             .await
             .expect("ack ok");
         let s2_after_first = drain(h.outputs.get_mut("s2").expect("s2"));
@@ -1285,7 +1316,10 @@ mod tests {
         let mut ack_second = AckMsg::new(s1_msgs[1].clone());
         ack_second.calldata = s1_msgs[1].current_calldata().unwrap();
         h.fanout
-            .process(Message::Control(NodeControlMsg::Ack(ack_second)), &mut h.effect)
+            .process(
+                Message::Control(NodeControlMsg::Ack(ack_second)),
+                &mut h.effect,
+            )
             .await
             .expect("ack ok");
         let s2_after_second = drain(h.outputs.get_mut("s2").expect("s2"));
