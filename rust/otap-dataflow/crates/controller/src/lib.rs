@@ -151,8 +151,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // TODO: This should be validated somewhere, that internal node are defined when
         // its is requested. Possibly we could fill in a default.
+        let has_internal_pipeline = internal_pipeline_handle.is_some();
         match (
-            internal_pipeline_handle.is_some(),
+            has_internal_pipeline,
             telemetry_config.logs.providers.uses_its_provider(),
         ) {
             (false, true) => {
@@ -208,6 +209,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let mut threads = Vec::new();
         let mut ctrl_msg_senders = Vec::new();
 
+        // Add internal pipeline to threads list if present
+        if let Some((thread_name, handle)) = internal_pipeline_handle {
+            let ikey = Self::internal_pipeline_key();
+            threads.push((
+                thread_name,
+                0, // TODO: thread_id is not defined
+                ikey,
+                handle,
+            ));
+        }
+
         for (pipeline_group_id, pipeline_group) in pipeline_groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let quota = pipeline.quota().clone();
@@ -246,15 +258,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         core_id.id
                     );
 
-                    let group_id = pipeline_group_id.clone();
-                    let pipeline_id = pipeline_id.clone();
+                    let run_key = pipeline_key.clone();
                     let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                     let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
                             Self::run_pipeline_thread(
-                                pipeline_key,
+                                run_key,
                                 core_id,
                                 pipeline_config,
                                 pipeline_factory,
@@ -271,14 +282,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             source: e,
                         })?;
 
-                    threads.push((
-                        thread_name,
-                        thread_id,
-                        core_id.id,
-                        group_id,
-                        pipeline_id,
-                        handle,
-                    ));
+                    threads.push((thread_name, thread_id, pipeline_key, handle));
                 }
             }
         }
@@ -313,12 +317,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, core_id, group_id, pipeline_id, handle) in threads {
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                core_id,
-            };
+        for (thread_name, thread_id, pipeline_key, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
@@ -344,6 +343,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         err_summary,
                     ));
                     // Thread join failed, handle the error
+                    let core_id = pipeline_key.core_id;
                     return Err(Error::ThreadPanic {
                         thread_name,
                         thread_id,
@@ -486,6 +486,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
     }
 
+    fn internal_pipeline_key() -> DeployedPipelineKey {
+        DeployedPipelineKey {
+            pipeline_group_id: "internal".into(),
+            pipeline_id: "internal".into(),
+            core_id: 0, // TODO: Internal thread is unpinned, core_id is not accurate.
+        }
+    }
+
     /// Spawns the internal telemetry pipeline if any pipeline has an internal config.
     ///
     /// Returns the thread handle if an internal pipeline was spawned
@@ -529,15 +537,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             return Ok(None);
         }
 
-        let internal_pipeline_id: otap_df_config::PipelineId = "internal".into();
-        let internal_group_id: otap_df_config::PipelineGroupId = "internal".into();
-        let internal_pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: internal_group_id.clone(),
-            pipeline_id: internal_pipeline_id.clone(),
-            core_id: 0, // TODO: Internal thread is unpinned, core_id is not accurate.
-        };
-        let internal_pipeline_ctx =
-            controller_ctx.pipeline_context_with(internal_group_id, internal_pipeline_id, 0, 0);
+        let ikey = Self::internal_pipeline_key();
+        let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+            ikey.pipeline_group_id,
+            ikey.pipeline_id,
+            ikey.core_id,
+            0, // TODO: we do not have a thread_id, core_id
+        );
 
         // Create control message channel for internal pipeline
         let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
@@ -557,7 +563,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .name(thread_name.clone())
             .spawn(move || {
                 Self::run_internal_pipeline_thread(
-                    internal_pipeline_key,
                     internal_config,
                     pipeline_factory,
                     internal_pipeline_ctx,
@@ -674,7 +679,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Runs the internal telemetry pipeline in the current thread.
     #[allow(clippy::too_many_arguments)]
     fn run_internal_pipeline_thread(
-        pipeline_key: DeployedPipelineKey,
         pipeline_config: PipelineConfig,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -702,7 +706,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
             obs_evt_reporter.report(EngineEvent::admitted(
-                pipeline_key.clone(),
+                Self::internal_pipeline_key(),
                 Some("Internal pipeline admission successful.".to_owned()),
             ));
 
@@ -723,7 +727,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             };
 
             obs_evt_reporter.report(EngineEvent::ready(
-                pipeline_key.clone(),
+                Self::internal_pipeline_key(),
                 Some("Internal pipeline initialization successful.".to_owned()),
             ));
 
@@ -733,7 +737,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // Start the pipeline (this will use the current thread's Tokio runtime)
             runtime_pipeline
                 .run_forever(
-                    pipeline_key,
+                    Self::internal_pipeline_key(),
                     pipeline_context,
                     obs_evt_reporter,
                     metrics_reporter,
