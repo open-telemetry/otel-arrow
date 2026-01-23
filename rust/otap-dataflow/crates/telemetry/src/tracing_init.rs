@@ -85,16 +85,11 @@ pub enum ProviderSetup {
     /// Synchronous console logging via `RawLoggingLayer`.
     ConsoleDirect,
 
-    /// Asynchronous console logging via an observed event reporter.
-    ConsoleAsync {
+    /// Asynchronous console logging via an observed event reporter which
+    /// is either the admin component ("console_async") or an internal telemetry
+    /// pipeline engine ("its").
+    InternalAsync {
         /// Reporter to send log events through.
-        reporter: ObservedEventReporter,
-    },
-
-    /// Internal Telemetry System mode: logs go through internal telemetry pipeline.
-    /// Uses the same mechanism as ConsoleAsync but the receiver goes to the ITR.
-    ITS {
-        /// Reporter to send log events to the Internal Telemetry Receiver.
         reporter: ObservedEventReporter,
     },
 
@@ -119,14 +114,7 @@ impl ProviderSetup {
                     .with(RawLoggingLayer::new(ConsoleWriter::color())),
             ),
 
-            ProviderSetup::ConsoleAsync { reporter } => {
-                let layer = ConsoleAsyncLayer::new(reporter);
-                Dispatch::new(Registry::default().with(filter()).with(layer))
-            }
-
-            ProviderSetup::ITS { reporter } => {
-                // ITS uses the same async layer as ConsoleAsync, but the
-                // receiver is consumed by the Internal Telemetry Receiver
+            ProviderSetup::InternalAsync { reporter } => {
                 let layer = ConsoleAsyncLayer::new(reporter);
                 Dispatch::new(Registry::default().with(filter()).with(layer))
             }
@@ -198,15 +186,6 @@ mod tests {
     }
 
     #[test]
-    fn tracing_setup_new() {
-        let _ = TracingSetup::new(ProviderSetup::Noop, LogLevel::Info);
-        let _ = TracingSetup::new(ProviderSetup::ConsoleDirect, LogLevel::Debug);
-
-        let (reporter, _rx) = test_reporter();
-        let _ = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Warn);
-    }
-
-    #[test]
     fn noop_provider_runs() {
         let setup = TracingSetup::new(ProviderSetup::Noop, LogLevel::Info);
         setup.with_subscriber(|| {
@@ -263,7 +242,7 @@ mod tests {
     #[test]
     fn console_async_provider_sends_logs() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
             otel_info!("async_log");
@@ -286,14 +265,25 @@ mod tests {
             LogLevel::Warn,
             LogLevel::Error,
         ] {
-            let (reporter, _receiver) = test_reporter();
-            let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, level);
+            let (reporter, receiver) = test_reporter();
+            let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, level);
             setup.with_subscriber(|| {
                 otel_debug!("debug");
                 otel_info!("info");
                 otel_warn!("warn");
                 otel_error!("error");
             });
+            drop(setup);
+
+            let cnt = receiver.into_iter().count();
+            let expect = match level {
+                LogLevel::Off => 0,
+                LogLevel::Debug => 4,
+                LogLevel::Info => 3,
+                LogLevel::Warn => 2,
+                LogLevel::Error => 1,
+            };
+            assert_eq!(cnt, expect);
         }
     }
 
@@ -333,7 +323,7 @@ mod tests {
     #[test]
     fn log_level_filters_debug() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
             otel_debug!("filtered");
@@ -348,7 +338,7 @@ mod tests {
     #[test]
     fn log_level_warn_filters_lower() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Warn);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
 
         setup.with_subscriber(|| {
             otel_debug!("filtered");
@@ -365,7 +355,7 @@ mod tests {
     #[test]
     fn log_level_error_filters_lower() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Error);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Error);
 
         setup.with_subscriber(|| {
             otel_debug!("filtered");
@@ -382,7 +372,7 @@ mod tests {
     #[test]
     fn log_level_off_filters_all() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Off);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Off);
 
         setup.with_subscriber(|| {
             otel_debug!("filtered");
@@ -397,7 +387,7 @@ mod tests {
     #[test]
     fn log_level_debug_allows_all() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Debug);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Debug);
 
         setup.with_subscriber(|| {
             otel_debug!("d");
@@ -413,15 +403,9 @@ mod tests {
     }
 
     #[test]
-    fn console_async_layer_new() {
-        let (reporter, _rx) = test_reporter();
-        let _layer = ConsoleAsyncLayer::new(&reporter);
-    }
-
-    #[test]
     fn console_async_layer_with_fields() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ConsoleAsync { reporter }, LogLevel::Info);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
             otel_info!("structured", key = "value", number = 42);
@@ -429,6 +413,10 @@ mod tests {
 
         let event = receiver.try_recv().expect("should receive log");
         assert!(matches!(event, ObservedEvent::Log(_)));
+        let text = event.to_string();
+        assert!(text.contains("key=value"), "text is {}", text);
+        assert!(text.contains("number=42"), "text is {}", text);
+        assert!(text.contains("structured"), "text is {}", text);
     }
 
     #[test]
@@ -442,13 +430,8 @@ mod tests {
         });
 
         let (reporter, _rx) = test_reporter();
-        ProviderSetup::ConsoleAsync { reporter }.with_subscriber(LogLevel::Info, || {
+        ProviderSetup::InternalAsync { reporter }.with_subscriber(LogLevel::Info, || {
             otel_info!("console_async");
-        });
-
-        let (reporter, _rx) = test_reporter();
-        ProviderSetup::ITS { reporter }.with_subscriber(LogLevel::Info, || {
-            otel_info!("its");
         });
 
         let logger_provider = SdkLoggerProvider::builder().build();
@@ -458,46 +441,9 @@ mod tests {
     }
 
     #[test]
-    fn its_provider_sends_logs() {
-        let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, LogLevel::Info);
-
-        setup.with_subscriber(|| {
-            otel_info!("its_log");
-        });
-
-        // Verify the log was sent through the channel (same as ConsoleAsync)
-        let event = receiver.try_recv().expect("should receive log event");
-        assert!(
-            matches!(event, ObservedEvent::Log(_)),
-            "event should be a log"
-        );
-    }
-
-    #[test]
-    fn its_provider_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
-            let (reporter, _receiver) = test_reporter();
-            let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, level);
-            setup.with_subscriber(|| {
-                otel_debug!("debug");
-                otel_info!("info");
-                otel_warn!("warn");
-                otel_error!("error");
-            });
-        }
-    }
-
-    #[test]
     fn its_provider_filters_correctly() {
         let (reporter, receiver) = test_reporter();
-        let setup = TracingSetup::new(ProviderSetup::ITS { reporter }, LogLevel::Warn);
+        let setup = TracingSetup::new(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
 
         setup.with_subscriber(|| {
             otel_debug!("filtered");
@@ -505,28 +451,9 @@ mod tests {
             otel_warn!("not_filtered");
             otel_error!("not_filtered");
         });
+        drop(setup);
 
-        // Should receive warn and error
-        let event1 = receiver.try_recv().expect("should receive warn");
-        assert!(matches!(event1, ObservedEvent::Log(_)));
-        let event2 = receiver.try_recv().expect("should receive error");
-        assert!(matches!(event2, ObservedEvent::Log(_)));
-        assert!(receiver.try_recv().is_err(), "should only have two events");
-    }
-
-    #[test]
-    fn provider_setup_clone() {
-        let _ = ProviderSetup::Noop.clone();
-        let _ = ProviderSetup::ConsoleDirect.clone();
-
-        let (reporter, _rx) = test_reporter();
-        let _ = ProviderSetup::ConsoleAsync { reporter }.clone();
-
-        let logger_provider = SdkLoggerProvider::builder().build();
-        let provider_setup = ProviderSetup::OpenTelemetry { logger_provider }.clone();
-
-        let setup = TracingSetup::new(provider_setup, LogLevel::Info);
-        let _cloned = setup.clone();
+        assert_eq!(receiver.into_iter().count(), 2);
     }
 
     #[test]
@@ -535,13 +462,13 @@ mod tests {
         let (reporter2, receiver2) = test_reporter();
 
         let setup1 = TracingSetup::new(
-            ProviderSetup::ConsoleAsync {
+            ProviderSetup::InternalAsync {
                 reporter: reporter1,
             },
             LogLevel::Info,
         );
         let setup2 = TracingSetup::new(
-            ProviderSetup::ConsoleAsync {
+            ProviderSetup::InternalAsync {
                 reporter: reporter2,
             },
             LogLevel::Info,

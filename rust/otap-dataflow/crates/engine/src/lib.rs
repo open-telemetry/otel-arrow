@@ -31,9 +31,9 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
-use otap_df_telemetry::otel_debug;
-use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
+use otap_df_telemetry::InternalTelemetrySettings;
+use otap_df_telemetry::otel_debug;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;

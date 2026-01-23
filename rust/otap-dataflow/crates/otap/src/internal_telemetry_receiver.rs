@@ -103,9 +103,6 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
             .start_periodic_telemetry(std::time::Duration::from_secs(1))
             .await?;
 
-        // Reusable buffer for encoding log records
-        let mut buf = ProtoBuffer::with_capacity(512);
-
         loop {
             tokio::select! {
                 biased;
@@ -117,7 +114,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    self.send_log_event(&effect_handler, log_event, &mut buf, &resource_bytes).await?;
+                                    self.send_log_event(&effect_handler, log_event, &resource_bytes).await?;
                                 }
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
@@ -138,7 +135,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            self.send_log_event(&effect_handler, log_event, &mut buf, &resource_bytes).await?;
+                            self.send_log_event(&effect_handler, log_event, &resource_bytes).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed
@@ -160,14 +157,17 @@ impl InternalTelemetryReceiver {
         &self,
         effect_handler: &local::EffectHandler<OtapPdata>,
         log_event: LogEvent,
-        buf: &mut ProtoBuffer,
         resource_bytes: &Bytes,
     ) -> Result<(), Error> {
-        encode_export_logs_request(buf, &log_event, resource_bytes);
+        // TODO: We may consider batching or re-using the allocation or batching
+        // into larger OtlpProtoBytes messages.
+        let mut buf = ProtoBuffer::with_capacity(512);
+
+        encode_export_logs_request(&mut buf, &log_event, resource_bytes);
 
         let pdata = OtapPdata::new(
             Context::default(),
-            OtlpProtoBytes::ExportLogsRequest(Bytes::copy_from_slice(buf.as_ref())).into(),
+            OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into(),
         );
         effect_handler.send_message(pdata).await?;
         Ok(())

@@ -13,6 +13,9 @@ pub mod formatter;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
+use serde::Serialize;
+use serde::ser::Serializer;
+use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
@@ -20,7 +23,7 @@ pub use encoder::DirectLogRecordEncoder;
 pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
-pub use formatter::{ConsoleWriter, RawLoggingLayer, AnsiCode, BufWriter, LOG_BUFFER_SIZE};
+pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -108,10 +111,23 @@ impl LogRecord {
     pub fn callsite(&self) -> SavedCallsite {
         SavedCallsite::new(self.callsite_id.0.metadata())
     }
+}
 
-    /// The format (without timestamp).
-    #[must_use]
-    pub fn format_without_timestamp(&self) -> String {
-        ConsoleWriter::no_color().format_log_record(None, self)
+impl fmt::Display for LogRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            ConsoleWriter::no_color().format_log_record(None, self)
+        )
+    }
+}
+
+impl Serialize for LogRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }

@@ -42,11 +42,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
+use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::error::Error as TelemetryError;
+use otap_df_telemetry::event::ObservedEvent;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::event::ObservedEvent;
-use otap_df_telemetry::InternalTelemetrySettings;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -288,13 +288,17 @@ impl<PData> EffectHandler<PData> {
     /// Returns the logs receiver for internal telemetry, if configured.
     #[must_use]
     pub fn logs_receiver(&self) -> Option<&flume::Receiver<ObservedEvent>> {
-        self.internal_telemetry.as_ref().map(|its| &its.logs_receiver)
+        self.internal_telemetry
+            .as_ref()
+            .map(|its| &its.logs_receiver)
     }
 
     /// Returns the resource bytes for internal telemetry, if configured.
     #[must_use]
     pub fn resource_bytes(&self) -> Option<&Bytes> {
-        self.internal_telemetry.as_ref().map(|its| &its.resource_bytes)
+        self.internal_telemetry
+            .as_ref()
+            .map(|its| &its.resource_bytes)
     }
 
     // More methods will be added in the future as needed.

@@ -115,12 +115,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .logs
             .providers
             .uses_console_async_provider()
-            .then(obs_state_store.reporter(engine_settings.observed_state.logging_events));
+            .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
         // providers use the ITS mode.
-        let (telemetry_system, its_logs_receiver) =
+        let telemetry_system =
             InternalTelemetrySystem::new(telemetry_config, console_async_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
@@ -141,7 +141,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             &pipeline_groups,
-            its_logs_receiver,
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -157,7 +156,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             telemetry_config.logs.providers.uses_its_provider(),
         ) {
             (false, true) => {
-                otel_warn!("internal pipeline nodes not defined yet ITS provider requested")
+                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
             }
             (true, false) => {
                 otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
@@ -497,7 +496,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             otap_df_config::PipelineGroupId,
             otap_df_config::pipeline_group::PipelineGroupConfig,
         >,
-        its_logs_receiver: Option<flume::Receiver<otap_df_telemetry::event::ObservedEvent>>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -517,34 +515,26 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let internal_config = match internal_config {
             Some(config) => config,
             None => {
+                // Note: Inconsistent configurations are checke elsewhere.
+                // This method is "_if_configured()" for lifetime reasons,
+                // so a silent return.
                 return Ok(None);
             }
         };
 
-        // We need the ITS logs receiver to create settings for the ITR
-        let its_logs_receiver = match its_logs_receiver {
-            Some(rx) => rx,
-            None => {
-                // Internal pipeline configured but no ITS receiver - this means
-                // no provider uses ITS mode, so there's nothing to consume.
-                otel_warn!(
-                    "internal_pipeline.skipped",
-                    message = "Internal pipeline configured but no ITS provider mode enabled"
-                );
-                return Ok(None);
-            }
-        };
-
-        // Create InternalTelemetrySettings for injection into the ITR
-        let internal_telemetry_settings =
-            telemetry_system.make_internal_telemetry_settings(its_logs_receiver);
+        let its_settings = telemetry_system.internal_telemetry_settings();
+        if its_settings.is_none() {
+            // Note: An inconsistency warning will be logged by the
+            // calling function.
+            return Ok(None);
+        }
 
         let internal_pipeline_id: otap_df_config::PipelineId = "internal".into();
         let internal_group_id: otap_df_config::PipelineGroupId = "internal".into();
         let internal_pipeline_key = DeployedPipelineKey {
             pipeline_group_id: internal_group_id.clone(),
             pipeline_id: internal_pipeline_id.clone(),
-            core_id: 0,
+            core_id: 0, // TODO: Internal thread is unpinned, core_id is not accurate.
         };
         let internal_pipeline_ctx =
             controller_ctx.pipeline_context_with(internal_group_id, internal_pipeline_id, 0, 0);
@@ -557,7 +547,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Create a channel to signal startup success/failure
-        let (startup_tx, startup_rx) = std_mpsc::channel::<Result<(), Error>>(1);
+        let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), Error>>(1);
 
         let thread_name = "internal-pipeline".to_string();
         let internal_evt_reporter = engine_evt_reporter.clone();
@@ -576,7 +566,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     internal_ctrl_tx,
                     internal_ctrl_rx,
                     tracing_setup,
-                    Some(internal_telemetry_settings),
+                    its_settings,
                     startup_tx,
                 )
             })
@@ -694,7 +684,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
         tracing_setup: TracingSetup,
         internal_telemetry: Option<InternalTelemetrySettings>,
-        startup_tx: std_mpsc::Sender<Result<(), Error>>,
+        startup_tx: std_mpsc::SyncSender<Result<(), Error>>,
     ) -> Result<Vec<()>, Error> {
         // TODO: This has no core pinning or NUMA awareness. The internal telemetry
         // system including the current metrics code path should support per-NUMA-region
