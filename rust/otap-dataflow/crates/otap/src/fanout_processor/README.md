@@ -1,6 +1,7 @@
 # Fan-out Processor
 
-The fan-out processor clones incoming PData to multiple downstream destinations with configurable delivery modes, ack policies, and fallback routing.
+The fan-out processor clones incoming PData to multiple downstream destinations
+with configurable delivery modes, ack policies, and fallback routing.
 
 ## Configuration
 
@@ -27,7 +28,7 @@ processor:
 
 Send to all destinations simultaneously:
 
-```
+```text
                          +-----------------+
                          |     FANOUT      |
     PData -------------->|                 +------> Dest A (primary)
@@ -40,18 +41,18 @@ Send to all destinations simultaneously:
 
 Send one-by-one, advancing only after receiving an ack:
 
-```
-    PData --> FANOUT --> Dest A --> [wait for ack] --> Dest B --> [wait for ack] --> Dest C
+```text
+    PData --> FANOUT --> Dest A --> [wait] --> Dest B --> [wait] --> Dest C
 ```
 
-- If a destination nacks and has a fallback, the fallback is tried before continuing
+- If a destination nacks and has a fallback, the fallback is tried first
 - If a destination nacks without fallback, the entire request fails
 
 ## Ack Policies (`await_ack`)
 
 ### `none` (Fire-and-Forget)
 
-```
+```text
     Upstream              FANOUT                    Downstream
         |                    |
         |  PData             |
@@ -66,7 +67,7 @@ Send one-by-one, advancing only after receiving an ack:
 
 ### `primary` (default)
 
-```
+```text
     Upstream              FANOUT                    Downstream
         |                    |
         |  PData             |
@@ -85,7 +86,7 @@ Send one-by-one, advancing only after receiving an ack:
 
 ### `all`
 
-```
+```text
     Upstream              FANOUT                    Downstream
         |                    |
         |  PData             |
@@ -98,7 +99,7 @@ Send one-by-one, advancing only after receiving an ack:
 ```
 
 - Wait for all origins to complete
-- **Fail-fast**: If ANY destination nacks (without fallback), upstream nacks immediately
+- **Fail-fast**: If ANY destination nacks (without fallback), upstream nacks
 
 ## Fallback Routing
 
@@ -115,7 +116,7 @@ destinations:
 
 ### Behavior
 
-```
+```text
     FANOUT --> Primary --> [Nack or Timeout]
                    |
                    +---> Trigger Backup --> [Ack] --> Upstream Ack
@@ -139,8 +140,8 @@ destinations:
     fallback_for: b
 ```
 
-```
-    A nacks --> B triggered --> B nacks --> C triggered --> C acks --> Upstream Ack
+```text
+    A nacks --> B triggered --> B nacks --> C triggered --> C acks --> Ack
 ```
 
 - Cycles are detected and rejected at config validation
@@ -177,7 +178,7 @@ destinations:
 |------|-----------|----------|
 | parallel | none | Send all, ack immediately, ignore outcomes |
 | parallel | primary | Send all, wait for primary (or fallback) |
-| parallel | all | Send all, wait for all, fail-fast on any nack |
+| parallel | all | Send all, wait for all, fail-fast on nack |
 | sequential | primary | Send one-by-one, complete when primary done |
 | sequential | all | Send one-by-one, all must complete in order |
 
@@ -186,6 +187,6 @@ destinations:
 - **Duplicate ports**: Rejected at config validation
 - **Multiple primaries**: Rejected; exactly one primary allowed
 - **Primary as fallback**: Rejected; primary cannot have `fallback_for`
-- **Unknown fallback target**: Rejected; `fallback_for` must reference existing port
+- **Unknown fallback target**: Rejected; `fallback_for` must reference port
 - **Fallback cycles**: Detected and rejected at config validation
 - **Shutdown**: Inflight requests are dropped (not proactively nacked)
