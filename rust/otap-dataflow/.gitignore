@@ -35,9 +35,3 @@ resolved-schema.yaml
 
 # Ignore the temporary repo dir created by `cargo xtask history` command
 history-temp-repo/
-
-# Local test scripts (not for check-in)
-test-otlp*.sh
-test-otlp*.py
-test-otlp*.yaml
-TEST_OTLP.md
