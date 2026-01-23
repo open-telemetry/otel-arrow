@@ -268,9 +268,6 @@ impl PersistenceProcessor {
         config: PersistenceProcessorConfig,
         pipeline_ctx: &PipelineContext,
     ) -> Result<Self, ConfigError> {
-        // Validate configuration early
-        let _ = config.parse_size_cap()?;
-
         let metrics = pipeline_ctx.register_metrics::<PersistenceProcessorMetrics>();
         let core_id = pipeline_ctx.core_id();
 
@@ -313,12 +310,7 @@ impl PersistenceProcessor {
     /// Per ARCHITECTURE.md, each core has its own Quiver instance with a
     /// core-specific subdirectory to avoid cross-core locking.
     async fn init_engine(&self) -> Result<(Arc<QuiverEngine>, SubscriberId), Error> {
-        let size_cap = self
-            .config
-            .parse_size_cap()
-            .map_err(|e| Error::InternalError {
-                message: e.to_string(),
-            })?;
+        let size_cap = self.config.size_cap_bytes();
         let policy = self.config.retention_policy();
 
         // Create per-core data directory: {base_path}/core_{core_id}

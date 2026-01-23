@@ -6,14 +6,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use byte_unit::{Byte, Unit};
 use quiver::config::RetentionPolicy;
 use serde::Deserialize;
 
-use otap_df_config::error::Error as ConfigError;
-
-/// Default retention size cap (500 GB).
-fn default_retention_size_cap() -> String {
-    "500GB".to_string()
+/// Default retention size cap (500 GiB).
+fn default_retention_size_cap() -> Byte {
+    Byte::from_u64_with_unit(500, Unit::GiB).expect("valid constant")
 }
 
 /// Default size cap policy.
@@ -85,9 +84,10 @@ pub struct PersistenceProcessorConfig {
     /// Directory path for persistent storage.
     pub path: PathBuf,
 
-    /// Maximum disk space to use (e.g., "500GB", "100MB").
+    /// Maximum disk space to use (e.g., "500 GiB", "100 MB", or raw bytes).
+    /// Supports both IEC (KiB, MiB, GiB) and SI (KB, MB, GB) units.
     #[serde(default = "default_retention_size_cap")]
-    pub retention_size_cap: String,
+    pub retention_size_cap: Byte,
 
     /// Maximum age of data to retain (e.g., "24h", "7d").
     /// When set, data older than this will be eligible for removal.
@@ -126,11 +126,10 @@ pub struct PersistenceProcessorConfig {
 }
 
 impl PersistenceProcessorConfig {
-    /// Parse the retention size cap string into bytes.
-    pub fn parse_size_cap(&self) -> Result<u64, ConfigError> {
-        parse_size_string(&self.retention_size_cap).map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("invalid retention_size_cap: {}", e),
-        })
+    /// Get the retention size cap in bytes.
+    #[must_use]
+    pub fn size_cap_bytes(&self) -> u64 {
+        self.retention_size_cap.as_u64()
     }
 
     /// Get the retention policy for Quiver.
@@ -140,52 +139,31 @@ impl PersistenceProcessorConfig {
     }
 }
 
-/// Parse a human-readable size string like "500GB" into bytes.
-fn parse_size_string(s: &str) -> Result<u64, String> {
-    let s = s.trim().to_uppercase();
-
-    let (num_str, multiplier) = if s.ends_with("TB") {
-        (&s[..s.len() - 2], 1024u64 * 1024 * 1024 * 1024)
-    } else if s.ends_with("GB") {
-        (&s[..s.len() - 2], 1024u64 * 1024 * 1024)
-    } else if s.ends_with("MB") {
-        (&s[..s.len() - 2], 1024u64 * 1024)
-    } else if s.ends_with("KB") {
-        (&s[..s.len() - 2], 1024u64)
-    } else if s.ends_with('B') {
-        (&s[..s.len() - 1], 1u64)
-    } else {
-        // Assume bytes if no suffix
-        (s.as_str(), 1u64)
-    };
-
-    let num: f64 = num_str
-        .trim()
-        .parse()
-        .map_err(|_| format!("invalid number: {}", num_str))?;
-
-    Ok((num * multiplier as f64) as u64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_size_string() {
-        assert_eq!(
-            parse_size_string("500GB").unwrap(),
-            500 * 1024 * 1024 * 1024
-        );
-        assert_eq!(parse_size_string("100MB").unwrap(), 100 * 1024 * 1024);
-        assert_eq!(parse_size_string("1TB").unwrap(), 1024 * 1024 * 1024 * 1024);
-        assert_eq!(parse_size_string("1024KB").unwrap(), 1024 * 1024);
-        assert_eq!(parse_size_string("1024B").unwrap(), 1024);
-        assert_eq!(parse_size_string("1024").unwrap(), 1024);
-        assert_eq!(
-            parse_size_string("1.5GB").unwrap(),
-            (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
-        );
+    fn test_size_cap_serde() {
+        // Test string with IEC units
+        let json = r#"{"path": "/tmp/test", "retention_size_cap": "500 GiB"}"#;
+        let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.size_cap_bytes(), 500 * 1024 * 1024 * 1024);
+
+        // Test string with SI units
+        let json = r#"{"path": "/tmp/test", "retention_size_cap": "100 MB"}"#;
+        let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.size_cap_bytes(), 100 * 1000 * 1000);
+
+        // Test raw bytes as string
+        let json = r#"{"path": "/tmp/test", "retention_size_cap": "1073741824"}"#;
+        let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.size_cap_bytes(), 1024 * 1024 * 1024);
+
+        // Test decimal values
+        let json = r#"{"path": "/tmp/test", "retention_size_cap": "1.5 GiB"}"#;
+        let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.size_cap_bytes(), (1.5 * 1024.0 * 1024.0 * 1024.0) as u64);
     }
 
     #[test]
@@ -203,7 +181,8 @@ mod tests {
     fn test_config_defaults() {
         let json = r#"{"path": "/tmp/test"}"#;
         let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.retention_size_cap, "500GB");
+        // Default is 500 GiB
+        assert_eq!(config.size_cap_bytes(), 500 * 1024 * 1024 * 1024);
         assert_eq!(config.size_cap_policy, SizeCapPolicy::Backpressure);
         assert_eq!(config.poll_interval, Duration::from_millis(100));
         assert!(config.max_age.is_none());

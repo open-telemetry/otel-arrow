@@ -102,6 +102,7 @@ notify = { workspace = true, optional = true }
 # Quiver persistence engine (optional)
 quiver = { package = "otap-df-quiver", path = "../quiver", optional = true }
 blake3 = { workspace = true, optional = true }
+byte-unit = { workspace = true, optional = true }
 
 [features]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
@@ -127,7 +128,7 @@ recordset-kql-processor = [
     "dep:data_engine_recordset"
 ]
 # Persistence processor using Quiver
-persistence = ["dep:quiver", "dep:blake3"]
+persistence = ["dep:quiver", "dep:blake3", "dep:byte-unit"]
 
 [dev-dependencies]
 flume.workspace = true
