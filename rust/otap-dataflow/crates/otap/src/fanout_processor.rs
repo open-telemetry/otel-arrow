@@ -1,5 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
+
 //! Fan-out processor that clones pdata to multiple downstream outputs with configurable
 //! ack/nack aggregation, optional sequential delivery, and fallback routing.
 //!
@@ -610,16 +611,23 @@ impl FanoutProcessor {
             return Ok(());
         }
 
+        let fallback_triggered;
         if let Some(nackmsg) = self.handle_failure(request_id, dest_index, nack.reason.clone()) {
             self.metrics.nacked.add(1);
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
+        } else {
+            fallback_triggered = true;
         }
 
         // Fallback triggered: try dispatch immediately.
         if let Some(inflight) = self.inflight.get_mut(&request_id) {
             Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+        }
+        // If a fallback was triggered, wait for its outcome instead of nacking upstream now.
+        if fallback_triggered {
+            return Ok(());
         }
 
         if matches!(await_ack, AwaitAck::All) {
@@ -1168,6 +1176,20 @@ mod tests {
             .await
             .expect("ack ok");
         assert!(h.fanout.inflight.is_empty());
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+        assert_eq!(delivered_nack, 0);
     }
 
     #[tokio::test]
