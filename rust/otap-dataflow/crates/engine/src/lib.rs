@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
-    PortName,
+    PipelineGroupId, PipelineId, PortName,
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
@@ -338,36 +338,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         PipeNode::new(receivers.len()),
                     )?;
-                    let node_entity_key = base_ctx.register_node_entity();
-                    let node_telemetry_handle =
-                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    // Create the guard before any fallible work so failed builds still clean up.
-                    let mut node_guard =
-                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
-                    let wrapper = with_node_telemetry_handle(
-                        node_telemetry_handle.clone(),
-                        || -> Result<ReceiverWrapper<PData>, Error> {
-                            let wrapper = self.create_receiver(
-                                &base_ctx,
-                                node_id.clone(),
-                                node_config.clone(),
-                            )?;
-                            Ok(wrapper.with_control_channel_metrics(
-                                &base_ctx,
-                                &mut build_state.channel_metrics,
-                                channel_metrics_enabled,
-                            ))
-                        },
-                    )?;
-                    build_state.register_node(
+                    let node_id_for_create = node_id.clone();
+                    let wrapper = self.build_node_wrapper(
+                        &mut build_state,
+                        &base_ctx,
                         NodeType::Receiver,
                         node_id,
-                        base_ctx.clone(),
-                        node_telemetry_handle.clone(),
+                        channel_metrics_enabled,
+                        || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
-                    let wrapper = wrapper.with_node_telemetry_guard(
-                        node_guard.take().expect("node telemetry guard missing"),
-                    );
                     receivers.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Processor => {
@@ -376,36 +355,21 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         PipeNode::new(processors.len()),
                     )?;
-                    let node_entity_key = base_ctx.register_node_entity();
-                    let node_telemetry_handle =
-                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    // Create the guard before any fallible work so failed builds still clean up.
-                    let mut node_guard =
-                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
-                    let wrapper = with_node_telemetry_handle(
-                        node_telemetry_handle.clone(),
-                        || -> Result<ProcessorWrapper<PData>, Error> {
-                            let wrapper = self.create_processor(
-                                &base_ctx,
-                                node_id.clone(),
-                                node_config.clone(),
-                            )?;
-                            Ok(wrapper.with_control_channel_metrics(
-                                &base_ctx,
-                                &mut build_state.channel_metrics,
-                                channel_metrics_enabled,
-                            ))
-                        },
-                    )?;
-                    build_state.register_node(
+                    let node_id_for_create = node_id.clone();
+                    let wrapper = self.build_node_wrapper(
+                        &mut build_state,
+                        &base_ctx,
                         NodeType::Processor,
                         node_id,
-                        base_ctx.clone(),
-                        node_telemetry_handle.clone(),
+                        channel_metrics_enabled,
+                        || {
+                            self.create_processor(
+                                &base_ctx,
+                                node_id_for_create,
+                                node_config.clone(),
+                            )
+                        },
                     )?;
-                    let wrapper = wrapper.with_node_telemetry_guard(
-                        node_guard.take().expect("node telemetry guard missing"),
-                    );
                     processors.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Exporter => {
@@ -414,36 +378,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         PipeNode::new(exporters.len()),
                     )?;
-                    let node_entity_key = base_ctx.register_node_entity();
-                    let node_telemetry_handle =
-                        NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
-                    // Create the guard before any fallible work so failed builds still clean up.
-                    let mut node_guard =
-                        Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
-                    let wrapper = with_node_telemetry_handle(
-                        node_telemetry_handle.clone(),
-                        || -> Result<ExporterWrapper<PData>, Error> {
-                            let wrapper = self.create_exporter(
-                                &base_ctx,
-                                node_id.clone(),
-                                node_config.clone(),
-                            )?;
-                            Ok(wrapper.with_control_channel_metrics(
-                                &base_ctx,
-                                &mut build_state.channel_metrics,
-                                channel_metrics_enabled,
-                            ))
-                        },
-                    )?;
-                    build_state.register_node(
+                    let node_id_for_create = node_id.clone();
+                    let wrapper = self.build_node_wrapper(
+                        &mut build_state,
+                        &base_ctx,
                         NodeType::Exporter,
                         node_id,
-                        base_ctx.clone(),
-                        node_telemetry_handle.clone(),
+                        channel_metrics_enabled,
+                        || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
-                    let wrapper = wrapper.with_node_telemetry_guard(
-                        node_guard.take().expect("node telemetry guard missing"),
-                    );
                     exporters.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
@@ -457,75 +400,71 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let edges = collect_hyper_edges_runtime(&receivers, &processors);
 
+        // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
+        let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
+            .expect("default_pdata_channel_size must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
         let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
-
-        // First pass: collect all channel assignments to avoid multiple mutable borrows
-        let buffer_size = NonZeroUsize::new(1000).expect("Buffer size must be non-zero");
-        let assignments = edges
+        let wirings = edges
             .into_iter()
             .map(|hyper_edge| {
-                let span = otel_debug_span!(
-                    "hyper_edge.wireup",
-                    pipeline_group_id = pipeline_group_id.as_ref(),
-                    pipeline_id = pipeline_id.as_ref(),
-                    core_id = core_id,
-                    source_ids = hyper_edge.source_ids_display(),
-                    dest_ids = hyper_edge.destination_ids_display()
-                );
-                let _enter = span.enter();
-                hyper_edge.into_assignment(
+                let resolved = hyper_edge.resolve(&build_state)?;
+                resolved.into_wiring(
                     &pipeline,
                     &mut build_state,
                     buffer_size,
                     channel_metrics_enabled,
+                    &pipeline_group_id,
+                    &pipeline_id,
+                    core_id,
                 )
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
-        // Second pass: perform all assignments
-        for assignment in assignments {
-            debug_assert_eq!(assignment.sources.len(), assignment.senders.len());
-            for (source, sender) in assignment
-                .sources
-                .into_iter()
-                .zip(assignment.senders.into_iter())
-            {
-                let src_node = pipeline
-                    .get_mut_node_with_pdata_sender(source.node_id.index)
-                    .ok_or_else(|| Error::UnknownNode {
-                        node: source.node_id.name.clone(),
-                    })?;
-                otel_debug!(
-                    "pdata.sender.set",
-                    pipeline_group_id = pipeline_group_id.as_ref(),
-                    pipeline_id = pipeline_id.as_ref(),
-                    core_id = core_id,
-                    node_id = source.node_id.name.as_ref(),
-                    port = source.port.as_ref(),
-                );
-                src_node.set_pdata_sender(source.node_id, source.port, sender)?;
-            }
-            for (dest, receiver) in assignment.destinations {
-                let dest_node = pipeline
-                    .get_mut_node_with_pdata_receiver(dest.index)
-                    .ok_or_else(|| Error::UnknownNode {
-                        node: dest.name.clone(),
-                    })?;
-                otel_debug!(
-                    "pdata.receiver.set",
-                    pipeline_group_id = pipeline_group_id.as_ref(),
-                    pipeline_id = pipeline_id.as_ref(),
-                    core_id = core_id,
-                    node_id = dest.name.as_ref(),
-                );
-
-                dest_node.set_pdata_receiver(dest, receiver)?;
-            }
+        // Second pass: apply hyper-edge wiring
+        for wiring in wirings {
+            wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
 
         Ok(pipeline)
+    }
+
+    fn build_node_wrapper<W, F>(
+        &self,
+        build_state: &mut BuildState<PData>,
+        base_ctx: &PipelineContext,
+        node_type: NodeType,
+        node_id: NodeId,
+        channel_metrics_enabled: bool,
+        create_wrapper: F,
+    ) -> Result<W, Error>
+    where
+        W: TelemetryWrapped,
+        F: FnOnce() -> Result<W, Error>,
+    {
+        let node_entity_key = base_ctx.register_node_entity();
+        let node_telemetry_handle =
+            NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+        // Create the guard before any fallible work so failed builds still clean up.
+        let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
+        build_state.register_node(
+            node_type,
+            node_id,
+            base_ctx.clone(),
+            node_telemetry_handle.clone(),
+        )?;
+        let wrapper =
+            with_node_telemetry_handle(node_telemetry_handle.clone(), || -> Result<W, Error> {
+                let wrapper = create_wrapper()?;
+                Ok(wrapper.with_control_channel_metrics(
+                    base_ctx,
+                    &mut build_state.channel_metrics,
+                    channel_metrics_enabled,
+                ))
+            })?;
+        Ok(wrapper
+            .with_node_telemetry_guard(node_guard.take().expect("node telemetry guard missing")))
     }
 
     /// Determines the best channel type from the following parameters:
@@ -1162,6 +1101,76 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     }
 }
 
+trait TelemetryWrapped: Sized {
+    fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
+    ) -> Self;
+    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self;
+}
+
+impl<PData> TelemetryWrapped for ReceiverWrapper<PData> {
+    fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
+    ) -> Self {
+        ReceiverWrapper::with_control_channel_metrics(
+            self,
+            pipeline_ctx,
+            channel_metrics,
+            channel_metrics_enabled,
+        )
+    }
+
+    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        ReceiverWrapper::with_node_telemetry_guard(self, guard)
+    }
+}
+
+impl<PData> TelemetryWrapped for ProcessorWrapper<PData> {
+    fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
+    ) -> Self {
+        ProcessorWrapper::with_control_channel_metrics(
+            self,
+            pipeline_ctx,
+            channel_metrics,
+            channel_metrics_enabled,
+        )
+    }
+
+    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        ProcessorWrapper::with_node_telemetry_guard(self, guard)
+    }
+}
+
+impl<PData> TelemetryWrapped for ExporterWrapper<PData> {
+    fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
+    ) -> Self {
+        ExporterWrapper::with_control_channel_metrics(
+            self,
+            pipeline_ctx,
+            channel_metrics,
+            channel_metrics_enabled,
+        )
+    }
+
+    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        ExporterWrapper::with_node_telemetry_guard(self, guard)
+    }
+}
+
 struct NodeRegistration {
     node_id: NodeId,
     node_type: NodeType,
@@ -1249,14 +1258,62 @@ struct NodeIdPortName {
     port: PortName,
 }
 
-/// Represents the channel assignments for a hyper-edge in the runtime graph.
-struct ChannelAssignment<PData> {
+/// Represents the channel wiring for a hyper-edge in the runtime graph.
+struct HyperEdgeWiring<PData> {
     /// All the source endpoints for this hyper-edge.
     sources: Vec<NodeIdPortName>,
     /// The senders assigned to the sources.
     senders: Vec<Sender<PData>>,
     /// The destinations and their assigned receivers.
     destinations: Vec<(NodeId, Receiver<PData>)>,
+}
+
+impl<PData> HyperEdgeWiring<PData>
+where
+    PData: 'static + Clone + Debug,
+{
+    fn apply(
+        self,
+        pipeline: &mut RuntimePipeline<PData>,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        core_id: usize,
+    ) -> Result<(), Error> {
+        debug_assert_eq!(self.sources.len(), self.senders.len());
+        for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
+            let src_node = pipeline
+                .get_mut_node_with_pdata_sender(source.node_id.index)
+                .ok_or_else(|| Error::UnknownNode {
+                    node: source.node_id.name.clone(),
+                })?;
+            otel_debug!(
+                "pdata.sender.set",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                node_id = source.node_id.name.as_ref(),
+                port = source.port.as_ref(),
+            );
+            src_node.set_pdata_sender(source.node_id, source.port, sender)?;
+        }
+        for (dest, receiver) in self.destinations {
+            let dest_node = pipeline
+                .get_mut_node_with_pdata_receiver(dest.index)
+                .ok_or_else(|| Error::UnknownNode {
+                    node: dest.name.clone(),
+                })?;
+            otel_debug!(
+                "pdata.receiver.set",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                node_id = dest.name.as_ref(),
+            );
+
+            dest_node.set_pdata_receiver(dest, receiver)?;
+        }
+        Ok(())
+    }
 }
 
 /// Represents a hyper-edge in the runtime graph, corresponding to one or more source ports,
@@ -1271,28 +1328,52 @@ struct HyperEdgeRuntime {
     destinations: Vec<NodeName>,
 }
 
+/// Represents a hyper-edge with resolved destination node IDs.
+struct ResolvedHyperEdgeRuntime {
+    sources: Vec<NodeIdPortName>,
+    destinations: Vec<NodeId>,
+    dispatch_strategy: DispatchStrategy,
+    source_ids_display: String,
+    destination_ids_display: String,
+}
+
 #[derive(Hash, PartialEq, Eq)]
 struct HyperEdgeKey {
     dispatch_strategy: std::mem::Discriminant<DispatchStrategy>,
     destinations: Vec<NodeName>,
 }
 impl HyperEdgeRuntime {
-    fn source_ids_display(&self) -> String {
-        self.sources
+    fn resolve<PData>(
+        self,
+        build_state: &BuildState<PData>,
+    ) -> Result<ResolvedHyperEdgeRuntime, Error> {
+        let destinations = self
+            .destinations
+            .iter()
+            .map(|name| build_state.resolve_destination_id(name))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let source_ids_display = self
+            .sources
             .iter()
             .map(|source| format!("{}:{}", source.node_id.name, source.port))
             .collect::<Vec<_>>()
-            .join(", ")
-    }
-
-    fn destination_ids_display(&self) -> String {
-        self.destinations
+            .join(", ");
+        let destination_ids_display = destinations
             .iter()
-            .map(|dest_name| dest_name.as_ref().to_string())
+            .map(|dest| dest.name.as_ref().to_string())
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", ");
+        Ok(ResolvedHyperEdgeRuntime {
+            sources: self.sources,
+            destinations,
+            dispatch_strategy: self.dispatch_strategy,
+            source_ids_display,
+            destination_ids_display,
+        })
     }
+}
 
+impl ResolvedHyperEdgeRuntime {
     fn channel_id(&self) -> Cow<'static, str> {
         let sources = self
             .sources
@@ -1302,7 +1383,7 @@ impl HyperEdgeRuntime {
         let destinations = self
             .destinations
             .iter()
-            .map(|dest| dest.as_ref().to_string())
+            .map(|dest| dest.name.as_ref().to_string())
             .collect::<Vec<_>>();
         let signature = format!(
             "src:[{}]|dst:[{}]|dispatch:{}",
@@ -1314,22 +1395,36 @@ impl HyperEdgeRuntime {
         format!("hyperedge:{:016x}", hash).into()
     }
 
-    fn into_assignment<PData>(
+    fn into_wiring<PData>(
         self,
         pipeline: &RuntimePipeline<PData>,
         build_state: &mut BuildState<PData>,
         buffer_size: NonZeroUsize,
         channel_metrics_enabled: bool,
-    ) -> Result<ChannelAssignment<PData>, Error>
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        core_id: usize,
+    ) -> Result<HyperEdgeWiring<PData>, Error>
     where
         PData: 'static + Clone + Debug,
     {
         let channel_id = self.channel_id();
-        let HyperEdgeRuntime {
+        let ResolvedHyperEdgeRuntime {
             sources,
             destinations,
             dispatch_strategy: _,
+            source_ids_display,
+            destination_ids_display,
         } = self;
+        let span = otel_debug_span!(
+            "hyper_edge.wireup",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            source_ids = source_ids_display,
+            dest_ids = destination_ids_display
+        );
+        let _enter = span.enter();
 
         let mut source_nodes = Vec::with_capacity(sources.len());
         let mut source_ports = Vec::with_capacity(sources.len());
@@ -1353,14 +1448,15 @@ impl HyperEdgeRuntime {
         let mut dest_nodes = Vec::with_capacity(destinations.len());
         let mut dest_contexts = Vec::with_capacity(destinations.len());
         let mut dest_telemetries = Vec::with_capacity(destinations.len());
-        for name in &destinations {
-            let node_id = build_state.resolve_destination_id(name)?;
+        for node_id in &destinations {
             let node = pipeline
                 .get_node(node_id.index)
-                .ok_or_else(|| Error::UnknownNode { node: name.clone() })?;
+                .ok_or_else(|| Error::UnknownNode {
+                    node: node_id.name.clone(),
+                })?;
             dest_nodes.push(node);
-            dest_contexts.push(build_state.node_context(name)?);
-            dest_telemetries.push(build_state.node_telemetry(name)?);
+            dest_contexts.push(build_state.node_context(&node_id.name)?);
+            dest_telemetries.push(build_state.node_telemetry(&node_id.name)?);
         }
 
         let (pdata_senders, pdata_receivers) = PipelineFactory::<PData>::select_channel_type(
@@ -1377,12 +1473,8 @@ impl HyperEdgeRuntime {
             channel_metrics_enabled,
         )?;
 
-        let destinations = dest_nodes
-            .into_iter()
-            .map(|n| n.node_id())
-            .zip(pdata_receivers)
-            .collect();
-        Ok(ChannelAssignment {
+        let destinations = destinations.into_iter().zip(pdata_receivers).collect();
+        Ok(HyperEdgeWiring {
             sources,
             senders: pdata_senders,
             destinations,
