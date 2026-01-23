@@ -159,8 +159,6 @@ impl InternalTelemetryReceiver {
         log_event: LogEvent,
         resource_bytes: &Bytes,
     ) -> Result<(), Error> {
-        // TODO: We may consider batching or re-using the allocation or batching
-        // into larger OtlpProtoBytes messages.
         let mut buf = ProtoBuffer::with_capacity(512);
 
         encode_export_logs_request(&mut buf, &log_event, resource_bytes);
