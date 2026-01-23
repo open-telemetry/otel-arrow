@@ -35,36 +35,26 @@ use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 /// URN for the fan-out processor.
 pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:fanout:processor";
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 enum DeliveryMode {
     /// Send to all active destinations immediately.
+    #[default]
     Parallel,
     /// Send to destinations sequentially, moving to the next after an Ack.
     Sequential,
 }
 
-impl Default for DeliveryMode {
-    fn default() -> Self {
-        Self::Parallel
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 enum AwaitAck {
     /// Wait for the primary (or its fallback) only.
+    #[default]
     Primary,
     /// Wait for all active destinations (with replacement by fallback when configured).
     All,
     /// Do not wait; Ack upstream immediately after dispatch.
     None,
-}
-
-impl Default for AwaitAck {
-    fn default() -> Self {
-        Self::Primary
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +131,7 @@ impl FanoutConfig {
                 });
             }
 
-            if !port_index.insert(dest.port.clone(), idx).is_none() {
+            if port_index.insert(dest.port.clone(), idx).is_some() {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!("fanout: duplicate destination port `{}`", dest.port),
                 });
@@ -268,8 +258,8 @@ fn parse_calldata(calldata: &CallData) -> Option<(u64, usize)> {
     if calldata.len() < 2 {
         return None;
     }
-    let req = u64::try_from(calldata[0]).ok()?;
-    let dest = usize::try_from(calldata[1]).ok()?;
+    let req = u64::from(calldata[0]);
+    let dest = usize::try_from(u64::from(calldata[1])).ok()?;
     Some((req, dest))
 }
 
@@ -346,9 +336,9 @@ impl FanoutProcessor {
 
             // Fallback destinations are only sent when triggered.
             let is_fallback = dest.fallback_for.is_some();
-            let status = if is_fallback {
-                DestStatus::PendingSend
-            } else if matches!(self.config.mode, DeliveryMode::Sequential) && !queue.is_empty() {
+            let status = if is_fallback
+                || (matches!(self.config.mode, DeliveryMode::Sequential) && !queue.is_empty())
+            {
                 DestStatus::PendingSend
             } else {
                 queue.push(idx);
@@ -490,11 +480,10 @@ impl FanoutProcessor {
             let mut timeouts = Vec::new();
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 for (idx, ep) in inflight.endpoints.iter().enumerate() {
-                    if matches!(ep.status, DestStatus::InFlight)
-                        && ep.timeout_at.is_some()
-                        && ep.timeout_at.unwrap() <= now
-                    {
-                        timeouts.push(idx);
+                    if let Some(deadline) = ep.timeout_at {
+                        if matches!(ep.status, DestStatus::InFlight) && deadline <= now {
+                            timeouts.push(idx);
+                        }
                     }
                 }
             }
@@ -730,7 +719,6 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig| {
         create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
-            .map_err(Into::into)
     },
 };
 
@@ -890,6 +878,86 @@ mod tests {
         assert!(cfg.validate(&node_cfg).is_err());
     }
 
+    #[test]
+    fn config_rejects_fallback_to_unknown_port() {
+        let cfg = FanoutConfig {
+            destinations: vec![
+                DestinationConfig {
+                    port: "p1".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+                DestinationConfig {
+                    port: "p2".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("missing".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                ("p1".into(), HyperEdgeConfig {
+                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+                ("p2".into(), HyperEdgeConfig {
+                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        assert!(cfg.validate(&node_cfg).is_err());
+    }
+
+    #[test]
+    fn config_rejects_multiple_primary() {
+        let cfg = FanoutConfig {
+            destinations: vec![
+                DestinationConfig {
+                    port: "p1".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+                DestinationConfig {
+                    port: "p2".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                ("p1".into(), HyperEdgeConfig {
+                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+                ("p2".into(), HyperEdgeConfig {
+                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        assert!(cfg.validate(&node_cfg).is_err());
+    }
+
     #[tokio::test]
     async fn processor_sends_and_acks_primary() {
         let mut h = build_harness(
@@ -915,6 +983,46 @@ mod tests {
             .await
             .expect("ack ok");
         assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[test]
+    fn duplicate_ports_are_rejected() {
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                ("p1".into(), HyperEdgeConfig {
+                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+                ("p2".into(), HyperEdgeConfig {
+                    destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                }),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({
+                "destinations": [
+                    { "port": "p1", "primary": true },
+                    { "port": "p1", "primary": false }
+                ],
+                "await_ack": "primary"
+            }),
+        };
+
+        let metrics_system = InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let err = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
+            .err()
+            .expect("duplicate ports should fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("duplicate destination port"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[tokio::test]
