@@ -6,6 +6,5 @@
 // pub mod assert_exporter;
 pub mod encode_decode;
 pub mod error;
-// pub mod fanout_processor;
 pub mod metrics_types;
 pub mod pipeline;

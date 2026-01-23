@@ -1,12 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exporter that buffers inputs from two ports and asserts their equivalence.
-//!
-//! NOTE: Multi-port exporters are not yet fully wired in the engine. The port
-//! selection logic here is a placeholder that will be replaced once the engine
-//! supplies port metadata on inbound messages.
-
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -33,10 +27,10 @@ use serde::Deserialize;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-pub const ASSERT_EXPORTER_URN: &str = "urn:otel:assert:exporter";
+pub const ASSERT_VALID_EXPORTER_URN: &str = "urn:otel:assert_valid:exporter";
 
 #[derive(Debug, Deserialize)]
-struct AssertExporterConfig {
+struct AssertValidExporterConfig {
     /// When true, a failing equivalence check is considered expected.
     #[serde(default)]
     expect_failure: bool,
@@ -44,21 +38,18 @@ struct AssertExporterConfig {
 
 #[metric_set(name = "validation.assert.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
-struct AssertExporterMetrics {
-    /// Number of comparisons executed.
-    #[metric(unit = "{comparison}")]
-    comparisons: otap_df_telemetry::instrument::Counter<u64>,
+struct AssertValidExporterMetrics {
     /// Number of comparisons that did not match expectation.
-    #[metric(unit = "{comparison}")]
-    mismatches: otap_df_telemetry::instrument::Counter<u64>,
+    /// 0 -> not valid
+    /// 1 -> valid
+    valid: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
-pub struct AssertExporter {
-    config: AssertExporterConfig,
-    left: Vec<OtlpProtoMessage>,
-    right: Vec<OtlpProtoMessage>,
-    next_side: bool,
-    metrics: MetricSet<AssertExporterMetrics>,
+pub struct AssertValidExporter {
+    config: AssertValidExporterConfig,
+    control_msg: Vec<OtlpProtoMessage>,
+    suv_msg: Vec<OtlpProtoMessage>,
+    metrics: MetricSet<AssertValidExporterMetrics>,
 }
 
 fn to_otlp(msg: OtapPdata) -> Option<OtlpProtoMessage> {
@@ -80,13 +71,12 @@ pub fn create_assert_exporter(
             error: e.to_string(),
         }
     })?;
-    let metrics = pipeline_ctx.register_metrics::<AssertExporterMetrics>();
+    let metrics = pipeline_ctx.register_metrics::<AssertValidExporterMetrics>();
     Ok(ExporterWrapper::local(
-        AssertExporter {
+        AssertValidExporter {
             config,
             left: Vec::new(),
             right: Vec::new(),
-            next_side: false,
             metrics,
         },
         node,
@@ -107,39 +97,8 @@ pub static ASSERT_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory
     },
 };
 
-impl AssertExporter {
-    fn pick_side(&mut self, _msg: &Message<OtapPdata>) -> bool {
-        // TODO: replace with real port-based routing once Message carries port info.
-        let side = self.next_side;
-        self.next_side = !self.next_side;
-        side
-    }
-
-    fn compare(&mut self) {
-        if self.left.is_empty() || self.right.is_empty() {
-            return;
-        }
-        self.metrics.comparisons.inc();
-
-        let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            assert_equivalent(&self.left, &self.right);
-        }));
-
-        let comparison_failed = res.is_err();
-        let expectation_met = if self.config.expect_failure {
-            comparison_failed
-        } else {
-            !comparison_failed
-        };
-
-        if !expectation_met {
-            self.metrics.mismatches.inc();
-        }
-    }
-}
-
 #[async_trait(?Send)]
-impl Exporter<OtapPdata> for AssertExporter {
+impl Exporter<OtapPdata> for AssertValidExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
@@ -153,20 +112,14 @@ impl Exporter<OtapPdata> for AssertExporter {
                     let _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                    self.compare();
                     break;
                 }
                 Message::PData(pdata) => {
-                    if let Some(proto) = to_otlp(pdata) {
-                        if self.pick_side(&Message::PData(OtapPdata::new_todo_context(
-                            OtapPayload::empty(proto.signal_type()),
-                        ))) {
-                            self.right.push(proto);
-                        } else {
-                            self.left.push(proto);
-                        }
-                        self.compare();
-                    }
+                    // if message read in is from SUV update suv vector
+                    // if message read in is from control update control vector
+                    // compare and update metric
+                    // if we expect_failure -> suv pipeline contains processors that can alter the data then we use the inverted result of assert_equivlent
+                    // otherwise use assert_equivelent 
                 }
             }
         }

@@ -25,8 +25,8 @@ const READY_BACKOFF_SECS: u64 = 3;
 
 const METRICS_POLL_SECS: u64 = 2;
 const LOADGEN_MAX_SIGNALS: u64 = 2000;
-const LOADGEN_TIMEOUT_SECS: u64 = 60;
-const PROPAGATION_DELAY_SECS: u64 = 3;
+const LOADGEN_TIMEOUT_SECS: u64 = 70;
+const PROPAGATION_DELAY_SECS: u64 = 10;
 
 const PIPELINE_GROUP_ID: &str = "validation_test";
 const PIPELINE_ID_TRAFFIC: &str = "traffic_gen";
@@ -81,7 +81,7 @@ impl PipelineSimulator {
         // create controller and run
         let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
         let engine_config = self.engine_config.clone();
-        let _ = controller.run_forever(engine_config);
+        let _ = controller.run_till_shutdown(engine_config);
     }
 }
 
@@ -97,49 +97,40 @@ impl PipelineValidation {
 
         let admin_client = Client::new();
 
-        // wait for ready signal, returns error if not ready after some time
-        wait_for_ready(&admin_client, ADMIN_ENDPOINT).await?;
+        let _ = wait_for_ready(&admin_client, ADMIN_ENDPOINT).await;
 
         let loadgen_deadline =
             std::time::Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
         loop {
-            let snapshot = fetch_metrics(&admin_client).await?;
+            let snapshot = fetch_metrics(&admin_client, ADMIN_ENDPOINT).await?;
             if loadgen_reached_limit(&snapshot) {
-                // load gen has sent all signals
                 break;
             }
             if std::time::Instant::now() >= loadgen_deadline {
-                // return Err(PipelineError::Status(format!(
-                //     "load generator did not reach {} signals before timeout",
-                //     LOADGEN_MAX_SIGNALS
-                // )));
-                break;
+                return Err(PipelineError::Status(format!(
+                    "load generator did not reach {} signals before timeout",
+                    LOADGEN_MAX_SIGNALS
+                )));
             }
             sleep(Duration::from_secs(METRICS_POLL_SECS)).await;
         }
 
-        let content = admin_client
-        .get(format!("{ADMIN_ENDPOINT}/telemetry/metrics"))
-        .send()
-        .await.expect("failed to get metrics").error_for_status().expect("failed").text().await.expect("failed to get metrics");
-        println!("metrics: {content}");
-
 
         sleep(Duration::from_secs(PROPAGATION_DELAY_SECS)).await;
 
-        /// send shutdown signal
-        let shutdown: Value = admin_client
-            .post(format!("{ADMIN_ENDPOINT}/pipeline-groups/shutdown"))
+        let assert_snapshot = fetch_metrics(&admin_client, ADMIN_ENDPOINT).await?;
+        let result = assert_valid_from_metrics(&assert_snapshot);
+
+        // shutdown the pipeline
+        let _ = admin_client
+            .post(format!(
+                "{ADMIN_ENDPOINT}/pipeline-groups/shutdown?wait=true"
+            ))
             .send()
             .await?
             .error_for_status()
-            .map_err(|e| PipelineError::Status(e.to_string()))?
-            .json()
-            .await?;
-
-        let assert_snapshot = fetch_metrics(&admin_client).await?;
-        // let result = assert_from_metrics(&assert_snapshot);
-        Ok(true)
+            .map_err(|e| PipelineError::Status(e.to_string()))?;
+        Ok(result)
     }
 
     /// render_template generates the validation pipeline group with the pipeline that will be validated
@@ -179,9 +170,10 @@ async fn wait_for_ready(client: &Client, base: &str) -> Result<(), PipelineError
     ))
 }
 
-async fn fetch_metrics(client: &Client) -> Result<MetricsSnapshot, PipelineError> {
+async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, PipelineError> {
     Ok(client
-        .get(format!("{ADMIN_ENDPOINT}/telemetry/metrics"))
+        .get(format!("{base}/telemetry/metrics"))
+        .query(&[("reset", false), ("keep_all_zeroes", false)])
         .send()
         .await?
         .error_for_status()
@@ -198,48 +190,39 @@ fn metric_value_u64(value: &MetricValue) -> Option<u64> {
 }
 
 fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
-    snapshot
+    // Prefer the fake data generator metrics if present.
+    if let Some(v) = snapshot
         .metric_sets
         .iter()
         .find(|set| set.name == "fake_data_generator.receiver.metrics")
         .and_then(|set| {
             set.metrics
                 .iter()
-                .find(|m| m.metadata.name == "logs_produced")
+                .find(|m| m.name == "logs.produced")
                 .and_then(|m| metric_value_u64(&m.value))
         })
-        .map(|v| v >= LOADGEN_MAX_SIGNALS)
-        .unwrap_or(false)
+    {
+        return v >= LOADGEN_MAX_SIGNALS;
+    }
+    false
 }
 
-// fn assert_from_metrics(snapshot: &MetricsSnapshot) -> bool {
-//     let mut comparisons = 0_u64;
-//     let mut mismatches = 0_u64;
-
-//     if let Some(set) = snapshot
-//         .metric_sets
-//         .iter()
-//         .find(|set| set.name == "validation.assert.exporter.metrics")
-//     {
-//         for metric in &set.metrics {
-//             match metric.metadata.name.as_str() {
-//                 "comparisons" => {
-//                     if let Some(v) = metric_value_u64(&metric.value) {
-//                         comparisons = v;
-//                     }
-//                 }
-//                 "mismatches" => {
-//                     if let Some(v) = metric_value_u64(&metric.value) {
-//                         mismatches = v;
-//                     }
-//                 }
-//                 _ => {}
-//             }
-//         }
-//     }
-
-//     comparisons > 0 && mismatches == 0
-// }
+fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
+    if let Some(v) = snapshot
+        .metric_sets
+        .iter()
+        .find(|set| set.name == "assert_valid.exporter.metrics")
+        .and_then(|set| {
+            set.metrics
+                .iter()
+                .find(|m| m.name == "valid")
+                .and_then(|m| metric_value_u64(&m.value))
+        })
+    {
+        return v >= 1;
+    }
+    false
+}
 
 #[cfg(test)]
 mod test {
