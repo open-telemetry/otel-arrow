@@ -276,6 +276,7 @@ impl PipelineContext {
     pub fn channel_attribute_set(
         &self,
         channel_id: Cow<'static, str>,
+        node_port: Cow<'static, str>,
         channel_kind: &'static str,
         channel_mode: &'static str,
         channel_type: &'static str,
@@ -283,6 +284,7 @@ impl PipelineContext {
     ) -> ChannelAttributeSet {
         ChannelAttributeSet {
             node_attrs: self.node_attribute_set(),
+            node_port,
             channel_id,
             channel_kind: Cow::Borrowed(channel_kind),
             channel_mode: Cow::Borrowed(channel_mode),
@@ -296,6 +298,7 @@ impl PipelineContext {
     pub fn register_channel_entity(
         &self,
         channel_id: Cow<'static, str>,
+        node_port: Cow<'static, str>,
         channel_kind: &'static str,
         channel_mode: &'static str,
         channel_type: &'static str,
@@ -303,6 +306,7 @@ impl PipelineContext {
     ) -> EntityKey {
         let attrs = self.channel_attribute_set(
             channel_id,
+            node_port,
             channel_kind,
             channel_mode,
             channel_type,
