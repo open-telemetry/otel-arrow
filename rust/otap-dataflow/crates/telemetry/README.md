@@ -57,7 +57,7 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 
 ## Logging Macros
 
-There are internal macros defined in `otal_df_telemetry` with names
+There are internal macros defined in `otap_df_telemetry` with names
 `otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These 
 macros all require a constant event-name string as the first argument,
 otherwise, they follow Tokio `tracing` syntax for key-value expressions.
