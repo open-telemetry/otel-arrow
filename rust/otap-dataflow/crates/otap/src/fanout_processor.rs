@@ -138,6 +138,14 @@ impl FanoutConfig {
             }
 
             if dest.primary {
+                if dest.fallback_for.is_some() {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "fanout: primary destination `{}` cannot also be a fallback",
+                            dest.port
+                        ),
+                    });
+                }
                 if primary_seen {
                     return Err(ConfigError::InvalidUserConfig {
                         error: "fanout: only one primary destination is allowed".into(),
@@ -405,6 +413,9 @@ impl FanoutProcessor {
 
         for idx in to_send {
             if let Some(payload) = inflight.endpoints[idx].payload.take() {
+                inflight.endpoints[idx].timeout_at = destinations[idx]
+                    .timeout
+                    .map(|d| now() + d);
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
                     .await?;
@@ -449,6 +460,9 @@ impl FanoutProcessor {
                 && self.config.destinations[*idx].fallback_for.is_some()
         }) {
             inflight.endpoints[fb_idx].status = DestStatus::InFlight;
+            inflight.endpoints[fb_idx].timeout_at = self.config.destinations[fb_idx]
+                .timeout
+                .map(|d| now() + d);
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.clear();
                 inflight.next_send_queue.push(fb_idx);
@@ -698,6 +712,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 if await_ack_none {
                     let pdata_for_ack = inflight.ack_payload.take().unwrap_or(pdata);
                     let _ = self.inflight.remove(&request_id);
+                    self.metrics.acked.add(1);
                     effect_handler
                         .notify_ack(AckMsg::new(pdata_for_ack))
                         .await?;
@@ -986,6 +1001,37 @@ mod tests {
         assert!(cfg.validate(&node_cfg).is_err());
     }
 
+    #[test]
+    fn config_rejects_primary_marked_as_fallback() {
+        let cfg = FanoutConfig {
+            destinations: vec![
+                DestinationConfig {
+                    port: "p1".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: Some("p0".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [(
+                "p1".into(),
+                HyperEdgeConfig {
+                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                },
+            )]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        assert!(cfg.validate(&node_cfg).is_err());
+    }
+
     #[tokio::test]
     async fn processor_sends_and_acks_primary() {
         let mut h = build_harness(
@@ -1148,7 +1194,7 @@ mod tests {
         let mut h = build_harness(
             json!([
                 make_dest("primary", true, None, None),
-                make_dest("backup", false, Some("primary"), None)
+                make_dest("backup", false, Some("primary"), Some("50ms"))
             ]),
             "parallel",
             "primary",
