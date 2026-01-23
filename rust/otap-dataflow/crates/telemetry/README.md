@@ -58,7 +58,7 @@ See the [telemetry-macros crate](../telemetry-macros) for details.
 ## Logging Macros
 
 There are internal macros defined in `otap_df_telemetry` with names
-`otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These 
+`otel_info!`, `otel_warn!`, `otel_error!`, and `otel_debug!`. These
 macros all require a constant event-name string as the first argument,
 otherwise, they follow Tokio `tracing` syntax for key-value expressions.
 
@@ -95,9 +95,9 @@ field, with the following choices:
   defined in the pipeline's `internal` nodes section. These nodes
   are configured in a dedicated thread.
 - `console_async`: configure asynchronous console logging. In this
-  mode log records are printed to the console by the observed-state-store thread, avoiding 
+  mode log records are printed to the console by the observed-state-store thread, avoiding
   blocking the caller.
-- `console_direct`: configure synchronous logging. This mode blocks the calling 
+- `console_direct`: configure synchronous logging. This mode blocks the calling
   thread to print each log statement immediately.
 - `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
   supports more extensive diagnostics, including support for
