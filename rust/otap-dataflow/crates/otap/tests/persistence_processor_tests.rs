@@ -90,7 +90,7 @@ fn test_persistence_processor_data_flow() {
         // Allow enough time for:
         // 1. Fake data generator to produce signals
         // 2. Persistence processor to ingest to Quiver
-        // 3. Segment to finalize (max_segment_duration = 200ms)
+        // 3. Segment to finalize (max_segment_open_duration = 200ms)
         // 4. Timer tick to forward downstream
         std::thread::sleep(Duration::from_millis(500));
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -345,7 +345,7 @@ fn build_persistence_pipeline_config(
         "poll_interval": "50ms",
         "retention_size_cap": "100MB",
         "size_cap_policy": "backpressure",
-        "max_segment_duration": "200ms",
+        "max_segment_open_duration": "200ms",
         "max_bundles_per_tick": 100
     });
 

@@ -10,9 +10,9 @@ use byte_unit::{Byte, Unit};
 use quiver::config::RetentionPolicy;
 use serde::Deserialize;
 
-/// Default retention size cap (500 GiB).
+/// Default retention size cap (10 GiB).
 fn default_retention_size_cap() -> Byte {
-    Byte::from_u64_with_unit(500, Unit::GiB).expect("valid constant")
+    Byte::from_u64_with_unit(10, Unit::GiB).expect("valid constant")
 }
 
 /// Default size cap policy.
@@ -30,8 +30,8 @@ fn default_otlp_handling() -> OtlpHandling {
     OtlpHandling::PassThrough
 }
 
-/// Default maximum segment duration (5 seconds).
-fn default_max_segment_duration() -> Duration {
+/// Default maximum time a segment can stay open (5 seconds).
+fn default_max_segment_open_duration() -> Duration {
     Duration::from_secs(5)
 }
 
@@ -107,13 +107,13 @@ pub struct PersistenceProcessorConfig {
     #[serde(default = "default_otlp_handling")]
     pub otlp_handling: OtlpHandling,
 
-    /// Maximum duration a segment stays open before automatic finalization.
+    /// Maximum time a segment can stay open before automatic finalization.
     ///
     /// Data becomes visible to downstream only after segment finalization.
     /// Lower values reduce latency but increase I/O overhead.
     /// Default: 5 seconds.
-    #[serde(with = "humantime_serde", default = "default_max_segment_duration")]
-    pub max_segment_duration: Duration,
+    #[serde(with = "humantime_serde", default = "default_max_segment_open_duration")]
+    pub max_segment_open_duration: Duration,
 
     /// Maximum number of bundles to forward downstream per timer tick.
     ///

@@ -46,7 +46,7 @@ nodes:
       retention_size_cap: "500MB"
       size_cap_policy: backpressure
       # Faster segment finalization for testing
-      max_segment_duration: 500ms
+      max_segment_open_duration: 500ms
       # Allow more bundles per tick for throughput
       max_bundles_per_tick: 1000
 

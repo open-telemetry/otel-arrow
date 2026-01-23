@@ -316,13 +316,13 @@ impl PersistenceProcessor {
             core_id = self.core_id,
             size_cap = size_cap,
             policy = ?policy,
-            max_segment_duration = ?self.config.max_segment_duration,
+            max_segment_open_duration = ?self.config.max_segment_open_duration,
             "initializing Quiver engine"
         );
 
         // Create Quiver configuration with per-core data directory
         let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
-        quiver_config.segment.max_open_duration = self.config.max_segment_duration;
+        quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
 
         // Create disk budget
         let budget = Arc::new(DiskBudget::new(size_cap, policy));
