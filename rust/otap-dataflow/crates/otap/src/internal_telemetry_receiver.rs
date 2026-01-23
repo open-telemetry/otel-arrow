@@ -42,6 +42,9 @@ pub struct Config {}
 pub struct InternalTelemetryReceiver {
     #[allow(dead_code)]
     config: Config,
+    /// Internal telemetry settings obtained from the pipeline context during construction.
+    /// Contains the logs receiver channel and pre-encoded resource bytes.
+    internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
 }
 
 /// Declares the internal telemetry receiver as a local receiver factory.
@@ -49,12 +52,22 @@ pub struct InternalTelemetryReceiver {
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: INTERNAL_TELEMETRY_RECEIVER_URN,
-    create: |_pipeline: PipelineContext,
+    create: |mut pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig| {
+        // Get internal telemetry settings from the pipeline context
+        let internal_telemetry = pipeline.take_internal_telemetry().ok_or_else(|| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: "InternalTelemetryReceiver requires internal telemetry settings in pipeline context".to_owned(),
+            }
+        })?;
+
         Ok(ReceiverWrapper::local(
-            InternalTelemetryReceiver::from_config(&node_config.config)?,
+            InternalTelemetryReceiver::new_with_telemetry(
+                InternalTelemetryReceiver::parse_config(&node_config.config)?,
+                internal_telemetry,
+            ),
             node,
             node_config,
             receiver_config,
@@ -63,20 +76,25 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
 };
 
 impl InternalTelemetryReceiver {
-    /// Create a new receiver with the given configuration.
+    /// Create a new receiver with the given configuration and internal telemetry settings.
     #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new_with_telemetry(
+        config: Config,
+        internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
+    ) -> Self {
+        Self {
+            config,
+            internal_telemetry,
+        }
     }
 
-    /// Create a receiver from a JSON configuration.
-    pub fn from_config(config: &Value) -> Result<Self, otap_df_config::error::Error> {
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
+    /// Parse configuration from a JSON value.
+    pub fn parse_config(config: &Value) -> Result<Config, otap_df_config::error::Error> {
+        serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
-        })?;
-        Ok(Self::new(config))
+        })
     }
 }
 
@@ -87,16 +105,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        // Get the logs receiver channel from the effect handler
-        let logs_receiver = effect_handler
-            .logs_receiver()
-            .expect("InternalTelemetryReceiver requires a logs_receiver to be configured");
-
-        // Get the pre-encoded resource bytes
-        let resource_bytes = effect_handler
-            .resource_bytes()
-            .expect("InternalTelemetryReceiver requires resource_bytes to be configured")
-            .clone();
+        // Use the internal telemetry settings provided at construction
+        let logs_receiver = &self.internal_telemetry.logs_receiver;
+        let resource_bytes = self.internal_telemetry.resource_bytes.clone();
 
         // Start periodic telemetry collection
         let _ = effect_handler

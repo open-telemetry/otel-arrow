@@ -11,6 +11,7 @@ use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use otap_df_telemetry::InternalTelemetrySettings;
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
@@ -102,6 +103,9 @@ pub struct PipelineContext {
     node_id: NodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
+    /// Only the ITR factory reads this; other receivers ignore it.
+    internal_telemetry: Option<InternalTelemetrySettings>,
 }
 
 impl ControllerContext {
@@ -154,6 +158,7 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            internal_telemetry: None,
         }
     }
 
@@ -173,6 +178,31 @@ impl PipelineContext {
     #[must_use]
     pub fn core_id(&self) -> usize {
         self.core_id
+    }
+
+    /// Sets the internal telemetry settings for the Internal Telemetry Receiver.
+    ///
+    /// This is called by the pipeline factory when building the internal telemetry pipeline.
+    /// The ITR factory will read these settings during node construction.
+    pub fn set_internal_telemetry(&mut self, settings: InternalTelemetrySettings) {
+        self.internal_telemetry = Some(settings);
+    }
+
+    /// Returns the internal telemetry settings, if configured.
+    ///
+    /// Only the Internal Telemetry Receiver factory uses this to obtain the logs
+    /// channel and resource bytes it needs for operation.
+    #[must_use]
+    pub fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
+        self.internal_telemetry.as_ref()
+    }
+
+    /// Takes the internal telemetry settings, leaving None in its place.
+    ///
+    /// Used by the ITR factory to consume the settings during construction.
+    #[must_use]
+    pub fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
+        self.internal_telemetry.take()
     }
 
     /// Registers a metric set for the given entity key and tracks it in node telemetry if present.
@@ -336,6 +366,7 @@ impl PipelineContext {
             node_id,
             node_urn,
             node_kind,
+            internal_telemetry: None,
         }
     }
 }

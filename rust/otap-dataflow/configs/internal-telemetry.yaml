@@ -29,7 +29,7 @@ nodes:
 internal:
   telemetry:
     kind: receiver
-    plugin_urn: "urn:otel:otap:internal_telemetry:receiver"
+    plugin_urn: "urn:otel:internal_telemetry:receiver"
     out_ports:
       out_port:
         destinations:

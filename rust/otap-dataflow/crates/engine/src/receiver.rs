@@ -28,7 +28,6 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,8 +57,6 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Internal telemetry settings for ITR (only used by InternalTelemetryReceiver).
-        internal_telemetry: Option<InternalTelemetrySettings>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -81,8 +78,6 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Internal telemetry settings for ITR (only used by InternalTelemetryReceiver).
-        internal_telemetry: Option<InternalTelemetrySettings>,
     },
 }
 
@@ -123,7 +118,6 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            internal_telemetry: None,
         }
     }
 
@@ -150,7 +144,6 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            internal_telemetry: None,
         }
     }
 
@@ -165,7 +158,6 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                internal_telemetry,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -177,7 +169,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                internal_telemetry,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -188,7 +179,6 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                internal_telemetry,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -200,7 +190,6 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                internal_telemetry,
             },
         }
     }
@@ -209,22 +198,6 @@ impl<PData> ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::Local { telemetry, .. } => telemetry.take(),
             ReceiverWrapper::Shared { telemetry, .. } => telemetry.take(),
-        }
-    }
-
-    /// Sets internal telemetry settings for the internal telemetry receiver.
-    pub(crate) fn set_internal_telemetry(&mut self, settings: InternalTelemetrySettings) {
-        match self {
-            ReceiverWrapper::Local {
-                internal_telemetry, ..
-            } => {
-                *internal_telemetry = Some(settings);
-            }
-            ReceiverWrapper::Shared {
-                internal_telemetry, ..
-            } => {
-                *internal_telemetry = Some(settings);
-            }
         }
     }
 
@@ -245,7 +218,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                internal_telemetry,
+                ..
             } => {
                 let control_sender = control_sender.into_mpsc();
                 let control_receiver = control_receiver.into_mpsc();
@@ -310,7 +283,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    internal_telemetry,
                 }
             }
             ReceiverWrapper::Shared {
@@ -323,7 +295,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                internal_telemetry,
+                ..
             } => {
                 let control_sender = control_sender.into_mpsc();
                 let control_receiver = control_receiver.into_mpsc();
@@ -388,7 +360,6 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    internal_telemetry,
                 }
             }
         }
@@ -408,7 +379,6 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
-                    internal_telemetry,
                     ..
                 },
                 metrics_reporter,
@@ -425,16 +395,13 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let mut effect_handler = local::EffectHandler::new(
+                let effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
-                if let Some(its) = internal_telemetry {
-                    effect_handler.set_internal_telemetry(its);
-                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
@@ -444,7 +411,6 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
-                    internal_telemetry,
                     ..
                 },
                 metrics_reporter,
@@ -461,16 +427,13 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let mut effect_handler = shared::EffectHandler::new(
+                let effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
-                if let Some(its) = internal_telemetry {
-                    effect_handler.set_internal_telemetry(its);
-                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }

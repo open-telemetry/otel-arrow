@@ -39,12 +39,9 @@ use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
-use bytes::Bytes;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
-use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::event::ObservedEvent;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -101,8 +98,6 @@ pub struct EffectHandler<PData> {
     msg_senders: HashMap<PortName, SharedSender<PData>>,
     /// Cached default sender for fast access in the hot path
     default_sender: Option<SharedSender<PData>>,
-    /// Internal telemetry settings for the internal telemetry receiver.
-    internal_telemetry: Option<InternalTelemetrySettings>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -135,7 +130,6 @@ impl<PData> EffectHandler<PData> {
             core,
             msg_senders,
             default_sender,
-            internal_telemetry: None,
         }
     }
 
@@ -278,27 +272,6 @@ impl<PData> EffectHandler<PData> {
         metrics: &mut MetricSet<M>,
     ) -> Result<(), TelemetryError> {
         self.core.report_metrics(metrics)
-    }
-
-    /// Sets internal telemetry settings for the internal telemetry receiver.
-    pub fn set_internal_telemetry(&mut self, settings: InternalTelemetrySettings) {
-        self.internal_telemetry = Some(settings);
-    }
-
-    /// Returns the logs receiver for internal telemetry, if configured.
-    #[must_use]
-    pub fn logs_receiver(&self) -> Option<&flume::Receiver<ObservedEvent>> {
-        self.internal_telemetry
-            .as_ref()
-            .map(|its| &its.logs_receiver)
-    }
-
-    /// Returns the resource bytes for internal telemetry, if configured.
-    #[must_use]
-    pub fn resource_bytes(&self) -> Option<&Bytes> {
-        self.internal_telemetry
-            .as_ref()
-            .map(|its| &its.resource_bytes)
     }
 
     // More methods will be added in the future as needed.

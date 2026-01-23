@@ -91,6 +91,14 @@ pub struct InternalTelemetrySettings {
     pub resource_bytes: bytes::Bytes,
 }
 
+impl std::fmt::Debug for InternalTelemetrySettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InternalTelemetrySettings")
+            .field("resource_bytes", &self.resource_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.

@@ -345,13 +345,22 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
+                    // Inject internal telemetry settings into context if this is the ITR node.
+                    // The ITR factory will extract these settings during construction.
+                    let mut base_ctx = base_ctx;
+                    if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                        if let Some(ref settings) = internal_telemetry {
+                            base_ctx.set_internal_telemetry(settings.clone());
+                        }
+                    }
+
                     let node_entity_key = base_ctx.register_node_entity();
                     let node_telemetry_handle =
                         NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
                     // Create the guard before any fallible work so failed builds still clean up.
                     let mut node_guard =
                         Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
-                    let mut wrapper = with_node_telemetry_handle(
+                    let wrapper = with_node_telemetry_handle(
                         node_telemetry_handle.clone(),
                         || -> Result<ReceiverWrapper<PData>, Error> {
                             let wrapper = self.create_receiver(
@@ -369,14 +378,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                             ))
                         },
                     )?;
-
-                    // Inject internal telemetry settings if this is the ITR node
-                    if let Some(ref settings) = internal_telemetry {
-                        if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
-                            wrapper.set_internal_telemetry(settings.clone());
-                        }
-                    }
-
                     let wrapper = wrapper.with_node_telemetry_guard(
                         node_guard.take().expect("node telemetry guard missing"),
                     );
