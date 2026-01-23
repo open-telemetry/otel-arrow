@@ -54,19 +54,6 @@ pub enum ColorMode {
     NoColor,
 }
 
-/// Scope printing mode for log records with entity context.
-#[derive(Debug, Clone, Copy, Default)]
-pub enum ScopeMode {
-    /// Print scope attributes on a continuation line after the log message.
-    /// Used when printing individual log records.
-    #[default]
-    Inline,
-    /// Do not print scope attributes with individual log records.
-    /// Used when log records are grouped by scope and the scope header
-    /// is printed once before multiple log records.
-    Grouped,
-}
-
 impl ColorMode {
     /// Write an ANSI escape sequence (no-op for NoColor).
     #[inline]
@@ -131,59 +118,26 @@ impl ConsoleWriter {
     ///
     /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
     pub fn format_log_record(&self, time: Option<SystemTime>, record: &LogRecord) -> String {
-        self.format_log_record_with_mode(time, record, ScopeMode::Inline)
-    }
-
-    /// Format a LogRecord with configurable scope printing mode.
-    pub fn format_log_record_with_mode(
-        &self,
-        time: Option<SystemTime>,
-        record: &LogRecord,
-        scope_mode: ScopeMode,
-    ) -> String {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into_with_mode(&mut buf, time, record, scope_mode);
+        let len = self.format_log_record_into(&mut buf, time, record);
         // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
 
     /// Print a LogRecord directly to stdout or stderr (based on level).
     pub fn print_log_record(&self, time: SystemTime, record: &LogRecord) {
-        self.print_log_record_with_mode(time, record, ScopeMode::Inline);
-    }
-
-    /// Print a LogRecord with configurable scope printing mode.
-    pub fn print_log_record_with_mode(
-        &self,
-        time: SystemTime,
-        record: &LogRecord,
-        scope_mode: ScopeMode,
-    ) {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into_with_mode(&mut buf, Some(time), record, scope_mode);
+        let len = self.format_log_record_into(&mut buf, Some(time), record);
         self.write_line(record.callsite().level(), &buf[..len]);
     }
 
     /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
-    /// Uses `ScopeMode::Inline` by default.
     #[allow(dead_code)]
     fn format_log_record_into(
         &self,
         buf: &mut [u8],
         time: Option<SystemTime>,
         record: &LogRecord,
-    ) -> usize {
-        self.format_log_record_into_with_mode(buf, time, record, ScopeMode::Inline)
-    }
-
-    /// Encode a LogRecord to a byte buffer with configurable scope mode.
-    /// Returns the number of bytes written.
-    fn format_log_record_into_with_mode(
-        &self,
-        buf: &mut [u8],
-        time: Option<SystemTime>,
-        record: &LogRecord,
-        scope_mode: ScopeMode,
     ) -> usize {
         let mut w = Cursor::new(buf);
 
@@ -202,7 +156,7 @@ impl ConsoleWriter {
         );
 
         // Add scope continuation line if entity context is present (Inline mode only)
-        if matches!(scope_mode, ScopeMode::Inline) && record.has_entity_context() {
+        if record.context.len() != 0 {
             self.format_scope_continuation_into(&mut w, record);
         }
 
@@ -213,23 +167,19 @@ impl ConsoleWriter {
     /// This prints on a new line without timestamp/level/name prefix.
     /// Format: `  └─ scope [pipeline=<key>, node=<key>]`
     fn format_scope_continuation_into(&self, w: &mut BufWriter<'_>, record: &LogRecord) {
-        // Indent to align with the log message (past timestamp and level)
-        let _ = w.write_all(b"                                ");
+        let _ = w.write_all(b"    ");
         self.write_styled(w, AnsiCode::Dim, |w| {
             let _ = w.write_all(b"scope");
         });
         let _ = w.write_all(b" [");
 
         let mut first = true;
-        if let Some(key) = record.pipeline_entity_key {
-            let _ = write!(w, "pipeline={:?}", key);
-            first = false;
-        }
-        if let Some(key) = record.node_entity_key {
+        for key in record.context.iter() {
             if !first {
                 let _ = w.write_all(b", ");
             }
-            let _ = write!(w, "node={:?}", key);
+            let _ = write!(w, "{:?}", key);
+            first = false;
         }
         let _ = w.write_all(b"]\n");
     }
@@ -973,7 +923,7 @@ mod tests {
         );
 
         // Test Grouped mode - scope continuation should be suppressed
-        let output = writer.format_log_record_with_mode(Some(time), &record, ScopeMode::Grouped);
+        let output = writer.format_log_record(Some(time), &record);
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!(
             lines.len(),

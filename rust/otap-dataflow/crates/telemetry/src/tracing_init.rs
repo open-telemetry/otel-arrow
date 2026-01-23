@@ -8,11 +8,11 @@
 //! subscriber determines how log events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
-use crate::registry::EntityKey;
-use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer};
+use crate::self_tracing::{ConsoleWriter, LogContext, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use smallvec::smallvec;
 use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
@@ -29,9 +29,7 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 #[derive(Clone, Copy)]
 pub struct EntityKeyProviders {
     /// Returns the current pipeline entity key for this thread, if set.
-    pub pipeline: fn() -> Option<EntityKey>,
-    /// Returns the current node entity key for this task, if set.
-    pub node: fn() -> Option<EntityKey>,
+    pub context: fn() -> Option<LogContext>,
 }
 
 /// Creates an `EnvFilter` for the given log level.
@@ -213,11 +211,11 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
-        let (pipeline_entity_key, node_entity_key) = match self.entity_providers {
-            Some(providers) => ((providers.pipeline)(), (providers.node)()),
-            None => (None, None),
+        let context = match self.entity_providers {
+            Some(providers) => (providers.context)(),
+            None => smallvec![],
         };
-        let record = LogRecord::new_with_context(event, pipeline_entity_key, node_entity_key);
+        let record = LogRecord::new_with_context(event, context);
         self.reporter.log(LogEvent { time, record });
     }
 }
@@ -486,9 +484,13 @@ mod tests {
         });
 
         let logger_provider = SdkLoggerProvider::builder().build();
-        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(LogLevel::Info, None, || {
-            otel_info!("otel");
-        });
+        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(
+            LogLevel::Info,
+            None,
+            || {
+                otel_info!("otel");
+            },
+        );
     }
 
     #[test]

@@ -10,16 +10,16 @@
 pub mod encoder;
 pub mod formatter;
 
+use crate::registry::EntityKey;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
+use smallvec::SmallVec;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
-use crate::registry::EntityKey;
-
 pub use encoder::DirectLogRecordEncoder;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, ScopeMode};
+pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -34,14 +34,12 @@ pub struct LogRecord {
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
 
-    /// The pipeline entity key at the time this log record was created.
-    /// Used to associate the log with the correct pipeline for telemetry.
-    pub pipeline_entity_key: Option<EntityKey>,
-
-    /// The node entity key at the time this log record was created.
-    /// Used to associate the log with the correct node for telemetry.
-    pub node_entity_key: Option<EntityKey>,
+    /// The context of this log record, typically pipeline and node context keys.
+    pub context: LogContext,
 }
+
+/// Context keys refer to attribute sets in the telemetry registry.
+pub type LogContext = SmallVec<[EntityKey; 2]>;
 
 /// Saved callsite information. This is information that can easily be
 /// populated from Metadata, for example in a `register_callsite` hook
@@ -95,16 +93,12 @@ impl LogRecord {
     /// Entity keys are not captured; use `new_with_context` for that.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        Self::new_with_context(event, None, None)
+        Self::new_with_context(event, smallvec::smallvec![])
     }
 
     /// Construct a log record with entity context, partially encoding its dynamic content.
     #[must_use]
-    pub fn new_with_context(
-        event: &Event<'_>,
-        pipeline_entity_key: Option<EntityKey>,
-        node_entity_key: Option<EntityKey>,
-    ) -> Self {
+    pub fn new_with_context(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
@@ -118,8 +112,7 @@ impl LogRecord {
         Self {
             callsite_id: metadata.callsite(),
             body_attrs_bytes: buf.into_bytes(),
-            pipeline_entity_key,
-            node_entity_key,
+            context,
         }
     }
 
@@ -138,6 +131,6 @@ impl LogRecord {
     /// Returns true if this log record has any entity context (pipeline or node).
     #[must_use]
     pub fn has_entity_context(&self) -> bool {
-        self.pipeline_entity_key.is_some() || self.node_entity_key.is_some()
+        !self.context.is_empty()
     }
 }
