@@ -12,15 +12,32 @@
 //! Since each bundle contains only one signal type and ArrowPayloadType values
 //! go up to ~45, we use the ArrowPayloadType value directly as the slot ID.
 //!
-//! - Slots 0-45: Direct ArrowPayloadType values (shared between signal types)
-//! - Slot 60: OTLP Logs opaque binary storage  
-//! - Slot 61: OTLP Traces opaque binary storage
-//! - Slot 62: OTLP Metrics opaque binary storage
+//! Slot IDs map directly to `ArrowPayloadType` enum values defined in
+//! `proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto`:
 //!
-//! The signal type is determined by which ArrowPayloadType values are present:
-//! - LOGS (30), LOG_ATTRS (31) => Logs signal
-//! - SPANS (40), SPAN_* => Traces signal
-//! - UNIVARIATE_METRICS (10), etc. => Metrics signal
+//! | Signal  | Payload Types (slot IDs)                                    | Table Count |
+//! |---------|-------------------------------------------------------------|-------------|
+//! | Shared  | RESOURCE_ATTRS (1), SCOPE_ATTRS (2)                         | 2           |
+//! | Metrics | UNIVARIATE_METRICS (10) through METRIC_ATTRS (26)           | 17          |
+//! | Logs    | LOGS (30), LOG_ATTRS (31)                                   | 2           |
+//! | Traces  | SPANS (40) through SPAN_LINK_ATTRS (45)                     | 6           |
+//!
+//! Total tables per signal (including shared RESOURCE_ATTRS and SCOPE_ATTRS):
+//! - Logs: 4 tables (LOGS, LOG_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS)
+//! - Traces: 8 tables (SPANS, SPAN_ATTRS, SPAN_EVENTS, SPAN_LINKS,
+//!   SPAN_EVENT_ATTRS, SPAN_LINK_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS)
+//! - Metrics: 19 tables (UNIVARIATE_METRICS, MULTIVARIATE_METRICS, 4 data point
+//!   types, 4 DP attrs, 3 exemplar types, 3 exemplar attrs, METRIC_ATTRS,
+//!   RESOURCE_ATTRS, SCOPE_ATTRS)
+//!
+//! Reserved slots for OTLP pass-through (opaque binary storage):
+//! - Slot 60: OTLP Logs
+//! - Slot 61: OTLP Traces
+//! - Slot 62: OTLP Metrics
+//!
+//! Note: Slots identify payload *types*, not schemas. Within each slot, Quiver
+//! supports many different schemas via `(slot_id, schema_fingerprint)` pairs
+//! that create distinct "streams" (up to 100,000 per segment).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -78,11 +95,15 @@ fn is_otlp_slot(slot: SlotId) -> Option<SignalType> {
     }
 }
 
-/// Convert a slot ID back to signal type and payload type (Arrow format only)
+/// Convert a slot ID back to signal type and payload type (Arrow format only).
+///
+/// This reverse mapping is used during WAL recovery to reconstruct the signal type
+/// from persisted slot IDs. The ranges correspond to `ArrowPayloadType` values
+/// from `arrow_service.proto`.
 fn from_slot_id(slot: SlotId) -> Option<(SignalType, ArrowPayloadType)> {
     let raw = slot.raw();
 
-    // Check if it's an OTLP slot
+    // Check if it's an OTLP slot (60-62 range, not an ArrowPayloadType)
     if raw >= otlp_slots::OTLP_LOGS {
         return None;
     }
@@ -90,11 +111,16 @@ fn from_slot_id(slot: SlotId) -> Option<(SignalType, ArrowPayloadType)> {
     // Convert directly back to ArrowPayloadType
     let payload_type = ArrowPayloadType::try_from(raw as i32).ok()?;
 
-    // Determine signal type from the payload type value
+    // Determine signal type from the ArrowPayloadType value ranges.
+    // See arrow_service.proto for the enum definitions:
+    //   - Metrics: 10-26 (UNIVARIATE_METRICS through METRIC_ATTRS)
+    //   - Logs: 30-31 (LOGS, LOG_ATTRS)
+    //   - Traces: 40-45 (SPANS through SPAN_LINK_ATTRS)
+    //   - Shared: 1-2 (RESOURCE_ATTRS, SCOPE_ATTRS) - used by all signals
     let signal_type = match raw {
+        10..=26 => SignalType::Metrics, // UNIVARIATE_METRICS (10) through METRIC_ATTRS (26)
         30..=31 => SignalType::Logs,    // LOGS (30), LOG_ATTRS (31)
         40..=45 => SignalType::Traces,  // SPANS (40) through SPAN_LINK_ATTRS (45)
-        10..=26 => SignalType::Metrics, // UNIVARIATE_METRICS (10) through METRIC_ATTRS (26)
         1..=2 => SignalType::Logs,      // RESOURCE_ATTRS (1), SCOPE_ATTRS (2) - default to Logs
         _ => SignalType::Logs,          // Unknown - default to Logs
     };
