@@ -557,7 +557,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Create a channel to signal startup success/failure
-        let (startup_tx, startup_rx) = std_mpsc::channel::<Result<(), Error>>();
+        let (startup_tx, startup_rx) = std_mpsc::channel::<Result<(), Error>>(1);
 
         let thread_name = "internal-pipeline".to_string();
         let internal_evt_reporter = engine_evt_reporter.clone();
