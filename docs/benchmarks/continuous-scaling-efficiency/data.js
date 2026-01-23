@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769197946633,
+  "lastUpdate": 1769202488904,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1462,6 +1462,66 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7299,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c432e64e8abf4a85cb540263a81841003611f512",
+          "message": "Fix minor syntax warning in beaubourg engine (flagged by rust-analyzer in vscode) (#1874)\n\n# Change Summary\n\nFix a minor syntax warning about unused parens in beaubourg\n\n## What issue does this PR close?\n\nn/a\n\n## How are these changes tested?\n\nn/a\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-01-23T20:31:46Z",
+          "tree_id": "77b94f740adbe782f47149bd9e535761e5c69524",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/c432e64e8abf4a85cb540263a81841003611f512"
+        },
+        "date": 1769202488298,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.9089,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8237,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.8206,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.6269,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_24_cores",
+            "value": 0.703,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 24 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7766,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
