@@ -292,12 +292,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
     /// Builds a runtime pipeline from the given pipeline configuration.
     ///
-    /// Steps:
-    /// - Create all runtime nodes based on the pipeline configuration.
-    /// - Analyze both the local vs shared nature of each pair of connected nodes and the nature of
-    ///   the hyper-edges between them to determine the best channel type.
-    /// - Assign channels to the source nodes and their destination nodes based on the previous
-    ///   analysis.
+    /// Main phases:
+    /// 1) Create runtime nodes and register telemetry.
+    /// 2) Plan hyper edge wiring: resolve destinations, pick channel type (shared/local,
+    ///    MPSC/MPMC), create channel endpoints, and register channel metrics.
+    /// 3) Apply wiring: attach senders to source ports and receivers to destination nodes,
+    ///    then publish collected channel metrics on the pipeline.
+    ///
+    /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
