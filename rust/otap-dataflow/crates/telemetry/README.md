@@ -95,10 +95,10 @@ field, with the following choices:
   defined in the pipeline's `internal` nodes section. These nodes
   are configured in a dedicated thread.
 - `console_async`: configure asynchronous console logging. In this
-  mode log records are printed to the console from the administrative
-  component.
-- `console_direct`: configure synchronous logging. In this mode, logging
-  interrupts the calling thread to print each log statement.
+  mode log records are printed to the console by the observed-state-store thread, avoiding 
+  blocking the caller.
+- `console_direct`: configure synchronous logging. This mode blocks the calling 
+  thread to print each log statement immediately.
 - `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
   supports more extensive diagnostics, including support for
   distributed tracing events.
