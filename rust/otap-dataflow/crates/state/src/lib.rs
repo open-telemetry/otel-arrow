@@ -11,7 +11,6 @@ pub mod error;
 pub mod phase;
 mod pipeline_rt_status;
 pub mod pipeline_status;
-pub mod reporter;
 pub mod store;
 
 use otap_df_telemetry::event::ObservedEvent;

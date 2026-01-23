@@ -14,12 +14,13 @@
 //!
 //! The implementation uses HTTP CONNECT method to establish tunnels through proxies.
 
+use crate::socket_options;
 use base64::Engine;
 use base64::prelude::*;
 use http::Uri;
 use ipnet::IpNet;
+use otap_df_telemetry::{otel_debug, otel_warn};
 use serde::Deserialize;
-use socket2::{Socket, TcpKeepalive};
 use std::borrow::Cow;
 use std::env;
 use std::io;
@@ -234,7 +235,7 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host, port) {
-            otap_df_telemetry::otel_debug!("proxy.bypass", host = host, port = port);
+            otel_debug!("proxy.bypass", host = host, port = port);
             return None;
         }
 
@@ -245,15 +246,13 @@ impl ProxyConfig {
         };
 
         if let Some(url) = proxy {
-            if log::log_enabled!(log::Level::Debug) {
-                otap_df_telemetry::otel_debug!(
-                    "proxy.using",
-                    proxy = url.to_string(),
-                    target = uri.to_string()
-                );
-            }
+            otel_debug!(
+                "proxy.using",
+                proxy = url.to_string(),
+                target = uri.to_string(),
+            );
         } else {
-            otap_df_telemetry::otel_debug!("proxy.none", target = uri.to_string());
+            otel_debug!("proxy.none", target = uri.to_string());
         }
 
         proxy.map(|u| u.expose())
@@ -484,7 +483,7 @@ async fn http_connect_tunnel_on_stream(
     connect_request.push_str("\r\n");
 
     // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
-    otap_df_telemetry::otel_debug!(
+    otel_debug!(
         "proxy.connect_request",
         target = format!("{formatted_target}:{target_port}"),
         has_auth = proxy_auth.is_some()
@@ -502,7 +501,7 @@ async fn http_connect_tunnel_on_stream(
         ));
     }
 
-    otap_df_telemetry::otel_debug!("proxy.connect_response", status_line = status_line.trim());
+    otel_debug!("proxy.connect_response", status_line = status_line.trim());
 
     // Parse "HTTP/1.1 200 Connection established".
     // Be robust to multiple ASCII spaces/tabs between tokens.
@@ -575,10 +574,6 @@ async fn http_connect_tunnel_on_stream(
 }
 
 /// Applies TCP socket options (nodelay, keepalive) to a stream.
-///
-/// This function performs a series of conversions (tokio -> std -> socket2 -> std -> tokio)
-/// to apply socket options that are not directly exposed by tokio's TcpStream.
-/// Specifically, `socket2` is required to set detailed keepalive parameters (interval, retries).
 fn apply_socket_options(
     stream: TcpStream,
     tcp_nodelay: bool,
@@ -586,41 +581,13 @@ fn apply_socket_options(
     tcp_keepalive_interval: Option<Duration>,
     tcp_keepalive_retries: Option<u32>,
 ) -> io::Result<TcpStream> {
-    // Convert tokio TcpStream to std TcpStream, then to Socket
-    stream.set_nodelay(tcp_nodelay)?;
-
-    let std_stream = stream.into_std()?;
-    let socket: Socket = std_stream.into();
-
-    // Apply TCP keepalive settings
-    if let Some(keepalive_time) = tcp_keepalive {
-        let mut keepalive = TcpKeepalive::new().with_time(keepalive_time);
-
-        if let Some(interval) = tcp_keepalive_interval {
-            keepalive = keepalive.with_interval(interval);
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        if let Some(retries) = tcp_keepalive_retries {
-            keepalive = keepalive.with_retries(retries);
-        }
-
-        #[cfg(target_os = "windows")]
-        if tcp_keepalive_retries.is_some() {
-            otap_df_telemetry::otel_warn!(
-                "proxy.keepalive_retries_ignored",
-                platform = "windows",
-                message = "tcp_keepalive_retries is configured but ignored on Windows: TcpKeepalive::with_retries is not available on this platform"
-            );
-        }
-
-        socket.set_tcp_keepalive(&keepalive)?;
-    }
-
-    // Convert back to std TcpStream, then to tokio TcpStream
-    let std_stream: std::net::TcpStream = socket.into();
-    std_stream.set_nonblocking(true)?;
-    TcpStream::from_std(std_stream)
+    socket_options::apply_socket_options(
+        stream,
+        tcp_nodelay,
+        tcp_keepalive,
+        tcp_keepalive_interval,
+        tcp_keepalive_retries,
+    )
 }
 
 /// Establishes a TCP connection to a target, optionally through an HTTP CONNECT proxy.
@@ -651,11 +618,11 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
         let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
-        otap_df_telemetry::otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
+        otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
         let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
             .await
             .map_err(|e| {
-                otap_df_telemetry::otel_warn!(
+                otel_warn!(
                     "proxy.connect_failed",
                     host = proxy_host,
                     port = proxy_port,
@@ -664,7 +631,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
-        otap_df_telemetry::otel_debug!("proxy.connected");
+        otel_debug!("proxy.connected");
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(

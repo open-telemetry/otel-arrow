@@ -115,7 +115,6 @@ impl PipelineValidation {
             sleep(Duration::from_secs(METRICS_POLL_SECS)).await;
         }
 
-
         sleep(Duration::from_secs(PROPAGATION_DELAY_SECS)).await;
 
         let assert_snapshot = fetch_metrics(&admin_client, ADMIN_ENDPOINT).await?;
@@ -228,9 +227,6 @@ fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
 mod test {
     use super::*;
     use otap_df_otap::OTAP_PIPELINE_FACTORY;
-    use otap_df_otap::fake_data_generator::fake_signal::{
-        fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-    };
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use std::fs;
     use std::fs::File;

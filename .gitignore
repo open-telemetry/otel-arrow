@@ -6,7 +6,11 @@ dist/
 *.iml
 
 # VS Code
-.vscode/
+# We track shared settings (.vscode/settings.json, extensions.json) but ignore
+# user-specific files and local overrides.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
 .devcontainer/
 
 # Emacs

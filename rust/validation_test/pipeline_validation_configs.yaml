@@ -8,6 +8,6 @@ tests:
   - name: "Debug Processor"
     pipeline_config_path: ./validation_pipelines/debug-processor.yaml
     variables:
-      loadgen_exporter_type: otap
+      loadgen_exporter_type: otlp
       backend_receiver_type: otlp
       expect_failure: false
