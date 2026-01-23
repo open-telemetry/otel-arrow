@@ -35,7 +35,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 /// Generate a batch of fake logs using weaver. This function stores the logs in the /tmp
 /// directory, so that subsequent benchmark runs will use the same data. This makes
-/// comparing results between benchmark runs more reliable indicator of performance change
+/// comparing results between benchmark runs a more reliable indicator of performance change
 #[allow(clippy::print_stdout)]
 fn gen_fake_logs_batch(batch_size: usize) {
     let file_path = format!("/tmp/input_{batch_size}.proto");
@@ -92,7 +92,7 @@ fn read_logs_batch(batch_size: usize, with_nulls: bool) -> OtapArrowRecords {
             .downcast_ref::<DictionaryArray<UInt16Type>>()
             .expect("str column dict key is u16");
 
-        // Add some nulls to exercise null-handling path
+        // add some nulls to exercise null-handling path
         let values = str_dict
             .values()
             .as_any()
@@ -111,7 +111,7 @@ fn read_logs_batch(batch_size: usize, with_nulls: bool) -> OtapArrowRecords {
         let new_str_dict =
             DictionaryArray::<UInt16Type>::new(keys_builder.finish(), Arc::new(values.clone()));
 
-        // Replace the str column in attrs_batch
+        // replace the str column in attrs_batch
         let mut columns: Vec<Arc<dyn Array>> = attrs_batch.columns().to_vec();
         let str_col_idx = attrs_batch
             .schema()

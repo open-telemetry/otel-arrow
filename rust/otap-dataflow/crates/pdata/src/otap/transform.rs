@@ -170,7 +170,7 @@ where
     // in the implementation below, to compare the items from the type, key, and value columns to
     // their neighbour (to determine which rows are use delta encoded ID), we use the arrow `eq`
     // compute kernel to generate a "eq bitmask" of for each column indicating where one row's
-    // value is equal to the next row. The first part of this method is computing such bitmaps..
+    // value is equal to the next row. The first part of this function is computing such bitmasks
 
     // compute a bitmap for the key column where subsequent keys are equal
     let keys_arr = record_batch
@@ -194,10 +194,9 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    // helper function to create a `Buffer` for the "eq bitmask" which indicates which subsequent
-    // rows in the values columns are delta encoded. This should be called with the bitmask
-    // of which rows are equal. We combine the null buffer into the values buffer because
-    // null values break a sequence of delta encoding
+    // helper function include nulls in the bitmask that's used to determine which rows in values
+    // columns may be delta encoded. It is to be called with the bitmask of which rows are equal.
+    // note: null values break a sequence of delta encoding
     let and_validity_bitmap = |eq: BooleanArray| -> Buffer {
         let bits = eq.values().inner().clone();
         let nulls = eq.nulls();
@@ -225,17 +224,18 @@ where
         }
     };
 
-    // Down below, we're going to create the "eq bitmask" for all the values columns to help us
-    // determine which ranges have delta encoding. Computing this is one of the most expensive
-    // parts of this algorithm, so we want to minimize the data for which this has to be computed.
+    // Further below, we're going to create the "eq bitmask" for all the values columns to help us
+    // determine which ranges have delta encoding. For best performance, we want to minimize the
+    // data for which this has to be computed.
     //
     // Normally, transport encoded data is sorted first by the type column. If we receive a batch
-    // like this, which would be expected, although no guarantees are made, we compute
-    // the "eq bitmask" for each value column only on ranges that contain this type. If the batch
-    // isn't sorted, we compute it for the entire column as a worst-case fallback.
+    // sorted like this, which would be expected, we compute the "eq bitmask" for each value column
+    // only on ranges that contain this type (these ranges can be efficiently computed when the
+    // batch is sorted). If the batch isn't sorted, we compute it for the entire column as a worst-
+    // case fallback.
     //
-    // The code in the next section is computing these ranges, and then we go on to compute the
-    // "eq bitmask" for each values column.
+    // The code in the next section is computing these type ranges, if possible, and afterward it
+    // computes the "eq bitmask" for each values column
 
     // pull out a few references to the type column that will be used later on
     let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
@@ -297,11 +297,11 @@ where
     // compute value equality arrays - either for specific ranges (sorted) or entire column (unsorted)
     let compute_val_eq = |arr: &ArrayRef, type_value: u8| -> Result<Buffer> {
         if let Some((start, end)) = get_type_range(type_value) {
-            // Sorted case: only compute equality for the range where this type appears
+            // sorted case: only compute equality for the range where this type appears
             let sliced = arr.slice(start, end - start);
             create_next_element_equality_array(&sliced).map(and_validity_bitmap)
         } else {
-            // Unsorted case: compute for entire column
+            // unsorted case: compute for entire column
             create_next_element_equality_array(arr).map(and_validity_bitmap)
         }
     };
@@ -335,7 +335,6 @@ where
     // than rebuilding it from scratch using a PrimitiveBuilder because we only need to rewrite
     // the delta encoded segments
     let parent_id_arr_ref = get_required_array(record_batch, consts::PARENT_ID)?;
-
     // TODO - currently we're casting to a primitive array, then casting back to the original
     // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
     // dictionary encoded, so we should revisit this for metrics/traces which have attributes
@@ -351,21 +350,22 @@ where
         .ok_or_else(|| Error::UnexpectedRecordBatchState {
             reason: "Failed to downcast parent_id to primitive array".to_string(),
         })?;
-
     let mut materialized_parent_ids = parent_id_arr.values().to_vec();
 
-    // closure to process a range of values where all type/key are equal. takes the range start/end
-    //  of such a range, and removes delta encoding for subsequent runs of equivalent non-null values
+    // closure to process a range of values where all type/key are equal.
+    //
+    // note the passed range is the range in the "eq bitmask" which was used to determine where
+    // type/key have equivalent value equal to the next row. this means that from the perspective
+    // of indexing the record batch itself, the range_end is actually an inclusive range end.
     let mut process_range =
         |eq_range_start: usize, eq_range_end: usize, write_idx: &mut usize| -> Result<()> {
-            let range_length = eq_range_end + 1 - eq_range_start;
-
-            // first element in range: always use value as-is (not delta encoded)
+            // first element in range: always use value as-is, because the range we're handling
+            // started begins a new sequent of delta encoding
             materialized_parent_ids[*write_idx] = materialized_parent_ids[eq_range_start];
             *write_idx += 1;
 
-            // only process multi-element ranges
-            if range_length > 1 {
+            // only continue on to remove delta encodings if the range contains multiple rows
+            if eq_range_end - eq_range_start > 0 {
                 // determine value equality array based on attribute type
                 let value_type = AttributeValueType::try_from(type_values[eq_range_start])
                     .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
@@ -384,7 +384,7 @@ where
                 };
 
                 if let Some(values_eq) = values_eq {
-                    // Calculate offset adjustment for sorted types - recall that the values_eq
+                    // calculate offset adjustment for sorted types - recall that the values_eq
                     // array may contain value for the full dataset, unless the dataset was sorted
                     // by type, in which case it only values for rows containing values of this
                     // type, in which case we need to offset from curr_range_start when indexing it
@@ -464,7 +464,7 @@ where
     // process all ranges having equivalent type/key
     for delta_range_end in BitIndexIterator::new(range_ends_val_buffer, 0, last_idx) {
         process_range(delta_range_start, delta_range_end, &mut write_idx)?;
-        delta_range_start = delta_range_end + 1;
+        delta_range_start = delta_range_end + 1; // skip 1 non-delta encoded value
     }
 
     // process the last range, if not already handled
