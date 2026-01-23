@@ -104,9 +104,20 @@ where
     let curr_values = array.values();
     let mut new_values = Vec::from(curr_values.clone());
     let mut acc: T::Native = T::Native::default(); // zero
-    for delta in new_values.iter_mut().take(array.len()) {
-        acc += *delta;
-        *delta = acc;
+
+    if let Some(nulls) = array.nulls() {
+        for (start, end) in BitSliceIterator::new(nulls.buffer().as_slice(), 0, array.len()) {
+            for delta in new_values.iter_mut().take(end).skip(start) {
+                acc += *delta;
+                *delta = acc;
+            }
+        }
+    } else {
+        // no nulls, just accumulate every value
+        for delta in new_values.iter_mut().take(array.len()) {
+            acc += *delta;
+            *delta = acc;
+        }
     }
 
     PrimitiveArray::<T>::new(ScalarBuffer::from(new_values), array.nulls().cloned())
@@ -2688,6 +2699,38 @@ mod test {
             .unwrap();
 
         let expected = UInt16Array::from(vec![Some(1), Some(1), None, Some(1), Some(1), None]);
+        assert_eq!(transformed_column, &expected);
+    }
+
+    #[test]
+    fn test_remove_delta_encoding_with_nonzero_nulls() {
+        // test to cover an edge case where the values buffer contains non-zero values in the
+        // null positions. This is valid arrow array, albeit unusual, and we'd get an error
+        // removing delta encoding if we didn't consider the validitity buffer
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test",
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::new(
+                ScalarBuffer::from(vec![1, 1, 1, 1, 1, 1]),
+                Some(NullBuffer::from(vec![true, true, false, true, true, false])),
+            ))],
+        )
+        .unwrap();
+
+        let result = remove_delta_encoding::<UInt16Type>(&record_batch, "test").unwrap();
+
+        let transformed_column = result
+            .column_by_name("test")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+
+        let expected = UInt16Array::from(vec![Some(1), Some(2), None, Some(3), Some(4), None]);
         assert_eq!(transformed_column, &expected);
     }
 
