@@ -357,85 +357,84 @@ where
     // note the passed range is the range in the "eq bitmask" which was used to determine where
     // type/key have equivalent value equal to the next row. this means that from the perspective
     // of indexing the record batch itself, the range_end is actually an inclusive range end.
-    let mut process_range =
-        |eq_range_start: usize, eq_range_end: usize| -> Result<()> {
-            // first element in range is already correct (not delta encoded) because presumably the
-            // key/type columns were not equal to what is in this range.
+    let mut process_range = |eq_range_start: usize, eq_range_end: usize| -> Result<()> {
+        // first element in range is already correct (not delta encoded) because presumably the
+        // key/type columns were not equal to what is in this range.
 
-            // only continue on to remove delta encodings if the range contains multiple rows
-            if eq_range_end - eq_range_start > 0 {
-                // determine value equality array based on attribute type
-                let value_type = AttributeValueType::try_from(type_values[eq_range_start])
-                    .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
+        // only continue on to remove delta encodings if the range contains multiple rows
+        if eq_range_end - eq_range_start > 0 {
+            // determine value equality array based on attribute type
+            let value_type = AttributeValueType::try_from(type_values[eq_range_start])
+                .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
 
-                // get the "eq bitmask" for the column containing the type of values for this range
-                let values_eq = match value_type {
-                    AttributeValueType::Str => val_str_eq.as_ref(),
-                    AttributeValueType::Int => val_int_eq.as_ref(),
-                    AttributeValueType::Bool => val_bool_eq.as_ref(),
-                    AttributeValueType::Bytes => val_bytes_eq.as_ref(),
-                    AttributeValueType::Double => val_double_eq.as_ref(),
-                    // Map/Slice/Empty are never delta-encoded
-                    AttributeValueType::Map
-                    | AttributeValueType::Slice
-                    | AttributeValueType::Empty => None,
-                };
+            // get the "eq bitmask" for the column containing the type of values for this range
+            let values_eq = match value_type {
+                AttributeValueType::Str => val_str_eq.as_ref(),
+                AttributeValueType::Int => val_int_eq.as_ref(),
+                AttributeValueType::Bool => val_bool_eq.as_ref(),
+                AttributeValueType::Bytes => val_bytes_eq.as_ref(),
+                AttributeValueType::Double => val_double_eq.as_ref(),
+                // Map/Slice/Empty are never delta-encoded
+                AttributeValueType::Map | AttributeValueType::Slice | AttributeValueType::Empty => {
+                    None
+                }
+            };
 
-                if let Some(values_eq) = values_eq {
-                    // calculate offset adjustment for sorted types - recall that the values_eq
-                    // array may contain value for the full dataset, unless the dataset was sorted
-                    // by type, in which case it only values for rows containing values of this
-                    // type, in which case we need to offset from curr_range_start when indexing it
-                    let type_offset = get_type_offset(value_type as u8);
+            if let Some(values_eq) = values_eq {
+                // calculate offset adjustment for sorted types - recall that the values_eq
+                // array may contain value for the full dataset, unless the dataset was sorted
+                // by type, in which case it only values for rows containing values of this
+                // type, in which case we need to offset from curr_range_start when indexing it
+                let type_offset = get_type_offset(value_type as u8);
 
-                    // Process remaining elements in range
-                    let mut curr_parent_id = materialized_parent_ids[eq_range_start];
-                    let mut batch_idx = eq_range_start + 1;
+                // Process remaining elements in range
+                let mut curr_parent_id = materialized_parent_ids[eq_range_start];
+                let mut batch_idx = eq_range_start + 1;
 
-                    // below we will iterate over ranges of delta encoded IDs (e.g. sub-ranges
-                    // within the range which for which this closure has been invoked, where
-                    // subsequent values are equal and not null). We identify these ranges as runs
-                    // of `true` values in the values_eq buffer
+                // below we will iterate over ranges of delta encoded IDs (e.g. sub-ranges
+                // within the range which for which this closure has been invoked, where
+                // subsequent values are equal and not null). We identify these ranges as runs
+                // of `true` values in the values_eq buffer
 
-                    let delta_range_iter = BitSliceIterator::new(
-                        values_eq.as_slice(),
-                        eq_range_start - type_offset,
-                        eq_range_end - eq_range_start,
-                    );
-                    for delta_range in delta_range_iter {
-                        // convert back to batch coordinates ...
-                        // delta_range is relative to the offset (curr_range_start - type_offset)
-                        // values_eq_bits[i] means element[i] == element[i+1], so element[i+1] is delta-encoded
-                        // so: batch_idx = delta_range.0 + (curr_range_start - type_offset) + 1 + type_offset
-                        // simplifies to: delta_range.0 + curr_range_start + 1
-                        let batch_delta_start = delta_range.0 + eq_range_start + 1;
-                        let batch_delta_end = delta_range.1 + eq_range_start + 1;
+                let delta_range_iter = BitSliceIterator::new(
+                    values_eq.as_slice(),
+                    eq_range_start - type_offset,
+                    eq_range_end - eq_range_start,
+                );
+                for delta_range in delta_range_iter {
+                    // convert back to batch coordinates ...
+                    // delta_range is relative to the offset (curr_range_start - type_offset)
+                    // values_eq_bits[i] means element[i] == element[i+1], so element[i+1] is delta-encoded
+                    // so: batch_idx = delta_range.0 + (curr_range_start - type_offset) + 1 + type_offset
+                    // simplifies to: delta_range.0 + curr_range_start + 1
+                    let batch_delta_start = delta_range.0 + eq_range_start + 1;
+                    let batch_delta_end = delta_range.1 + eq_range_start + 1;
 
-                        // update curr_parent_id for any non-delta values we're skipping ...
-                        // just jump to the end of the last non-delta encoded range and read the last value
-                        if batch_idx < batch_delta_start {
-                            curr_parent_id = materialized_parent_ids[batch_delta_start - 1];
-                            batch_idx = batch_delta_start;
-                        }
-
-                        // process delta-encoded range
-                        while batch_idx < batch_delta_end {
-                            curr_parent_id += materialized_parent_ids[batch_idx];
-                            materialized_parent_ids[batch_idx] = curr_parent_id;
-                            batch_idx += 1;
-                        }
+                    // update curr_parent_id for any non-delta values we're skipping ...
+                    // just jump to the end of the last non-delta encoded range and read the last value
+                    if batch_idx < batch_delta_start {
+                        curr_parent_id = materialized_parent_ids[batch_delta_start - 1];
+                        batch_idx = batch_delta_start;
                     }
 
-                    // handle any remaining non-delta values after last delta range ...
-                    // just read the last value if there are any remaining
-                    if batch_idx <= eq_range_end {
-                        curr_parent_id = materialized_parent_ids[eq_range_end];
+                    // process delta-encoded range
+                    while batch_idx < batch_delta_end {
+                        curr_parent_id += materialized_parent_ids[batch_idx];
+                        materialized_parent_ids[batch_idx] = curr_parent_id;
+                        batch_idx += 1;
                     }
                 }
-            }
 
-            Ok(())
-        };
+                // handle any remaining non-delta values after last delta range ...
+                // just read the last value if there are any remaining
+                if batch_idx <= eq_range_end {
+                    curr_parent_id = materialized_parent_ids[eq_range_end];
+                }
+            }
+        }
+
+        Ok(())
+    };
 
     // below we're going to create an iterator of indices where delta encoding may break due to
     // a change in type/key. To do this, we and the "eq bitmask"s for key and type, then invert it.
