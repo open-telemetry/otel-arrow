@@ -257,7 +257,7 @@ you're more than welcome to participate!
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
 
 For more information about the maintainer role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
 
 ### Approvers
 
