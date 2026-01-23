@@ -79,7 +79,7 @@ name = "otlp_bytes"
 harness = false
 
 [[bench]]
-name = "materialize_parent_id"
+name = "transport_optimize"
 harness = false
 
 [[bench]]
