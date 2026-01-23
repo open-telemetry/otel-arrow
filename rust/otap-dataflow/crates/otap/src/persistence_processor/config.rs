@@ -103,7 +103,10 @@ pub struct PersistenceProcessorConfig {
     /// Data becomes visible to downstream only after segment finalization.
     /// Lower values reduce latency but increase I/O overhead.
     /// Default: 5 seconds.
-    #[serde(with = "humantime_serde", default = "default_max_segment_open_duration")]
+    #[serde(
+        with = "humantime_serde",
+        default = "default_max_segment_open_duration"
+    )]
     pub max_segment_open_duration: Duration,
 }
 
