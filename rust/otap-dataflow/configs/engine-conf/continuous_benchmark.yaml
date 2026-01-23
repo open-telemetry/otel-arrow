@@ -17,16 +17,14 @@ pipeline_groups:
   continuous_benchmark:
     pipelines:
       # ======================================================================
-      # Pipeline generating traffic
+      # Pipelines generating traffic
       # ======================================================================
+      # First group of traffic generators based a static pre-generated dataset
       traffic_gen1:
         quota:
           core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 10
-                end: 20
+            type: core_count
+            count: 15
 
         nodes:
           receiver:
@@ -38,18 +36,21 @@ pipeline_groups:
                   - exporter
                 dispatch_strategy: round_robin
             config:
+              data_source: static
+              generation_strategy: pre_generated
               traffic_config:
                 signals_per_second: 100000
                 max_signal_count: null
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 30
-              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
             kind: exporter
             plugin_urn: "urn:otel:otlp:exporter"
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
+      # Second group of traffic generators based on on-the-fly data generation
+      # derived from semantic conventions
       traffic_gen2:
         quota:
           core_allocation:
@@ -92,7 +93,7 @@ pipeline_groups:
             set:
               - type: CoreRange
                 start: 0
-                end: 0
+                end: 1
         nodes:
           otlp_recv1:
             kind: receiver
