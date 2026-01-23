@@ -17,7 +17,7 @@
 
 #![cfg(feature = "persistence")]
 
-use otap_df_config::observed_state::ObservedStateSettings;
+use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
@@ -83,7 +83,7 @@ fn test_persistence_processor_data_flow() {
         core_id: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
-    let event_reporter = observed_state_store.reporter();
+    let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
     // Shutdown after allowing time for data to flow
     let shutdown_handle = std::thread::spawn(move || {
@@ -185,7 +185,7 @@ fn test_persistence_processor_recovery() {
             core_id: 0,
         };
         let metrics_reporter = telemetry_system.reporter();
-        let event_reporter = observed_state_store.reporter();
+        let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
         // Quick shutdown - data may not have been fully forwarded
         let shutdown_handle = std::thread::spawn(move || {
@@ -268,7 +268,7 @@ fn test_persistence_processor_recovery() {
             core_id: 0,
         };
         let metrics_reporter = telemetry_system.reporter();
-        let event_reporter = observed_state_store.reporter();
+        let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
         // Allow time for recovery and forwarding
         let shutdown_handle = std::thread::spawn(move || {

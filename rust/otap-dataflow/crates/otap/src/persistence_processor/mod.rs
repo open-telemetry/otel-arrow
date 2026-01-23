@@ -51,6 +51,7 @@ pub use config::{OtlpHandling, PersistenceProcessorConfig, SizeCapPolicy};
 
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::SignalType;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
@@ -64,7 +65,7 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
@@ -79,9 +80,16 @@ const SUBSCRIBER_ID: &str = "persistence-processor";
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Metrics for the persistence processor.
-#[metric_set(name = "persistence.processor.metrics")]
+///
+/// Follows RFC-aligned telemetry conventions:
+/// - Metric set name follows `otelcol.<entity>` pattern
+/// - Tracks both bundles and individual items (spans, data points, log records)
+/// - Per-signal breakdown for consumed and produced items
+#[metric_set(name = "otelcol.node.persistence")]
 #[derive(Debug, Default, Clone)]
 pub struct PersistenceProcessorMetrics {
+    // ─── Bundle-level metrics ───────────────────────────────────────────────
+
     /// Number of bundles ingested to Quiver.
     #[metric(unit = "{bundle}")]
     pub bundles_ingested: Counter<u64>,
@@ -98,6 +106,36 @@ pub struct PersistenceProcessorMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_nacked: Counter<u64>,
 
+    // ─── Consumed item metrics (per signal type) ────────────────────────────
+
+    /// Number of log records consumed (ingested to WAL).
+    #[metric(unit = "{item}")]
+    pub consumed_items_logs: Counter<u64>,
+
+    /// Number of metric data points consumed (ingested to WAL).
+    #[metric(unit = "{item}")]
+    pub consumed_items_metrics: Counter<u64>,
+
+    /// Number of trace spans consumed (ingested to WAL).
+    #[metric(unit = "{item}")]
+    pub consumed_items_traces: Counter<u64>,
+
+    // ─── Produced item metrics (per signal type) ────────────────────────────
+
+    /// Number of log records produced (sent downstream).
+    #[metric(unit = "{item}")]
+    pub produced_items_logs: Counter<u64>,
+
+    /// Number of metric data points produced (sent downstream).
+    #[metric(unit = "{item}")]
+    pub produced_items_metrics: Counter<u64>,
+
+    /// Number of trace spans produced (sent downstream).
+    #[metric(unit = "{item}")]
+    pub produced_items_traces: Counter<u64>,
+
+    // ─── Error and backpressure metrics ─────────────────────────────────────
+
     /// Number of ingest errors.
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
@@ -105,6 +143,26 @@ pub struct PersistenceProcessorMetrics {
     /// Number of read errors.
     #[metric(unit = "{error}")]
     pub read_errors: Counter<u64>,
+
+    // ─── Quiver storage metrics (updated on telemetry collection) ───────────
+
+    /// Current bytes used by Quiver storage (WAL + segments).
+    #[metric(unit = "By")]
+    pub storage_bytes_used: Gauge<u64>,
+
+    /// Configured storage capacity cap.
+    #[metric(unit = "By")]
+    pub storage_bytes_cap: Gauge<u64>,
+
+    /// Total segments force-dropped due to DropOldest retention policy.
+    /// Non-zero values indicate data loss.
+    #[metric(unit = "{segment}")]
+    pub dropped_segments: Gauge<u64>,
+
+    /// Total bundles lost due to force-dropped segments (DropOldest policy).
+    /// Non-zero values indicate data loss.
+    #[metric(unit = "{bundle}")]
+    pub dropped_bundles: Gauge<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -358,6 +416,10 @@ impl PersistenceProcessor {
 
         let (context, payload) = data.into_parts();
 
+        // Capture signal type and item count before consuming the payload
+        let signal_type = payload.signal_type();
+        let num_items = payload.num_items() as u64;
+
         // Get the engine reference
         let (engine, _) = self.engine()?;
 
@@ -391,13 +453,21 @@ impl PersistenceProcessor {
         match ingest_result {
             Ok(()) => {
                 self.metrics.bundles_ingested.add(1);
+
+                // Track consumed items by signal type
+                match signal_type {
+                    SignalType::Logs => self.metrics.consumed_items_logs.add(num_items),
+                    SignalType::Metrics => self.metrics.consumed_items_metrics.add(num_items),
+                    SignalType::Traces => self.metrics.consumed_items_traces.add(num_items),
+                }
+
                 debug!("persisted bundle to WAL");
 
                 // ACK upstream after successful WAL write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
                 let ack_pdata = OtapPdata::new(
                     context,
-                    OtapPayload::empty(otap_df_config::SignalType::Logs),
+                    OtapPayload::empty(SignalType::Logs),
                 );
                 effect_handler.notify_ack(AckMsg::new(ack_pdata)).await?;
                 Ok(())
@@ -408,7 +478,7 @@ impl PersistenceProcessor {
 
                 let nack_pdata = OtapPdata::new(
                     context,
-                    OtapPayload::empty(otap_df_config::SignalType::Logs),
+                    OtapPayload::empty(SignalType::Logs),
                 );
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -549,6 +619,10 @@ impl PersistenceProcessor {
         // Convert the reconstructed bundle to OtapPdata
         match convert_bundle_to_pdata(handle.data()) {
             Ok(mut pdata) => {
+                // Capture signal type and item count for metrics before moving pdata
+                let signal_type = pdata.signal_type();
+                let num_items = pdata.num_items() as u64;
+
                 // Track pending bundle
                 let _ = self.pending_bundles.insert(key, PendingBundle::default());
 
@@ -564,6 +638,16 @@ impl PersistenceProcessor {
                 match effect_handler.try_send_message(pdata) {
                     Ok(()) => {
                         self.metrics.bundles_sent.add(1);
+
+                        // Track produced items by signal type
+                        match signal_type {
+                            SignalType::Logs => self.metrics.produced_items_logs.add(num_items),
+                            SignalType::Metrics => {
+                                self.metrics.produced_items_metrics.add(num_items)
+                            }
+                            SignalType::Traces => self.metrics.produced_items_traces.add(num_items),
+                        }
+
                         debug!(
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
@@ -578,7 +662,9 @@ impl PersistenceProcessor {
                     Err(otap_df_engine::error::TypedError::ChannelSendError(
                         otap_df_channel::error::SendError::Full(_pdata),
                     )) => {
-                        // Channel is full - defer the bundle for retry on next tick
+                        // Channel is full - defer the bundle for retry on next tick.
+                        // This is normal operation for a buffering processor - data is safe
+                        // in Quiver and will be retried. No backpressure is propagated upstream.
                         let _ = self.pending_bundles.remove(&key);
                         let _ = handle.defer();
                         ProcessBundleResult::Backpressure
@@ -815,11 +901,34 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
                 }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                } => metrics_reporter
-                    .report(&mut self.metrics)
-                    .map_err(|e| Error::InternalError {
-                        message: e.to_string(),
-                    }),
+                } => {
+                    // Collect Quiver storage metrics (separate scope to avoid borrow conflicts)
+                    let quiver_metrics = if let Ok((engine, _)) = self.engine() {
+                        let budget = engine.budget();
+                        Some((
+                            budget.used(),
+                            budget.cap(),
+                            engine.force_dropped_segments(),
+                            engine.force_dropped_bundles(),
+                        ))
+                    } else {
+                        None
+                    };
+
+                    // Update metrics from collected values
+                    if let Some((used, cap, dropped_segs, dropped_buns)) = quiver_metrics {
+                        self.metrics.storage_bytes_used.set(used);
+                        self.metrics.storage_bytes_cap.set(cap);
+                        self.metrics.dropped_segments.set(dropped_segs);
+                        self.metrics.dropped_bundles.set(dropped_buns);
+                    }
+
+                    metrics_reporter
+                        .report(&mut self.metrics)
+                        .map_err(|e| Error::InternalError {
+                            message: e.to_string(),
+                        })
+                }
                 NodeControlMsg::Config { config } => {
                     debug!(config = ?config, "received config update (ignored)");
                     Ok(())
