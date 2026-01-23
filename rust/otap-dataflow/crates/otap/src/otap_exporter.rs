@@ -207,6 +207,16 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                        // TODO: There is a race condition somewhere,
+                        // causing this shutdown message to be never received.
+                        // Noticed when load testing
+                        // or more easily, when exporter is hitting errors
+                        // like endpoint not available. (the backoff sleep
+                        // might be causing it?)
+                        otel_info!(
+                            "exporter.shutdown",
+                            message = "OTAP Exporter shutting down"
+                        );
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -354,10 +364,15 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             shutdown_rx.clone()
                         ).await;
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         // there was an error initiating the streaming request
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
-                        otel_error!("failed request, waiting", backoff = ?failed_request_backoff);
+                        otel_error!(
+                            "exporter.request_failed",
+                            message = "Failed to connect, retrying after backoff",
+                            error = %e,
+                            backoff = ?failed_request_backoff
+                        );
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
