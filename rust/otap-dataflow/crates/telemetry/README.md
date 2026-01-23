@@ -83,10 +83,10 @@ logging.
 
 There are four aspects that can be configured:
 
-- `engine`: configure logging for main engine threads
-- `global`: configure logging for the global `tracing` subscriber
-- `admin`: configure logging for the engine administrative threads
-- `internal`: configure logging for components involved in internal logging.
+- `engine`: logging for pipeline threads that run dataflow processing (receivers, processors, exporters)
+- `global`: fallback logging for code outside engine/admin contexts (e.g., libraries, startup code)
+- `admin`: logging for administrative threads (metrics aggregation, observed state store, controller tasks)
+- `internal`: logging for the internal telemetry pipeline itself; restricted to `console_direct` or `noop` to avoid feedback loops
 
 These modes are configured through the `service::telemetry::logs::providers`
 field, with the following choices:
