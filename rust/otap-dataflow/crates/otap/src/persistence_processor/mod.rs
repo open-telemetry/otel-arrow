@@ -109,29 +109,29 @@ pub struct PersistenceProcessorMetrics {
     // ─── Consumed item metrics (per signal type) ────────────────────────────
 
     /// Number of log records consumed (ingested to WAL).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{log}")]
     pub consumed_items_logs: Counter<u64>,
 
     /// Number of metric data points consumed (ingested to WAL).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{metric}")]
     pub consumed_items_metrics: Counter<u64>,
 
     /// Number of trace spans consumed (ingested to WAL).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{span}")]
     pub consumed_items_traces: Counter<u64>,
 
     // ─── Produced item metrics (per signal type) ────────────────────────────
 
     /// Number of log records produced (sent downstream).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{log}")]
     pub produced_items_logs: Counter<u64>,
 
     /// Number of metric data points produced (sent downstream).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{metric}")]
     pub produced_items_metrics: Counter<u64>,
 
     /// Number of trace spans produced (sent downstream).
-    #[metric(unit = "{item}")]
+    #[metric(unit = "{span}")]
     pub produced_items_traces: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
