@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+use super::AZURE_MONITOR_EXPORTER_URN;
 use super::auth::Auth;
 use super::auth_header::AuthHeader;
 use super::config::ApiConfig;
@@ -105,10 +106,7 @@ fn default_heartbeat_os_major_version() -> String {
 
 #[inline]
 fn default_heartbeat_os_minor_version() -> String {
-    std::env::var("EXPORTER_ID").unwrap_or_else(|_| {
-        let (_, minor) = parse_os_version();
-        minor
-    })
+    AZURE_MONITOR_EXPORTER_URN.to_string()
 }
 
 impl Heartbeat {
@@ -117,7 +115,7 @@ impl Heartbeat {
         let http_client = Client::builder()
             .http1_only()
             .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST) // e.g., 32/4 = 8 connections per pool
+            .pool_max_idle_per_host(MAX_IDLE_CONNECTIONS_PER_HOST)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
             .build()

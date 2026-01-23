@@ -7,6 +7,8 @@ use azure_core::time::OffsetDateTime;
 use reqwest::header::HeaderValue;
 use std::time::{Duration, Instant};
 
+const TOKEN_REFRESH_BUFFER_SECS: u64 = 300; // 5 minutes
+
 /// Pre-formatted Authorization header with token refresh management.
 /// Provides fast access to the header value while handling token expiration.
 #[derive(Clone, Debug)]
@@ -48,7 +50,8 @@ impl AuthHeader {
         let valid_seconds = (token.expires_on - OffsetDateTime::now_utc()).whole_seconds();
 
         self.token_valid_until = Instant::now() + Duration::from_secs(valid_seconds.max(0) as u64);
-        self.token_refresh_after = self.token_valid_until - Duration::from_secs(300);
+        self.token_refresh_after =
+            self.token_valid_until - Duration::from_secs(TOKEN_REFRESH_BUFFER_SECS);
 
         Ok(())
     }

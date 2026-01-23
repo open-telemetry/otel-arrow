@@ -557,7 +557,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     let stats_start = std::time::Instant::now();
 
                     // Get memory stats (this is the slow part - file I/O)
-                    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+                    let status = tokio::fs::read_to_string("/proc/self/status").await.unwrap_or_default();
                     let get_kb = |name: &str| -> u64 {
                         status.lines()
                             .find(|line| line.starts_with(name))
@@ -565,7 +565,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             .unwrap_or(0)
                     };
 
-                    let smaps = std::fs::read_to_string("/proc/self/smaps_rollup").unwrap_or_default();
+                    let smaps = tokio::fs::read_to_string("/proc/self/smaps_rollup").await.unwrap_or_default();
                     let get_smaps_kb = |name: &str| -> u64 {
                         smaps.lines()
                             .find(|line| line.starts_with(name))
