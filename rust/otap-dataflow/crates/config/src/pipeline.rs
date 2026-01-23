@@ -1666,6 +1666,15 @@ mod tests {
         // Should have the internal nodes as its main nodes
         assert_eq!(internal.nodes.len(), 2);
 
+        assert_eq!(
+            internal.nodes["itr"].plugin_urn.as_ref(),
+            "urn:otel:otap:internal_telemetry:receiver"
+        );
+        assert_eq!(
+            internal.nodes["console"].plugin_urn.as_ref(),
+            "urn:otel:console:exporter"
+        );
+
         // The extracted config's internal should be empty
         assert!(internal.internal.is_empty());
 

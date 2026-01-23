@@ -111,14 +111,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
-        let logging_evt_reporter =
-            obs_state_store.reporter(engine_settings.observed_state.logging_events);
+        let console_async_reporter = telemetry_config
+            .logs
+            .providers
+            .uses_console_async_provider()
+            .then(obs_state_store.reporter(engine_settings.observed_state.logging_events));
 
-        // Create the telemetry system, pass the observed state store
-        // as the admin reporter for console_async support.
-        // The ITS logs receiver is returned if any provider uses ITS mode.
+        // Create the telemetry system. The console_async_reporter is passed when any
+        // providers use ConsoleAsync. The its_logs_receiver is passed when any
+        // providers use the ITS mode.
         let (telemetry_system, its_logs_receiver) =
-            InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
+            InternalTelemetrySystem::new(telemetry_config, console_async_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
@@ -136,8 +139,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        // Spawn internal telemetry pipeline thread, if configured.
-        let _internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
+        let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             &pipeline_groups,
             its_logs_receiver,
             &telemetry_system,
@@ -147,6 +149,21 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             &metrics_reporter,
             internal_tracing_setup,
         )?;
+
+        // TODO: This should be validated somewhere, that internal node are defined when
+        // its is requested. Possibly we could fill in a default.
+        match (
+            internal_pipeline_handle.is_some(),
+            telemetry_config.logs.providers.uses_its_provider(),
+        ) {
+            (false, true) => {
+                otel_warn!("internal pipeline nodes not defined yet ITS provider requested")
+            }
+            (true, false) => {
+                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+            }
+            _ => {}
+        };
 
         // Initialize the global subscriber AFTER the internal pipeline has signaled
         // successful startup. This ensures the channel receiver is being consumed
@@ -474,9 +491,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ///
     /// Returns the thread handle if an internal pipeline was spawned
     /// and waits for it to start, or None.
-    ///
-    /// TODO: This uses the first internal pipeline it finds, assumes only one pipeline
-    /// group defines the internal pipeline.
     #[allow(clippy::too_many_arguments)]
     fn spawn_internal_pipeline_if_configured(
         pipeline_groups: &std::collections::HashMap<
@@ -491,7 +505,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: &MetricsReporter,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
-        // Find the first pipeline with an internal config
+        // TODO: This uses the first internal pipeline it finds.  This
+        // requires a permanent solution, the current approach of
+        // PipelineConfig containing an `internal` nodes section
+        // is incorrect.
         let internal_config: Option<PipelineConfig> = pipeline_groups
             .iter()
             .flat_map(|(_, group)| group.pipelines.iter())
@@ -499,7 +516,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         let internal_config = match internal_config {
             Some(config) => config,
-            None => return Ok(None), // No internal pipeline configured
+            None => {
+                return Ok(None);
+            }
         };
 
         // We need the ITS logs receiver to create settings for the ITR
@@ -527,12 +546,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             pipeline_id: internal_pipeline_id.clone(),
             core_id: 0,
         };
-        let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
-            internal_group_id,
-            internal_pipeline_id,
-            0,
-            0,
-        );
+        let internal_pipeline_ctx =
+            controller_ctx.pipeline_context_with(internal_group_id, internal_pipeline_id, 0, 0);
 
         // Create control message channel for internal pipeline
         let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
@@ -681,7 +696,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         internal_telemetry: Option<InternalTelemetrySettings>,
         startup_tx: std_mpsc::Sender<Result<(), Error>>,
     ) -> Result<Vec<()>, Error> {
-        // No core pinning for internal pipeline - it's lightweight
+        // TODO: This has no core pinning or NUMA awareness. The internal telemetry
+        // system including the current metrics code path should support per-NUMA-region
+        // configurations.
 
         // Run the pipeline with thread-local tracing subscriber active.
         tracing_setup.with_subscriber(|| {
