@@ -94,6 +94,7 @@ struct FanoutConfig {
 
 impl FanoutConfig {
     const fn default_timeout_interval() -> Duration {
+        // Default cadence for checking timeouts; conservative polling interval.
         Duration::from_millis(200)
     }
 
@@ -333,6 +334,8 @@ impl FanoutProcessor {
         let mut endpoints = Vec::with_capacity(self.config.destinations.len());
         let mut queue = SmallVec::<[usize; 4]>::new();
         let interests = Interests::ACKS_OR_NACKS | Interests::RETURN_DATA;
+        // Deadlines are initialized here and reset at actual dispatch time; a future tightening
+        // could defer setting timeout_at until send if needed.
         let now = now();
 
         for (idx, dest) in self.config.destinations.iter().enumerate() {
@@ -413,9 +416,7 @@ impl FanoutProcessor {
 
         for idx in to_send {
             if let Some(payload) = inflight.endpoints[idx].payload.take() {
-                inflight.endpoints[idx].timeout_at = destinations[idx]
-                    .timeout
-                    .map(|d| now() + d);
+                inflight.endpoints[idx].timeout_at = destinations[idx].timeout.map(|d| now() + d);
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
                     .await?;
@@ -460,9 +461,8 @@ impl FanoutProcessor {
                 && self.config.destinations[*idx].fallback_for.is_some()
         }) {
             inflight.endpoints[fb_idx].status = DestStatus::InFlight;
-            inflight.endpoints[fb_idx].timeout_at = self.config.destinations[fb_idx]
-                .timeout
-                .map(|d| now() + d);
+            inflight.endpoints[fb_idx].timeout_at =
+                self.config.destinations[fb_idx].timeout.map(|d| now() + d);
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.clear();
                 inflight.next_send_queue.push(fb_idx);
@@ -503,12 +503,27 @@ impl FanoutProcessor {
                 }
             }
             for idx in timeouts {
+                let (await_ack, primary, origin) = {
+                    let inflight = match self.inflight.get(&req) {
+                        Some(inflight) => inflight,
+                        None => continue,
+                    };
+                    (
+                        inflight.await_ack,
+                        inflight.primary,
+                        inflight.endpoints[idx].origin,
+                    )
+                };
                 match self.handle_failure(
                     req,
                     idx,
                     format!("fanout: timeout on {}", self.config.destinations[idx].port),
                 ) {
                     Some(nack) => {
+                        // Ignore non-primary timeouts when awaiting primary only.
+                        if matches!(await_ack, AwaitAck::Primary) && origin != primary {
+                            continue;
+                        }
                         expired.push(nack);
                         let _ = self.inflight.remove(&req);
                     }
@@ -540,6 +555,9 @@ impl FanoutProcessor {
             let Some(inflight) = self.inflight.get_mut(&request_id) else {
                 return Ok(());
             };
+            if dest_index >= inflight.endpoints.len() {
+                return Ok(());
+            }
             inflight.endpoints[dest_index].status = DestStatus::Acked;
             let origin = inflight.endpoints[dest_index].origin;
 
@@ -587,8 +605,7 @@ impl FanoutProcessor {
         }
 
         if matches!(await_ack, AwaitAck::All) {
-            let payload = (*ack.accepted).clone();
-            let maybe_ack = self.mark_complete(request_id, origin, Some(payload));
+            let maybe_ack = self.mark_complete(request_id, origin, None);
             if let Some(final_payload) = maybe_ack {
                 self.metrics.acked.add(1);
                 let ackmsg = AckMsg {
@@ -613,6 +630,9 @@ impl FanoutProcessor {
             let Some(inflight) = self.inflight.get_mut(&request_id) else {
                 return Ok(());
             };
+            if dest_index >= inflight.endpoints.len() {
+                return Ok(());
+            }
             inflight.endpoints[dest_index].status = DestStatus::Nacked;
             (
                 inflight.endpoints[dest_index].origin,
@@ -1004,14 +1024,12 @@ mod tests {
     #[test]
     fn config_rejects_primary_marked_as_fallback() {
         let cfg = FanoutConfig {
-            destinations: vec![
-                DestinationConfig {
-                    port: "p1".into(),
-                    primary: true,
-                    timeout: None,
-                    fallback_for: Some("p0".into()),
-                },
-            ],
+            destinations: vec![DestinationConfig {
+                port: "p1".into(),
+                primary: true,
+                timeout: None,
+                fallback_for: Some("p0".into()),
+            }],
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
@@ -1345,6 +1363,63 @@ mod tests {
         assert_eq!(delivered_nack, 0);
     }
 
+    #[tokio::test]
+    async fn non_primary_timeout_does_not_abort_primary() {
+        let mut h = build_harness(
+            json!([
+                make_dest("prim", true, None, None),
+                make_dest("sec", false, None, Some("20ms"))
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+        let mut prim = drain(h.outputs.get_mut("prim").expect("prim"));
+        assert_eq!(prim.len(), 1);
+
+        // Let secondary timeout
+        sleep(Duration::from_millis(50)).await;
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::TimerTick {}),
+                &mut h.effect,
+            )
+            .await
+            .expect("timer tick ok");
+        // Drain any timeout nacks (should be none upstream in primary-only mode).
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(10), h.pipeline_rx.recv()).await
+        {
+            if matches!(msg, PipelineControlMsg::DeliverNack { .. }) {
+                panic!("unexpected nack upstream");
+            }
+        }
+
+        // Primary still acks successfully
+        let mut ack = AckMsg::new(prim.pop().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+        assert_eq!(delivered_nack, 0);
+    }
     #[tokio::test]
     async fn sequential_multiple_requests_inflight() {
         let mut h = build_harness(
