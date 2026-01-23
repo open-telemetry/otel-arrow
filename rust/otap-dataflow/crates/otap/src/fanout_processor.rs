@@ -1,11 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Fan-out processor that clones pdata to multiple downstream outputs with configurable
-//! ack/nack aggregation, optional sequential delivery, and fallback routing.
+//! Fan-out processor that clones pdata to multiple downstream outputs.
 //!
-//! The processor is intentionally conservative: it requires one destination per out port
-//! (MPSC) to avoid the existing MPMC load-balancing used for multi-destination edges.
+//! # Delivery Modes
+//! - `parallel`: Send to all destinations simultaneously
+//! - `sequential`: Send one-by-one, advance on ack
+//!
+//! # Ack Policies (`await_ack`)
+//! - `none`: Fire-and-forget, ack upstream immediately
+//! - `primary`: Wait for primary destination (or its fallback chain)
+//! - `all`: Wait for all origins; fail-fast on any nack
+//!
+//! # Fallback
+//! Destinations can declare `fallback_for: <port>`. On nack/timeout of the
+//! origin, the fallback is triggered. Chains (A→B→C) are supported.
+//!
+//! See `fanout_processor/README.md` for detailed diagrams and examples.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -486,10 +497,7 @@ impl FanoutProcessor {
         let refused = inflight
             .ack_payload
             .clone()
-            .or_else(|| inflight.endpoints[dest_index].payload.clone())
-            .ok_or_else(|| ())
-            .map_err(|_| ())
-            .ok()?;
+            .or_else(|| inflight.endpoints[dest_index].payload.clone())?;
         Some(NackMsg {
             reason,
             calldata: smallvec![],
@@ -672,11 +680,6 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if matches!(await_ack, AwaitAck::Primary) && origin == primary {
-            self.metrics.nacked.add(1);
-            let _ = self.inflight.remove(&request_id);
-            effect_handler.notify_nack(nack).await?;
-        }
         Ok(())
     }
 }
