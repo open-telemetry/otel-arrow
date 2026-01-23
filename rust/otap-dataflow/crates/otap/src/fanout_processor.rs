@@ -1,0 +1,1199 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+//! Fan-out processor that clones pdata to multiple downstream outputs with configurable
+//! ack/nack aggregation, optional sequential delivery, and fallback routing.
+//!
+//! The processor is intentionally conservative: it requires one destination per out port
+//! (MPSC) to avoid the existing MPMC load-balancing used for multi-destination edges.
+
+use async_trait::async_trait;
+use linkme::distributed_slice;
+use otap_df_config::error::Error as ConfigError;
+use otap_df_config::PortName;
+use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::config::ProcessorConfig;
+use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::{AckMsg, CallData, Context8u8, NackMsg, NodeControlMsg};
+use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::local::processor::{EffectHandler, Processor};
+use otap_df_engine::message::Message;
+use otap_df_engine::node::NodeId;
+use otap_df_engine::{ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension};
+use otap_df_engine::{ProcessorFactory, processor::ProcessorWrapper};
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use smallvec::{SmallVec, smallvec};
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+use std::sync::Arc;
+
+use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+
+/// URN for the fan-out processor.
+pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:fanout:processor";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DeliveryMode {
+    /// Send to all active destinations immediately.
+    Parallel,
+    /// Send to destinations sequentially, moving to the next after an Ack.
+    Sequential,
+}
+
+impl Default for DeliveryMode {
+    fn default() -> Self {
+        Self::Parallel
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum AwaitAck {
+    /// Wait for the primary (or its fallback) only.
+    Primary,
+    /// Wait for all active destinations (with replacement by fallback when configured).
+    All,
+    /// Do not wait; Ack upstream immediately after dispatch.
+    None,
+}
+
+impl Default for AwaitAck {
+    fn default() -> Self {
+        Self::Primary
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DestinationConfig {
+    /// Out port name used to reach the destination.
+    pub port: PortName,
+    /// Whether this destination is the primary one (first wins if not specified).
+    #[serde(default)]
+    pub primary: bool,
+    /// Timeout before treating the destination as failed.
+    #[serde(with = "humantime_serde", default)]
+    pub timeout: Option<Duration>,
+    /// Optional port name this destination will act as a fallback for.
+    #[serde(default)]
+    pub fallback_for: Option<PortName>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct FanoutConfig {
+    /// Delivery pattern.
+    #[serde(default)]
+    pub mode: DeliveryMode,
+    /// Ack policy.
+    #[serde(default)]
+    pub await_ack: AwaitAck,
+    /// Destinations. Each must map to a dedicated out port with exactly one downstream edge.
+    #[serde(default)]
+    pub destinations: Vec<DestinationConfig>,
+    /// Interval for timeout checks when any destination declares a timeout.
+    #[serde(with = "humantime_serde", default = "FanoutConfig::default_timeout_interval")]
+    pub timeout_check_interval: Duration,
+}
+
+impl FanoutConfig {
+    const fn default_timeout_interval() -> Duration {
+        Duration::from_millis(200)
+    }
+
+    fn validate(
+        mut self,
+        node_config: &NodeUserConfig,
+    ) -> Result<ValidatedConfig, ConfigError> {
+        if self.destinations.is_empty() {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "fanout: at least one destination is required".into(),
+            });
+        }
+
+        // Default primary to the first destination if none set.
+        if !self.destinations.iter().any(|d| d.primary) {
+            if let Some(first) = self.destinations.first_mut() {
+                first.primary = true;
+            }
+        }
+
+        let mut primary_seen = false;
+        let mut port_index = HashMap::new();
+        let mut origins: HashSet<PortName> = HashSet::new();
+
+        for (idx, dest) in self.destinations.iter().enumerate() {
+            let out_port_cfg = node_config
+                .out_ports
+                .get(&dest.port)
+                .ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: format!("fanout: unknown out_port `{}`", dest.port),
+                })?;
+
+            if out_port_cfg.destinations.len() != 1 {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!(
+                        "fanout: out_port `{}` must target exactly one destination to avoid load-balancing",
+                        dest.port
+                    ),
+                });
+            }
+
+            if !port_index.insert(dest.port.clone(), idx).is_none() {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: format!("fanout: duplicate destination port `{}`", dest.port),
+                });
+            }
+
+            if dest.primary {
+                if primary_seen {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: "fanout: only one primary destination is allowed".into(),
+                    });
+                }
+                primary_seen = true;
+            }
+
+            if let Some(fb) = &dest.fallback_for {
+                if !origins.contains(fb) && !self.destinations.iter().any(|d| &d.port == fb) {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "fanout: fallback_for `{}` does not reference a configured destination",
+                            fb
+                        ),
+                    });
+                }
+            } else {
+                let _ = origins.insert(dest.port.clone());
+            }
+        }
+
+        let primary_index = self
+            .destinations
+            .iter()
+            .position(|d| d.primary)
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: "fanout: missing primary destination".into(),
+            })?;
+
+        // Build mapping fallback -> origin index
+        let mut fallback_map = HashMap::new();
+        for (idx, dest) in self.destinations.iter().enumerate() {
+            if let Some(fb) = &dest.fallback_for {
+                let origin_idx = *port_index.get(fb).ok_or_else(|| ConfigError::InvalidUserConfig {
+                    error: format!("fanout: fallback_for `{}` not found", fb),
+                })?;
+                let _ = fallback_map.insert(idx, origin_idx);
+            }
+        }
+
+        Ok(ValidatedConfig {
+            mode: self.mode,
+            await_ack: self.await_ack,
+            destinations: self.destinations,
+            primary_index,
+            fallback_map,
+            timeout_check_interval: self.timeout_check_interval,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedConfig {
+    mode: DeliveryMode,
+    await_ack: AwaitAck,
+    destinations: Vec<DestinationConfig>,
+    primary_index: usize,
+    fallback_map: HashMap<usize, usize>,
+    timeout_check_interval: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestStatus {
+    PendingSend,
+    InFlight,
+    Acked,
+    Nacked,
+}
+
+#[derive(Debug)]
+struct EndpointState {
+    origin: usize,
+    status: DestStatus,
+    timeout_at: Option<Instant>,
+    payload: Option<OtapPdata>,
+}
+
+#[derive(Debug)]
+struct Inflight {
+    await_ack: AwaitAck,
+    mode: DeliveryMode,
+    primary: usize,
+    endpoints: Vec<EndpointState>,
+    completed_origins: HashSet<usize>,
+    required_origins: usize,
+    ack_payload: Option<OtapPdata>,
+    next_send_queue: SmallVec<[usize; 4]>,
+}
+
+#[metric_set(name = "fanout.processor.metrics")]
+#[derive(Debug, Default, Clone)]
+struct FanoutMetrics {
+    #[metric(unit = "{item}")]
+    pub sent: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub acked: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub nacked: Counter<u64>,
+    #[metric(unit = "{item}")]
+    pub timed_out: Counter<u64>,
+}
+
+/// Fan-out processor implementation.
+pub struct FanoutProcessor {
+    config: ValidatedConfig,
+    metrics: MetricSet<FanoutMetrics>,
+    inflight: HashMap<u64, Inflight>,
+    next_id: u64,
+    timer_started: bool,
+}
+
+fn build_calldata(request_id: u64, dest_index: usize) -> CallData {
+    smallvec![Context8u8::from(request_id), Context8u8::from(dest_index as u64)]
+}
+
+fn parse_calldata(calldata: &CallData) -> Option<(u64, usize)> {
+    if calldata.len() < 2 {
+        return None;
+    }
+    let req = u64::try_from(calldata[0]).ok()?;
+    let dest = usize::try_from(calldata[1]).ok()?;
+    Some((req, dest))
+}
+
+fn now() -> Instant {
+    Instant::now()
+}
+
+impl FanoutProcessor {
+    fn new(pipeline_ctx: PipelineContext, config: ValidatedConfig) -> Self {
+        let metrics = pipeline_ctx.register_metrics::<FanoutMetrics>();
+        Self {
+            config,
+            metrics,
+            inflight: HashMap::new(),
+            next_id: 1,
+            timer_started: false,
+        }
+    }
+
+    fn from_config(
+        pipeline_ctx: PipelineContext,
+        node_config: &NodeUserConfig,
+        user_config: &Value,
+    ) -> Result<Self, ConfigError> {
+        let cfg: FanoutConfig = serde_json::from_value(user_config.clone()).map_err(|e| {
+            ConfigError::InvalidUserConfig {
+                error: format!("fanout: invalid config: {e}"),
+            }
+        })?;
+        let validated = cfg.validate(node_config)?;
+        Ok(Self::new(pipeline_ctx, validated))
+    }
+
+    async fn ensure_timer(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        if self.timer_started || self.config.destinations.iter().all(|d| d.timeout.is_none()) {
+            return Ok(());
+        }
+        let interval = self.config.timeout_check_interval;
+        let _ = effect_handler.start_periodic_timer(interval).await?;
+        self.timer_started = true;
+        Ok(())
+    }
+
+    async fn register_inflight(
+        &mut self,
+        pdata: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<u64, Error> {
+        self.ensure_timer(effect_handler).await?;
+
+        let request_id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+
+        let mut endpoints = Vec::with_capacity(self.config.destinations.len());
+        let mut queue = SmallVec::<[usize; 4]>::new();
+        let interests = Interests::ACKS_OR_NACKS | Interests::RETURN_DATA;
+        let now = now();
+
+        for (idx, dest) in self.config.destinations.iter().enumerate() {
+            // Create a clone for this destination and subscribe with fanout calldata.
+            let mut dest_data = pdata.clone();
+            let calldata = build_calldata(request_id, idx);
+            effect_handler.subscribe_to(interests, calldata, &mut dest_data);
+
+            let timeout_at = dest.timeout.map(|d| now + d);
+            let origin = *self
+                .config
+                .fallback_map
+                .get(&idx)
+                .unwrap_or(&idx);
+
+            // Fallback destinations are only sent when triggered.
+            let is_fallback = dest.fallback_for.is_some();
+            let status = if is_fallback {
+                DestStatus::PendingSend
+            } else if matches!(self.config.mode, DeliveryMode::Sequential) && !queue.is_empty() {
+                DestStatus::PendingSend
+            } else {
+                queue.push(idx);
+                DestStatus::InFlight
+            };
+
+            endpoints.push(EndpointState {
+                origin,
+                status,
+                timeout_at,
+                payload: Some(dest_data),
+            });
+        }
+
+        let required_origins = self
+            .config
+            .destinations
+            .iter()
+            .filter(|d| d.fallback_for.is_none())
+            .count();
+        let primary_payload = endpoints
+            .get(self.config.primary_index)
+            .and_then(|ep| ep.payload.clone());
+
+        let _ = self.inflight.insert(
+            request_id,
+            Inflight {
+                await_ack: self.config.await_ack,
+                mode: self.config.mode,
+                primary: self.config.primary_index,
+                endpoints,
+                completed_origins: HashSet::new(),
+                required_origins,
+                ack_payload: primary_payload,
+                next_send_queue: queue,
+            },
+        );
+
+        Ok(request_id)
+    }
+
+    async fn dispatch_ready(
+        inflight: &mut Inflight,
+        destinations: &[DestinationConfig],
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let mut to_send = SmallVec::<[usize; 4]>::new();
+        match inflight.mode {
+            DeliveryMode::Parallel => {
+                for (idx, ep) in inflight.endpoints.iter().enumerate() {
+                    if matches!(ep.status, DestStatus::InFlight) {
+                        to_send.push(idx);
+                    }
+                }
+            }
+            DeliveryMode::Sequential => {
+                if let Some(idx) = inflight.next_send_queue.first().copied() {
+                    to_send.push(idx);
+                }
+            }
+        }
+
+        for idx in to_send {
+            if let Some(payload) = inflight.endpoints[idx].payload.take() {
+                effect_handler
+                    .send_message_to(destinations[idx].port.clone(), payload)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn mark_complete(
+        &mut self,
+        request_id: u64,
+        origin: usize,
+        ack_payload: Option<OtapPdata>,
+    ) -> Option<OtapPdata> {
+        if let Some(inflight) = self.inflight.get_mut(&request_id) {
+            if let Some(ref payload) = ack_payload {
+                inflight.ack_payload = Some(payload.clone());
+            }
+            let _ = inflight.completed_origins.insert(origin);
+            if inflight.completed_origins.len() >= inflight.required_origins {
+                let entry = self.inflight.remove(&request_id)?;
+                return entry.ack_payload.or(ack_payload);
+            }
+        }
+        None
+    }
+
+    fn handle_failure(
+        &mut self,
+        request_id: u64,
+        dest_index: usize,
+        reason: String,
+    ) -> Option<NackMsg<OtapPdata>> {
+        let inflight = self.inflight.get_mut(&request_id)?;
+        let origin = inflight.endpoints[dest_index].origin;
+        inflight.endpoints[dest_index].status = DestStatus::Nacked;
+
+        // Trigger fallback if configured.
+        if let Some((fb_idx, _)) = inflight
+            .endpoints
+            .iter()
+            .enumerate()
+            .find(|(idx, ep)| ep.origin == origin && ep.status == DestStatus::PendingSend && self.config.destinations[*idx].fallback_for.is_some())
+        {
+            inflight.endpoints[fb_idx].status = DestStatus::InFlight;
+            if matches!(inflight.mode, DeliveryMode::Sequential) {
+                inflight.next_send_queue.clear();
+                inflight.next_send_queue.push(fb_idx);
+            }
+            return None;
+        }
+
+        // No fallback, produce a nack.
+        let refused = inflight
+            .ack_payload
+            .clone()
+            .or_else(|| inflight.endpoints[dest_index].payload.clone())
+            .expect("fanout always retains a payload per request");
+        Some(NackMsg {
+            reason,
+            calldata: smallvec![],
+            refused: Box::new(refused),
+        })
+    }
+
+    async fn handle_timeout(
+        &mut self,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<Vec<NackMsg<OtapPdata>>, Error> {
+        let now = now();
+        let mut expired = Vec::new();
+        let mut dispatch_requests = HashSet::new();
+        let requests: Vec<u64> = self.inflight.keys().cloned().collect();
+        for req in requests {
+            let mut timeouts = Vec::new();
+            if let Some(inflight) = self.inflight.get_mut(&req) {
+                for (idx, ep) in inflight.endpoints.iter().enumerate() {
+                    if matches!(ep.status, DestStatus::InFlight)
+                        && ep.timeout_at.is_some()
+                        && ep.timeout_at.unwrap() <= now
+                    {
+                        timeouts.push(idx);
+                    }
+                }
+            }
+            for idx in timeouts {
+                match self.handle_failure(
+                    req,
+                    idx,
+                    format!("fanout: timeout on {}", self.config.destinations[idx].port),
+                ) {
+                    Some(nack) => {
+                        expired.push(nack);
+                        let _ = self.inflight.remove(&req);
+                    }
+                    None => {
+                        let _ = dispatch_requests.insert(req);
+                    }
+                }
+            }
+        }
+
+        for req in dispatch_requests {
+            if let Some(inflight) = self.inflight.get_mut(&req) {
+                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+            }
+        }
+
+        Ok(expired)
+    }
+
+    async fn process_ack(
+        &mut self,
+        ack: AckMsg<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Some((request_id, dest_index)) = parse_calldata(&ack.calldata) else {
+            return Ok(());
+        };
+        let (origin, await_ack, primary, mode) = {
+            let Some(inflight) = self.inflight.get_mut(&request_id) else {
+                return Ok(());
+            };
+            inflight.endpoints[dest_index].status = DestStatus::Acked;
+            let origin = inflight.endpoints[dest_index].origin;
+
+            if matches!(inflight.mode, DeliveryMode::Sequential) {
+                inflight.next_send_queue.retain(|idx| *idx != dest_index);
+                // Advance to the next pending send for this request.
+                if inflight.next_send_queue.is_empty() {
+                    if let Some(next_idx) = inflight
+                        .endpoints
+                        .iter()
+                        .enumerate()
+                        .find(|(_, ep)| ep.status == DestStatus::PendingSend && ep.payload.is_some())
+                        .map(|(idx, _)| idx)
+                    {
+                        inflight.endpoints[next_idx].status = DestStatus::InFlight;
+                        inflight.next_send_queue.push(next_idx);
+                    }
+                }
+            }
+            (
+                origin,
+                inflight.await_ack,
+                inflight.primary,
+                inflight.mode,
+            )
+        };
+
+        if matches!(await_ack, AwaitAck::None) {
+            return Ok(());
+        }
+
+        // Await primary: if this ack corresponds to primary origin (or its fallback) we can finish.
+        if matches!(await_ack, AwaitAck::Primary) && origin == primary {
+            let ack_to_return = AckMsg {
+                accepted: ack.accepted,
+                calldata: ack.calldata,
+            };
+            let _ = self.inflight.remove(&request_id);
+            self.metrics.acked.add(1);
+            effect_handler.notify_ack(ack_to_return).await?;
+            return Ok(());
+        }
+
+        if matches!(mode, DeliveryMode::Sequential) {
+            if let Some(inflight) = self.inflight.get_mut(&request_id) {
+                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+            }
+        }
+
+        if matches!(await_ack, AwaitAck::All) {
+            let payload = (*ack.accepted).clone();
+            let maybe_ack = self.mark_complete(request_id, origin, Some(payload));
+            if let Some(final_payload) = maybe_ack {
+                self.metrics.acked.add(1);
+                let ackmsg = AckMsg {
+                    accepted: Box::new(final_payload),
+                    calldata: ack.calldata,
+                };
+                effect_handler.notify_ack(ackmsg).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_nack(
+        &mut self,
+        nack: NackMsg<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Some((request_id, dest_index)) = parse_calldata(&nack.calldata) else {
+            return Ok(());
+        };
+        let (origin, await_ack, primary) = {
+            let Some(inflight) = self.inflight.get_mut(&request_id) else {
+                return Ok(());
+            };
+            inflight.endpoints[dest_index].status = DestStatus::Nacked;
+            (
+                inflight.endpoints[dest_index].origin,
+                inflight.await_ack,
+                inflight.primary,
+            )
+        };
+
+        if matches!(await_ack, AwaitAck::Primary) && origin != primary {
+            return Ok(());
+        }
+
+        if let Some(nackmsg) = self.handle_failure(request_id, dest_index, nack.reason.clone()) {
+            self.metrics.nacked.add(1);
+            let _ = self.inflight.remove(&request_id);
+            effect_handler.notify_nack(nackmsg).await?;
+            return Ok(());
+        }
+
+        // Fallback triggered: try dispatch immediately.
+        if let Some(inflight) = self.inflight.get_mut(&request_id) {
+            Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+        }
+
+        if matches!(await_ack, AwaitAck::All) {
+            if let Some(inflight) = self.inflight.get_mut(&request_id) {
+                let maybe_nack = if inflight.completed_origins.contains(&origin) {
+                    None
+                } else {
+                    Some(nack)
+                };
+                if let Some(nackmsg) = maybe_nack {
+                    self.metrics.nacked.add(1);
+                    let _ = self.inflight.remove(&request_id);
+                    effect_handler.notify_nack(nackmsg).await?;
+                }
+            }
+        } else if matches!(await_ack, AwaitAck::Primary) && origin == primary {
+            self.metrics.nacked.add(1);
+            let _ = self.inflight.remove(&request_id);
+            effect_handler.notify_nack(nack).await?;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl Processor<OtapPdata> for FanoutProcessor {
+    async fn process(
+        &mut self,
+        msg: Message<OtapPdata>,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        match msg {
+            Message::Control(NodeControlMsg::Ack(ack)) => self.process_ack(ack, effect_handler).await,
+            Message::Control(NodeControlMsg::Nack(nack)) => self.process_nack(nack, effect_handler).await,
+            Message::Control(NodeControlMsg::TimerTick { .. }) => {
+                for nack in self.handle_timeout(effect_handler).await? {
+                    self.metrics.timed_out.add(1);
+                    effect_handler.notify_nack(nack).await?;
+                }
+                Ok(())
+            }
+            Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                _ = metrics_reporter.report(&mut self.metrics);
+                Ok(())
+            }
+            // Shutdown and other control messages are ignored: we drop inflight state on drop,
+            // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
+            Message::Control(_) => Ok(()),
+            Message::PData(pdata) => {
+                // Fast-path for await_ack = None: Ack immediately after dispatch.
+                let await_ack_none = matches!(self.config.await_ack, AwaitAck::None);
+                let request_id = self.register_inflight(pdata.clone(), effect_handler).await?;
+                let inflight = self.inflight.get_mut(&request_id).expect("inflight just inserted");
+                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+                self.metrics.sent.add(1);
+
+                if await_ack_none {
+                    let pdata_for_ack = inflight
+                        .ack_payload
+                        .take()
+                        .unwrap_or(pdata);
+                    let _ = self.inflight.remove(&request_id);
+                    effect_handler.notify_ack(AckMsg::new(pdata_for_ack)).await?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Factory to create a fan-out processor.
+pub fn create_fanout_processor(
+    pipeline_ctx: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    let fanout = FanoutProcessor::from_config(pipeline_ctx.clone(), &node_config, &node_config.config)?;
+    Ok(ProcessorWrapper::local(
+        fanout,
+        node,
+        node_config,
+        processor_config,
+    ))
+}
+
+/// Register the fan-out processor as an OTAP processor factory.
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
+pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    name: FANOUT_PROCESSOR_URN,
+    create: |pipeline_ctx: PipelineContext,
+             node: NodeId,
+             node_config: Arc<NodeUserConfig>,
+             proc_cfg: &ProcessorConfig| {
+        create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
+            .map_err(Into::into)
+    },
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pdata::Context;
+    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+    use otap_df_config::SignalType;
+    use otap_df_engine::control::{
+        NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel,
+    };
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    use otap_df_engine::local::processor::EffectHandler;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
+    use otap_df_engine::testing::test_node;
+    use otap_df_telemetry::InternalTelemetrySystem;
+    use otap_df_pdata::{OtlpProtoBytes, OtapPayload};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    fn make_dest(
+        port: &str,
+        primary: bool,
+        fallback_for: Option<&str>,
+        timeout: Option<&str>,
+    ) -> Value {
+        let mut obj = json!({ "port": port, "primary": primary });
+        if let Some(fb) = fallback_for {
+            obj["fallback_for"] = json!(fb);
+        }
+        if let Some(to) = timeout {
+            obj["timeout"] = json!(to);
+        }
+        obj
+    }
+
+    struct FanoutHarness {
+        fanout: FanoutProcessor,
+        effect: EffectHandler<OtapPdata>,
+        outputs: HashMap<String, LocalReceiver<OtapPdata>>,
+        pipeline_rx: otap_df_engine::shared::message::SharedReceiver<
+            PipelineControlMsg<OtapPdata>,
+        >,
+    }
+
+    fn build_harness(destinations: Value, mode: &str, await_ack: &str) -> FanoutHarness {
+        let metrics_system = InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let destinations_cfg = destinations.clone();
+        let mut out_ports = std::collections::HashMap::new();
+        let destinations_for_ports = destinations_cfg.clone();
+        if let Some(arr) = destinations_for_ports.as_array() {
+            for dest in arr {
+                let port = dest
+                    .get("port")
+                    .and_then(|v| v.as_str())
+                    .expect("port string")
+                    .to_string();
+                let port_name: PortName = port.clone().into();
+                let _ = out_ports.insert(
+                    port_name.clone(),
+                    HyperEdgeConfig {
+                        destinations: [test_node(format!("{}_dst", port)).name.clone()]
+                            .into_iter()
+                            .collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                );
+            }
+        }
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports,
+            default_out_port: None,
+            config: json!({
+                "mode": mode,
+                "await_ack": await_ack,
+                "destinations": destinations_cfg,
+            }),
+        };
+
+        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let fanout = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
+            .expect("valid config");
+
+        let mut outputs = HashMap::new();
+        let mut senders = HashMap::new();
+        for port in node_cfg.out_ports.keys() {
+            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let _ = senders.insert(port.clone(), LocalSender::mpsc(tx));
+            let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
+        }
+
+        let mut effect = EffectHandler::new(
+            test_node("fanout"),
+            senders,
+            node_cfg.default_out_port.clone(),
+            metrics_system.reporter(),
+        );
+        let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+        effect.set_pipeline_ctrl_msg_sender(pipeline_tx);
+
+        FanoutHarness {
+            fanout,
+            effect,
+            outputs,
+            pipeline_rx,
+        }
+    }
+
+    fn drain(receiver: &mut LocalReceiver<OtapPdata>) -> Vec<OtapPdata> {
+        let mut items = Vec::new();
+        while let Ok(msg) = receiver.try_recv() {
+            items.push(msg);
+        }
+        items
+    }
+
+    fn make_node_config() -> NodeUserConfig {
+        NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [(TEST_OUT_PORT_NAME.into(), HyperEdgeConfig {
+                destinations: [test_node("downstream").name.clone()].into_iter().collect(),
+                dispatch_strategy: DispatchStrategy::Broadcast,
+            })].into(),
+            default_out_port: None,
+            config: json!({
+                "destinations": [
+                    { "port": TEST_OUT_PORT_NAME, "primary": true }
+                ],
+                "await_ack": "primary"
+            }),
+        }
+    }
+
+    fn make_pdata() -> OtapPdata {
+        let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
+        OtapPdata::new(Context::default(), payload)
+    }
+
+    #[test]
+    fn config_requires_destination() {
+        let cfg = FanoutConfig {
+            destinations: Vec::new(),
+            ..Default::default()
+        };
+        let node_cfg = make_node_config();
+        assert!(cfg.validate(&node_cfg).is_err());
+    }
+
+    #[tokio::test]
+    async fn processor_sends_and_acks_primary() {
+        let mut h = build_harness(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
+            "parallel",
+            "primary",
+        );
+        let data = make_pdata();
+        h.fanout
+            .process(Message::PData(data), &mut h.effect)
+            .await
+            .expect("process ok");
+        let mut sent = drain(
+            h.outputs
+                .get_mut(TEST_OUT_PORT_NAME)
+                .expect("out port"),
+        );
+        assert_eq!(sent.len(), 1);
+        let mut ack = AckMsg::new(sent.pop().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn awaits_all_across_multiple_destinations() {
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut all = Vec::new();
+        for port in ["p1", "p2"] {
+            let r = h.outputs.get_mut(port).expect("port");
+            all.push((port, drain(r)));
+        }
+        assert_eq!(all[0].1.len(), 1);
+        assert_eq!(all[1].1.len(), 1);
+
+        for (_, mut msgs) in all {
+            let mut ack = AckMsg::new(msgs.pop().unwrap());
+            ack.calldata = ack.accepted.current_calldata().unwrap();
+            h.fanout
+                .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+                .await
+                .expect("ack ok");
+        }
+
+        assert!(h.fanout.inflight.is_empty());
+        // Only one upstream ack is emitted.
+        let mut delivered = 0;
+        while let Ok(msg) = h.pipeline_rx.try_recv() {
+            if matches!(msg, PipelineControlMsg::DeliverAck { .. }) {
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, 1);
+    }
+
+    #[tokio::test]
+    async fn sequential_mode_sends_to_next_destination_after_ack() {
+        let mut h = build_harness(
+            json!([
+                make_dest("s1", true, None, None),
+                make_dest("s2", false, None, None)
+            ]),
+            "sequential",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let first = drain(h.outputs.get_mut("s1").expect("s1"));
+        let second = drain(h.outputs.get_mut("s2").expect("s2"));
+        assert_eq!(first.len(), 1);
+        assert!(second.is_empty());
+
+        let mut ack_first = AckMsg::new(first.into_iter().next().unwrap());
+        ack_first.calldata = ack_first.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_first)), &mut h.effect)
+            .await
+            .expect("ack ok");
+
+        let next = drain(h.outputs.get_mut("s2").expect("s2"));
+        assert_eq!(next.len(), 1);
+
+        let mut ack_second = AckMsg::new(next.into_iter().next().unwrap());
+        ack_second.calldata = ack_second.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_second)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_on_nack_dispatches_to_backup() {
+        let mut h = build_harness(
+            json!([
+                make_dest("primary", true, None, None),
+                make_dest("backup", false, Some("primary"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut primary_msg = drain(h.outputs.get_mut("primary").expect("primary"));
+        assert_eq!(primary_msg.len(), 1);
+        let mut nack = NackMsg::new("fail", primary_msg.pop().unwrap());
+        nack.calldata = nack.refused.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        let backup = drain(h.outputs.get_mut("backup").expect("backup"));
+        assert_eq!(backup.len(), 1);
+        let mut ack = AckMsg::new(backup.into_iter().next().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn timeout_triggers_nack() {
+        let mut h = build_harness(
+            json!([make_dest("t1", true, None, Some("50ms"))]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        sleep(Duration::from_millis(100)).await;
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::TimerTick {}),
+                &mut h.effect,
+            )
+            .await
+            .expect("timer tick ok");
+        sleep(Duration::from_millis(1)).await;
+
+        let mut delivered_nacks = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if matches!(msg, PipelineControlMsg::DeliverNack { .. }) {
+                delivered_nacks += 1;
+            }
+        }
+        assert_eq!(delivered_nacks, 1);
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fire_and_forget_ack_none() {
+        let mut h = build_harness(
+            json!([make_dest("ff", true, None, None)]),
+            "parallel",
+            "none",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+        let mut delivered = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if matches!(msg, PipelineControlMsg::DeliverAck { .. }) {
+                delivered += 1;
+            }
+        }
+        assert_eq!(delivered, 1);
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_primary_nack_does_not_abort_primary() {
+        let mut h = build_harness(
+            json!([
+                make_dest("prim", true, None, None),
+                make_dest("sec", false, None, None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+        let mut prim = drain(h.outputs.get_mut("prim").expect("prim"));
+        let mut sec = drain(h.outputs.get_mut("sec").expect("sec"));
+        assert_eq!(prim.len(), 1);
+        assert_eq!(sec.len(), 1);
+
+        let mut nack = NackMsg::new("secondary fail", sec.pop().unwrap());
+        nack.calldata = nack.refused.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+        assert!(!h.fanout.inflight.is_empty());
+
+        let mut ack = AckMsg::new(prim.pop().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        assert!(h.fanout.inflight.is_empty());
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+        assert_eq!(delivered_nack, 0);
+    }
+
+    #[tokio::test]
+    async fn sequential_multiple_requests_inflight() {
+        let mut h = build_harness(
+            json!([
+                make_dest("s1", true, None, None),
+                make_dest("s2", false, None, None)
+            ]),
+            "sequential",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("first process ok");
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("second process ok");
+
+        let s1_msgs = drain(h.outputs.get_mut("s1").expect("s1"));
+        let s2_msgs = drain(h.outputs.get_mut("s2").expect("s2"));
+        assert_eq!(s1_msgs.len(), 2);
+        assert!(s2_msgs.is_empty());
+
+        let mut ack_first = AckMsg::new(s1_msgs[0].clone());
+        ack_first.calldata = s1_msgs[0].current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_first)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        let s2_after_first = drain(h.outputs.get_mut("s2").expect("s2"));
+        assert_eq!(s2_after_first.len(), 1);
+
+        let mut ack_second = AckMsg::new(s1_msgs[1].clone());
+        ack_second.calldata = s1_msgs[1].current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_second)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        let s2_after_second = drain(h.outputs.get_mut("s2").expect("s2"));
+        assert_eq!(s2_after_second.len(), 1);
+
+        for msg in s2_after_first
+            .into_iter()
+            .chain(s2_after_second.into_iter())
+        {
+            let mut ack = AckMsg::new(msg.clone());
+            ack.calldata = msg.current_calldata().unwrap();
+            h.fanout
+                .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+                .await
+                .expect("ack ok");
+        }
+        assert!(h.fanout.inflight.is_empty());
+    }
+}
