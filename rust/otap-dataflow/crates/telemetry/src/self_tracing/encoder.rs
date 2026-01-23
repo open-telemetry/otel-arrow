@@ -325,7 +325,7 @@ where
 pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> bytes::Bytes {
     let mut buf = ProtoBuffer::with_capacity(256);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
-    bytes::Bytes::copy_from_slice(buf.as_ref())
+    buf.into_bytes()
 }
 
 /// Encode a single resource attribute as a KeyValue message.
