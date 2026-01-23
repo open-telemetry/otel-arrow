@@ -345,8 +345,7 @@ fn build_persistence_pipeline_config(
         "poll_interval": "50ms",
         "retention_size_cap": "100MB",
         "size_cap_policy": "backpressure",
-        "max_segment_open_duration": "200ms",
-        "max_bundles_per_tick": 100
+        "max_segment_open_duration": "200ms"
     });
 
     PipelineConfigBuilder::new()

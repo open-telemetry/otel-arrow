@@ -192,8 +192,13 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// State for tracking a pending downstream delivery.
-#[derive(Debug, Default, Clone)]
+///
+/// Holds the Quiver bundle handle to keep the bundle claimed while in-flight.
+/// When dropped without explicit ack(), the handle's Drop impl will call
+/// on_deferred(), releasing the claim and making the bundle eligible for redelivery.
 struct PendingBundle {
+    /// The Quiver bundle handle - keeps the bundle claimed while in-flight.
+    handle: QuiverBundleHandle,
     /// Number of retries attempted.
     retry_count: u32,
 }
@@ -448,8 +453,6 @@ impl PersistenceProcessor {
                     SignalType::Traces => self.metrics.consumed_items_traces.add(num_items),
                 }
 
-                debug!("persisted bundle to WAL");
-
                 // ACK upstream after successful WAL write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
                 let ack_pdata = OtapPdata::new(context, OtapPayload::empty(SignalType::Logs));
@@ -499,18 +502,21 @@ impl PersistenceProcessor {
             }
         }
 
-        let max_bundles = self.config.max_bundles_per_tick;
+        // Time-budgeted draining: spend at most 50% of poll_interval processing bundles.
+        // This ensures we yield back promptly to handle incoming data, which is typically
+        // higher priority than draining historical data (e.g., during recovery from a
+        // network outage, new data reflects current system state).
+        let drain_budget = self.config.poll_interval / 2;
+        let deadline = Instant::now() + drain_budget;
         let mut bundles_processed = 0usize;
 
-        // Process bundles up to the configured limit per tick
-        // A limit of 0 means unlimited (drain all available)
         loop {
-            // Check if we've hit the per-tick limit (0 = unlimited)
-            if max_bundles > 0 && bundles_processed >= max_bundles {
+            // Check time budget before each bundle to ensure we yield back for new data
+            if Instant::now() >= deadline {
                 debug!(
                     bundles_processed = bundles_processed,
-                    max_bundles_per_tick = max_bundles,
-                    "reached per-tick bundle limit, deferring remaining to next tick"
+                    budget_ms = drain_budget.as_millis(),
+                    "drain time budget exhausted, deferring remaining to next tick"
                 );
                 break;
             }
@@ -590,10 +596,19 @@ impl PersistenceProcessor {
         let bundle_ref = handle.bundle_ref();
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
-        // Skip if this bundle is already in-flight (waiting for ACK/NACK)
+        // Skip if this bundle is already in-flight (waiting for ACK/NACK).
+        // This should rarely since we keep the handle claimed, but can occur
+        // if the bundle was previously sent and is still awaiting response.
         if self.pending_bundles.contains_key(&key) {
-            // Already sent downstream, waiting for response - just defer again
-            let _ = handle.defer();
+            // Bundle is in-flight. Dropping the handle will trigger implicit defer,
+            // but since we already hold the original handle, this one is a duplicate claim.
+            // This shouldn't happen in normal operation since we keep bundles claimed.
+            warn!(
+                segment_seq = bundle_ref.segment_seq.raw(),
+                bundle_index = bundle_ref.bundle_index.raw(),
+                "received duplicate handle for in-flight bundle"
+            );
+            drop(handle); // Implicit defer
             return ProcessBundleResult::Skipped;
         }
 
@@ -603,9 +618,6 @@ impl PersistenceProcessor {
                 // Capture signal type and item count for metrics before moving pdata
                 let signal_type = pdata.signal_type();
                 let num_items = pdata.num_items() as u64;
-
-                // Track pending bundle
-                let _ = self.pending_bundles.insert(key, PendingBundle::default());
 
                 // Subscribe for ACK/NACK with BundleRef in calldata
                 let calldata = encode_bundle_ref(bundle_ref);
@@ -630,46 +642,50 @@ impl PersistenceProcessor {
                         }
 
                         debug!(
+                            core_id = self.core_id,
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             "forwarded bundle downstream from finalized segment"
                         );
 
-                        // Defer the handle - we'll ack/reject when we receive downstream response
-                        // The bundle remains claimed and won't be redelivered until we resolve it
-                        let _ = handle.defer();
+                        // Store the handle to keep the bundle claimed until ACK/NACK.
+                        // The bundle will not be redelivered while we hold the handle.
+                        let _ = self.pending_bundles.insert(
+                            key,
+                            PendingBundle {
+                                handle,
+                                retry_count: 0,
+                            },
+                        );
                         ProcessBundleResult::Sent
                     }
                     Err(otap_df_engine::error::TypedError::ChannelSendError(
                         otap_df_channel::error::SendError::Full(_pdata),
                     )) => {
-                        // Channel is full - defer the bundle for retry on next tick.
-                        // This is normal operation for a buffering processor - data is safe
-                        // in Quiver and will be retried. No backpressure is propagated upstream.
-                        let _ = self.pending_bundles.remove(&key);
-                        let _ = handle.defer();
+                        // Channel is full - release the bundle for retry on next tick.
+                        // Dropping the handle triggers implicit defer, making the bundle
+                        // eligible for redelivery on the next poll.
+                        drop(handle);
                         ProcessBundleResult::Backpressure
                     }
                     Err(otap_df_engine::error::TypedError::ChannelSendError(
                         otap_df_channel::error::SendError::Closed(_pdata),
                     )) => {
-                        // Channel is closed - this is a fatal error
-                        let _ = self.pending_bundles.remove(&key);
-                        let _ = handle.defer();
+                        // Channel is closed - this is a fatal error.
+                        // Drop the handle to release the claim (data stays in Quiver).
+                        drop(handle);
                         ProcessBundleResult::Error(Error::ChannelSendError {
                             error: "downstream channel closed".to_string(),
                         })
                     }
                     Err(otap_df_engine::error::TypedError::Error(e)) => {
                         // Configuration error (no default port) - this is a fatal error
-                        let _ = self.pending_bundles.remove(&key);
-                        let _ = handle.defer();
+                        drop(handle);
                         ProcessBundleResult::Error(e)
                     }
                     Err(e) => {
                         // Other TypedError variants
-                        let _ = self.pending_bundles.remove(&key);
-                        let _ = handle.defer();
+                        drop(handle);
                         ProcessBundleResult::Error(e.into())
                     }
                 }
@@ -699,24 +715,21 @@ impl PersistenceProcessor {
 
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
-        // Remove from pending and acknowledge in Quiver
-        if self.pending_bundles.remove(&key).is_some() {
-            let (engine, subscriber_id) = self.engine()?;
-            // Claim and ack the bundle in Quiver
-            match engine.claim_bundle(subscriber_id, bundle_ref) {
-                Ok(handle) => {
-                    handle.ack();
-                    self.metrics.bundles_acked.add(1);
-                    debug!(
-                        segment_seq = bundle_ref.segment_seq.raw(),
-                        bundle_index = bundle_ref.bundle_index.raw(),
-                        "bundle acknowledged in Quiver"
-                    );
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to claim bundle for ack");
-                }
-            }
+        // Remove from pending and acknowledge in Quiver using the stored handle
+        if let Some(pending) = self.pending_bundles.remove(&key) {
+            pending.handle.ack();
+            self.metrics.bundles_acked.add(1);
+            debug!(
+                segment_seq = bundle_ref.segment_seq.raw(),
+                bundle_index = bundle_ref.bundle_index.raw(),
+                "bundle acknowledged in Quiver"
+            );
+        } else {
+            warn!(
+                segment_seq = bundle_ref.segment_seq.raw(),
+                bundle_index = bundle_ref.bundle_index.raw(),
+                "received ACK for unknown bundle"
+            );
         }
 
         Ok(())
@@ -737,25 +750,32 @@ impl PersistenceProcessor {
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
         // Handle retry
-        if let Some(mut pending) = self.pending_bundles.remove(&key) {
-            pending.retry_count += 1;
+        if let Some(pending) = self.pending_bundles.remove(&key) {
+            let retry_count = pending.retry_count + 1;
             self.metrics.bundles_nacked.add(1);
 
             debug!(
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
-                retry_count = pending.retry_count,
+                retry_count = retry_count,
                 reason = %nack.reason,
                 "bundle nacked, will retry on next poll"
             );
 
-            // The bundle is already deferred in Quiver (we called defer() when sending).
-            // It will be redelivered on the next poll_next_bundle() call.
+            // Drop the handle to trigger implicit defer, releasing the claim.
+            // The bundle will be redelivered on the next poll_next_bundle() call.
             // We rely on the timer tick to retry naturally.
             //
-            // For more sophisticated retry with exponential backoff, the embedding layer
-            // could use effect_handler.delay_data() - but for now we rely on Quiver's
-            // natural redelivery.
+            // TODO: For more sophisticated retry with exponential backoff, the embedding
+            // layer could use effect_handler.delay_data(). We could also track retry_count
+            // separately and reject bundles that exceed a maximum retry limit.
+            drop(pending.handle);
+        } else {
+            warn!(
+                segment_seq = bundle_ref.segment_seq.raw(),
+                bundle_index = bundle_ref.bundle_index.raw(),
+                "received NACK for unknown bundle"
+            );
         }
 
         Ok(())

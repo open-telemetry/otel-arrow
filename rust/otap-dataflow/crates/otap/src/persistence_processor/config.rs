@@ -35,15 +35,6 @@ fn default_max_segment_open_duration() -> Duration {
     Duration::from_secs(5)
 }
 
-/// Default maximum bundles to forward per timer tick.
-///
-/// Limits how many bundles are sent downstream per tick to prevent
-/// the processor from blocking on downstream backpressure and being
-/// unable to receive new data.
-fn default_max_bundles_per_tick() -> usize {
-    100
-}
-
 /// How to handle incoming OTLP data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -114,15 +105,6 @@ pub struct PersistenceProcessorConfig {
     /// Default: 5 seconds.
     #[serde(with = "humantime_serde", default = "default_max_segment_open_duration")]
     pub max_segment_open_duration: Duration,
-
-    /// Maximum number of bundles to forward downstream per timer tick.
-    ///
-    /// This prevents the processor from blocking indefinitely when downstream
-    /// applies backpressure. Remaining bundles will be picked up on the next
-    /// timer tick. Setting to 0 disables the limit (drains all available bundles).
-    /// Default: 100.
-    #[serde(default = "default_max_bundles_per_tick")]
-    pub max_bundles_per_tick: usize,
 }
 
 impl PersistenceProcessorConfig {
@@ -184,8 +166,8 @@ mod tests {
     fn test_config_defaults() {
         let json = r#"{"path": "/tmp/test"}"#;
         let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
-        // Default is 500 GiB
-        assert_eq!(config.size_cap_bytes(), 500 * 1024 * 1024 * 1024);
+        // Default is 10 GiB
+        assert_eq!(config.size_cap_bytes(), 10 * 1024 * 1024 * 1024);
         assert_eq!(config.size_cap_policy, SizeCapPolicy::Backpressure);
         assert_eq!(config.poll_interval, Duration::from_millis(100));
         assert!(config.max_age.is_none());
