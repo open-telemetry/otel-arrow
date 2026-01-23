@@ -177,18 +177,30 @@ impl FanoutConfig {
                 error: "fanout: missing primary destination".into(),
             })?;
 
-        // Build mapping fallback -> origin index
-        let mut fallback_map = HashMap::new();
-        for (idx, dest) in self.destinations.iter().enumerate() {
-            if let Some(fb) = &dest.fallback_for {
-                let origin_idx =
-                    *port_index
-                        .get(fb)
-                        .ok_or_else(|| ConfigError::InvalidUserConfig {
-                            error: format!("fanout: fallback_for `{}` not found", fb),
-                        })?;
-                let _ = fallback_map.insert(idx, origin_idx);
+        // Resolve fallback chains to their ultimate origin and detect cycles.
+        let mut origins_vec = vec![0usize; self.destinations.len()];
+        for (idx, _dest) in self.destinations.iter().enumerate() {
+            let mut seen = HashSet::new();
+            let mut current = idx;
+            loop {
+                if !seen.insert(current) {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: "fanout: fallback cycle detected".into(),
+                    });
+                }
+                if let Some(fb) = &self.destinations[current].fallback_for {
+                    let next =
+                        *port_index
+                            .get(fb)
+                            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                                error: format!("fanout: fallback_for `{}` not found", fb),
+                            })?;
+                    current = next;
+                } else {
+                    break;
+                }
             }
+            origins_vec[idx] = current;
         }
 
         Ok(ValidatedConfig {
@@ -196,7 +208,7 @@ impl FanoutConfig {
             await_ack: self.await_ack,
             destinations: self.destinations,
             primary_index,
-            fallback_map,
+            origins: origins_vec,
             timeout_check_interval: self.timeout_check_interval,
         })
     }
@@ -208,7 +220,7 @@ struct ValidatedConfig {
     await_ack: AwaitAck,
     destinations: Vec<DestinationConfig>,
     primary_index: usize,
-    fallback_map: HashMap<usize, usize>,
+    origins: Vec<usize>,
     timeout_check_interval: Duration,
 }
 
@@ -345,7 +357,7 @@ impl FanoutProcessor {
             effect_handler.subscribe_to(interests, calldata, &mut dest_data);
 
             let timeout_at = dest.timeout.map(|d| now + d);
-            let origin = *self.config.fallback_map.get(&idx).unwrap_or(&idx);
+            let origin = self.config.origins[idx];
 
             // Fallback destinations are only sent when triggered.
             let is_fallback = dest.fallback_for.is_some();
@@ -475,7 +487,9 @@ impl FanoutProcessor {
             .ack_payload
             .clone()
             .or_else(|| inflight.endpoints[dest_index].payload.clone())
-            .expect("fanout always retains a payload per request");
+            .ok_or_else(|| ())
+            .map_err(|_| ())
+            .ok()?;
         Some(NackMsg {
             reason,
             calldata: smallvec![],
@@ -633,7 +647,6 @@ impl FanoutProcessor {
             if dest_index >= inflight.endpoints.len() {
                 return Ok(());
             }
-            inflight.endpoints[dest_index].status = DestStatus::Nacked;
             (
                 inflight.endpoints[dest_index].origin,
                 inflight.await_ack,
@@ -645,39 +658,21 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        let fallback_triggered;
         if let Some(nackmsg) = self.handle_failure(request_id, dest_index, nack.reason.clone()) {
             self.metrics.nacked.add(1);
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
             return Ok(());
-        } else {
-            fallback_triggered = true;
         }
 
         // Fallback triggered: try dispatch immediately.
         if let Some(inflight) = self.inflight.get_mut(&request_id) {
             Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
-        }
-        // If a fallback was triggered, wait for its outcome instead of nacking upstream now.
-        if fallback_triggered {
+            // Wait for fallback outcome instead of nacking now.
             return Ok(());
         }
 
-        if matches!(await_ack, AwaitAck::All) {
-            if let Some(inflight) = self.inflight.get_mut(&request_id) {
-                let maybe_nack = if inflight.completed_origins.contains(&origin) {
-                    None
-                } else {
-                    Some(nack)
-                };
-                if let Some(nackmsg) = maybe_nack {
-                    self.metrics.nacked.add(1);
-                    let _ = self.inflight.remove(&request_id);
-                    effect_handler.notify_nack(nackmsg).await?;
-                }
-            }
-        } else if matches!(await_ack, AwaitAck::Primary) && origin == primary {
+        if matches!(await_ack, AwaitAck::Primary) && origin == primary {
             self.metrics.nacked.add(1);
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nack).await?;
@@ -1257,6 +1252,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeout_triggers_fallback_then_ack() {
+        let mut h = build_harness(
+            json!([
+                make_dest("primary", true, None, Some("30ms")),
+                make_dest("backup", false, Some("primary"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        sleep(Duration::from_millis(60)).await;
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::TimerTick {}),
+                &mut h.effect,
+            )
+            .await
+            .expect("timer tick ok");
+
+        let backup = drain(h.outputs.get_mut("backup").expect("backup"));
+        assert_eq!(backup.len(), 1);
+        let mut ack = AckMsg::new(backup.into_iter().next().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+        assert_eq!(delivered_nack, 0);
+    }
+
+    #[tokio::test]
+    async fn chained_fallback_succeeds() {
+        let mut h = build_harness(
+            json!([
+                make_dest("a", true, None, None),
+                make_dest("b", false, Some("a"), None),
+                make_dest("c", false, Some("b"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Nack a, nack b, ack c.
+        let mut a_msg = drain(h.outputs.get_mut("a").expect("a"));
+        let mut nack_a = NackMsg::new("a failed", a_msg.pop().unwrap());
+        nack_a.calldata = nack_a.refused.current_calldata().unwrap();
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Nack(nack_a)),
+                &mut h.effect,
+            )
+            .await
+            .expect("nack ok");
+
+        let mut b_msg = drain(h.outputs.get_mut("b").expect("b"));
+        let mut nack_b = NackMsg::new("b failed", b_msg.pop().unwrap());
+        nack_b.calldata = nack_b.refused.current_calldata().unwrap();
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Nack(nack_b)),
+                &mut h.effect,
+            )
+            .await
+            .expect("nack ok");
+
+        let c_msg = drain(h.outputs.get_mut("c").expect("c"));
+        assert_eq!(c_msg.len(), 1);
+        let mut ack_c = AckMsg::new(c_msg.into_iter().next().unwrap());
+        ack_c.calldata = ack_c.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_c)), &mut h.effect)
+            .await
+            .expect("ack ok");
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+        assert_eq!(delivered_nack, 0);
+    }
+
+    #[tokio::test]
     async fn timeout_triggers_nack() {
         let mut h = build_harness(
             json!([make_dest("t1", true, None, Some("50ms"))]),
@@ -1287,6 +1393,60 @@ mod tests {
             }
         }
         assert_eq!(delivered_nacks, 1);
+        assert!(h.fanout.inflight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fallback_also_nacks() {
+        let mut h = build_harness(
+            json!([
+                make_dest("primary", true, None, None),
+                make_dest("backup", false, Some("primary"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Nack primary.
+        let mut primary_msg = drain(h.outputs.get_mut("primary").expect("primary"));
+        assert_eq!(primary_msg.len(), 1);
+        let mut nack = NackMsg::new("fail primary", primary_msg.pop().unwrap());
+        nack.calldata = nack.refused.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        // Nack fallback.
+        let mut backup = drain(h.outputs.get_mut("backup").expect("backup"));
+        assert_eq!(backup.len(), 1);
+        let mut nack_fb = NackMsg::new("fail backup", backup.pop().unwrap());
+        nack_fb.calldata = nack_fb.refused.current_calldata().unwrap();
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Nack(nack_fb)),
+                &mut h.effect,
+            )
+            .await
+            .expect("nack ok");
+
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 0);
+        assert_eq!(delivered_nack, 1);
         assert!(h.fanout.inflight.is_empty());
     }
 
