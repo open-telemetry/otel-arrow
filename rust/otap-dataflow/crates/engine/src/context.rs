@@ -9,9 +9,9 @@ use crate::attributes::{
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use otap_df_config::node::NodeKind;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
-use otap_df_telemetry::InternalTelemetrySettings;
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
