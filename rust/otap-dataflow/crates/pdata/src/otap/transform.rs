@@ -358,11 +358,9 @@ where
     // type/key have equivalent value equal to the next row. this means that from the perspective
     // of indexing the record batch itself, the range_end is actually an inclusive range end.
     let mut process_range =
-        |eq_range_start: usize, eq_range_end: usize, write_idx: &mut usize| -> Result<()> {
-            // first element in range: always use value as-is, because the range we're handling
-            // started begins a new sequent of delta encoding
-            materialized_parent_ids[*write_idx] = materialized_parent_ids[eq_range_start];
-            *write_idx += 1;
+        |eq_range_start: usize, eq_range_end: usize| -> Result<()> {
+            // first element in range is already correct (not delta encoded) because presumably the
+            // key/type columns were not equal to what is in this range.
 
             // only continue on to remove delta encodings if the range contains multiple rows
             if eq_range_end - eq_range_start > 0 {
@@ -433,14 +431,6 @@ where
                     if batch_idx <= eq_range_end {
                         curr_parent_id = materialized_parent_ids[eq_range_end];
                     }
-
-                    // update write_idx to account for all processed elements
-                    *write_idx = eq_range_end + 1;
-                } else {
-                    // no value array: type doesn't support delta encoding
-                    // values are already correct, just advance indices (write_idx == batch_idx)
-                    let range_count = eq_range_end - eq_range_start;
-                    *write_idx += range_count;
                 }
             }
 
@@ -457,19 +447,19 @@ where
     let num_rows = record_batch.num_rows();
     let last_idx = num_rows - 1;
 
-    // Iterate directly over range boundaries using BitIndexIterator
+    // pointer to start of current delta encoded range. Will be updated as we iterate through
+    // ranges to remove delta encoding
     let mut delta_range_start = 0;
-    let mut write_idx = 0;
 
     // process all ranges having equivalent type/key
     for delta_range_end in BitIndexIterator::new(range_ends_val_buffer, 0, last_idx) {
-        process_range(delta_range_start, delta_range_end, &mut write_idx)?;
+        process_range(delta_range_start, delta_range_end)?;
         delta_range_start = delta_range_end + 1; // skip 1 non-delta encoded value
     }
 
-    // process the last range, if not already handled
+    // Process the final range ending at last_idx if it wasn't already processed
     if delta_range_start <= last_idx {
-        process_range(delta_range_start, last_idx, &mut write_idx)?;
+        process_range(delta_range_start, last_idx)?;
     }
 
     // create new arrow array for parent_id column
