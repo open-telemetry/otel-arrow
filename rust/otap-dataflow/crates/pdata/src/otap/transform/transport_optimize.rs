@@ -9,7 +9,7 @@
 //! for example, transmitting OTAP data via gRPC.
 
 use std::{
-    ops::{Add, AddAssign, Sub},
+    ops::{Add, AddAssign, Range, Sub},
     sync::Arc,
 };
 
@@ -26,8 +26,10 @@ use arrow_schema::Field;
 
 use crate::{
     arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array},
-    encode::record::array::{ArrayAppend, PrimitiveArrayBuilder},
-    encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper,
+    encode::record::{
+        array::{ArrayAppend, PrimitiveArrayBuilder},
+        attributes::AttributesRecordBatchBuilderConstructorHelper,
+    },
     error::{Error, Result},
     otap::transform::{
         create_next_element_equality_array, create_next_eq_array_for_array,
@@ -37,7 +39,11 @@ use crate::{
     },
     otlp::attributes::{AttributeValueType, parent_id::ParentId},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{FieldExt, consts, get_field_metadata},
+    schema::{
+        FieldExt,
+        consts,
+        get_field_metadata,
+    },
 };
 
 /// identifier for column encoding
@@ -410,9 +416,8 @@ fn sort_record_batch(
     payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch> {
-
     if *payload_type == ArrowPayloadType::LogAttrs {
-        return sort_attrs_record_batch(record_batch)
+        return sort_attrs_record_batch(record_batch);
     }
 
     let sort_columns_paths = get_sort_column_paths(payload_type);
@@ -472,7 +477,65 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let key_col_by_type = take(key_col, &type_col_sorted_indices, None).unwrap();
 
     let mut sorted_keys = vec![];
-    let mut sorted_values_str = vec![];
+
+    // TODO it will be easy to index like this and make the values sorting cleaner,
+    // but we'll need to completely refactor to optimizing concating dict values
+    // so we should refactor this into something abstract ...
+    let values_columns: [Option<&Arc<dyn Array>>; 2] =
+        [None, record_batch.column_by_name(consts::ATTRIBUTE_STR)];
+    let sorted_values: [Vec<Arc<dyn Array>>; 8] = [
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ];
+
+    let mut sorted_val_columns: [Option<SortedArrayBuilder>; 8] = [
+        None, // empty
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .map(|col| SortedArrayBuilder::try_new(col))
+            .transpose()?,
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .map(|col| SortedArrayBuilder::try_new(col))
+            .transpose()?,
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_DOUBLE)
+            .map(|col| SortedArrayBuilder::try_new(col))
+            .transpose()?,
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_BOOL)
+            .map(|col| SortedArrayBuilder::try_new(col))
+            .transpose()?,
+        None, // map
+        None, // slice
+        record_batch
+            .column_by_name(consts::ATTRIBUTE_BOOL)
+            .map(|col| SortedArrayBuilder::try_new(col))
+            .transpose()?,
+    ];
+
+    // ser column is special case b/c more than one attr type maps to it
+    let mut sorted_ser_column = record_batch
+        .column_by_name(consts::ATTRIBUTE_SER)
+        .map(|col| SortedArrayBuilder::try_new(col))
+        .transpose()?;
+
+    // first sort all the values columns by type. This will make it easier to eventually sort them by key...
+    // TODO - this might be inefficient
+    for sorted_col in &mut sorted_val_columns {
+        if let Some(sorted_col) = sorted_col.as_mut() {
+            sorted_col.sort_source(&type_col_sorted_indices)?
+        }
+    }
+    if let Some(sorted_col) = sorted_ser_column.as_mut() {
+        sorted_col.sort_source(&type_col_sorted_indices)?;
+    }
 
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
@@ -482,33 +545,54 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         let keys_range_sorted = take(&keys_range, &keys_range_sorted_indices, None).unwrap();
         sorted_keys.push(keys_range_sorted.clone());
 
-        let values_col =
-            match AttributeValueType::try_from(type_col_sorted_bytes[type_range.start]).unwrap() {
-                AttributeValueType::Str => record_batch.column_by_name(consts::ATTRIBUTE_STR),
-                AttributeValueType::Bool => {
-                    None
-                    // record_batch.column_by_name(consts::ATTRIBUTE_BOOL)
-                }
-                AttributeValueType::Int => {
-                    None
-                    // record_batch.column_by_name(consts::ATTRIBUTE_INT)
-                }
-                AttributeValueType::Double => {
-                    None
-                    // record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
-                }
-                AttributeValueType::Slice => {
-                    None
-                }
-                x => {
-                    println!("x  = {x:?}");
-                    todo!()
-                }
-            };
+        // let key_range_type =
+        //     AttributeValueType::try_from(type_col_sorted_bytes[type_range.start]).unwrap();
+        // let (values_col, sorted_values) = match key_range_type {
+        //     AttributeValueType::Str => (
+        //         record_batch.column_by_name(consts::ATTRIBUTE_STR),
+        //         &mut sorted_values_str,
+        //     ),
+        //     // AttributeValueType::Bool => {
+        //     //     //
+        //     //     // None
+        //     //     // record_batch.column_by_name(consts::ATTRIBUTE_BOOL)
+        //     // }
+        //     AttributeValueType::Int => (
+        //         record_batch.column_by_name(consts::ATTRIBUTE_INT),
+        //         &mut sorted_values_int,
+        //     ),
+        //     // AttributeValueType::Double => {
+        //     //     None
+        //     //     // record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
+        //     // }
+        //     // AttributeValueType::Slice => {
+        //     //     None
+        //     // }
+        //     x => {
+        //         println!("x  = {x:?}");
+        //         todo!()
+        //     }
+        // };
+        //
 
-        if let Some(values_col) = values_col {
-            let values_col_by_type = take(values_col, &type_col_sorted_indices, None).unwrap();
-            let values_type_range = values_col_by_type.slice(type_range.start, type_range.len());
+        let key_range_attr_type = type_col_sorted_bytes[type_range.start];
+        let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
+            || key_range_attr_type == AttributeValueType::Slice as u8
+        {
+            sorted_ser_column.as_mut()
+        } else {
+            sorted_val_columns[key_range_attr_type as usize].as_mut()
+        };
+
+        // sort the values columns for values of this type
+        if let Some(sorted_val_col) = sorted_val_col {
+            // TODO -- now the source for the type_col_sorted_indices?
+            // let values_col_by_type = take(values_col, &type_col_sorted_indices, None).unwrap();
+            // let values_type_range = values_col_by_type.slice(type_range.start, type_range.len());
+            // let values_type_range_by_key =
+            //     take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
+
+            let values_type_range = sorted_val_col.slice_source(&type_range)?;
             let values_type_range_by_key =
                 take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
 
@@ -518,47 +602,150 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                     values_type_range_by_key.slice(key_range.start, key_range.len());
                 let values_key_range_sorted =
                     arrow::compute::sort(&values_key_range, None).unwrap();
-                sorted_values_str.push(values_key_range_sorted);
+                sorted_val_col.append_external_sorted_range(values_key_range_sorted)?;
+                // sorted_values.push(values_key_range_sorted);
             }
-        } else {
-            sorted_values_str.push(Arc::new(StringArray::new_null(type_range.len())));
+        }
+
+        // push the unsorted values for columns not of this type to fill in gaps
+        for attr_type in AttributeValueType::Empty as u8..AttributeValueType::Bytes as u8 {
+            if attr_type == key_range_attr_type {
+                continue; // skip cause we already pushed the sorted section for this type
+            }
+
+            let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
+                || key_range_attr_type == AttributeValueType::Slice as u8
+            {
+                sorted_ser_column.as_mut()
+            } else {
+                sorted_val_columns[attr_type as usize].as_mut()
+            };
+
+            if let Some(sorted_val_col) = sorted_val_col {
+                sorted_val_col.append_range(&type_range);
+            }
         }
     }
 
-    if sorted_values_str.is_empty() {
-        todo!()
-    } else {
-        let mut columns = vec![];
-        for field in record_batch.schema().fields() {
-            if field.name() == consts::ATTRIBUTE_TYPE {
-                columns.push(type_col_sorted.clone());
-                continue;
-            }
+    let mut columns = vec![];
+    for field in record_batch.schema().fields() {
+        let field_name = field.name();
 
-            if field.name() == consts::ATTRIBUTE_KEY {
-                let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
-                columns.push(concat(&sorted_keys_refs).unwrap());
-                continue;
-            }
-
-            if field.name() == consts::ATTRIBUTE_STR {
-                let sorted_val_refs = sorted_values_str.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
-                columns.push(concat(&sorted_val_refs).unwrap());
-                continue;
-            }
-
-            columns.push(record_batch.column_by_name(field.name()).unwrap().clone());
+        if field_name == consts::ATTRIBUTE_TYPE {
+            columns.push(type_col_sorted.clone());
+            continue;
         }
 
-        let batch = RecordBatch::try_new(
-            record_batch.schema().clone(),
-            columns,
-        )
-        .unwrap();
+        if field_name == consts::ATTRIBUTE_KEY {
+            let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
+            columns.push(concat(&sorted_keys_refs).unwrap());
+            continue;
+        }
 
-        // arrow::util::pretty::print_batches(&[batch.clone()]).unwrap();
+        if field_name == consts::ATTRIBUTE_STR {
+            let sorted_col = sorted_val_columns[AttributeValueType::Str as usize].as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
 
-        Ok(batch)
+        if field_name == consts::ATTRIBUTE_INT {
+            let sorted_col = sorted_val_columns[AttributeValueType::Int as usize].as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
+
+        if field_name == consts::ATTRIBUTE_BOOL {
+            let sorted_col = sorted_val_columns[AttributeValueType::Bool as usize].as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
+
+        if field_name == consts::ATTRIBUTE_DOUBLE {
+            let sorted_col = sorted_val_columns[AttributeValueType::Double as usize].as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
+
+        if field_name == consts::ATTRIBUTE_BYTES {
+            let sorted_col = sorted_val_columns[AttributeValueType::Bytes as usize].as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
+
+        if field_name == consts::ATTRIBUTE_SER {
+            let sorted_col = sorted_ser_column.as_ref().unwrap();
+            columns.push(sorted_col.finish()?);
+            continue;
+        }
+
+        todo!("handle bad col name {field_name}")
+    }
+
+    // println!("columns = {columns:?}");
+
+    let batch = RecordBatch::try_new(record_batch.schema().clone(), columns).unwrap();
+
+    // arrow::util::pretty::print_batches(&[batch.clone()]).unwrap();
+
+    Ok(batch)
+}
+
+// TODO
+// struct SortedArrayBuilderSourceDict {
+//     key_type: DataType,
+//     values: Arc<dyn Array>,
+// }
+
+struct SortedArrayBuilder {
+    // TODO
+    // source_dict: Option<SortedArrayBuilderSourceDict>,
+    //
+    // TODO - we might consider refactoring this into something not Arc to reduce heap allocations?
+    sorted_segments: Vec<Arc<dyn Array>>,
+
+    // TODO - we could get into the internals of `take` and figure out if it's faster not to take from
+    // an Arc dyn array, then we'd avoid a heap allocation here as well
+    source: Arc<dyn Array>,
+}
+
+impl SortedArrayBuilder {
+    fn try_new(source: &Arc<dyn Array>) -> Result<Self> {
+        Ok(Self {
+            sorted_segments: Vec::new(),
+            source: Arc::clone(source),
+        })
+    }
+
+    fn sort_source(&mut self, indices: &dyn Array) -> Result<()> {
+        self.source = Arc::new(take(self.source.as_ref(), indices, None).unwrap());
+        Ok(())
+    }
+
+    fn slice_source(&self, range: &Range<usize>) -> Result<Arc<dyn Array>> {
+        Ok(self.source.slice(range.start, range.len()))
+    }
+
+    // TODO this might not need to take a &Range b/c range is copy?
+    // fn append_sorted_range(&mut self, range: &Range<usize>, indices: &dyn Array) -> Result<()> {
+    //     todo!()
+    // }
+
+    fn append_external_sorted_range(&mut self, arr: Arc<dyn Array>) -> Result<()> {
+        self.sorted_segments.push(arr);
+        Ok(())
+    }
+
+    // TODO this might not need to take a &Range b/c range is copy?
+    fn append_range(&mut self, range: &Range<usize>) {
+        let arr = self.source.slice(range.start, range.len());
+        self.sorted_segments.push(arr);
+        // todo!()
+    }
+
+    fn finish(&self) -> Result<Arc<dyn Array>> {
+        let sorted_keys_refs = self.sorted_segments.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
+        let sorted_column = concat(sorted_keys_refs.as_ref()).unwrap();
+        Ok(sorted_column)
     }
 }
 
@@ -1865,62 +2052,88 @@ mod test {
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
-                DataType::Dictionary(
-                    Box::new(DataType::UInt8),
-                    Box::new(DataType::Utf8)
-                ),
-                false
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                false,
             ),
             Field::new(
                 consts::ATTRIBUTE_STR,
-                DataType::Dictionary(
-                    Box::new(DataType::UInt16),
-                    Box::new(DataType::Utf8)
-                ),
-                false
-            )
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_INT,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
+                true,
+            ),
         ]));
 
-        let input = RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(UInt8Array::from_iter_values([
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8
-            ])),
-            Arc::new(DictionaryArray::new(
-                UInt8Array::from_iter_values([0, 1, 0, 1]),
-                Arc::new(StringArray::from_iter_values(["ka", "kb"]))
-            )),
-            Arc::new(DictionaryArray::new(
-                UInt16Array::from_iter_values([0, 1, 0, 1]),
-                Arc::new(StringArray::from_iter_values(["va", "vb"]))
-            )),
-        ]).unwrap();
+        // TODO:
+        // - there ain't no null attrs
+        // - no vals not dict encoded
+        // - should also have at least one vals dict w/ non pre-sorted keys
+        // - an ID column
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([1, 0, 0, 1, 0, 1]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([None, None, Some(0), Some(1), Some(0), Some(1)]),
+                    Arc::new(StringArray::from_iter_values(["va", "vb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(1), Some(0), None, None, None, None]),
+                    Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
+                )),
+            ],
+        )
+        .unwrap();
 
         arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
 
         let result = sort_attrs_record_batch(&input).unwrap();
         arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
 
-        let expected = RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(UInt8Array::from_iter_values([
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8
-            ])),
-            Arc::new(DictionaryArray::new(
-                UInt8Array::from_iter_values([0, 0, 1, 1]),
-                Arc::new(StringArray::from_iter_values(["ka", "kb"]))
-            )),
-            Arc::new(DictionaryArray::new(
-                UInt16Array::from_iter_values([0, 0, 1, 1]),
-                Arc::new(StringArray::from_iter_values(["va", "vb"]))
-            )),
-        ]).unwrap();
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(0), Some(0), Some(1), Some(1), None, None]),
+                    Arc::new(StringArray::from_iter_values(["va", "vb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([None, None, None, None, Some(0), Some(1)]),
+                    Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
+                )),
+            ],
+        )
+        .unwrap();
 
-        assert_eq!(result, expected);
+        // TODO - should this just be imported for the module?
+        pretty_assertions::assert_eq!(result, expected);
     }
 
     // TODO there are probably other test cases need to write for sort_attrs_record_batch
@@ -2595,6 +2808,4 @@ mod test {
             transport_encode_parent_id_for_columns::<UInt16Type>(&input, &["name"]).unwrap();
         assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
     }
-
-
 }
