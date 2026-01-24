@@ -1719,8 +1719,7 @@ mod tests {
         assert!(
             delivered_to_receiver,
             "Ack should be delivered to upstream receiver (node_id={}), but was delivered to node_id={:?}",
-            UPSTREAM_RECEIVER_NODE_ID,
-            wrong_node_id
+            UPSTREAM_RECEIVER_NODE_ID, wrong_node_id
         );
     }
 
@@ -1786,8 +1785,7 @@ mod tests {
         assert!(
             delivered_to_receiver,
             "Nack should be delivered to upstream receiver (node_id={}), but was delivered to node_id={:?}",
-            UPSTREAM_RECEIVER_NODE_ID,
-            wrong_node_id
+            UPSTREAM_RECEIVER_NODE_ID, wrong_node_id
         );
     }
 }
