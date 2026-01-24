@@ -3,7 +3,7 @@
 # This configuration uses the fake data generator to produce synthetic OTAP data,
 # persists it through Quiver, and sends to noop exporter.
 #
-# Build with: cargo build --release --features quiver-persistence
+# Build with: cargo build --release --features persistence
 # Run with:   ./target/release/df_engine --pipeline configs/fake-persistence-noop.yaml
 
 settings:

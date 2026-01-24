@@ -29,7 +29,7 @@ ARG RUSTFLAGS="-C target-cpu=native"
 ENV RUSTFLAGS=${RUSTFLAGS}
 
 # These are used to enable features and are passed to carg's --features argument
-# e.g. --build-arg FEATURES="azure,quiver-persistence"
+# e.g. --build-arg FEATURES="azure,persistence"
 ARG FEATURES
 ENV FEATURES=${FEATURES}
 

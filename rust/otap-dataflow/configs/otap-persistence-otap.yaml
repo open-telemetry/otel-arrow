@@ -3,8 +3,8 @@
 # This configuration demonstrates the persistence processor providing
 # durable buffering between an OTAP receiver and OTAP exporter.
 #
-# Build with: cargo build --release --features quiver-persistence
-# Run with:   ./target/release/df_engine --config configs/otap-persistence-otap.yaml
+# Build with: cargo build --release --features persistence
+# Run with:   ./target/release/df_engine --pipeline configs/otap-persistence-otap.yaml
 #
 # To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
 

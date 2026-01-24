@@ -204,8 +204,8 @@ azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
-# Quiver persistence layer with persistence processor (opt-in)
-quiver-persistence = ["quiver", "otap-df-otap/persistence"]
+# Persistence processor using Quiver (opt-in)
+persistence = ["quiver", "otap-df-otap/persistence"]
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 # Experimental exporters (opt-in)

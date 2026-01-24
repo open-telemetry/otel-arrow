@@ -5,8 +5,8 @@
 # opaque binary for efficient pass-through (near-zero CPU overhead).
 # Set otlp_handling: convert_to_arrow to enable querying on stored data.
 #
-# Build with: cargo build --release --features quiver-persistence
-# Run with:   ./target/release/df_engine --config configs/otlp-persistence-otlp.yaml
+# Build with: cargo build --release --features persistence
+# Run with:   ./target/release/df_engine --pipeline configs/otlp-persistence-otlp.yaml
 #
 # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
 

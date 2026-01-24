@@ -3,8 +3,8 @@
 # This configuration lets you verify the persistence processor e2e flow
 # by writing received data to a debug log file.
 #
-# Build with: cargo build --release --features quiver-persistence
-# Run with:   ./target/release/df_engine --config configs/otlp-persistence-debug.yaml
+# Build with: cargo build --release --features persistence
+# Run with:   ./target/release/df_engine --pipeline configs/otlp-persistence-debug.yaml
 # Send data:  telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure --logs 10
 # Verify:     cat /tmp/persistence_debug.log
 
