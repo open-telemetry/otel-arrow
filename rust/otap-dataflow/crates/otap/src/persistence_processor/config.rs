@@ -40,9 +40,9 @@ fn default_otlp_handling() -> OtlpHandling {
     OtlpHandling::PassThrough
 }
 
-/// Default maximum time a segment can stay open (5 seconds).
+/// Default maximum time a segment can stay open (1 seconds).
 fn default_max_segment_open_duration() -> Duration {
-    Duration::from_secs(5)
+    Duration::from_secs(1)
 }
 
 /// How to handle incoming OTLP data.
