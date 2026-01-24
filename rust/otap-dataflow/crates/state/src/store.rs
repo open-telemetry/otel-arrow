@@ -13,7 +13,7 @@ use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::ConsoleWriter;
+use otap_df_telemetry::self_tracing::{ConsoleWriter, LogContext};
 use otap_df_telemetry::{otel_error, otel_info};
 use parking_lot::RwLock;
 use serde::Serialize;
@@ -152,7 +152,7 @@ impl ObservedStateStore {
 
                 // If we have a registry and entity context, print scope attributes
                 if let Some(ref registry) = *self.registry.read() {
-                    self.print_scope_from_registry(&log.record, registry);
+                    self.print_scope_from_registry(&log.record.context, registry);
                 }
             }
         }
@@ -161,58 +161,58 @@ impl ObservedStateStore {
 
     /// Print scope attributes by looking up entity keys in the registry.
     fn print_scope_from_registry(&self, context: &LogContext, registry: &TelemetryRegistryHandle) {
-        use std::io::Write;
+        // use std::io::Write;
 
-        // Build scope line with resolved attributes
-        let mut scope_parts = Vec::new();
+        // // Build scope line with resolved attributes
+        // let mut scope_parts = Vec::new();
 
-        if let Some(pipeline_key) = record.pipeline_entity_key {
-            registry.visit_entity(pipeline_key, |attrs| {
-                let desc = attrs.descriptor();
-                let values = attrs.attribute_values();
-                // Include all non-empty pipeline attributes
-                for (i, field) in desc.fields.iter().enumerate() {
-                    if let Some(val) = values.get(i) {
-                        let s = val.to_string_value();
-                        if !s.is_empty() {
-                            scope_parts.push(format!("{}={}", field.key, s));
-                        }
-                    }
-                }
-            });
-        }
+        // if let Some(pipeline_key) = record.pipeline_entity_key {
+        //     registry.visit_entity(pipeline_key, |attrs| {
+        //         let desc = attrs.descriptor();
+        //         let values = attrs.attribute_values();
+        //         // Include all non-empty pipeline attributes
+        //         for (i, field) in desc.fields.iter().enumerate() {
+        //             if let Some(val) = values.get(i) {
+        //                 let s = val.to_string_value();
+        //                 if !s.is_empty() {
+        //                     scope_parts.push(format!("{}={}", field.key, s));
+        //                 }
+        //             }
+        //         }
+        //     });
+        // }
 
-        if let Some(node_key) = record.node_entity_key {
-            registry.visit_entity(node_key, |attrs| {
-                let desc = attrs.descriptor();
-                let values = attrs.attribute_values();
-                // Include all non-empty node attributes (skip duplicates from pipeline)
-                for (i, field) in desc.fields.iter().enumerate() {
-                    // Skip fields already in scope_parts (node inherits from pipeline)
-                    if scope_parts
-                        .iter()
-                        .any(|p| p.starts_with(&format!("{}=", field.key)))
-                    {
-                        continue;
-                    }
-                    if let Some(val) = values.get(i) {
-                        let s = val.to_string_value();
-                        if !s.is_empty() {
-                            scope_parts.push(format!("{}={}", field.key, s));
-                        }
-                    }
-                }
-            });
-        }
+        // if let Some(node_key) = record.node_entity_key {
+        //     registry.visit_entity(node_key, |attrs| {
+        //         let desc = attrs.descriptor();
+        //         let values = attrs.attribute_values();
+        //         // Include all non-empty node attributes (skip duplicates from pipeline)
+        //         for (i, field) in desc.fields.iter().enumerate() {
+        //             // Skip fields already in scope_parts (node inherits from pipeline)
+        //             if scope_parts
+        //                 .iter()
+        //                 .any(|p| p.starts_with(&format!("{}=", field.key)))
+        //             {
+        //                 continue;
+        //             }
+        //             if let Some(val) = values.get(i) {
+        //                 let s = val.to_string_value();
+        //                 if !s.is_empty() {
+        //                     scope_parts.push(format!("{}={}", field.key, s));
+        //                 }
+        //             }
+        //         }
+        //     });
+        // }
 
-        if !scope_parts.is_empty() {
-            // Print scope line (indented, no timestamp/level)
-            let scope_line = format!(
-                "                                scope [{}]\n",
-                scope_parts.join(", ")
-            );
-            let _ = std::io::stderr().write_all(scope_line.as_bytes());
-        }
+        // if !scope_parts.is_empty() {
+        //     // Print scope line (indented, no timestamp/level)
+        //     let scope_line = format!(
+        //         "                                scope [{}]\n",
+        //         scope_parts.join(", ")
+        //     );
+        //     let _ = std::io::stderr().write_all(scope_line.as_bytes());
+        // }
     }
 
     /// Reports a new observed event in the store.

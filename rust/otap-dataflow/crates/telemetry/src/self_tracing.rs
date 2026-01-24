@@ -14,11 +14,17 @@ use crate::registry::EntityKey;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
-use smallvec::SmallVec;
+use smallvec::{smallvec, SmallVec};
+use serde::Serialize;
+use serde::ser::Serializer;
+use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
+pub use encoder::encode_export_logs_request;
+pub use encoder::encode_resource;
+pub use encoder::encode_resource_to_bytes;
 pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
@@ -93,7 +99,7 @@ impl LogRecord {
     /// Entity keys are not captured; use `new_with_context` for that.
     #[must_use]
     pub fn new(event: &Event<'_>) -> Self {
-        Self::new_with_context(event, smallvec::smallvec![])
+        Self::new_with_context(event, smallvec![])
     }
 
     /// Construct a log record with entity context, partially encoding its dynamic content.
@@ -122,15 +128,28 @@ impl LogRecord {
         SavedCallsite::new(self.callsite_id.0.metadata())
     }
 
-    /// The format (without timestamp).
-    #[must_use]
-    pub fn format_without_timestamp(&self) -> String {
-        ConsoleWriter::no_color().format_log_record(None, self)
-    }
-
     /// Returns true if this log record has any entity context (pipeline or node).
     #[must_use]
     pub fn has_entity_context(&self) -> bool {
         !self.context.is_empty()
+    }
+}
+
+impl fmt::Display for LogRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            ConsoleWriter::no_color().format_log_record(None, self)
+        )
+    }
+}
+
+impl Serialize for LogRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }

@@ -35,6 +35,7 @@ futures = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
+bytes = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
 uuid = { workspace = true }

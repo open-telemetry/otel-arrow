@@ -25,16 +25,18 @@
 //! * Export of a registry compatible with the semantic registry format
 //! * Client SDK generation with Weaver
 
-use std::sync::Arc;
-
 use crate::error::Error;
-use crate::event::ObservedEventReporter;
+use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
+use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{
     LogLevel, LoggingProviders, ProviderMode,
 };
+use std::sync::Arc;
+use tracing_init::ProviderSetup;
+use crate::tracing_init::empty_log_context;
 
 pub mod attributes;
 pub mod collector;
@@ -56,7 +58,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use tracing_init::{EntityKeyProviders, TracingSetup};
+pub use tracing_init::{TracingSetup, LogContextFn};
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -74,13 +76,35 @@ pub use tracing::info_span as otel_info_span;
 pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
 
+/// The URN for the internal telemetry receiver.
+/// Defined here so it can be used by controller, engine, otap, and other crates.
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
+
+/// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
+///
+/// This bundles the receiver end of the logs channel and pre-encoded resource bytes
+/// for injection into the ITR via the EffectHandler.
+#[derive(Clone)]
+pub struct InternalTelemetrySettings {
+    /// Receiver end of the logs channel for `ObservedEvent::Log` events.
+    pub logs_receiver: flume::Receiver<ObservedEvent>,
+    /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
+    pub resource_bytes: bytes::Bytes,
+}
+
+impl std::fmt::Debug for InternalTelemetrySettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InternalTelemetrySettings")
+            .field("resource_bytes", &self.resource_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
 // TODO This should be #[cfg(test)], but something is preventing it from working.
 // The #[cfg(test)]-labeled otap_batch_processor::test_helpers::from_config
 // can't load this module unless I remove #[cfg(test)]! See #1304.
 pub mod entity;
 pub mod testing;
-
-use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 
 /// The internal telemetry system - unified entry point for all telemetry.
 ///
@@ -120,28 +144,42 @@ pub struct InternalTelemetrySystem {
     provider_modes: LoggingProviders,
 
     /// Event reporter for asynchronous internal logging modes.
-    admin_reporter: ObservedEventReporter,
 
-    /// Entity key providers for associating logs with pipeline/node context.
-    /// Set via `set_entity_providers()` before spawning pipeline threads.
-    entity_providers: Option<EntityKeyProviders>,
+    /// Entity key providers for associating events with context.
+    context_fn: LogContextFn,
+
+    /// Event reporter for ConsoleAsync mode (Internal Telemetry System).
+    console_async_reporter: Option<ObservedEventReporter>,
+
+    /// Event reporter for ITS mode (Internal Telemetry System).
+    its_reporter: Option<ObservedEventReporter>,
+
+    /// Internal telemetry pipeline setup.
+    its_settings: Option<InternalTelemetrySettings>,
 }
 
 impl InternalTelemetrySystem {
     /// Creates a new [`InternalTelemetrySystem`] initialized with the given configuration.
     ///
-    /// This creates:
-    /// 1. The internal metrics subsystem (registry, collector, reporter, dispatcher)
-    /// 2. The OpenTelemetry SDK providers (meter, and optionally logger)
+    /// Depending on logging provider mode choices, multiple telemetry backends can be
+    /// initialized:
     ///
-    /// The `admin_reporter` is required for async logging modes (`ConsoleAsync`, future `ITS`).
-    /// Create the `ObservedStateStore` first and pass its reporter here.
+    /// OpenTelemetry: the OTel logging provider is created if any
+    /// service::telemetry::logs::providers uses this choice.  Note: the OTel meter
+    /// provider is created unconditionally.
+    ///
+    /// ConsoleAsync: the ObservedEventReporer is passed in, having been created for
+    /// use by the admin component unconditionally, to support the ConsoleAsync mode.
+    ///
+    /// ITS: if any logging provider is configured with for the internal telemetry system,
+    /// an InternalReceiver will be returned.
     ///
     /// **Note:** The global tracing subscriber is NOT initialized here. Call
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
-        admin_reporter: ObservedEventReporter,
+        console_async_reporter: Option<ObservedEventReporter>,
+        context_fn: LogContextFn,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -166,6 +204,22 @@ impl InternalTelemetrySystem {
         let sdk_logger_provider = otel_client.logger_provider().cloned();
         let otel_runtime = otel_client.into_runtime();
 
+        // 3. Create ITS channel if any provider uses ITS mode
+        let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
+            let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
+            let reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
+            let resource_bytes = otel_sdk::encode_resource_bytes(&config.resource);
+            (
+                Some(reporter),
+                Some(InternalTelemetrySettings {
+                    logs_receiver,
+                    resource_bytes,
+                }),
+            )
+        } else {
+            (None, None)
+        };
+
         Ok(Self {
             registry: telemetry_registry,
             collector: Arc::new(collector),
@@ -176,8 +230,10 @@ impl InternalTelemetrySystem {
             _otel_runtime: otel_runtime,
             log_level: config.logs.level,
             provider_modes: config.logs.providers.clone(),
-            admin_reporter,
-            entity_providers: None,
+            context_fn,
+            console_async_reporter,
+            its_reporter,
+            its_settings,
         })
     }
 
@@ -194,51 +250,38 @@ impl InternalTelemetrySystem {
         }
     }
 
-    /// Set entity key providers for associating logs with pipeline/node context.
-    ///
-    /// This should be called before spawning pipeline threads. Once set, all
-    /// tracing setups (global, engine, admin) will use these providers to
-    /// capture entity context when creating log records.
-    pub fn set_entity_providers(&mut self, providers: EntityKeyProviders) {
-        self.entity_providers = Some(providers);
-    }
-
     /// Returns a `TracingSetup` for the given provider mode.
     ///
     /// This is useful for per-thread subscriber configuration in the engine.
     /// The event reporter is taken from the internal state.
     #[must_use]
     pub fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
-        use tracing_init::ProviderSetup;
-
         let provider = match mode {
             ProviderMode::Noop => ProviderSetup::Noop,
 
             ProviderMode::ConsoleDirect => ProviderSetup::ConsoleDirect,
 
-            ProviderMode::ConsoleAsync => ProviderSetup::ConsoleAsync {
-                reporter: self.admin_reporter.clone(),
+            ProviderMode::ConsoleAsync => ProviderSetup::InternalAsync {
+                reporter: self
+                    .console_async_reporter
+                    .as_ref()
+                    .expect("has provider")
+                    .clone(),
+            },
+
+            ProviderMode::ITS => ProviderSetup::InternalAsync {
+                reporter: self.its_reporter.as_ref().expect("has provider").clone(),
             },
 
             ProviderMode::OpenTelemetry => {
-                let logger = self
-                    .sdk_logger_provider
-                    .as_ref()
-                    .expect("OpenTelemetry mode requires logger_provider");
+                let logger = self.sdk_logger_provider.as_ref().expect("has provider");
                 ProviderSetup::OpenTelemetry {
                     logger_provider: logger.clone(),
                 }
             }
-
-            ProviderMode::ITS => {
-                // ITS mode not yet implemented - fall back to Noop
-                raw_error!("ITS provider mode not yet implemented, falling back to Noop");
-                ProviderSetup::Noop
-            }
         };
 
-        TracingSetup::new(provider, self.log_level)
-            .with_entity_providers_opt(self.entity_providers)
+        TracingSetup::new(provider, self.log_level, self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -251,6 +294,21 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn admin_tracing_setup(&self) -> TracingSetup {
         self.tracing_setup_for(self.provider_modes.admin)
+    }
+
+    /// Returns a `TracingSetup` for internal telemetry pipeline threads.
+    ///
+    /// This defaults to `Noop` to avoid feedback loops where logs from
+    /// the internal pipeline would be sent back to itself.
+    #[must_use]
+    pub fn internal_tracing_setup(&self) -> TracingSetup {
+        self.tracing_setup_for(self.provider_modes.internal)
+    }
+
+    /// Ihe internal telemetry pipeline backend setup.
+    #[must_use]
+    pub fn internal_telemetry_settings(&self) -> Option<InternalTelemetrySettings> {
+        self.its_settings.clone()
     }
 
     /// Returns the configured log level.
@@ -307,6 +365,109 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        Self::new(&config, dummy_reporter).expect("default telemetry config should be valid")
+        Self::new(&config, Some(dummy_reporter), empty_log_context).expect("default telemetry config should be valid")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::pipeline::service::telemetry::{
+        AttributeValue::I64 as OTelI64,
+        AttributeValue::String as OTelString,
+        logs::{LoggingProviders, ProviderMode},
+    };
+    use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
+    use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::testing::equiv::assert_equivalent;
+    use prost::Message;
+
+    fn test_reporter() -> ObservedEventReporter {
+        let (sender, _receiver) = flume::bounded(16);
+        ObservedEventReporter::new(SendPolicy::default(), sender)
+    }
+
+    fn config_with_providers(providers: LoggingProviders) -> TelemetryConfig {
+        TelemetryConfig {
+            logs: otap_df_config::pipeline::service::telemetry::logs::LogsConfig {
+                providers,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn its_receiver_presence_depends_on_provider_mode() {
+        // Default (no ITS) -> no receiver
+        let its = InternalTelemetrySystem::new(&TelemetryConfig::default(), Some(test_reporter()))
+            .expect("should create");
+        assert!(
+            its.internal_telemetry_settings().is_none(),
+            "no ITS mode -> no receiver"
+        );
+
+        // ITS mode on engine -> receiver present and receives logs
+        let providers = LoggingProviders {
+            global: ProviderMode::Noop,
+            engine: ProviderMode::ITS,
+            internal: ProviderMode::Noop,
+            admin: ProviderMode::Noop,
+        };
+        let its =
+            InternalTelemetrySystem::new(&config_with_providers(providers), Some(test_reporter()))
+                .expect("should create");
+        let its_settings = its.internal_telemetry_settings();
+        let rx = its_settings
+            .expect("ITS mode should provide receiver")
+            .logs_receiver;
+        assert!(rx.is_empty(), "receiver starts empty");
+
+        // Emit a log using the engine tracing setup (which uses ITS)
+        its.engine_tracing_setup().with_subscriber(|| {
+            crate::otel_info!("test log message");
+        });
+
+        // Receiver should have the log
+        let recv = rx.recv().expect("receiver should have log after emit");
+        assert!(matches!(recv, ObservedEvent::Log(_)));
+        let text = recv.to_string();
+        assert!(text.contains("test log message"), "log message is {}", text);
+    }
+
+    #[test]
+    fn resource_bytes() {
+        let mut config = TelemetryConfig::default();
+        let _ = config.resource.insert(
+            "service.name".to_string(),
+            OTelString("my-test-service".into()),
+        );
+        let _ = config
+            .resource
+            .insert("service.id".to_string(), OTelI64(1234));
+        config.logs.providers.global = ProviderMode::ITS;
+
+        let its =
+            InternalTelemetrySystem::new(&config, Some(test_reporter())).expect("should create");
+
+        let settings = its.internal_telemetry_settings().expect("has ITS");
+        let parse =
+            ResourceLogs::decode(settings.resource_bytes).expect("decode OTLP resource bytes");
+
+        // The encoding is a fragment of ResourceLogs with just the Resource field set
+        assert_equivalent(
+            &[OtlpProtoMessage::Logs(LogsData::new([parse]))],
+            &[OtlpProtoMessage::Logs(LogsData::new([ResourceLogs::new(
+                Resource::build()
+                    .attributes([
+                        KeyValue::new("service.name", AnyValue::new_string("my-test-service")),
+                        KeyValue::new("service.id", AnyValue::new_int(1234)),
+                    ])
+                    .finish(),
+                [],
+            )]))],
+        );
     }
 }

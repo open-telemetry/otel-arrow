@@ -906,8 +906,7 @@ mod tests {
         let record_no_entity = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            context: None,
-            node_entity_key: None,
+            context: LogContext::empty(),
         };
 
         let output = writer.format_log_record(Some(time), &record_no_entity);
