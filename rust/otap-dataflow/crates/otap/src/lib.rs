@@ -105,6 +105,9 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+/// Internal telemetry receiver
+pub mod internal_telemetry_receiver;
+
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
