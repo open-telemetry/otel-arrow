@@ -2,6 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Configuration for the persistence processor.
+//!
+//! # Dispatch Strategy
+//!
+//! The persistence processor should be connected with `RoundRobin` (or `Random`/`LeastLoaded`)
+//! dispatch on its incoming edge. Using `Broadcast` will cause each message to be persisted
+//! multiple times (once per core), leading to:
+//! - N× storage consumption
+//! - N× duplicate messages forwarded downstream
+//!
+//! See the [module documentation](super) for more details.
 
 use std::path::PathBuf;
 use std::time::Duration;

@@ -18,6 +18,25 @@
 //!            WAL + Segments
 //! ```
 //!
+//! # Per-Core Isolation
+//!
+//! Each processor instance (one per CPU core) has its own isolated Quiver engine
+//! with a separate WAL and segment store. Data is partitioned by core at runtime,
+//! with each core's data stored in `{path}/core_{core_id}/`.
+//!
+//! # Dispatch Strategy Considerations
+//!
+//! **Important**: The dispatch strategy on the incoming edge affects behavior:
+//!
+//! | Strategy | Behavior | Recommendation |
+//! |----------|----------|----------------|
+//! | `RoundRobin` | Data distributed across cores, each persists its share | ✅ **Recommended** |
+//! | `Random` | Similar to round-robin | ✅ OK |
+//! | `LeastLoaded` | Similar to round-robin | ✅ OK |
+//! | `Broadcast` | Same data persisted N times (once per core) | ⚠️ **Avoid** - causes N× storage and duplicates |
+//!
+//! For the outgoing edge (to exporters), any dispatch strategy is valid.
+//!
 //! # Message Flow
 //!
 //! - `Message::Data`: Ingested to Quiver, ACK sent upstream after WAL fsync
