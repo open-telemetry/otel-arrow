@@ -21,6 +21,10 @@ and exporters supporting natively the OTAP Pdata.
   specified size or timeout.
 - Debug Processor: A processor to log incoming data for debugging
   purposes.
+- Persistence Processor: A processor providing durable buffering via Quiver's
+  write-ahead log and segment storage. See
+  [persistence_processor](src/persistence_processor/) for details.
+  Enable with `--features persistence`.
 - Retry Processor (WIP): A processor to retry sending data on failure.
 - Signal Type Router: A processor to route data based on signal type
   (traces, metrics, logs) to different downstream nodes.
