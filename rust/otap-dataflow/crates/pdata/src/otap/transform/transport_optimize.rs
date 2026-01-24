@@ -530,14 +530,20 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     } else {
         let mut columns = vec![];
         for field in record_batch.schema().fields() {
+            if field.name() == consts::ATTRIBUTE_TYPE {
+                columns.push(type_col_sorted.clone());
+                continue;
+            }
+
             if field.name() == consts::ATTRIBUTE_KEY {
                 let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
                 columns.push(concat(&sorted_keys_refs).unwrap());
                 continue;
             }
 
-            if field.name() == consts::ATTRIBUTE_TYPE {
-                columns.push(type_col_sorted.clone());
+            if field.name() == consts::ATTRIBUTE_STR {
+                let sorted_val_refs = sorted_values_str.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
+                columns.push(concat(&sorted_val_refs).unwrap());
                 continue;
             }
 
@@ -1569,6 +1575,10 @@ mod test {
         assert!(is_column_encoded(SCOPE_ID_COL_PATH, &schema).unwrap());
     }
 
+    // TODO -- all these sort tests might need to change if we're invoking
+    // sort_attrs_batch internally to what the test calls, just cuz it might not
+    // be calling the code that's expected
+
     #[test]
     fn test_sort_columns_multi_column() {
         let input_data = vec![(2, 1, 1), (2, 0, 1), (2, 1, 0)];
@@ -1847,6 +1857,73 @@ mod test {
         let result = sort_record_batch(&ArrowPayloadType::LogAttrs, &input).unwrap();
         arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
     }
+
+    #[test]
+    fn test_sort_attrs_record_batch() {
+        // TODO - add an ID column?
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(
+                    Box::new(DataType::UInt8),
+                    Box::new(DataType::Utf8)
+                ),
+                false
+            ),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(
+                    Box::new(DataType::UInt16),
+                    Box::new(DataType::Utf8)
+                ),
+                false
+            )
+        ]));
+
+        let input = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(UInt8Array::from_iter_values([
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8
+            ])),
+            Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 1, 0, 1]),
+                Arc::new(StringArray::from_iter_values(["ka", "kb"]))
+            )),
+            Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values([0, 1, 0, 1]),
+                Arc::new(StringArray::from_iter_values(["va", "vb"]))
+            )),
+        ]).unwrap();
+
+        arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
+
+        let expected = RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(UInt8Array::from_iter_values([
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8
+            ])),
+            Arc::new(DictionaryArray::new(
+                UInt8Array::from_iter_values([0, 0, 1, 1]),
+                Arc::new(StringArray::from_iter_values(["ka", "kb"]))
+            )),
+            Arc::new(DictionaryArray::new(
+                UInt16Array::from_iter_values([0, 0, 1, 1]),
+                Arc::new(StringArray::from_iter_values(["va", "vb"]))
+            )),
+        ]).unwrap();
+
+        assert_eq!(result, expected);
+    }
+
+    // TODO there are probably other test cases need to write for sort_attrs_record_batch
 
     #[test]
     fn test_create_delta_encoded_column() {
@@ -2518,4 +2595,6 @@ mod test {
             transport_encode_parent_id_for_columns::<UInt16Type>(&input, &["name"]).unwrap();
         assert_eq!(&result, input.column_by_name(consts::PARENT_ID).unwrap());
     }
+
+
 }
