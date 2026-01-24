@@ -463,6 +463,8 @@ fn sort_record_batch(
 }
 
 fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    // println!("input batch size = {}", record_batch.num_rows());
+
     let type_col = record_batch.column_by_name(consts::ATTRIBUTE_TYPE).unwrap();
     let type_col_sorted_indices = arrow::compute::sort_to_indices(type_col, None, None).unwrap();
     let type_col_sorted = take(type_col, &type_col_sorted_indices, None).unwrap();
@@ -477,22 +479,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let key_col_by_type = take(key_col, &type_col_sorted_indices, None).unwrap();
 
     let mut sorted_keys = vec![];
-
-    // TODO it will be easy to index like this and make the values sorting cleaner,
-    // but we'll need to completely refactor to optimizing concating dict values
-    // so we should refactor this into something abstract ...
-    let values_columns: [Option<&Arc<dyn Array>>; 2] =
-        [None, record_batch.column_by_name(consts::ATTRIBUTE_STR)];
-    let sorted_values: [Vec<Arc<dyn Array>>; 8] = [
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    ];
 
     let mut sorted_val_columns: [Option<SortedArrayBuilder>; 8] = [
         None, // empty
@@ -539,41 +525,13 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
+        // println!("type range = {:?}, len = {}", type_range, type_range.len());
+
         let keys_range = key_col_by_type.slice(type_range.start, type_range.len());
         let keys_range_sorted_indices =
             arrow::compute::sort_to_indices(&keys_range, None, None).unwrap();
         let keys_range_sorted = take(&keys_range, &keys_range_sorted_indices, None).unwrap();
         sorted_keys.push(keys_range_sorted.clone());
-
-        // let key_range_type =
-        //     AttributeValueType::try_from(type_col_sorted_bytes[type_range.start]).unwrap();
-        // let (values_col, sorted_values) = match key_range_type {
-        //     AttributeValueType::Str => (
-        //         record_batch.column_by_name(consts::ATTRIBUTE_STR),
-        //         &mut sorted_values_str,
-        //     ),
-        //     // AttributeValueType::Bool => {
-        //     //     //
-        //     //     // None
-        //     //     // record_batch.column_by_name(consts::ATTRIBUTE_BOOL)
-        //     // }
-        //     AttributeValueType::Int => (
-        //         record_batch.column_by_name(consts::ATTRIBUTE_INT),
-        //         &mut sorted_values_int,
-        //     ),
-        //     // AttributeValueType::Double => {
-        //     //     None
-        //     //     // record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE)
-        //     // }
-        //     // AttributeValueType::Slice => {
-        //     //     None
-        //     // }
-        //     x => {
-        //         println!("x  = {x:?}");
-        //         todo!()
-        //     }
-        // };
-        //
 
         let key_range_attr_type = type_col_sorted_bytes[type_range.start];
         let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
@@ -613,15 +571,20 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 continue; // skip cause we already pushed the sorted section for this type
             }
 
-            let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
-                || key_range_attr_type == AttributeValueType::Slice as u8
-            {
+            // TODO checking map or slice here isn't right ...
+            // if there's a map and no slice type, we get too many vals
+            if attr_type == AttributeValueType::Map as u8 {
+                continue // skip to avoid double insert cause it's the same column as Map
+            }
+            let sorted_val_col = if attr_type == AttributeValueType::Slice as u8 {
                 sorted_ser_column.as_mut()
             } else {
                 sorted_val_columns[attr_type as usize].as_mut()
             };
 
+
             if let Some(sorted_val_col) = sorted_val_col {
+                // println!("appending restants: {attr_type:?}, {type_range:?} len = {}", type_range.len());
                 sorted_val_col.append_range(&type_range);
             }
         }
@@ -630,6 +593,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let mut columns = vec![];
     for field in record_batch.schema().fields() {
         let field_name = field.name();
+
+        // println!("field_name = {field_name}");
 
         if field_name == consts::ATTRIBUTE_TYPE {
             columns.push(type_col_sorted.clone());
@@ -678,8 +643,18 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             continue;
         }
 
+        // TODO - not the right handling
+        if field_name == consts::PARENT_ID {
+            columns.push(record_batch.column_by_name(consts::PARENT_ID).unwrap().clone());
+            continue;
+        }
+
         todo!("handle bad col name {field_name}")
     }
+
+    // for column in &columns {
+    //     println!("len = {}", column.len());
+    // }
 
     // println!("columns = {columns:?}");
 
