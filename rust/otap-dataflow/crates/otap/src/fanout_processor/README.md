@@ -218,3 +218,37 @@ copied during clone.
 - **Unknown fallback target**: Rejected; `fallback_for` must reference port
 - **Fallback cycles**: Detected and rejected at config validation
 - **Shutdown**: Inflight requests are dropped (not proactively nacked)
+
+## Performance Optimizations
+
+The processor uses optimized fast paths for common configurations to minimize
+memory allocations per request:
+
+| Configuration | Fast Path | State Per Request |
+|---------------|-----------|-------------------|
+| `await_ack: none` | Fire-and-forget | **None** (zero tracking) |
+| `parallel` + `primary` (no fallback/timeout) | Slim primary | Minimal map |
+| All other configs | Full | Complete endpoint tracking |
+
+### Fire-and-Forget (`await_ack: none`)
+
+- Bypasses all inflight state allocation
+- Clones and sends to each destination immediately
+- Acks upstream without waiting for downstream
+- No subscriptions to downstream control messages
+
+### Slim Primary Path
+
+Eligible when: `mode: parallel`, `await_ack: primary`, no `fallback_for`, no `timeout`
+
+- Uses a tiny map instead of per-endpoint state
+- Ignores non-primary acks/nacks
+- Forwards upstream immediately on primary ack/nack
+
+### Full Path
+
+Required for: `sequential` mode, `await_ack: all`, any fallback, any timeout
+
+- Tracks per-endpoint status, timeouts, and fallback chains
+- Coordinates ordering (sequential) or completion (await_all)
+- Handles failover to backup destinations

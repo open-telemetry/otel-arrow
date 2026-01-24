@@ -214,6 +214,19 @@ impl FanoutConfig {
             origins_vec[idx] = current;
         }
 
+        // Compute fast-path eligibility flags.
+        let has_any_fallback = self.destinations.iter().any(|d| d.fallback_for.is_some());
+        let has_any_timeout = self.destinations.iter().any(|d| d.timeout.is_some());
+
+        // Fire-and-forget: await_ack == None
+        let use_fire_and_forget = matches!(self.await_ack, AwaitAck::None);
+
+        // Slim primary-only: parallel + primary + no fallback + no timeout
+        let use_slim_primary = matches!(self.mode, DeliveryMode::Parallel)
+            && matches!(self.await_ack, AwaitAck::Primary)
+            && !has_any_fallback
+            && !has_any_timeout;
+
         Ok(ValidatedConfig {
             mode: self.mode,
             await_ack: self.await_ack,
@@ -221,6 +234,8 @@ impl FanoutConfig {
             primary_index,
             origins: origins_vec,
             timeout_check_interval: self.timeout_check_interval,
+            use_fire_and_forget,
+            use_slim_primary,
         })
     }
 }
@@ -233,6 +248,11 @@ struct ValidatedConfig {
     primary_index: usize,
     origins: Vec<usize>,
     timeout_check_interval: Duration,
+    /// Fast-path: await_ack == None, no inflight tracking needed.
+    use_fire_and_forget: bool,
+    /// Fast-path: parallel + primary + no fallback + no timeout.
+    /// Uses slim inflight (request_id → original_pdata) instead of full EndpointVec.
+    use_slim_primary: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,7 +306,10 @@ struct FanoutMetrics {
 pub struct FanoutProcessor {
     config: ValidatedConfig,
     metrics: MetricSet<FanoutMetrics>,
+    /// Full inflight tracking for complex scenarios (sequential, await_all, fallback, timeout).
     inflight: HashMap<u64, Inflight>,
+    /// Slim inflight for primary-only fast path: just request_id -> original_pdata.
+    slim_inflight: HashMap<u64, OtapPdata>,
     next_id: u64,
     timer_started: bool,
 }
@@ -318,6 +341,7 @@ impl FanoutProcessor {
             config,
             metrics,
             inflight: HashMap::new(),
+            slim_inflight: HashMap::new(),
             next_id: 1,
             timer_started: false,
         }
@@ -682,6 +706,118 @@ impl FanoutProcessor {
 
         Ok(())
     }
+
+    // =========================================================================
+    // FAST PATH: Fire-and-forget (await_ack = none)
+    // =========================================================================
+    // No inflight tracking. Clone/send to each destination, ack upstream immediately.
+    // Downstream acks/nacks are ignored (no subscription with ACKS/NACKS interests).
+
+    async fn process_fire_and_forget(
+        &mut self,
+        pdata: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        // Send to all destinations (parallel, no fallback tracking).
+        for dest in &self.config.destinations {
+            // Skip fallback destinations in fire-and-forget mode.
+            if dest.fallback_for.is_some() {
+                continue;
+            }
+            let dest_data = pdata.clone();
+            // No subscription - we don't care about downstream acks/nacks.
+            effect_handler
+                .send_message_to(dest.port.clone(), dest_data)
+                .await?;
+        }
+        self.metrics.sent.add(1);
+
+        // Ack upstream immediately with original pdata.
+        self.metrics.acked.add(1);
+        effect_handler.notify_ack(AckMsg::new(pdata)).await?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // FAST PATH: Slim primary-only (parallel + primary + no fallback/timeout)
+    // =========================================================================
+    // Minimal state: request_id → original_pdata. Ignore non-primary acks/nacks.
+
+    async fn process_slim_primary(
+        &mut self,
+        pdata: OtapPdata,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let request_id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+
+        // Store only the original pdata for upstream routing on primary ack.
+        let _ = self.slim_inflight.insert(request_id, pdata.clone());
+
+        // Send to all destinations with subscription so we receive acks.
+        let interests = Interests::ACKS_OR_NACKS;
+        for (idx, dest) in self.config.destinations.iter().enumerate() {
+            let mut dest_data = pdata.clone();
+            let calldata = build_calldata(request_id, idx);
+            effect_handler.subscribe_to(interests, calldata, &mut dest_data);
+            effect_handler
+                .send_message_to(dest.port.clone(), dest_data)
+                .await?;
+        }
+        self.metrics.sent.add(1);
+        Ok(())
+    }
+
+    async fn process_ack_slim_primary(
+        &mut self,
+        ack: AckMsg<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Some((request_id, dest_index)) = parse_calldata(&ack.calldata) else {
+            return Ok(());
+        };
+
+        // Only care about primary acks.
+        if dest_index != self.config.primary_index {
+            return Ok(());
+        }
+
+        // Primary acked - forward upstream and clean up.
+        if let Some(original_pdata) = self.slim_inflight.remove(&request_id) {
+            self.metrics.acked.add(1);
+            effect_handler
+                .notify_ack(AckMsg::new(original_pdata))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn process_nack_slim_primary(
+        &mut self,
+        nack: NackMsg<OtapPdata>,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        let Some((request_id, dest_index)) = parse_calldata(&nack.calldata) else {
+            return Ok(());
+        };
+
+        // Only care about primary nacks (no fallback in slim path).
+        if dest_index != self.config.primary_index {
+            return Ok(());
+        }
+
+        // Primary nacked - forward upstream and clean up.
+        if let Some(original_pdata) = self.slim_inflight.remove(&request_id) {
+            self.metrics.nacked.add(1);
+            let nackmsg = NackMsg {
+                reason: nack.reason,
+                calldata: smallvec![],
+                refused: Box::new(original_pdata),
+            };
+            effect_handler.notify_nack(nackmsg).await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait(?Send)]
@@ -693,12 +829,25 @@ impl Processor<OtapPdata> for FanoutProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::Control(NodeControlMsg::Ack(ack)) => {
-                self.process_ack(ack, effect_handler).await
+                // Fire-and-forget never receives acks (no subscription).
+                // Slim primary path uses dedicated handler.
+                if self.config.use_slim_primary {
+                    self.process_ack_slim_primary(ack, effect_handler).await
+                } else {
+                    self.process_ack(ack, effect_handler).await
+                }
             }
             Message::Control(NodeControlMsg::Nack(nack)) => {
-                self.process_nack(nack, effect_handler).await
+                // Fire-and-forget never receives nacks (no subscription).
+                // Slim primary path uses dedicated handler.
+                if self.config.use_slim_primary {
+                    self.process_nack_slim_primary(nack, effect_handler).await
+                } else {
+                    self.process_nack(nack, effect_handler).await
+                }
             }
             Message::Control(NodeControlMsg::TimerTick { .. }) => {
+                // Fire-and-forget and slim primary don't use timers.
                 for nack in self.handle_timeout(effect_handler).await? {
                     effect_handler.notify_nack(nack).await?;
                 }
@@ -714,28 +863,29 @@ impl Processor<OtapPdata> for FanoutProcessor {
             // mirroring other stateless processors. Follow-up could proactively nack inflight on shutdown.
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
-                // Fast-path for await_ack = None: Ack immediately after dispatch.
-                let await_ack_none = matches!(self.config.await_ack, AwaitAck::None);
-                let request_id = self
-                    .register_inflight(pdata.clone(), effect_handler)
-                    .await?;
+                // === FAST PATH 1: Fire-and-forget (await_ack = none) ===
+                // No inflight tracking at all. Clone, send, ack upstream immediately.
+                if self.config.use_fire_and_forget {
+                    self.process_fire_and_forget(pdata, effect_handler).await?;
+                    return Ok(());
+                }
+
+                // === FAST PATH 2: Slim primary-only (parallel + primary + no fallback/timeout) ===
+                // Minimal state: just request_id → original_pdata.
+                if self.config.use_slim_primary {
+                    self.process_slim_primary(pdata, effect_handler).await?;
+                    return Ok(());
+                }
+
+                // === FULL PATH: Sequential, await_all, fallback, or timeout ===
+                // Full inflight tracking with EndpointVec.
+                let request_id = self.register_inflight(pdata, effect_handler).await?;
                 let inflight = self
                     .inflight
                     .get_mut(&request_id)
                     .expect("inflight just inserted");
                 Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
                 self.metrics.sent.add(1);
-
-                if await_ack_none {
-                    // Use original pdata for correct upstream routing
-                    let entry = self.inflight.remove(&request_id);
-                    self.metrics.acked.add(1);
-                    if let Some(inflight) = entry {
-                        effect_handler
-                            .notify_ack(AckMsg::new(inflight.original_pdata))
-                            .await?;
-                    }
-                }
                 Ok(())
             }
         }
@@ -1077,7 +1227,8 @@ mod tests {
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
             .expect("ack ok");
-        assert!(h.fanout.inflight.is_empty());
+        // This config uses slim_inflight (parallel + primary + no fallback/timeout).
+        assert!(h.fanout.slim_inflight.is_empty());
     }
 
     #[test]
@@ -1469,10 +1620,18 @@ mod tests {
             "parallel",
             "none",
         );
+        // Verify fire-and-forget flag is set.
+        assert!(h.fanout.config.use_fire_and_forget);
+
         h.fanout
             .process(Message::PData(make_pdata()), &mut h.effect)
             .await
             .expect("process ok");
+
+        // Fire-and-forget uses no inflight state at all.
+        assert!(h.fanout.inflight.is_empty());
+        assert!(h.fanout.slim_inflight.is_empty());
+
         let mut delivered = 0;
         while let Ok(Ok(msg)) =
             tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
@@ -1482,7 +1641,87 @@ mod tests {
             }
         }
         assert_eq!(delivered, 1);
+    }
+
+    #[tokio::test]
+    async fn slim_primary_path_used_when_eligible() {
+        // parallel + primary + no fallback + no timeout = slim path
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "primary",
+        );
+
+        // Verify slim primary flag is set and fire-and-forget is not.
+        assert!(h.fanout.config.use_slim_primary);
+        assert!(!h.fanout.config.use_fire_and_forget);
+
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Slim path uses slim_inflight, not full inflight.
         assert!(h.fanout.inflight.is_empty());
+        assert!(!h.fanout.slim_inflight.is_empty());
+
+        // Drain outputs.
+        let mut p1 = drain(h.outputs.get_mut("p1").expect("p1"));
+        let _p2 = drain(h.outputs.get_mut("p2").expect("p2"));
+
+        // Ack from primary clears slim_inflight.
+        let mut ack = AckMsg::new(p1.pop().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+        assert!(h.fanout.slim_inflight.is_empty());
+
+        // Verify upstream ack delivered.
+        let mut delivered_ack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if matches!(msg, PipelineControlMsg::DeliverAck { .. }) {
+                delivered_ack += 1;
+            }
+        }
+        assert_eq!(delivered_ack, 1);
+    }
+
+    #[tokio::test]
+    async fn slim_path_disabled_when_fallback_present() {
+        // Adding fallback should disable slim path.
+        let h = build_harness(
+            json!([
+                make_dest("primary", true, None, None),
+                make_dest("backup", false, Some("primary"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+
+        // Fallback disables slim path.
+        assert!(!h.fanout.config.use_slim_primary);
+        assert!(!h.fanout.config.use_fire_and_forget);
+    }
+
+    #[tokio::test]
+    async fn slim_path_disabled_when_timeout_present() {
+        // Adding timeout should disable slim path.
+        let h = build_harness(
+            json!([make_dest("p1", true, None, Some("100ms"))]),
+            "parallel",
+            "primary",
+        );
+
+        // Timeout disables slim path.
+        assert!(!h.fanout.config.use_slim_primary);
+        assert!(!h.fanout.config.use_fire_and_forget);
     }
 
     #[tokio::test]
@@ -1510,7 +1749,8 @@ mod tests {
             .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
             .await
             .expect("nack ok");
-        assert!(!h.fanout.inflight.is_empty());
+        // This config uses slim_inflight (parallel + primary + no fallback/timeout).
+        assert!(!h.fanout.slim_inflight.is_empty());
 
         let mut ack = AckMsg::new(prim.pop().unwrap());
         ack.calldata = ack.accepted.current_calldata().unwrap();
@@ -1518,7 +1758,7 @@ mod tests {
             .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
             .await
             .expect("ack ok");
-        assert!(h.fanout.inflight.is_empty());
+        assert!(h.fanout.slim_inflight.is_empty());
 
         let mut delivered_ack = 0;
         let mut delivered_nack = 0;
@@ -1699,8 +1939,8 @@ mod tests {
             .await
             .expect("ack ok");
 
-        // Verify fanout's inflight is cleared
-        assert!(h.fanout.inflight.is_empty());
+        // Verify fanout's slim_inflight is cleared (this config uses slim path).
+        assert!(h.fanout.slim_inflight.is_empty());
 
         // Now check the upstream delivery - should go to UPSTREAM_RECEIVER_NODE_ID
         let mut delivered_to_receiver = false;
@@ -1767,7 +2007,8 @@ mod tests {
             .await
             .expect("nack ok");
 
-        assert!(h.fanout.inflight.is_empty());
+        // This config uses slim_inflight (parallel + primary + no fallback/timeout).
+        assert!(h.fanout.slim_inflight.is_empty());
 
         // Check the upstream delivery - should go to UPSTREAM_RECEIVER_NODE_ID
         let mut delivered_to_receiver = false;
