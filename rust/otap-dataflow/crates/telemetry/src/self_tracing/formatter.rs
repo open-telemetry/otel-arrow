@@ -585,8 +585,8 @@ where
 mod tests {
     use super::*;
     use crate::self_tracing::DirectLogRecordEncoder;
-    use crate::self_tracing::encoder::level_to_severity_number;
     use crate::self_tracing::LogContext;
+    use crate::self_tracing::encoder::level_to_severity_number;
     use bytes::Bytes;
     use otap_df_pdata::otlp::ProtoBuffer;
     use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;

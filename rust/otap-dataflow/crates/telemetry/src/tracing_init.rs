@@ -115,11 +115,7 @@ pub enum ProviderSetup {
 
 impl ProviderSetup {
     /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(
-        &self,
-        log_level: LogLevel,
-        context_fn: LogContextFn,
-    ) -> Dispatch {
+    fn build_dispatch(&self, log_level: LogLevel, context_fn: LogContextFn) -> Dispatch {
         let filter = || create_env_filter(log_level);
 
         match self {
@@ -154,12 +150,7 @@ impl ProviderSetup {
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    pub fn with_subscriber<F, R>(
-        &self,
-        log_level: LogLevel,
-        context_fn: LogContextFn,
-        f: F,
-    ) -> R
+    pub fn with_subscriber<F, R>(&self, log_level: LogLevel, context_fn: LogContextFn, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -177,10 +168,7 @@ pub struct ConsoleAsyncLayer {
 impl ConsoleAsyncLayer {
     /// Create a new async logging layer.
     #[must_use]
-    pub fn new(
-        reporter: &ObservedEventReporter,
-        context_fn: LogContextFn,
-    ) -> Self {
+    pub fn new(reporter: &ObservedEventReporter, context_fn: LogContextFn) -> Self {
         Self {
             reporter: reporter.clone(),
             context_fn,
@@ -464,9 +452,13 @@ mod tests {
         });
 
         let (reporter, _rx) = test_reporter();
-        ProviderSetup::InternalAsync { reporter }.with_subscriber(LogLevel::Info, empty_log_context, || {
-            otel_info!("console_async");
-        });
+        ProviderSetup::InternalAsync { reporter }.with_subscriber(
+            LogLevel::Info,
+            empty_log_context,
+            || {
+                otel_info!("console_async");
+            },
+        );
 
         let logger_provider = SdkLoggerProvider::builder().build();
         ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(

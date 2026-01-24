@@ -41,7 +41,6 @@
 //! - TODO: Live pipeline updates
 //! - TODO: Better resource control
 
-use smallvec::smallvec;
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
@@ -53,15 +52,18 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::{node_entity_key, pipeline_entity_key, set_pipeline_entity_key};
+use otap_df_engine::entity_context::{
+    node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
+};
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
-    InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span, otel_warn,
-    InternalTelemetrySettings, self_tracing::LogContext,
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
+    otel_warn, self_tracing::LogContext,
 };
+use smallvec::smallvec;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -84,10 +86,10 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
 
 fn engine_keys() -> LogContext {
     match (node_entity_key(), pipeline_entity_key()) {
-        (Some(k1), Some(k2)) =>     smallvec![k1, k2],
-        (Some(k1), None) =>     smallvec![k1],
-        (None, Some(k2)) =>     smallvec![k2],
-        (None, None) =>     smallvec![],
+        (Some(k1), Some(k2)) => smallvec![k1, k2],
+        (Some(k1), None) => smallvec![k1],
+        (None, Some(k2)) => smallvec![k2],
+        (None, None) => smallvec![],
     }
 }
 
@@ -126,14 +128,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             .providers
             .uses_console_async_provider()
             .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
-
-        // // Set entity key providers so all tracing setups can associate logs
-        // // with pipeline/node context. The function pointers read thread-local
-        // // and task-local state, so they work correctly on any thread.
-        // telemetry_system.set_entity_providers(EntityKeyProviders {
-        //     pipeline: pipeline_entity_key,
-        //     node: node_entity_key,
-        // });
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any

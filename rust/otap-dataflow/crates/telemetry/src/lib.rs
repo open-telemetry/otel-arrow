@@ -28,6 +28,7 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
+use crate::tracing_init::empty_log_context;
 use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
@@ -36,7 +37,6 @@ use otap_df_config::pipeline::service::telemetry::logs::{
 };
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
-use crate::tracing_init::empty_log_context;
 
 pub mod attributes;
 pub mod collector;
@@ -58,7 +58,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use tracing_init::{TracingSetup, LogContextFn};
+pub use tracing_init::{LogContextFn, TracingSetup};
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -365,7 +365,8 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        Self::new(&config, Some(dummy_reporter), empty_log_context).expect("default telemetry config should be valid")
+        Self::new(&config, Some(dummy_reporter), empty_log_context)
+            .expect("default telemetry config should be valid")
     }
 }
 
@@ -402,8 +403,12 @@ mod tests {
     #[test]
     fn its_receiver_presence_depends_on_provider_mode() {
         // Default (no ITS) -> no receiver
-        let its = InternalTelemetrySystem::new(&TelemetryConfig::default(), Some(test_reporter()), empty_log_context)
-            .expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &TelemetryConfig::default(),
+            Some(test_reporter()),
+            empty_log_context,
+        )
+        .expect("should create");
         assert!(
             its.internal_telemetry_settings().is_none(),
             "no ITS mode -> no receiver"
@@ -416,9 +421,12 @@ mod tests {
             internal: ProviderMode::Noop,
             admin: ProviderMode::Noop,
         };
-        let its =
-            InternalTelemetrySystem::new(&config_with_providers(providers), Some(test_reporter()), empty_log_context)
-                .expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &config_with_providers(providers),
+            Some(test_reporter()),
+            empty_log_context,
+        )
+        .expect("should create");
         let its_settings = its.internal_telemetry_settings();
         let rx = its_settings
             .expect("ITS mode should provide receiver")
@@ -449,8 +457,8 @@ mod tests {
             .insert("service.id".to_string(), OTelI64(1234));
         config.logs.providers.global = ProviderMode::ITS;
 
-        let its =
-            InternalTelemetrySystem::new(&config, Some(test_reporter()), empty_log_context).expect("should create");
+        let its = InternalTelemetrySystem::new(&config, Some(test_reporter()), empty_log_context)
+            .expect("should create");
 
         let settings = its.internal_telemetry_settings().expect("has ITS");
         let parse =

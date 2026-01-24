@@ -18,9 +18,9 @@ use otap_df_telemetry::{otel_error, otel_info};
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
-use std::io::Write;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
 
@@ -153,17 +153,14 @@ impl ObservedStateStore {
                 let context = &log.record.context;
 
                 // Print log record and scope atomically in a single write
-                self.console.print_log_record_with_scope(
-                    log.time,
-                    &log.record,
-                    |w, cw| {
+                self.console
+                    .print_log_record_with_scope(log.time, &log.record, |w, cw| {
                         if !context.is_empty() {
                             if let Some(ref reg) = *registry {
                                 Self::format_scope_from_registry(w, cw, context, reg);
                             }
                         }
-                    },
-                );
+                    });
             }
         }
         Ok(())
