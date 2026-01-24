@@ -17,6 +17,11 @@ processors:
     # Maximum disk space (default: 10 GiB)
     retention_size_cap: 10 GiB
 
+    # Maximum age of data to retain (optional, no default)
+    # When set, data older than this becomes eligible for removal.
+    # Can be combined with retention_size_cap for dual-constraint retention.
+    # max_age: 24h
+
     # Policy when size cap is reached (default: backpressure)
     # - backpressure: Block ingestion (no data loss)
     # - drop_oldest: Remove oldest segments (controlled data loss)
