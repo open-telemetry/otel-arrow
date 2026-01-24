@@ -3,13 +3,14 @@
 
 //! Error types for pipeline validation helpers.
 
+use minijinja::Error as MiniJinjaError;
 use std::fmt;
 use std::io;
 
 #[derive(Debug)]
 pub enum PipelineError {
     Io(io::Error),
-    Template(tera::Error),
+    Template(MiniJinjaError),
     Config(String),
     Http(reqwest::Error),
     Status(String),
@@ -37,8 +38,8 @@ impl From<io::Error> for PipelineError {
     }
 }
 
-impl From<tera::Error> for PipelineError {
-    fn from(err: tera::Error) -> Self {
+impl From<MiniJinjaError> for PipelineError {
+    fn from(err: MiniJinjaError) -> Self {
         PipelineError::Template(err)
     }
 }

@@ -9,5 +9,5 @@ tests:
     pipeline_config_path: ./validation_pipelines/debug-processor.yaml
     variables:
       loadgen_exporter_type: otlp
-      backend_receiver_type: otlp
+      backend_receiver_type: otap
       expect_failure: false

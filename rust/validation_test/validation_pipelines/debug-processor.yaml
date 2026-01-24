@@ -1,5 +1,3 @@
-
-
 nodes:
   receiver:
     kind: receiver
@@ -23,7 +21,10 @@ nodes:
       verbosity: basic
   exporter:
     kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    plugin_urn: "urn:otel:otap:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
+      compression_method: none
+      arrow:
+        payload_compression: none
 

@@ -3,22 +3,21 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+use minijinja::{Environment, context};
 use otap_df_config::engine::EngineConfig;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
-use tera::{Context, Tera};
 use tokio::time::{Duration, sleep};
 
 use crate::error::PipelineError;
 use crate::metrics_types::{MetricValue, MetricsSnapshot};
 
-const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.tera";
+const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
 const ADMIN_ENDPOINT: &str = "http://127.0.0.1:8085";
 const READY_MAX_ATTEMPTS: usize = 10;
 const READY_BACKOFF_SECS: u64 = 3;
@@ -139,10 +138,17 @@ impl PipelineValidation {
         // get pipeline group template to run validation test
         let template = fs::read_to_string(template_path)?;
 
-        let mut tera_context = Context::from_serialize(&self.variables)?;
-        tera_context.insert("pipeline_config", &pipeline_config);
-        // render the pipeline group string
-        Ok(Tera::one_off(&template, &tera_context, false)?)
+        let mut env = Environment::new();
+        let _ = env.add_template("template", template.as_str());
+        let tmpl = env.get_template("template")?;
+        let ctx = context! {
+            loadgen_exporter_type => &self.variables.loadgen_exporter_type,
+            backend_receiver_type => &self.variables.backend_receiver_type,
+            expect_failure => self.variables.expect_failure,
+            pipeline_config => pipeline_config,
+        };
+        let rendered = tmpl.render(ctx)?;
+        Ok(rendered)
     }
 }
 

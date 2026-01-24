@@ -1,0 +1,134 @@
+# Engine-wide settings
+settings:
+  http_admin:
+    bind_address: 127.0.0.1:8085
+{% set receiver_type = backend_receiver_type | default("otlp") -%}
+{% set exporter_type = loadgen_exporter_type | default("otlp") -%}
+{% set receiver_extra_config = "" -%}
+{% set receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% if receiver_type == "otap" -%}
+  {% set receiver_plugin_urn = "urn:otel:otap:receiver" -%}
+  {% set receiver_extra_config = "response_stream_channel_size: 256" -%}
+{% endif -%}
+{% set exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
+{% if exporter_type == "otap" -%}
+  {% set exporter_plugin_urn = "urn:otel:otap:exporter" -%}
+{% endif -%}
+{% set suv_pipeline = pipeline_config | default("nodes:") -%}
+{% set expect_failure = expect_failure | default(false) -%}
+
+pipeline_groups:
+  validation_test:
+    pipelines:
+      # ======================================================================
+      # Validation pipeline to validate equivalence
+      # ======================================================================
+      validate:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 1
+                end: 1
+        nodes:
+          suv_receiver:
+            kind: receiver
+            plugin_urn: "{{ receiver_plugin_urn }}"
+            out_ports:
+              out_port:
+                destinations:
+                  - validation_exporter
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: "127.0.0.1:4318"
+              {{ receiver_extra_config }}
+
+          # control_receiver:
+          #   kind: receiver
+          #   plugin_urn: {{ receiver_plugin_urn }}
+          #   out_ports:
+          #     out_port:
+          #       destinations:
+          #         - validation_exporter1
+          #       dispatch_strategy: round_robin
+          #   config:
+          #     listening_addr: "127.0.0.1:4316"
+          validation_exporter:
+            kind: exporter
+            plugin_urn: "urn:otel:noop:exporter"
+            config:
+                # expect_failure: {{ expect_failure }}
+
+      # ======================================================================
+      # System Under Validation pipeline
+      # ======================================================================
+      suv:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 0
+                end: 0
+{{ suv_pipeline | indent(8, true)}}
+
+      # ======================================================================
+      # Pipeline generating traffic
+      # ======================================================================
+      traffic_gen:
+        quota:
+          core_allocation:
+            type: core_set
+            set:
+              - type: CoreRange
+                start: 2
+                end: 2
+
+        nodes:
+          receiver:
+            kind: receiver
+            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            out_ports:
+              out_port:
+                destinations:
+                  - suv_exporter
+                dispatch_strategy: broadcast
+            config:
+              traffic_config:
+                max_signal_count: 2000
+                max_batch_size: 100
+                signals_per_second: 100
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+          # fanout:
+          #   kind: processor
+          #   plugin_urn: "urn:otel:fanout:processor"
+          #   out_ports:
+          #     left:
+          #       destinations:
+          #         - suv_exporter
+          #       dispatch_strategy: round_robin
+          #     right:
+          #       destinations:
+          #         - validation_input
+          #       dispatch_strategy: round_robin
+
+          suv_exporter:
+            kind: exporter
+            plugin_urn: "{{ exporter_plugin_urn }}"
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+              {% if exporter_type == "otap" -%}
+              compression_method: none
+              arrow:
+                payload_compression: none
+              {% endif -%}
+          # control_exporter:
+          #   kind: exporter
+          #   plugin_urn: "{{ exporter_plugin_urn }}"
+          #   config:
+          #     grpc_endpoint: "http://127.0.0.1:4316"
