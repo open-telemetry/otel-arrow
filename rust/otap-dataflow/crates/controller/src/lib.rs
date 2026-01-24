@@ -216,6 +216,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let mut threads = Vec::new();
         let mut ctrl_msg_senders = Vec::new();
 
+        // TODO: We do not have proper thread::current().id assignment.
+        let mut next_thread_id: usize = 1;
+        let its_thread_id: usize = 0;
+
         // Add internal pipeline to threads list if present
         if let Some((thread_name, handle)) = internal_pipeline_handle {
             threads.push((thread_name, its_thread_id, its_key, handle));
@@ -229,7 +233,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     &quota.core_allocation,
                 )?;
 
-                for core_id in requested_cores.into_iter() {
+                for core_id in requested_cores {
                     let pipeline_key = DeployedPipelineKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
@@ -244,6 +248,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                     let pipeline_config = pipeline.clone();
                     let pipeline_factory = self.pipeline_factory;
+                    let thread_id = next_thread_id;
+                    next_thread_id += 1;
                     let pipeline_handle = controller_ctx.pipeline_context_with(
                         pipeline_group_id.clone(),
                         pipeline_id.clone(),
