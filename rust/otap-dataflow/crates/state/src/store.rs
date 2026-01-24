@@ -13,13 +13,14 @@ use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{ConsoleWriter, LogContext};
+use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LogContext};
 use otap_df_telemetry::{otel_error, otel_info};
 use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
+use std::io::Write;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
 
@@ -147,72 +148,60 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                // Print the log record first
-                self.console.print_log_record(log.time, &log.record);
+                // Get registry reference once for the scope formatter closure
+                let registry = self.registry.read();
+                let context = &log.record.context;
 
-                // If we have a registry and entity context, print scope attributes
-                if let Some(ref registry) = *self.registry.read() {
-                    self.print_scope_from_registry(&log.record.context, registry);
-                }
+                // Print log record and scope atomically in a single write
+                self.console.print_log_record_with_scope(
+                    log.time,
+                    &log.record,
+                    |w, cw| {
+                        if !context.is_empty() {
+                            if let Some(ref reg) = *registry {
+                                Self::format_scope_from_registry(w, cw, context, reg);
+                            }
+                        }
+                    },
+                );
             }
         }
         Ok(())
     }
 
-    /// Print scope attributes by looking up entity keys in the registry.
-    fn print_scope_from_registry(&self, context: &LogContext, registry: &TelemetryRegistryHandle) {
-        // use std::io::Write;
+    /// Format scope attributes by looking up entity keys in the registry.
+    /// Writes a scope continuation line with resolved attributes from all entities.
+    fn format_scope_from_registry(
+        w: &mut BufWriter<'_>,
+        cw: &ConsoleWriter,
+        context: &LogContext,
+        registry: &TelemetryRegistryHandle,
+    ) {
+        // Write scope line prefix
+        let _ = w.write_all(b"    ");
+        cw.write_styled(w, AnsiCode::Dim, |w| {
+            let _ = w.write_all(b"scope");
+        });
+        let _ = w.write_all(b" [");
 
-        // // Build scope line with resolved attributes
-        // let mut scope_parts = Vec::new();
+        let mut first = true;
 
-        // if let Some(pipeline_key) = record.pipeline_entity_key {
-        //     registry.visit_entity(pipeline_key, |attrs| {
-        //         let desc = attrs.descriptor();
-        //         let values = attrs.attribute_values();
-        //         // Include all non-empty pipeline attributes
-        //         for (i, field) in desc.fields.iter().enumerate() {
-        //             if let Some(val) = values.get(i) {
-        //                 let s = val.to_string_value();
-        //                 if !s.is_empty() {
-        //                     scope_parts.push(format!("{}={}", field.key, s));
-        //                 }
-        //             }
-        //         }
-        //     });
-        // }
+        for entity_key in context.iter() {
+            registry.visit_entity(*entity_key, |attrs| {
+                for (key, value) in attrs.iter_attributes() {
+                    let s = value.to_string_value();
+                    if !s.is_empty() {
+                        if !first {
+                            let _ = w.write_all(b", ");
+                        }
+                        first = false;
+                        let _ = write!(w, "{}={}", key, s);
+                    }
+                }
+            });
+        }
 
-        // if let Some(node_key) = record.node_entity_key {
-        //     registry.visit_entity(node_key, |attrs| {
-        //         let desc = attrs.descriptor();
-        //         let values = attrs.attribute_values();
-        //         // Include all non-empty node attributes (skip duplicates from pipeline)
-        //         for (i, field) in desc.fields.iter().enumerate() {
-        //             // Skip fields already in scope_parts (node inherits from pipeline)
-        //             if scope_parts
-        //                 .iter()
-        //                 .any(|p| p.starts_with(&format!("{}=", field.key)))
-        //             {
-        //                 continue;
-        //             }
-        //             if let Some(val) = values.get(i) {
-        //                 let s = val.to_string_value();
-        //                 if !s.is_empty() {
-        //                     scope_parts.push(format!("{}={}", field.key, s));
-        //                 }
-        //             }
-        //         }
-        //     });
-        // }
-
-        // if !scope_parts.is_empty() {
-        //     // Print scope line (indented, no timestamp/level)
-        //     let scope_line = format!(
-        //         "                                scope [{}]\n",
-        //         scope_parts.join(", ")
-        //     );
-        //     let _ = std::io::stderr().write_all(scope_line.as_bytes());
-        // }
+        let _ = w.write_all(b"]\n");
     }
 
     /// Reports a new observed event in the store.

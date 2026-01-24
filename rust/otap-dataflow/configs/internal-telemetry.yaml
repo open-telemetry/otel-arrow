@@ -46,10 +46,10 @@ service:
     logs:
       level: "debug"
       providers:
-        global: its
-        engine: its
+        global: console_async
+        engine: console_async
         internal: console_direct
-        admin: its
+        admin: console_direct
     resource:
       service.id: 1234
       service.name: test

@@ -402,7 +402,7 @@ mod tests {
     #[test]
     fn its_receiver_presence_depends_on_provider_mode() {
         // Default (no ITS) -> no receiver
-        let its = InternalTelemetrySystem::new(&TelemetryConfig::default(), Some(test_reporter()))
+        let its = InternalTelemetrySystem::new(&TelemetryConfig::default(), Some(test_reporter()), empty_log_context)
             .expect("should create");
         assert!(
             its.internal_telemetry_settings().is_none(),
@@ -417,7 +417,7 @@ mod tests {
             admin: ProviderMode::Noop,
         };
         let its =
-            InternalTelemetrySystem::new(&config_with_providers(providers), Some(test_reporter()))
+            InternalTelemetrySystem::new(&config_with_providers(providers), Some(test_reporter()), empty_log_context)
                 .expect("should create");
         let its_settings = its.internal_telemetry_settings();
         let rx = its_settings
@@ -450,7 +450,7 @@ mod tests {
         config.logs.providers.global = ProviderMode::ITS;
 
         let its =
-            InternalTelemetrySystem::new(&config, Some(test_reporter())).expect("should create");
+            InternalTelemetrySystem::new(&config, Some(test_reporter()), empty_log_context).expect("should create");
 
         let settings = its.internal_telemetry_settings().expect("has ITS");
         let parse =

@@ -131,14 +131,40 @@ impl ConsoleWriter {
         self.write_line(record.callsite().level(), &buf[..len]);
     }
 
-    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
-    #[allow(dead_code)]
-    fn format_log_record_into(
+    /// Print a LogRecord with a custom scope formatter.
+    ///
+    /// This allows the caller to provide a callback that formats scope information
+    /// using resolved attributes (e.g., from a registry lookup). The log record and
+    /// scope are written atomically to prevent interleaving with other log output.
+    ///
+    /// The `scope_formatter` callback receives a mutable buffer writer and should
+    /// append any scope continuation lines. If scope formatting is not needed,
+    /// use `print_log_record` instead.
+    pub fn print_log_record_with_scope<F>(
+        &self,
+        time: SystemTime,
+        record: &LogRecord,
+        scope_formatter: F,
+    ) where
+        F: FnOnce(&mut BufWriter<'_>, &Self),
+    {
+        let mut buf = [0u8; LOG_BUFFER_SIZE];
+        let len = self.format_log_record_core(&mut buf, Some(time), record, scope_formatter);
+        self.write_line(record.callsite().level(), &buf[..len]);
+    }
+
+    /// Core formatting logic that formats a LogRecord into a buffer.
+    /// The `scope_formatter` callback is called after the main log line to add scope.
+    fn format_log_record_core<F>(
         &self,
         buf: &mut [u8],
         time: Option<SystemTime>,
         record: &LogRecord,
-    ) -> usize {
+        scope_formatter: F,
+    ) -> usize
+    where
+        F: FnOnce(&mut BufWriter<'_>, &Self),
+    {
         let mut w = Cursor::new(buf);
 
         // Create a view over the pre-encoded body+attrs bytes
@@ -155,12 +181,26 @@ impl ConsoleWriter {
             },
         );
 
-        // Add scope continuation line if entity context is present (Inline mode only)
-        if record.context.len() != 0 {
-            self.format_scope_continuation_into(&mut w, record);
-        }
+        // Call the custom scope formatter
+        scope_formatter(&mut w, self);
 
         w.position() as usize
+    }
+
+    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
+    #[allow(dead_code)]
+    fn format_log_record_into(
+        &self,
+        buf: &mut [u8],
+        time: Option<SystemTime>,
+        record: &LogRecord,
+    ) -> usize {
+        self.format_log_record_core(buf, time, record, |w, cw| {
+            // Add scope continuation line if entity context is present (Inline mode only)
+            if !record.context.is_empty() {
+                cw.format_scope_continuation_into(w, record);
+            }
+        })
     }
 
     /// Format a scope continuation line showing entity context.
@@ -546,6 +586,7 @@ mod tests {
     use super::*;
     use crate::self_tracing::DirectLogRecordEncoder;
     use crate::self_tracing::encoder::level_to_severity_number;
+    use crate::self_tracing::LogContext;
     use bytes::Bytes;
     use otap_df_pdata::otlp::ProtoBuffer;
     use otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value;
@@ -906,7 +947,7 @@ mod tests {
         let record_no_entity = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            context: LogContext::empty(),
+            context: LogContext::default(),
         };
 
         let output = writer.format_log_record(Some(time), &record_no_entity);
