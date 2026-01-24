@@ -251,12 +251,16 @@ struct EndpointState {
     payload: Option<OtapPdata>,
 }
 
+/// Most fanout configurations have 2-4 destinations; inline storage avoids heap allocation.
+type EndpointVec = SmallVec<[EndpointState; 4]>;
+
 #[derive(Debug)]
 struct Inflight {
     await_ack: AwaitAck,
     mode: DeliveryMode,
     primary: usize,
-    endpoints: Vec<EndpointState>,
+    /// Inline storage for up to 4 endpoints to avoid heap allocation in common cases.
+    endpoints: EndpointVec,
     completed_origins: HashSet<usize>,
     required_origins: usize,
     /// Original pdata (before fanout's subscription was added) for upstream ack/nack.
@@ -356,7 +360,7 @@ impl FanoutProcessor {
         let request_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
 
-        let mut endpoints = Vec::with_capacity(self.config.destinations.len());
+        let mut endpoints = EndpointVec::new();
         let mut queue = SmallVec::<[usize; 4]>::new();
         let interests = Interests::ACKS_OR_NACKS | Interests::RETURN_DATA;
         // Deadlines are initialized here and reset at actual dispatch time; a future tightening
@@ -405,7 +409,7 @@ impl FanoutProcessor {
                 mode: self.config.mode,
                 primary: self.config.primary_index,
                 endpoints,
-                completed_origins: HashSet::new(),
+                completed_origins: HashSet::new(), // zero-cost default if not used.
                 required_origins,
                 original_pdata: pdata,
                 next_send_queue: queue,
@@ -498,10 +502,11 @@ impl FanoutProcessor {
     ) -> Result<Vec<NackMsg<OtapPdata>>, Error> {
         let now = now();
         let mut expired = Vec::new();
-        let mut dispatch_requests = HashSet::new();
-        let requests: Vec<u64> = self.inflight.keys().cloned().collect();
+        // Use SmallVec to avoid heap allocations for typical inflight counts.
+        let mut dispatch_requests = SmallVec::<[u64; 8]>::new();
+        let requests: SmallVec<[u64; 16]> = self.inflight.keys().cloned().collect();
         for req in requests {
-            let mut timeouts = Vec::new();
+            let mut timeouts = SmallVec::<[usize; 4]>::new();
             if let Some(inflight) = self.inflight.get_mut(&req) {
                 for (idx, ep) in inflight.endpoints.iter().enumerate() {
                     if let Some(deadline) = ep.timeout_at {
@@ -538,7 +543,10 @@ impl FanoutProcessor {
                         let _ = self.inflight.remove(&req);
                     }
                     None => {
-                        let _ = dispatch_requests.insert(req);
+                        // Avoid duplicates in dispatch list.
+                        if !dispatch_requests.contains(&req) {
+                            dispatch_requests.push(req);
+                        }
                     }
                 }
             }
