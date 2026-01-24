@@ -1,4 +1,4 @@
-# Fake Data → Persistence → Noop pipeline for throughput testing
+# Fake Data -> Persistence -> Noop pipeline for throughput testing
 #
 # This configuration uses the fake data generator to produce synthetic OTAP data,
 # persists it through Quiver, and sends to noop exporter.

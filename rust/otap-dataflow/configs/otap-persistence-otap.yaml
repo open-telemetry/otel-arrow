@@ -1,4 +1,4 @@
-# OTAP → Persistence → OTAP pipeline example
+# OTAP -> Persistence -> OTAP pipeline example
 #
 # This configuration demonstrates the persistence processor providing
 # durable buffering between an OTAP receiver and OTAP exporter.

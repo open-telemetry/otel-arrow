@@ -1,4 +1,4 @@
-# OTLP → Persistence → OTLP pipeline example
+# OTLP -> Persistence -> OTLP pipeline example
 #
 # This configuration demonstrates the persistence processor providing
 # durable buffering for OTLP data. By default, OTLP bytes are stored as

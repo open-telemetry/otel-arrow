@@ -41,13 +41,13 @@ Each processor instance (one per CPU core) has its own isolated Quiver engine:
 
 ```text
 {path}/
-├── core_0/
-│   ├── wal/
-│   └── segments/
-├── core_1/
-│   ├── wal/
-│   └── segments/
-└── ...
++-- core_0/
+|   +-- wal/
+|   +-- segments/
++-- core_1/
+|   +-- wal/
+|   +-- segments/
++-- ...
 ```
 
 ## Dispatch Strategy
@@ -56,15 +56,15 @@ Each processor instance (one per CPU core) has its own isolated Quiver engine:
 
 | Strategy      | Behavior                               | Recommendation     |
 | ------------- | -------------------------------------- | ------------------ |
-| `RoundRobin`  | Data distributed across cores          | ✅ **Recommended** |
-| `Random`      | Similar to round-robin                 | ✅ OK              |
-| `LeastLoaded` | Similar to round-robin                 | ✅ OK              |
-| `Broadcast`   | Same data persisted N× (once per core) | ⚠️ **Avoid**       |
+| `RoundRobin`  | Data distributed across cores          | **Recommended**    |
+| `Random`      | Similar to round-robin                 | OK                 |
+| `LeastLoaded` | Similar to round-robin                 | OK                 |
+| `Broadcast`   | Same data persisted Nx (once per core) | **Avoid**          |
 
 Using `Broadcast` on the incoming edge causes:
 
-- N× storage consumption (data duplicated across all cores)
-- N× duplicate messages forwarded downstream
+- Nx storage consumption (data duplicated across all cores)
+- Nx duplicate messages forwarded downstream
 
 For the **outgoing edge** (to exporters), any dispatch strategy is valid.
 

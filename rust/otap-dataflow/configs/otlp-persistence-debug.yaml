@@ -1,4 +1,4 @@
-# OTLP → Persistence → Debug pipeline for testing
+# OTLP -> Persistence -> Debug pipeline for testing
 #
 # This configuration lets you verify the persistence processor e2e flow
 # by writing received data to a debug log file.
