@@ -31,6 +31,8 @@ use otap_df_config::{
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
 };
+use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
+use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::{otel_debug, otel_debug_span};
 use std::borrow::Cow;
 use std::fmt::Debug;
@@ -300,10 +302,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     ///    then publish collected channel metrics on the pipeline.
     ///
     /// [config] -> [nodes] -> [hyper-edges] -> [wiring plan] -> [pipeline]
+    ///
+    /// The `internal_telemetry` settings are injected into any receiver with the
+    /// `INTERNAL_TELEMETRY_RECEIVER_URN` plugin URN, enabling it to consume logs
+    /// from the Internal Telemetry System.
     pub fn build(
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         config: PipelineConfig,
+        internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
@@ -335,6 +342,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
+                    // Inject internal telemetry settings into context if this is the ITR node.
+                    // The ITR factory will extract these settings during construction.
+                    let mut base_ctx = base_ctx;
+                    if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                        if let Some(ref settings) = internal_telemetry {
+                            base_ctx.set_internal_telemetry(settings.clone());
+                        }
+                    }
+
                     let node_id = build_state.next_node_id(
                         name.clone(),
                         NodeType::Receiver,
