@@ -98,7 +98,7 @@ Send one-by-one, advancing only after receiving an ack:
         |<--- Ack -----------|
 ```
 
-- Wait for all origins to complete
+- Wait for all non-fallback destinations to complete
 - **Fail-fast**: If ANY destination nacks (without fallback), upstream nacks
 
 ## Fallback Routing

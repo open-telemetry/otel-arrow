@@ -10,7 +10,7 @@
 //! # Ack Policies (`await_ack`)
 //! - `none`: Fire-and-forget, ack upstream immediately
 //! - `primary`: Wait for primary destination (or its fallback chain)
-//! - `all`: Wait for all origins; fail-fast on any nack
+//! - `all`: Wait for all non-fallback destinations; fail-fast on any nack
 //!
 //! # Fallback
 //! Destinations can declare `fallback_for: <port>`. On nack/timeout of the
@@ -259,7 +259,9 @@ struct Inflight {
     endpoints: Vec<EndpointState>,
     completed_origins: HashSet<usize>,
     required_origins: usize,
-    ack_payload: Option<OtapPdata>,
+    /// Original pdata (before fanout's subscription was added) for upstream ack/nack.
+    /// This ensures upstream routing uses the correct context stack.
+    original_pdata: OtapPdata,
     next_send_queue: SmallVec<[usize; 4]>,
 }
 
@@ -395,9 +397,6 @@ impl FanoutProcessor {
             .iter()
             .filter(|d| d.fallback_for.is_none())
             .count();
-        let primary_payload = endpoints
-            .get(self.config.primary_index)
-            .and_then(|ep| ep.payload.clone());
 
         let _ = self.inflight.insert(
             request_id,
@@ -408,7 +407,7 @@ impl FanoutProcessor {
                 endpoints,
                 completed_origins: HashSet::new(),
                 required_origins,
-                ack_payload: primary_payload,
+                original_pdata: pdata,
                 next_send_queue: queue,
             },
         );
@@ -448,20 +447,12 @@ impl FanoutProcessor {
         Ok(())
     }
 
-    fn mark_complete(
-        &mut self,
-        request_id: u64,
-        origin: usize,
-        ack_payload: Option<OtapPdata>,
-    ) -> Option<OtapPdata> {
+    fn mark_complete(&mut self, request_id: u64, origin: usize) -> Option<OtapPdata> {
         if let Some(inflight) = self.inflight.get_mut(&request_id) {
-            if let Some(ref payload) = ack_payload {
-                inflight.ack_payload = Some(payload.clone());
-            }
             let _ = inflight.completed_origins.insert(origin);
             if inflight.completed_origins.len() >= inflight.required_origins {
                 let entry = self.inflight.remove(&request_id)?;
-                return entry.ack_payload.or(ack_payload);
+                return Some(entry.original_pdata);
             }
         }
         None
@@ -493,15 +484,11 @@ impl FanoutProcessor {
             return None;
         }
 
-        // No fallback, produce a nack.
-        let refused = inflight
-            .ack_payload
-            .clone()
-            .or_else(|| inflight.endpoints[dest_index].payload.clone())?;
+        // No fallback, produce a nack using original pdata for correct upstream routing.
         Some(NackMsg {
             reason,
             calldata: smallvec![],
-            refused: Box::new(refused),
+            refused: Box::new(inflight.original_pdata.clone()),
         })
     }
 
@@ -536,6 +523,7 @@ impl FanoutProcessor {
                         inflight.endpoints[idx].origin,
                     )
                 };
+                self.metrics.timed_out.add(1);
                 match self.handle_failure(
                     req,
                     idx,
@@ -610,13 +598,16 @@ impl FanoutProcessor {
 
         // Await primary: if this ack corresponds to primary origin (or its fallback) we can finish.
         if matches!(await_ack, AwaitAck::Primary) && origin == primary {
-            let ack_to_return = AckMsg {
-                accepted: ack.accepted,
-                calldata: ack.calldata,
-            };
-            let _ = self.inflight.remove(&request_id);
+            let entry = self.inflight.remove(&request_id);
             self.metrics.acked.add(1);
-            effect_handler.notify_ack(ack_to_return).await?;
+            if let Some(inflight) = entry {
+                // Use original_pdata for correct upstream routing
+                let ack_to_return = AckMsg {
+                    accepted: Box::new(inflight.original_pdata),
+                    calldata: smallvec![],
+                };
+                effect_handler.notify_ack(ack_to_return).await?;
+            }
             return Ok(());
         }
 
@@ -627,12 +618,13 @@ impl FanoutProcessor {
         }
 
         if matches!(await_ack, AwaitAck::All) {
-            let maybe_ack = self.mark_complete(request_id, origin, None);
-            if let Some(final_payload) = maybe_ack {
+            let maybe_ack = self.mark_complete(request_id, origin);
+            if let Some(original_pdata) = maybe_ack {
                 self.metrics.acked.add(1);
+                // Use original_pdata for correct upstream routing
                 let ackmsg = AckMsg {
-                    accepted: Box::new(final_payload),
-                    calldata: ack.calldata,
+                    accepted: Box::new(original_pdata),
+                    calldata: smallvec![],
                 };
                 effect_handler.notify_ack(ackmsg).await?;
             }
@@ -700,7 +692,6 @@ impl Processor<OtapPdata> for FanoutProcessor {
             }
             Message::Control(NodeControlMsg::TimerTick { .. }) => {
                 for nack in self.handle_timeout(effect_handler).await? {
-                    self.metrics.timed_out.add(1);
                     effect_handler.notify_nack(nack).await?;
                 }
                 Ok(())
@@ -728,12 +719,14 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 self.metrics.sent.add(1);
 
                 if await_ack_none {
-                    let pdata_for_ack = inflight.ack_payload.take().unwrap_or(pdata);
-                    let _ = self.inflight.remove(&request_id);
+                    // Use original pdata for correct upstream routing
+                    let entry = self.inflight.remove(&request_id);
                     self.metrics.acked.add(1);
-                    effect_handler
-                        .notify_ack(AckMsg::new(pdata_for_ack))
-                        .await?;
+                    if let Some(inflight) = entry {
+                        effect_handler
+                            .notify_ack(AckMsg::new(inflight.original_pdata))
+                            .await?;
+                    }
                 }
                 Ok(())
             }
@@ -912,9 +905,17 @@ mod tests {
         }
     }
 
+    /// Simulated upstream node id for tests (e.g., a receiver before the fanout).
+    const TEST_UPSTREAM_NODE_ID: usize = 12345;
+
     fn make_pdata() -> OtapPdata {
         let payload = OtapPayload::OtlpBytes(OtlpProtoBytes::empty(SignalType::Logs));
-        OtapPdata::new(Context::default(), payload)
+        // Simulate an upstream subscriber (e.g., receiver) so acks/nacks route correctly.
+        OtapPdata::new(Context::default(), payload).test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            smallvec![],
+            TEST_UPSTREAM_NODE_ID,
+        )
     }
 
     #[test]
@@ -1643,5 +1644,150 @@ mod tests {
                 .expect("ack ok");
         }
         assert!(h.fanout.inflight.is_empty());
+    }
+
+    /// Test that verifies upstream ack is routed to the correct node with correct calldata.
+    ///
+    /// This test simulates the real pipeline scenario where:
+    /// 1. A receiver subscribes to acks with its own calldata
+    /// 2. Fanout receives the pdata and fans out to destinations
+    /// 3. Downstream acks back to fanout
+    /// 4. Fanout should propagate the ack to the original receiver (not to itself)
+    #[tokio::test]
+    async fn upstream_ack_routes_to_receiver_not_fanout() {
+        use crate::testing::TestCallData;
+
+        let mut h = build_harness(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
+            "parallel",
+            "primary",
+        );
+
+        // Simulate a receiver's subscription: create pdata with upstream context frame
+        const UPSTREAM_RECEIVER_NODE_ID: usize = 999;
+        let upstream_calldata = TestCallData::new_with(42, 7);
+        let data_with_upstream = make_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            upstream_calldata.clone().into(),
+            UPSTREAM_RECEIVER_NODE_ID,
+        );
+
+        // Process through fanout - fanout will add its own subscription frame
+        h.fanout
+            .process(Message::PData(data_with_upstream), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Get the sent message (now has both receiver and fanout frames)
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        assert_eq!(sent.len(), 1);
+
+        // Simulate downstream exporter acking - in real pipeline, Context::next_ack
+        // would pop the fanout frame and route to fanout
+        let mut ack = AckMsg::new(sent.pop().unwrap());
+        ack.calldata = ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack)), &mut h.effect)
+            .await
+            .expect("ack ok");
+
+        // Verify fanout's inflight is cleared
+        assert!(h.fanout.inflight.is_empty());
+
+        // Now check the upstream delivery - should go to UPSTREAM_RECEIVER_NODE_ID
+        let mut delivered_to_receiver = false;
+        let mut wrong_node_id = None;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if let PipelineControlMsg::DeliverAck { node_id, ack } = msg {
+                if node_id == UPSTREAM_RECEIVER_NODE_ID {
+                    // Also verify calldata matches the upstream receiver's calldata
+                    let received_calldata: Result<TestCallData, _> = ack.calldata.try_into();
+                    assert_eq!(
+                        received_calldata.expect("valid calldata"),
+                        upstream_calldata,
+                        "Ack calldata should match upstream receiver's calldata"
+                    );
+                    delivered_to_receiver = true;
+                } else {
+                    wrong_node_id = Some(node_id);
+                }
+            }
+        }
+
+        assert!(
+            delivered_to_receiver,
+            "Ack should be delivered to upstream receiver (node_id={}), but was delivered to node_id={:?}",
+            UPSTREAM_RECEIVER_NODE_ID,
+            wrong_node_id
+        );
+    }
+
+    /// Test that verifies upstream nack is routed to the correct node with correct calldata.
+    #[tokio::test]
+    async fn upstream_nack_routes_to_receiver_not_fanout() {
+        use crate::testing::TestCallData;
+
+        let mut h = build_harness(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
+            "parallel",
+            "primary",
+        );
+
+        // Simulate a receiver's subscription
+        const UPSTREAM_RECEIVER_NODE_ID: usize = 888;
+        let upstream_calldata = TestCallData::new_with(99, 11);
+        let data_with_upstream = make_pdata().test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            upstream_calldata.clone().into(),
+            UPSTREAM_RECEIVER_NODE_ID,
+        );
+
+        h.fanout
+            .process(Message::PData(data_with_upstream), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        assert_eq!(sent.len(), 1);
+
+        // Simulate downstream exporter nacking
+        let mut nack = NackMsg::new("downstream failed", sent.pop().unwrap());
+        nack.calldata = nack.refused.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        assert!(h.fanout.inflight.is_empty());
+
+        // Check the upstream delivery - should go to UPSTREAM_RECEIVER_NODE_ID
+        let mut delivered_to_receiver = false;
+        let mut wrong_node_id = None;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if let PipelineControlMsg::DeliverNack { node_id, nack } = msg {
+                if node_id == UPSTREAM_RECEIVER_NODE_ID {
+                    let received_calldata: Result<TestCallData, _> = nack.calldata.try_into();
+                    assert_eq!(
+                        received_calldata.expect("valid calldata"),
+                        upstream_calldata,
+                        "Nack calldata should match upstream receiver's calldata"
+                    );
+                    delivered_to_receiver = true;
+                } else {
+                    wrong_node_id = Some(node_id);
+                }
+            }
+        }
+
+        assert!(
+            delivered_to_receiver,
+            "Nack should be delivered to upstream receiver (node_id={}), but was delivered to node_id={:?}",
+            UPSTREAM_RECEIVER_NODE_ID,
+            wrong_node_id
+        );
     }
 }
