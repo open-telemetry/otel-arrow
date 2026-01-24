@@ -218,7 +218,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Add internal pipeline to threads list if present
         if let Some((thread_name, handle)) = internal_pipeline_handle {
-            threads.push((thread_name, 0, its_key, handle));
+            threads.push((thread_name, its_thread_id, its_key, handle));
         }
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups {
@@ -229,7 +229,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     &quota.core_allocation,
                 )?;
 
-                for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+                for core_id in requested_cores.into_iter() {
                     let pipeline_key = DeployedPipelineKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
