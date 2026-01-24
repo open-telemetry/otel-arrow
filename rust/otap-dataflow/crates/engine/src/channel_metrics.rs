@@ -249,6 +249,7 @@ mod tests {
         let (sender, receiver) = mpsc::Channel::new(1);
         let channel_entity_key = pipeline_ctx.register_channel_entity(
             "test:sender".into(),
+            "out".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
@@ -278,6 +279,7 @@ mod tests {
         let sender = LocalSender::mpsc(sender);
         let channel_entity_key = pipeline_ctx.register_channel_entity(
             "test:receiver".into(),
+            "input".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,

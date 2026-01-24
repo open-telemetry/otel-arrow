@@ -226,6 +226,7 @@ impl<PData> ReceiverWrapper<PData> {
                     (Ok(sender), Ok(receiver)) => {
                         let channel_entity_key = pipeline_ctx.register_channel_entity(
                             control_channel_id(&node_id),
+                            "input".into(),
                             CHANNEL_KIND_CONTROL,
                             CHANNEL_MODE_LOCAL,
                             CHANNEL_TYPE_MPSC,
@@ -303,6 +304,7 @@ impl<PData> ReceiverWrapper<PData> {
                     (Ok(sender), Ok(receiver)) => {
                         let channel_entity_key = pipeline_ctx.register_channel_entity(
                             control_channel_id(&node_id),
+                            "input".into(),
                             CHANNEL_KIND_CONTROL,
                             CHANNEL_MODE_SHARED,
                             CHANNEL_TYPE_MPSC,
