@@ -217,6 +217,8 @@ copied during clone.
 - **Primary as fallback**: Rejected; primary cannot have `fallback_for`
 - **Unknown fallback target**: Rejected; `fallback_for` must reference port
 - **Fallback cycles**: Detected and rejected at config validation
+- **Fallback with `await_ack: none`**: Rejected; fire-and-forget ignores fallbacks
+- **Timeout with `await_ack: none`**: Rejected; fire-and-forget doesn't track responses
 - **Shutdown**: Inflight requests are dropped (not proactively nacked)
 
 ## Performance Optimizations

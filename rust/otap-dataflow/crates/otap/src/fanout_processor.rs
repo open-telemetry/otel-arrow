@@ -167,7 +167,8 @@ impl FanoutConfig {
             }
 
             if let Some(fb) = &dest.fallback_for {
-                if !origins.contains(fb) && !self.destinations.iter().any(|d| &d.port == fb) {
+                // Check if the fallback target exists in any destination.
+                if !self.destinations.iter().any(|d| &d.port == fb) {
                     return Err(ConfigError::InvalidUserConfig {
                         error: format!(
                             "fanout: fallback_for `{}` does not reference a configured destination",
@@ -217,6 +218,18 @@ impl FanoutConfig {
         // Compute fast-path eligibility flags.
         let has_any_fallback = self.destinations.iter().any(|d| d.fallback_for.is_some());
         let has_any_timeout = self.destinations.iter().any(|d| d.timeout.is_some());
+
+        // Reject incompatible combinations.
+        if matches!(self.await_ack, AwaitAck::None) && has_any_fallback {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "fanout: fallback destinations are incompatible with await_ack: none (fire-and-forget mode ignores fallbacks)".into(),
+            });
+        }
+        if matches!(self.await_ack, AwaitAck::None) && has_any_timeout {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "fanout: timeouts are incompatible with await_ack: none (fire-and-forget mode does not track responses)".into(),
+            });
+        }
 
         // Fire-and-forget: await_ack == None
         let use_fire_and_forget = matches!(self.await_ack, AwaitAck::None);
@@ -847,7 +860,11 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 }
             }
             Message::Control(NodeControlMsg::TimerTick { .. }) => {
-                // Fire-and-forget and slim primary don't use timers.
+                // Fire-and-forget and slim primary don't start timers, so TimerTick
+                // should not arrive. Early return as defensive measure.
+                if self.config.use_fire_and_forget || self.config.use_slim_primary {
+                    return Ok(());
+                }
                 for nack in self.handle_timeout(effect_handler).await? {
                     effect_handler.notify_nack(nack).await?;
                 }
@@ -1207,6 +1224,169 @@ mod tests {
         assert!(cfg.validate(&node_cfg).is_err());
     }
 
+    #[test]
+    fn config_rejects_fallback_with_fire_and_forget() {
+        // Fallback destinations are incompatible with await_ack: none because
+        // fire-and-forget mode ignores downstream acks/nacks and never triggers fallbacks.
+        let cfg = FanoutConfig {
+            await_ack: AwaitAck::None,
+            destinations: vec![
+                DestinationConfig {
+                    port: "primary".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+                DestinationConfig {
+                    port: "backup".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("primary".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                (
+                    "primary".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "backup".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        let err = cfg
+            .validate(&node_cfg)
+            .err()
+            .expect("should reject fallback with fire-and-forget");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("fallback") && msg.contains("await_ack: none"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_timeout_with_fire_and_forget() {
+        // Timeouts are incompatible with await_ack: none because fire-and-forget
+        // mode doesn't track responses or use timers.
+        let cfg = FanoutConfig {
+            await_ack: AwaitAck::None,
+            destinations: vec![DestinationConfig {
+                port: "dest".into(),
+                primary: true,
+                timeout: Some(Duration::from_secs(5)),
+                fallback_for: None,
+            }],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [(
+                "dest".into(),
+                HyperEdgeConfig {
+                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                    dispatch_strategy: DispatchStrategy::Broadcast,
+                },
+            )]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        let err = cfg
+            .validate(&node_cfg)
+            .err()
+            .expect("should reject timeout with fire-and-forget");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timeout") && msg.contains("await_ack: none"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn config_rejects_fallback_cycle() {
+        // Fallback cycles must be detected and rejected to prevent infinite loops.
+        // Setup: primary (no fallback), a (fallback_for b), b (fallback_for a) = cycle a->b->a
+        let cfg = FanoutConfig {
+            destinations: vec![
+                DestinationConfig {
+                    port: "primary".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+                DestinationConfig {
+                    port: "a".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("b".into()),
+                },
+                DestinationConfig {
+                    port: "b".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("a".into()),
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                (
+                    "primary".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("dp").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "a".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("da").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "b".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("db").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        let err = cfg
+            .validate(&node_cfg)
+            .err()
+            .expect("should reject fallback cycle");
+        let msg = format!("{err}");
+        assert!(msg.contains("cycle"), "expected cycle error, got: {msg}");
+    }
+
     #[tokio::test]
     async fn processor_sends_and_acks_primary() {
         let mut h = build_harness(
@@ -1318,6 +1498,57 @@ mod tests {
             }
         }
         assert_eq!(delivered, 1);
+    }
+
+    #[tokio::test]
+    async fn await_all_fail_fast_on_nack() {
+        // Verify that await_ack: all fails fast when any destination nacks without fallback.
+        // The upstream should receive nack immediately without waiting for other destinations.
+        let mut h = build_harness(
+            json!([
+                make_dest("p1", true, None, None),
+                make_dest("p2", false, None, None)
+            ]),
+            "parallel",
+            "all",
+        );
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        let mut p1 = drain(h.outputs.get_mut("p1").expect("p1"));
+        let _p2 = drain(h.outputs.get_mut("p2").expect("p2"));
+        assert_eq!(p1.len(), 1);
+
+        // Nack from p1 - should trigger fail-fast without waiting for p2.
+        let mut nack = NackMsg::new("p1 failed", p1.pop().unwrap());
+        nack.calldata = nack.refused.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Nack(nack)), &mut h.effect)
+            .await
+            .expect("nack ok");
+
+        // Fail-fast: inflight should be removed immediately.
+        assert!(
+            h.fanout.inflight.is_empty(),
+            "fail-fast should remove inflight without waiting for p2"
+        );
+
+        // Upstream should receive nack immediately.
+        let mut delivered_ack = 0;
+        let mut delivered_nack = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            match msg {
+                PipelineControlMsg::DeliverAck { .. } => delivered_ack += 1,
+                PipelineControlMsg::DeliverNack { .. } => delivered_nack += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(delivered_ack, 0, "should not ack upstream");
+        assert_eq!(delivered_nack, 1, "should nack upstream immediately");
     }
 
     #[tokio::test]
