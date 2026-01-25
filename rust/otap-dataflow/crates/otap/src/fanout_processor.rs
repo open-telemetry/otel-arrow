@@ -1272,8 +1272,7 @@ mod tests {
         };
         let err = cfg
             .validate(&node_cfg)
-            .err()
-            .expect("should reject fallback with fire-and-forget");
+            .expect_err("should reject fallback with fire-and-forget");
         let msg = format!("{err}");
         assert!(
             msg.contains("fallback") && msg.contains("await_ack: none"),
@@ -1312,8 +1311,7 @@ mod tests {
         };
         let err = cfg
             .validate(&node_cfg)
-            .err()
-            .expect("should reject timeout with fire-and-forget");
+            .expect_err("should reject timeout with fire-and-forget");
         let msg = format!("{err}");
         assert!(
             msg.contains("timeout") && msg.contains("await_ack: none"),
@@ -1381,8 +1379,7 @@ mod tests {
         };
         let err = cfg
             .validate(&node_cfg)
-            .err()
-            .expect("should reject fallback cycle");
+            .expect_err("should reject fallback cycle");
         let msg = format!("{err}");
         assert!(msg.contains("cycle"), "expected cycle error, got: {msg}");
     }
