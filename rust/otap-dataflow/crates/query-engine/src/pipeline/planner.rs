@@ -419,7 +419,7 @@ impl PipelinePlanner {
         match set_expr.get_destination() {
             MutableValueExpression::Source(dest) => {
                 let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
-                
+
                 match dest_accessor {
                     ColumnAccessor::Attributes(attrs_id, key) => {
                         // only support static scalar values for insert
@@ -449,10 +449,10 @@ impl PipelinePlanner {
                                 };
 
                                 let mut entries = std::collections::BTreeMap::new();
-                                entries.insert(key, literal_value);
+                                let _ = entries.insert(key, literal_value);
                                 let insert_transform = InsertTransform::new(entries);
                                 let transform = AttributesTransform::default().with_insert(insert_transform);
-                                
+
                                 transform.validate().map_err(|e| Error::InvalidPipelineError {
                                     cause: format!("invalid attribute insert transform {e}"),
                                     query_location: Some(set_expr.get_query_location().clone()),
