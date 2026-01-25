@@ -39,11 +39,7 @@ use crate::{
     },
     otlp::attributes::{AttributeValueType, parent_id::ParentId},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
-    schema::{
-        FieldExt,
-        consts,
-        get_field_metadata,
-    },
+    schema::{FieldExt, consts, get_field_metadata},
 };
 
 /// identifier for column encoding
@@ -512,6 +508,13 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         .map(|col| SortedArrayBuilder::try_new(col))
         .transpose()?;
 
+    // TODO - proper error handling
+    let mut sorted_parent_id_column = record_batch
+        .column_by_name(consts::PARENT_ID)
+        .map(|col| SortedArrayBuilder::try_new(col))
+        .transpose()?
+        .unwrap();
+
     // first sort all the values columns by type. This will make it easier to eventually sort them by key...
     // TODO - this might be inefficient
     for sorted_col in &mut sorted_val_columns {
@@ -522,6 +525,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     if let Some(sorted_col) = sorted_ser_column.as_mut() {
         sorted_col.sort_source(&type_col_sorted_indices)?;
     }
+
+    sorted_parent_id_column.sort_source(&type_col_sorted_indices)?;
 
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
@@ -542,27 +547,36 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             sorted_val_columns[key_range_attr_type as usize].as_mut()
         };
 
+        let parent_id_type_range = sorted_parent_id_column.slice_source(&type_range)?;
+        let parent_id_type_range_by_key =
+            take(&parent_id_type_range, &keys_range_sorted_indices, None).unwrap();
+
         // sort the values columns for values of this type
         if let Some(sorted_val_col) = sorted_val_col {
-            // TODO -- now the source for the type_col_sorted_indices?
-            // let values_col_by_type = take(values_col, &type_col_sorted_indices, None).unwrap();
-            // let values_type_range = values_col_by_type.slice(type_range.start, type_range.len());
-            // let values_type_range_by_key =
-            //     take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
-
+            // get values w/in this of types
             let values_type_range = sorted_val_col.slice_source(&type_range)?;
             let values_type_range_by_key =
                 take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
 
             let key_partitions = partition(&[keys_range_sorted]).unwrap();
             for key_range in key_partitions.ranges() {
+                // get values
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
+                let values_key_range_sorted_indices =
+                    arrow::compute::sort_to_indices(&values_key_range, None, None).unwrap();
                 let values_key_range_sorted =
-                    arrow::compute::sort(&values_key_range, None).unwrap();
+                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
                 sorted_val_col.append_external_sorted_range(values_key_range_sorted)?;
-                // sorted_values.push(values_key_range_sorted);
+
+                let parent_id_key_range =
+                    parent_id_type_range_by_key.slice(key_range.start, key_range.len());
+                let parent_id_key_range_sorted =
+                    take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap();
+                sorted_parent_id_column.append_external_sorted_range(parent_id_key_range_sorted)?;
             }
+        } else {
+            todo!("handle case where type is for range, but there is no values column")
         }
 
         // push the unsorted values for columns not of this type to fill in gaps
@@ -574,14 +588,13 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             // TODO checking map or slice here isn't right ...
             // if there's a map and no slice type, we get too many vals
             if attr_type == AttributeValueType::Map as u8 {
-                continue // skip to avoid double insert cause it's the same column as Map
+                continue; // skip to avoid double insert cause it's the same column as Map
             }
             let sorted_val_col = if attr_type == AttributeValueType::Slice as u8 {
                 sorted_ser_column.as_mut()
             } else {
                 sorted_val_columns[attr_type as usize].as_mut()
             };
-
 
             if let Some(sorted_val_col) = sorted_val_col {
                 // println!("appending restants: {attr_type:?}, {type_range:?} len = {}", type_range.len());
@@ -608,31 +621,41 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         }
 
         if field_name == consts::ATTRIBUTE_STR {
-            let sorted_col = sorted_val_columns[AttributeValueType::Str as usize].as_ref().unwrap();
+            let sorted_col = sorted_val_columns[AttributeValueType::Str as usize]
+                .as_ref()
+                .unwrap();
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_INT {
-            let sorted_col = sorted_val_columns[AttributeValueType::Int as usize].as_ref().unwrap();
+            let sorted_col = sorted_val_columns[AttributeValueType::Int as usize]
+                .as_ref()
+                .unwrap();
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_BOOL {
-            let sorted_col = sorted_val_columns[AttributeValueType::Bool as usize].as_ref().unwrap();
+            let sorted_col = sorted_val_columns[AttributeValueType::Bool as usize]
+                .as_ref()
+                .unwrap();
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_DOUBLE {
-            let sorted_col = sorted_val_columns[AttributeValueType::Double as usize].as_ref().unwrap();
+            let sorted_col = sorted_val_columns[AttributeValueType::Double as usize]
+                .as_ref()
+                .unwrap();
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_BYTES {
-            let sorted_col = sorted_val_columns[AttributeValueType::Bytes as usize].as_ref().unwrap();
+            let sorted_col = sorted_val_columns[AttributeValueType::Bytes as usize]
+                .as_ref()
+                .unwrap();
             columns.push(sorted_col.finish()?);
             continue;
         }
@@ -645,7 +668,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
         // TODO - not the right handling
         if field_name == consts::PARENT_ID {
-            columns.push(record_batch.column_by_name(consts::PARENT_ID).unwrap().clone());
+            columns.push(sorted_parent_id_column.finish()?);
             continue;
         }
 
@@ -718,7 +741,11 @@ impl SortedArrayBuilder {
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
-        let sorted_keys_refs = self.sorted_segments.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
+        let sorted_keys_refs = self
+            .sorted_segments
+            .iter()
+            .map(|k| k.as_ref())
+            .collect::<Vec<_>>();
         let sorted_column = concat(sorted_keys_refs.as_ref()).unwrap();
         Ok(sorted_column)
     }
@@ -2024,6 +2051,7 @@ mod test {
     fn test_sort_attrs_record_batch() {
         // TODO - add an ID column?
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
@@ -2051,6 +2079,7 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Int as u8,
                     AttributeValueType::Int as u8,
@@ -2083,6 +2112,7 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt16Array::from_iter_values([2, 4, 3, 5, 1, 0])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
