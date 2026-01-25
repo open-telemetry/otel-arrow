@@ -7,13 +7,13 @@ use data_engine_expressions::{
     BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue,
+    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression, StaticScalarExpression, StringValue,
     TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
+use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -105,6 +105,7 @@ impl PipelinePlanner {
                 TransformExpression::ReduceMap(reduce_map_exr) => {
                     Self::plan_reduce_map(reduce_map_exr)
                 }
+                TransformExpression::Set(set_expr) => self.plan_set(set_expr),
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
                         "transform expression not yet supported {}",
@@ -407,7 +408,75 @@ impl PipelinePlanner {
             }
         }
 
+
         Ok(pipeline_stages)
+    }
+
+    fn plan_set(
+        &self,
+        set_expr: &SetTransformExpression,
+    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+        match set_expr.get_destination() {
+            MutableValueExpression::Source(dest) => {
+                let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
+                
+                match dest_accessor {
+                    ColumnAccessor::Attributes(attrs_id, key) => {
+                        // only support static scalar values for insert
+                        match set_expr.get_source() {
+                            ScalarExpression::Static(static_val) => {
+                                let literal_value = match static_val {
+                                    StaticScalarExpression::String(s) => {
+                                        LiteralValue::Str(s.get_value().to_string())
+                                    }
+                                    StaticScalarExpression::Integer(i) => {
+                                        LiteralValue::Int(i.get_value())
+                                    }
+                                    StaticScalarExpression::Boolean(b) => {
+                                        LiteralValue::Bool(b.get_value())
+                                    }
+                                    StaticScalarExpression::Double(d) => {
+                                        LiteralValue::Double(d.get_value())
+                                    }
+                                    _ => {
+                                        return Err(Error::NotYetSupportedError {
+                                            message: format!(
+                                                "unsupported static scalar type for attribute insert: {:?}",
+                                                static_val
+                                            ),
+                                        });
+                                    }
+                                };
+
+                                let mut entries = std::collections::BTreeMap::new();
+                                entries.insert(key, literal_value);
+                                let insert_transform = InsertTransform::new(entries);
+                                let transform = AttributesTransform::default().with_insert(insert_transform);
+                                
+                                transform.validate().map_err(|e| Error::InvalidPipelineError {
+                                    cause: format!("invalid attribute insert transform {e}"),
+                                    query_location: Some(set_expr.get_query_location().clone()),
+                                })?;
+
+                                Ok(vec![Box::new(AttributeTransformPipelineStage::new(
+                                    attrs_id,
+                                    transform,
+                                ))])
+                            }
+                            _ => Err(Error::NotYetSupportedError {
+                                message: "set expression only supports static scalar values for attribute insert".to_string(),
+                            }),
+                        }
+                    }
+                    _ => Err(Error::NotYetSupportedError {
+                        message: format!("set expression for destination {:?}", dest_accessor),
+                    }),
+                }
+            }
+            _ => Err(Error::NotYetSupportedError {
+                message: "set expression only supports source destinations".to_string(),
+            }),
+        }
     }
 }
 
