@@ -457,4 +457,40 @@ mod test {
     async fn test_delete_all_attributes_opl_parser() {
         test_delete_all_attributes::<OplParser>().await;
     }
+
+    async fn test_insert_attributes<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"new_attr\"] = \"new_value\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![
+                        KeyValue::new("x", AnyValue::new_string("a")),
+                        KeyValue::new("new_attr", AnyValue::new_string("new_value"))
+                    ])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![
+                        KeyValue::new("x2", AnyValue::new_string("b")),
+                        KeyValue::new("new_attr", AnyValue::new_string("new_value"))
+                    ])
+                    .finish(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_kql_parser() {
+        test_insert_attributes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_opl_parser() {
+        test_insert_attributes::<OplParser>().await;
+    }
 }
