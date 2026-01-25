@@ -18,9 +18,9 @@ use arrow::{
         Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
         PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
     },
-    buffer::{MutableBuffer, ScalarBuffer},
-    compute::{SortColumn, SortOptions, and, concat, partition, take, take_record_batch},
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
+    buffer::{Buffer, MutableBuffer, ScalarBuffer},
+    compute::{SortColumn, SortOptions, and, cast, concat, not, partition, take, take_record_batch},
+    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type}, util::bit_iterator::{BitIndexIterator, BitSliceIterator},
 };
 use arrow_schema::Field;
 
@@ -1401,7 +1401,7 @@ pub fn remove_transport_optimized_encodings(
 ///
 /// See the comments on [`super::materialize_parent_id_for_attributes`] for more information about
 /// the encoding scheme.
-pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
+pub fn transport_encode_parent_id_for_attributes_slow<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
 where
     T: ArrowPrimitiveType,
     T::Native: ParentId + Sub<Output = T::Native> + AttributesRecordBatchBuilderConstructorHelper,
@@ -1539,6 +1539,362 @@ where
         .expect("parent IDs are not optional");
 
     Ok(encoded_parent_ids)
+}
+
+
+pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
+where
+    T: ArrowPrimitiveType,
+    T::Native: ParentId + Sub<Output = T::Native> + AttributesRecordBatchBuilderConstructorHelper,
+{
+    // TODO a bunch of the code in here is now duplicated w/ materialize_parent_id_for_attributes
+    // and since a lot of the code is copied, the comments don't really make sense
+
+    // let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T>>::try_new(get_required_array(
+    //     record_batch,
+    //     consts::PARENT_ID,
+    // )?)?;
+
+    if record_batch.num_rows() == 0 {
+        // TODO no longer safe actually ....
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    // check that the column hasn't already been encoded. If so, we want to avoid re-encoding
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        consts::metadata::COLUMN_ENCODING,
+    );
+    if let Some(consts::metadata::encodings::QUASI_DELTA) = column_encoding {
+        // safety: we've already called `T::get_parent_id_column`, which checks that the column
+        // so it should be safe to call expect here
+        return Ok(record_batch
+            .column_by_name(consts::PARENT_ID)
+            .expect("error accessing parent ID column")
+            .clone());
+    }
+
+    let keys_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_KEY)
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_KEY.into(),
+        })?;
+    let key_eq_next = create_next_eq_array_for_array(keys_arr);
+
+    let type_arr = record_batch
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .ok_or_else(|| Error::ColumnNotFound {
+            name: consts::ATTRIBUTE_TYPE.into(),
+        })?;
+    let types_eq_next = create_next_element_equality_array(type_arr)?;
+    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+
+    let val_str_arr = record_batch.column_by_name(consts::ATTRIBUTE_STR);
+    let val_int_arr = record_batch.column_by_name(consts::ATTRIBUTE_INT);
+    let val_double_arr = record_batch.column_by_name(consts::ATTRIBUTE_DOUBLE);
+    let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
+    let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
+
+    // helper function include nulls in the bitmask that's used to determine which rows in values
+    // columns may be delta encoded. It is to be called with the bitmask of which rows are equal.
+    // note: null values break a sequence of delta encoding
+    let and_validity_bitmap = |eq: BooleanArray| -> Buffer {
+        let bits = eq.values().inner().clone();
+        let nulls = eq.nulls();
+
+        // if there are nulls, AND them into the bits buffer
+        // we treats null values as "not equal" for delta encoding purposes
+        if let Some(null_buffer) = nulls {
+            let null_bits = null_buffer.inner();
+            // AND the equality bits with the nulls validity buffer
+            let byte_len = bits.len();
+            let mut result = MutableBuffer::from_len_zeroed(byte_len);
+
+            let bits_slice = bits.as_slice();
+            let null_slice = null_bits.inner().as_slice();
+            let result_slice = result.as_slice_mut();
+
+            let min_len = bits_slice.len().min(null_slice.len());
+            for i in 0..min_len {
+                result_slice[i] = bits_slice[i] & null_slice[i];
+            }
+
+            result.into()
+        } else {
+            bits
+        }
+    };
+
+    // Further below, we're going to create the "eq bitmask" for all the values columns to help us
+    // determine which ranges have delta encoding. For best performance, we want to minimize the
+    // data for which this has to be computed.
+    //
+    // Normally, transport encoded data is sorted first by the type column. If we receive a batch
+    // sorted like this, which would be expected, we compute the "eq bitmask" for each value column
+    // only on ranges that contain this type (these ranges can be efficiently computed when the
+    // batch is sorted). If the batch isn't sorted, we compute it for the entire column as a worst-
+    // case fallback.
+    //
+    // The code in the next section is computing these type ranges, if possible, and afterward it
+    // computes the "eq bitmask" for each values column
+
+    // pull out a few references to the type column that will be used later on
+    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+    let type_values = type_arr.values();
+    let type_bytes = type_values.inner().as_slice();
+
+    // check if types are sorted - if so, we can optimize by only computing equality for specific ranges
+    let types_are_sorted = type_bytes.is_sorted();
+
+    // when sorted, compute type ranges sequentially to reuse end positions as start positions
+    // use fixed-size array indexed by AttributeValueType value (max is Bytes=7, so size 8)
+    let mut type_ranges: [Option<(usize, usize)>; 8] = [None; 8];
+    if types_are_sorted && !type_bytes.is_empty() {
+        let mut current_pos = 0;
+        // process types in AttributeValueType order: Empty, Str, Int, Double, Bool, Map, Slice, Bytes
+        for type_value in [
+            AttributeValueType::Empty as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Int as u8,
+            AttributeValueType::Double as u8,
+            AttributeValueType::Bool as u8,
+            AttributeValueType::Map as u8,
+            AttributeValueType::Slice as u8,
+            AttributeValueType::Bytes as u8,
+        ] {
+            if current_pos >= type_bytes.len() {
+                break;
+            }
+            // start is the current position (previous type's end)
+            let start = current_pos;
+
+            // find end with single binary search from current position
+            let end = type_bytes[start..].partition_point(|&x| x <= type_value) + start;
+
+            // only add if this type exists
+            if start < type_bytes.len() && type_bytes[start] == type_value {
+                type_ranges[type_value as usize] = Some((start, end));
+                current_pos = end;
+            }
+        }
+    }
+
+    // A couple helper functions for accessing the type ranges:
+
+    let get_type_range = |type_value: u8| -> Option<(usize, usize)> {
+        type_ranges.get(type_value as usize).and_then(|&r| r)
+    };
+
+    let get_type_offset = |type_value: u8| -> usize {
+        if types_are_sorted {
+            get_type_range(type_value)
+                .map(|(start, _)| start)
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    // compute value equality arrays - either for specific ranges (sorted) or entire column (unsorted)
+    let compute_val_eq = |arr: &ArrayRef, type_value: u8| -> Result<Buffer> {
+        if let Some((start, end)) = get_type_range(type_value) {
+            // sorted case: only compute equality for the range where this type appears
+            let sliced = arr.slice(start, end - start);
+            create_next_element_equality_array(&sliced).map(and_validity_bitmap)
+        } else {
+            // unsorted case: compute for entire column
+            create_next_element_equality_array(arr).map(and_validity_bitmap)
+        }
+    };
+
+    let val_str_eq = val_str_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Str as u8))
+        .transpose()?;
+    let val_int_eq = val_int_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Int as u8))
+        .transpose()?;
+    let val_double_eq = val_double_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Double as u8))
+        .transpose()?;
+    let val_bool_eq = val_bool_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Bool as u8))
+        .transpose()?;
+    let val_bytes_eq = val_bytes_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Bytes as u8))
+        .transpose()?;
+
+
+    // in the next phase of this function, we use the "eq bitmask"s created above to fill in a
+    // new parent ID column, removing delta encoding in subsequent rows of equal type, key and
+    // non-null value ...
+
+    // copy parent IDs value buffer into a mutable vec for in-place modification. This is faster
+    // than rebuilding it from scratch using a PrimitiveBuilder because we only need to rewrite
+    // the delta encoded segments
+    let parent_id_arr_ref = get_required_array(record_batch, consts::PARENT_ID)?;
+    // TODO - currently we're casting to a primitive array, then casting back to the original
+    // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
+    // dictionary encoded, so we should revisit this for metrics/traces which have attributes
+    // that use this kind of ID
+    let parent_id_arr = cast(&parent_id_arr_ref, &T::DATA_TYPE).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("Failed to cast parent_id column: {}", e),
+        }
+    })?;
+    let parent_id_arr = parent_id_arr
+        .as_any()
+        .downcast_ref::<PrimitiveArray<T>>()
+        .ok_or_else(|| Error::UnexpectedRecordBatchState {
+            reason: "Failed to downcast parent_id to primitive array".to_string(),
+        })?;
+    let mut encoded_parent_ids = parent_id_arr.values().to_vec();
+
+    // closure to process a range of values where all type/key are equal.
+    //
+    // note the passed range is the range in the "eq bitmask" which was used to determine where
+    // type/key have equivalent value equal to the next row. this means that from the perspective
+    // of indexing the record batch itself, the range_end is actually an inclusive range end.
+    let mut process_range = |eq_range_start: usize, eq_range_end: usize| -> Result<()> {
+        // first element in range is already correct (not delta encoded) because presumably the
+        // key/type columns were not equal to what is in this range.
+
+        // only continue on to remove delta encodings if the range contains multiple rows
+        if eq_range_end - eq_range_start > 0 {
+            // determine value equality array based on attribute type
+            let value_type = AttributeValueType::try_from(type_values[eq_range_start])
+                .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
+
+            // get the "eq bitmask" for the column containing the type of values for this range
+            let values_eq = match value_type {
+                AttributeValueType::Str => val_str_eq.as_ref(),
+                AttributeValueType::Int => val_int_eq.as_ref(),
+                AttributeValueType::Bool => val_bool_eq.as_ref(),
+                AttributeValueType::Bytes => val_bytes_eq.as_ref(),
+                AttributeValueType::Double => val_double_eq.as_ref(),
+                // Map/Slice/Empty are never delta-encoded
+                AttributeValueType::Map | AttributeValueType::Slice | AttributeValueType::Empty => {
+                    None
+                }
+            };
+
+            if let Some(values_eq) = values_eq {
+                // calculate offset adjustment for sorted types - recall that the values_eq
+                // array may contain value for the full dataset, unless the dataset was sorted
+                // by type, in which case it only values for rows containing values of this
+                // type, in which case we need to offset from curr_range_start when indexing it
+                let type_offset = get_type_offset(value_type as u8);
+
+                // Process remaining elements in range
+                let mut prev_parent_id = encoded_parent_ids[eq_range_start];
+                let mut batch_idx = eq_range_start + 1;
+
+                // below we will iterate over ranges of delta encoded IDs (e.g. sub-ranges
+                // within the range which for which this closure has been invoked, where
+                // subsequent values are equal and not null). We identify these ranges as runs
+                // of `true` values in the values_eq buffer
+
+                let delta_range_iter = BitSliceIterator::new(
+                    values_eq.as_slice(),
+                    eq_range_start - type_offset,
+                    eq_range_end - eq_range_start,
+                );
+                for delta_range in delta_range_iter {
+                    // convert back to batch coordinates ...
+                    // delta_range is relative to the offset (curr_range_start - type_offset)
+                    // values_eq_bits[i] means element[i] == element[i+1], so element[i+1] is delta-encoded
+                    // so: batch_idx = delta_range.0 + (curr_range_start - type_offset) + 1 + type_offset
+                    // simplifies to: delta_range.0 + curr_range_start + 1
+                    let batch_delta_start = delta_range.0 + eq_range_start + 1;
+                    let batch_delta_end = delta_range.1 + eq_range_start + 1;
+
+                    // update curr_parent_id for any non-delta values we're skipping ...
+                    // just jump to the end of the last non-delta encoded range and read the last value
+                    if batch_idx < batch_delta_start {
+                        prev_parent_id = encoded_parent_ids[batch_delta_start - 1];
+                        batch_idx = batch_delta_start;
+                    }
+
+                    // process delta-encoded range
+                    while batch_idx < batch_delta_end {
+                        let curr_parent_id = encoded_parent_ids[batch_idx];
+                        // prev_parent_id += ;
+                        // TODO reassure that this cannot subtract w/ underflow?
+                        encoded_parent_ids[batch_idx] = curr_parent_id - prev_parent_id;
+                        prev_parent_id = curr_parent_id;
+                        // encoded_parent_ids[batch_idx] = prev_parent_id;
+                        batch_idx += 1;
+                    }
+                }
+
+                // // handle any remaining non-delta values after last delta range ...
+                // // just read the last value if there are any remaining
+                // if batch_idx <= eq_range_end {
+                //     curr_parent_id = encoded_parent_ids[eq_range_end];
+                // }
+            }
+        }
+
+        Ok(())
+    };
+
+    // below we're going to create an iterator of indices where delta encoding may break due to
+    // a change in type/key. To do this, we and the "eq bitmask"s for key and type, then invert it.
+    // every index that is "true" in the result of this is a break in delta encoding
+    let types_and_keys_eq = and(&types_eq_next, &key_eq_next)
+        .expect("types_eq_next and key_eq_next should have same length");
+    let range_eq_ends = not(&types_and_keys_eq).expect("not operation should succeed");
+    let range_ends_val_buffer = range_eq_ends.values().values();
+    let num_rows = record_batch.num_rows();
+    let last_idx = num_rows - 1;
+
+    // pointer to start of current delta encoded range. Will be updated as we iterate through
+    // ranges to remove delta encoding
+    let mut delta_range_start = 0;
+
+    // process all ranges having equivalent type/key
+    for delta_range_end in BitIndexIterator::new(range_ends_val_buffer, 0, last_idx) {
+        process_range(delta_range_start, delta_range_end)?;
+        delta_range_start = delta_range_end + 1; // skip 1 non-delta encoded value
+    }
+
+    // Process the final range ending at last_idx if it wasn't already processed
+    if delta_range_start <= last_idx {
+        process_range(delta_range_start, last_idx)?;
+    }
+
+    // create new arrow array for parent_id column
+    // TODO var names could be better
+    let arr_as_prim = PrimitiveArray::<T>::new(
+        ScalarBuffer::from(encoded_parent_ids),
+        parent_id_arr.nulls().cloned(),
+    );
+    let orig_parent_id = record_batch
+        .column_by_name(consts::PARENT_ID)
+        .unwrap(); // TODO no unwrap
+    // TODO no unwrap
+    let result = cast(&arr_as_prim, orig_parent_id.data_type()).unwrap();
+
+    Ok(result)
+
+    // // create new record batch but with parent column replaced
+    // replace_materialized_parent_id_column(
+    //     record_batch,
+    //     materialized_parent_ids,
+    //     metadata::encodings::PLAIN,
+    // )
+
+    // todo!()
 }
 
 /// This function adds the quasi-delta encoding to the parent ID column. Subsequent parent IDs with
@@ -2015,37 +2371,37 @@ mod test {
         assert_eq!(result, expected);
     }
 
-    #[test]
-    fn test_sort_multi_column_dict() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(
-                consts::ATTRIBUTE_KEY,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                false,
-            ),
-        ]));
+    // #[test]
+    // fn test_sort_multi_column_dict() {
+    //     let schema = Arc::new(Schema::new(vec![
+    //         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+    //         Field::new(
+    //             consts::ATTRIBUTE_KEY,
+    //             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+    //             false,
+    //         ),
+    //     ]));
 
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt8Array::from_iter_values([
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Int as u8,
-                    AttributeValueType::Int as u8,
-                    AttributeValueType::Str as u8,
-                ])),
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 1, 2, 1]),
-                    Arc::new(StringArray::from_iter_values(["a", "b", "ccccc"])),
-                )),
-            ],
-        )
-        .unwrap();
+    //     let input = RecordBatch::try_new(
+    //         schema.clone(),
+    //         vec![
+    //             Arc::new(UInt8Array::from_iter_values([
+    //                 AttributeValueType::Str as u8,
+    //                 AttributeValueType::Int as u8,
+    //                 AttributeValueType::Int as u8,
+    //                 AttributeValueType::Str as u8,
+    //             ])),
+    //             Arc::new(DictionaryArray::new(
+    //                 UInt8Array::from_iter_values([0, 1, 2, 1]),
+    //                 Arc::new(StringArray::from_iter_values(["a", "b", "ccccc"])),
+    //             )),
+    //         ],
+    //     )
+    //     .unwrap();
 
-        let result = sort_record_batch(&ArrowPayloadType::LogAttrs, &input).unwrap();
-        arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
-    }
+    //     let result = sort_record_batch(&ArrowPayloadType::LogAttrs, &input).unwrap();
+    //     arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
+    // }
 
     #[test]
     fn test_sort_attrs_record_batch() {
