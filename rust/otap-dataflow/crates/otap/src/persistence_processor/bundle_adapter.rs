@@ -949,11 +949,7 @@ mod tests {
 
             // Should not be identified as shared
             if raw != 1 && raw != 2 {
-                assert!(
-                    !is_shared_slot(slot),
-                    "slot {} should not be shared",
-                    raw
-                );
+                assert!(!is_shared_slot(slot), "slot {} should not be shared", raw);
             }
 
             // Should not map to a signal type (except 0 which is UNKNOWN)
@@ -965,7 +961,16 @@ mod tests {
 
             // slot_to_payload_type depends on whether prost accepts the value
             // For truly invalid values (gaps), it should return None
-            if raw == 3 || raw == 9 || raw == 27 || raw == 29 || raw == 32 || raw == 39 || raw == 46 || raw == 50 || raw == 59 {
+            if raw == 3
+                || raw == 9
+                || raw == 27
+                || raw == 29
+                || raw == 32
+                || raw == 39
+                || raw == 46
+                || raw == 50
+                || raw == 59
+            {
                 assert!(
                     slot_to_payload_type(slot).is_none(),
                     "slot {} should return None from slot_to_payload_type",
@@ -1071,12 +1076,20 @@ mod tests {
         // Test the boundary values for each signal type range
         let boundary_cases = [
             // (slot_raw, expected_signal, expected_payload)
-            (10, Some(SignalType::Metrics), ArrowPayloadType::UnivariateMetrics),
+            (
+                10,
+                Some(SignalType::Metrics),
+                ArrowPayloadType::UnivariateMetrics,
+            ),
             (26, Some(SignalType::Metrics), ArrowPayloadType::MetricAttrs),
             (30, Some(SignalType::Logs), ArrowPayloadType::Logs),
             (31, Some(SignalType::Logs), ArrowPayloadType::LogAttrs),
             (40, Some(SignalType::Traces), ArrowPayloadType::Spans),
-            (45, Some(SignalType::Traces), ArrowPayloadType::SpanLinkAttrs),
+            (
+                45,
+                Some(SignalType::Traces),
+                ArrowPayloadType::SpanLinkAttrs,
+            ),
         ];
 
         for (raw, expected_signal, expected_payload) in boundary_cases {
@@ -1086,7 +1099,11 @@ mod tests {
                 let (signal, payload) = from_slot_id(slot)
                     .unwrap_or_else(|| panic!("slot {} should map to {:?}", raw, expected));
                 assert_eq!(signal, expected, "signal mismatch for slot {}", raw);
-                assert_eq!(payload, expected_payload, "payload mismatch for slot {}", raw);
+                assert_eq!(
+                    payload, expected_payload,
+                    "payload mismatch for slot {}",
+                    raw
+                );
             }
         }
     }
@@ -1115,11 +1132,7 @@ mod tests {
             );
 
             // Should NOT be a shared slot
-            assert!(
-                !is_shared_slot(slot),
-                "slot {} should not be shared",
-                raw
-            );
+            assert!(!is_shared_slot(slot), "slot {} should not be shared", raw);
         }
     }
 }
