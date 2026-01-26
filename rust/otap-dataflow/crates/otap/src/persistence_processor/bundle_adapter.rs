@@ -52,6 +52,7 @@ use quiver::record_bundle::{
 use quiver::segment::ReconstructedBundle;
 
 use otap_df_config::SignalType;
+use otap_df_pdata::otap::schema::SchemaIdBuilder;
 use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
@@ -190,9 +191,9 @@ fn otlp_schema_fingerprint() -> SchemaFingerprint {
 /// Compute schema fingerprint from a RecordBatch using blake3.
 fn compute_schema_fingerprint(batch: &RecordBatch) -> SchemaFingerprint {
     let schema = batch.schema();
-    // Create a deterministic string representation of the schema
-    let schema_str = format!("{:?}", schema);
-    let hash = blake3::hash(schema_str.as_bytes());
+    let mut builder = SchemaIdBuilder::new();
+    let schema_id = builder.build_id(&schema);
+    let hash = blake3::hash(schema_id.as_bytes());
     *hash.as_bytes()
 }
 
