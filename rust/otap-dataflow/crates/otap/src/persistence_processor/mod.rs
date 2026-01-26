@@ -866,7 +866,9 @@ impl PersistenceProcessor {
 
         // Check deadline before flush/drain sequence
         if Instant::now() >= deadline {
-            warn!("shutdown deadline reached, skipping flush and drain (engine shutdown will still finalize data)");
+            warn!(
+                "shutdown deadline reached, skipping flush and drain (engine shutdown will still finalize data)"
+            );
         } else {
             // Flush to finalize any open segment - this makes buffered data visible
             // for the drain loop below. Even if this is skipped, engine.shutdown()
