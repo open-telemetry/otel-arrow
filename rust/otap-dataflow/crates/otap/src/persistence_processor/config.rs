@@ -92,6 +92,7 @@ pub struct PersistenceProcessorConfig {
 
     /// Maximum age of data to retain (e.g., "24h", "7d").
     /// When set, data older than this will be eligible for removal.
+    /// TODO: This setting is currently a placeholder and is not yet enforced.
     #[serde(with = "humantime_serde", default)]
     pub max_age: Option<Duration>,
 
