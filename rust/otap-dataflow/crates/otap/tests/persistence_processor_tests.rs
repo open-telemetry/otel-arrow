@@ -68,7 +68,7 @@ fn test_persistence_processor_data_flow() {
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx.clone(), config.clone())
+        .build(pipeline_ctx.clone(), config.clone(), None)
         .expect("failed to build runtime pipeline");
 
     let pipeline_settings = config.pipeline_settings().clone();
@@ -170,7 +170,7 @@ fn test_persistence_processor_recovery() {
 
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let runtime_pipeline = OTAP_PIPELINE_FACTORY
-            .build(pipeline_ctx.clone(), config.clone())
+            .build(pipeline_ctx.clone(), config.clone(), None)
             .expect("failed to build runtime pipeline (run 1)");
 
         let pipeline_settings = config.pipeline_settings().clone();
@@ -253,7 +253,7 @@ fn test_persistence_processor_recovery() {
 
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let runtime_pipeline = OTAP_PIPELINE_FACTORY
-            .build(pipeline_ctx.clone(), config.clone())
+            .build(pipeline_ctx.clone(), config.clone(), None)
             .expect("failed to build runtime pipeline (run 2)");
 
         let pipeline_settings = config.pipeline_settings().clone();
