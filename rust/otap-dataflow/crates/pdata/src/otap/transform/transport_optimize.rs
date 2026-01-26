@@ -16,7 +16,8 @@ use std::{
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
+        UInt32Array,
     },
     buffer::{Buffer, MutableBuffer, ScalarBuffer},
     compute::{
@@ -513,21 +514,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
     // TODO - proper error handling
     let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
-    // let parent_id_col_is_sorted = is_parent_id_column_sorted(parent_id_col);
     let mut sorted_parent_id_column = SortedArrayBuilder::try_new(parent_id_col)?;
-
-    // first sort all the values columns by type. This will make it easier to eventually sort them by key...
-    // TODO - this might be inefficient
-    // for sorted_col in &mut sorted_val_columns {
-    //     if let Some(sorted_col) = sorted_col.as_mut() {
-    //         sorted_col.sort_source(&type_col_sorted_indices)?
-    //     }
-    // }
-    // if let Some(sorted_col) = sorted_ser_column.as_mut() {
-    //     sorted_col.sort_source(&type_col_sorted_indices)?;
-    // }
-
-    // sorted_parent_id_column.sort_source(&type_col_sorted_indices)?;
 
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
@@ -547,17 +534,16 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         };
 
         // let parent_id_type_range = sorted_parent_id_column.slice_source(&type_range)?;
-        let parent_id_type_range = sorted_parent_id_column.take_source(
-            &type_col_sorted_indices.slice(type_range.start, type_range.len())
-        )?;
+        let parent_id_type_range = sorted_parent_id_column
+            .take_source(&type_col_sorted_indices.slice(type_range.start, type_range.len()))?;
         let parent_id_type_range_by_key =
             take(&parent_id_type_range, &keys_range_sorted_indices, None).unwrap();
 
         // sort the values columns for values of this type
         if let Some(sorted_val_col) = sorted_val_col {
             // get values w/in this of types
-            let values_type_range = sorted_val_col.take_source(&type_col_sorted_indices.slice(type_range.start, type_range.len()))?;
-            // let values_type_range = sorted_val_col.slice_source(&type_range)?;
+            let values_type_range = sorted_val_col
+                .take_source(&type_col_sorted_indices.slice(type_range.start, type_range.len()))?;
             let values_type_range_by_key =
                 take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
 
@@ -591,8 +577,10 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 let values_partition = partition(&[values_key_range_sorted]).unwrap();
                 for values_range in values_partition.ranges() {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
-                    let parent_ids_range = parent_id_key_range_sorted.slice(values_range.start, values_range.len());
-                    let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
+                    let parent_ids_range =
+                        parent_id_key_range_sorted.slice(values_range.start, values_range.len());
+                    let parent_ids_sorted =
+                        arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
                     sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
                 }
             }
@@ -614,8 +602,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             }
 
             if let Some(sorted_val_col) = sorted_val_columns[attr_type as usize].as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices.slice(type_range.start, type_range.len()));
-                // sorted_val_col.append_range(&type_range);
+                sorted_val_col.take_and_append(
+                    &type_col_sorted_indices.slice(type_range.start, type_range.len()),
+                );
             }
         }
 
@@ -625,8 +614,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             && key_range_attr_type != AttributeValueType::Slice as u8
         {
             if let Some(sorted_val_col) = sorted_ser_column.as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices.slice(type_range.start, type_range.len()));
-                // sorted_val_col.append_range(&type_range);
+                sorted_val_col.take_and_append(
+                    &type_col_sorted_indices.slice(type_range.start, type_range.len()),
+                );
             }
         }
     }
@@ -717,10 +707,13 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
     match parent_id_col.data_type() {
         DataType::UInt16 => {
-            let as_prim = parent_id_col.as_any().downcast_ref::<UInt16Array>().unwrap();
+            let as_prim = parent_id_col
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap();
             let values_buffer = as_prim.values().iter().as_slice();
             values_buffer.is_sorted()
-        },
+        }
         _ => {
             todo!()
         }
@@ -2694,24 +2687,37 @@ mod test {
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                 ])),
-                Arc::new(StringArray::from_iter_values(["b", "b", "b", "a", "a", "a", ])),
-                Arc::new(StringArray::from_iter_values(["1", "2", "1", "2", "1", "2"])),
-            ]
-        ).unwrap();
+                Arc::new(StringArray::from_iter_values([
+                    "b", "b", "b", "a", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "1", "2", "1", "2", "1", "2",
+                ])),
+            ],
+        )
+        .unwrap();
 
-        let expected =  RecordBatch::try_new(schema.clone(), vec![
-            Arc::new(UInt16Array::from_iter_values([2, 1, 3, 0, 5, 4])),
-            Arc::new(UInt8Array::from_iter_values([
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-                AttributeValueType::Str as u8,
-            ])),
-            Arc::new(StringArray::from_iter_values(["a", "a", "a", "b", "b", "b",])),
-            Arc::new(StringArray::from_iter_values(["1", "2", "2", "1", "1", "2"])),
-        ]).unwrap();
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([2, 1, 3, 0, 5, 4])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "a", "b", "b", "b",
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "1", "2", "2", "1", "1", "2",
+                ])),
+            ],
+        )
+        .unwrap();
 
         let result = sort_attrs_record_batch(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
