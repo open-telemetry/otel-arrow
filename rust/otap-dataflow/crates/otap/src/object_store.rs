@@ -236,7 +236,6 @@ mod test {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
             storage_scope: None,
             auth: cloud_auth::azure::AuthMethod::AzureCli {
-                additionally_allowed_tenants: vec![],
                 subscription: None,
                 tenant_id: None,
             },
@@ -276,7 +275,6 @@ mod test {
             base_uri: "https://mystorageaccount.blob.core.windows.net/container".to_string(),
             storage_scope: None,
             auth: cloud_auth::azure::AuthMethod::AzureCli {
-                additionally_allowed_tenants: vec![],
                 subscription: None,
                 tenant_id: None,
             },
