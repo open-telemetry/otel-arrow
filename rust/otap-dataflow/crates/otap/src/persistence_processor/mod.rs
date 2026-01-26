@@ -936,7 +936,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
             self.ensure_engine_initialized().await?;
         }
 
-        // Start timer on first message if not already started
+        // Start timer on first message (whether control or data) if not already started
         if !self.timer_started {
             let _ = effect_handler
                 .start_periodic_timer(self.config.poll_interval)
