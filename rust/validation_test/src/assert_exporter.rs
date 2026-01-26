@@ -39,7 +39,13 @@ struct AssertValidExporterConfig {
 #[metric_set(name = "validation.assert.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
 struct AssertValidExporterMetrics {
-    /// Number of comparisons that did not match expectation.
+    /// Number of comparisons that did not match expectation
+    #[metric(name = "send.count", unit = "{comparison")]
+    failed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
+    /// Number of comparisons that did match expectation
+    #[metric(name = "send.count", unit = "{comparison}")]
+    passed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
+    /// The value of the last comparison result
     /// 0 -> not valid
     /// 1 -> valid
     valid: otap_df_telemetry::instrument::Gauge<u64>,

@@ -346,6 +346,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Starts the controller with the given engine configurations. Runs till pipeline is shutdown then closes everything
     /// Used in Validation test where shutdown signal is used to end pipeline groups and admin endpoint
     /// Starts the controller with the given engine configurations.
+    /// ToDo [LQ] We need to minimize duplication of code here
     pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
         let EngineConfig {
             settings: engine_settings,
@@ -583,7 +584,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         if let Some(err) = results.into_iter().find_map(Result::err) {
             return Err(err);
         }
-
 
         // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
