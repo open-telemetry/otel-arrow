@@ -780,7 +780,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 }
 
                 let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_ranks.sort_by(|a, b| a.1.cmp(&b.1));
+                with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
                 Ok(PrimitiveArray::from_iter_values(
                     with_ranks.into_iter().map(|(rank, _)| rank as u32),
