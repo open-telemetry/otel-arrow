@@ -188,8 +188,8 @@ data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engin
 data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
 
 # Azure Monitor Exporter
-azure_core = {version = "0.30.1", default-features = false }
-azure_identity = {version = "0.30.0", default-features = false }
+azure_core = {version = "0.31.0", default-features = false }
+azure_identity = {version = "0.31.0", default-features = false }
 flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"
