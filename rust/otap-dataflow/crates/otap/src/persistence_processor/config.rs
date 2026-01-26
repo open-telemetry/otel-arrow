@@ -30,7 +30,7 @@ fn default_size_cap_policy() -> SizeCapPolicy {
     SizeCapPolicy::Backpressure
 }
 
-/// Default poll interval for checking Quiver for bundles.
+/// Default poll interval for checking for available bundles.
 fn default_poll_interval() -> Duration {
     Duration::from_millis(100)
 }
@@ -100,7 +100,7 @@ pub struct PersistenceProcessorConfig {
     #[serde(default = "default_size_cap_policy")]
     pub size_cap_policy: SizeCapPolicy,
 
-    /// Interval for polling Quiver for available bundles.
+    /// Interval for polling for available bundles.
     #[serde(with = "humantime_serde", default = "default_poll_interval")]
     pub poll_interval: Duration,
 
@@ -127,7 +127,7 @@ impl PersistenceProcessorConfig {
         self.retention_size_cap.as_u64()
     }
 
-    /// Get the retention policy for Quiver.
+    /// Get the retention policy for the storage engine.
     #[must_use]
     pub fn retention_policy(&self) -> RetentionPolicy {
         self.size_cap_policy.into()

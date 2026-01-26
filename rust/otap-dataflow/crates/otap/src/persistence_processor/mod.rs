@@ -1,26 +1,26 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Persistence processor for durable buffering of OTAP data via Quiver.
+//! Persistence processor for durable buffering of OTAP data.
 //!
 //! This processor provides crash-resilient persistence by writing incoming
-//! telemetry data to Quiver's write-ahead log and segment storage before
-//! forwarding downstream. On acknowledgement from downstream, the data is
-//! marked as consumed in Quiver; on rejection, data can be replayed.
+//! telemetry data to a write-ahead log and segment storage before forwarding
+//! downstream. On acknowledgement from downstream, the data is marked as
+//! consumed; on rejection, data can be replayed.
 //!
 //! # Architecture
 //!
 //! ```text
 //! Upstream → PersistenceProcessor → Downstream
 //!                    ↓
-//!              QuiverEngine
+//!              StorageEngine
 //!                    ↓
 //!            WAL + Segments
 //! ```
 //!
 //! # Per-Core Isolation
 //!
-//! Each processor instance (one per CPU core) has its own isolated Quiver engine
+//! Each processor instance (one per CPU core) has its own isolated storage engine
 //! with a separate WAL and segment store. Data is partitioned by core at runtime,
 //! with each core's data stored in `{path}/core_{core_id}/`.
 //!
@@ -39,11 +39,11 @@
 //!
 //! # Message Flow
 //!
-//! - `Message::Data`: Ingested to Quiver, ACK sent upstream after WAL fsync
-//! - `TimerTick`: Poll Quiver for bundles, send downstream
+//! - `Message::Data`: Ingested to storage, ACK sent upstream after WAL fsync
+//! - `TimerTick`: Poll storage for bundles, send downstream
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
 //! - `Nack`: Call handle.defer() and schedule retry via delay_data()
-//! - `Shutdown`: Flush Quiver engine
+//! - `Shutdown`: Flush storage engine
 
 mod bundle_adapter;
 mod config;
@@ -108,7 +108,7 @@ const SUBSCRIBER_ID: &str = "persistence-processor";
 #[derive(Debug, Default, Clone)]
 pub struct PersistenceProcessorMetrics {
     // ─── Bundle-level metrics ───────────────────────────────────────────────
-    /// Number of bundles ingested to Quiver.
+    /// Number of bundles ingested to storage.
     #[metric(unit = "{bundle}")]
     pub bundles_ingested: Counter<u64>,
 
@@ -159,8 +159,8 @@ pub struct PersistenceProcessorMetrics {
     #[metric(unit = "{error}")]
     pub read_errors: Counter<u64>,
 
-    // ─── Quiver storage metrics (updated on telemetry collection) ───────────
-    /// Current bytes used by Quiver storage (WAL + segments).
+    // ─── Storage metrics (updated on telemetry collection) ──────────────────
+    /// Current bytes used by persistent storage (WAL + segments).
     #[metric(unit = "By")]
     pub storage_bytes_used: Gauge<u64>,
 

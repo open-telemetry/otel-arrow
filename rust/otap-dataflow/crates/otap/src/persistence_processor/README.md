@@ -1,8 +1,8 @@
 # Persistence Processor
 
-The Persistence Processor provides crash-resilient durable buffering using
-Quiver's write-ahead log (WAL) and segment storage. Data is persisted before
-forwarding downstream, enabling recovery after crashes or network outages.
+The Persistence Processor provides crash-resilient durable buffering using a
+write-ahead log (WAL) and segment storage. Data is persisted before forwarding
+downstream, enabling recovery after crashes or network outages.
 
 Enable with `--features persistence`.
 
@@ -35,7 +35,7 @@ nodes:
       # - drop_oldest: Remove oldest segments (controlled data loss)
       size_cap_policy: backpressure
 
-      # Interval for polling Quiver for bundles (default: 100ms)
+      # Interval for polling for available bundles (default: 100ms)
       poll_interval: 100ms
 
       # Maximum time a segment stays open before finalization (default: 1s)
@@ -50,7 +50,7 @@ nodes:
 
 ## Architecture
 
-Each processor instance (one per CPU core) has its own isolated Quiver engine:
+Each processor instance (one per CPU core) has its own isolated storage engine:
 
 ```text
 {path}/
@@ -83,7 +83,7 @@ For the **outgoing edge** (to exporters), any dispatch strategy is valid.
 
 ## Message Flow
 
-1. **Ingest**: Incoming data is written to Quiver's WAL, then ACK sent upstream
+1. **Ingest**: Incoming data is written to the WAL, then ACK sent upstream
 2. **Segment Finalization**: When segment reaches size/time threshold, it's
    written to disk
 3. **Forward**: Timer tick polls for finalized bundles, sends downstream
