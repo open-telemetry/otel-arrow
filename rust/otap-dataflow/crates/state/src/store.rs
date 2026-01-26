@@ -134,50 +134,36 @@ impl ObservedStateStore {
                 let context = &log.record.context;
 
                 // Print log record and scope atomically in a single write
-                self.console
-                    .print_log_record_with_scope(log.time, &log.record, |w, cw| {
-                        if !context.is_empty() {
-                            Self::format_scope_from_registry(w, cw, context, &self.registry);
-                        }
-                    });
+                self.console.print_log_record(log.time, &log.record, |w, cw| {
+                    if !context.is_empty() {
+                        Self::format_scope_from_registry(w, cw, context, &self.registry);
+                    }
+                });
             }
         }
         Ok(())
     }
 
     /// Format scope attributes by looking up entity keys in the registry.
-    /// Writes a scope continuation line with resolved attributes from all entities.
+    /// Appends entity references inline after the log message.
+    /// Format: ` entity/schema=name entity/schema=name ...`
     fn format_scope_from_registry(
         w: &mut BufWriter<'_>,
         cw: &ConsoleWriter,
         context: &LogContext,
         registry: &TelemetryRegistryHandle,
     ) {
-        // Write scope line prefix
-        let _ = w.write_all(b"    ");
-        cw.write_styled(w, AnsiCode::Dim, |w| {
-            let _ = w.write_all(b"scope");
-        });
-        let _ = w.write_all(b" [");
-
-        let mut first = true;
-
         for entity_key in context.iter() {
             registry.visit_entity(*entity_key, |attrs| {
-                for (key, value) in attrs.iter_attributes() {
-                    let s = value.to_string_value();
-                    if !s.is_empty() {
-                        if !first {
-                            let _ = w.write_all(b", ");
-                        }
-                        first = false;
-                        let _ = write!(w, "{}={}", key, s);
-                    }
+                let schema = attrs.schema_name();
+                if let Some(name) = attrs.primary_name() {
+                    let _ = w.write_all(b" ");
+                    cw.write_styled(w, AnsiCode::Cyan, |w| {
+                        let _ = write!(w, "entity/{}={}", schema, name);
+                    });
                 }
             });
         }
-
-        let _ = w.write_all(b"]\n");
     }
 
     /// Reports a new observed event in the store.

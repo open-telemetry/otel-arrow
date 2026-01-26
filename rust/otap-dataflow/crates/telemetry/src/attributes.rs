@@ -119,6 +119,19 @@ pub trait AttributeSetHandler {
     fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())
     }
+
+    /// Returns the primary (display) name for this attribute set.
+    /// By convention, this is the first attribute value.
+    fn primary_name(&self) -> Option<String> {
+        self.attribute_values()
+            .first()
+            .map(|v| v.to_string_value())
+    }
+
+    /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
+    fn schema_name(&self) -> &'static str {
+        self.descriptor().name
+    }
 }
 
 /// Represents a single attribute value that can be of different types.

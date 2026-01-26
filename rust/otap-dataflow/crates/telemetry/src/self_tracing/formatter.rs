@@ -89,7 +89,7 @@ impl RawLoggingLayer {
         // would prefer to avoid; it will be an extensive change in the
         // ProtoBuffer impl to stack-allocate this as a temporary.
         let record = LogRecord::new(event);
-        self.writer.print_log_record(time, &record);
+        self.writer.print_log_record(time, &record, |_, _| {});
     }
 }
 
@@ -125,22 +125,11 @@ impl ConsoleWriter {
     }
 
     /// Print a LogRecord directly to stdout or stderr (based on level).
-    pub fn print_log_record(&self, time: SystemTime, record: &LogRecord) {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into(&mut buf, Some(time), record);
-        self.write_line(record.callsite().level(), &buf[..len]);
-    }
-
-    /// Print a LogRecord with a custom scope formatter.
     ///
-    /// This allows the caller to provide a callback that formats scope information
-    /// using resolved attributes (e.g., from a registry lookup). The log record and
-    /// scope are written atomically to prevent interleaving with other log output.
-    ///
-    /// The `scope_formatter` callback receives a mutable buffer writer and should
-    /// append any scope continuation lines. If scope formatting is not needed,
-    /// use `print_log_record` instead.
-    pub fn print_log_record_with_scope<F>(
+    /// The `scope_formatter` callback is invoked after the log body/attributes,
+    /// before the newline. This allows callers to append scope information
+    /// (e.g., entity context from a registry) atomically within the same write.
+    pub fn print_log_record<F>(
         &self,
         time: SystemTime,
         record: &LogRecord,
@@ -149,25 +138,35 @@ impl ConsoleWriter {
         F: FnOnce(&mut BufWriter<'_>, &Self),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_core(&mut buf, Some(time), record, scope_formatter);
+        let mut w = Cursor::new(buf.as_mut_slice());
+
+        let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
+        let level = *record.callsite().level();
+
+        self.format_log_line(
+            &mut w,
+            Some(time),
+            &view,
+            |w, cw| cw.write_level(w, &level),
+            |w, cw| {
+                cw.write_styled(w, AnsiCode::Bold, |w| Self::write_event_name(w, record));
+            },
+            scope_formatter,
+        );
+
+        let len = w.position() as usize;
         self.write_line(record.callsite().level(), &buf[..len]);
     }
 
-    /// Core formatting logic that formats a LogRecord into a buffer.
-    /// The `scope_formatter` callback is called after the main log line to add scope.
-    fn format_log_record_core<F>(
+    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
+    fn format_log_record_into(
         &self,
         buf: &mut [u8],
         time: Option<SystemTime>,
         record: &LogRecord,
-        scope_formatter: F,
-    ) -> usize
-    where
-        F: FnOnce(&mut BufWriter<'_>, &Self),
-    {
+    ) -> usize {
         let mut w = Cursor::new(buf);
 
-        // Create a view over the pre-encoded body+attrs bytes
         let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
         let level = *record.callsite().level();
 
@@ -179,49 +178,15 @@ impl ConsoleWriter {
             |w, cw| {
                 cw.write_styled(w, AnsiCode::Bold, |w| Self::write_event_name(w, record));
             },
+            |w, _cw| {
+                // Append entity context inline (raw format for testing without registry)
+                for key in record.context.iter() {
+                    let _ = write!(w, " {:?}", key);
+                }
+            },
         );
 
-        // Call the custom scope formatter
-        scope_formatter(&mut w, self);
-
         w.position() as usize
-    }
-
-    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
-    #[allow(dead_code)]
-    fn format_log_record_into(
-        &self,
-        buf: &mut [u8],
-        time: Option<SystemTime>,
-        record: &LogRecord,
-    ) -> usize {
-        self.format_log_record_core(buf, time, record, |w, cw| {
-            // Add scope continuation line if entity context is present (Inline mode only)
-            if !record.context.is_empty() {
-                cw.format_scope_continuation_into(w, record);
-            }
-        })
-    }
-
-    /// Format a scope continuation line showing entity context.
-    /// This prints on a new line without timestamp/level/name prefix.
-    /// Format: `  └─ scope [pipeline=<key>, node=<key>]`
-    fn format_scope_continuation_into(&self, w: &mut BufWriter<'_>, record: &LogRecord) {
-        let _ = w.write_all(b"    ");
-        self.write_styled(w, AnsiCode::Dim, |w| {
-            let _ = w.write_all(b"scope");
-        });
-        let _ = w.write_all(b" [");
-
-        let mut first = true;
-        for key in record.context.iter() {
-            if !first {
-                let _ = w.write_all(b", ");
-            }
-            let _ = write!(w, "{:?}", key);
-            first = false;
-        }
-        let _ = w.write_all(b"]\n");
     }
 
     /// Write callsite details as event_name to buffer.
@@ -468,17 +433,20 @@ impl ConsoleWriter {
     /// - Event name (if any) prints space before itself
     /// - Body (if any) prints ": " before itself
     /// - Attributes (if any) print " [...]" before themselves
-    pub fn format_log_line<V, L, E>(
+    /// - Suffix (if any) is written after attributes, before the newline
+    pub fn format_log_line<V, L, E, S>(
         &self,
         w: &mut BufWriter<'_>,
         time: Option<SystemTime>,
         record: &V,
         format_level: L,
         format_event_name: E,
+        write_suffix: S,
     ) where
         V: LogRecordView,
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+        S: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
         self.format_line_impl(
             w,
@@ -488,6 +456,7 @@ impl ConsoleWriter {
             |w, has_event_name| {
                 Self::write_body_and_attrs(w, record, has_event_name);
             },
+            write_suffix,
         );
     }
 
@@ -495,17 +464,19 @@ impl ConsoleWriter {
     ///
     /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
     /// and doesn't print a body - just the header name and attributes.
-    pub fn format_header_line<A, L, E>(
+    pub fn format_header_line<A, L, E, S>(
         &self,
         w: &mut BufWriter<'_>,
         time: Option<SystemTime>,
         attrs: impl Iterator<Item = A>,
         format_level: L,
         format_event_name: E,
+        write_suffix: S,
     ) where
         A: AttributeView,
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
+        S: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
         self.format_line_impl(
             w,
@@ -515,21 +486,24 @@ impl ConsoleWriter {
             |w, _has_event_name| {
                 Self::write_attrs(w, attrs);
             },
+            write_suffix,
         );
     }
 
     /// Common implementation for formatting a line with timestamp, level, event name, and content.
-    fn format_line_impl<L, E, C>(
+    fn format_line_impl<L, E, C, S>(
         &self,
         w: &mut BufWriter<'_>,
         time: Option<SystemTime>,
         format_level: L,
         format_event_name: E,
         write_content: C,
+        write_suffix: S,
     ) where
         L: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         E: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
         C: FnOnce(&mut BufWriter<'_>, bool),
+        S: FnOnce(&mut BufWriter<'_>, &ConsoleWriter),
     {
         // Timestamp (optional)
         if let Some(time) = time {
@@ -547,6 +521,9 @@ impl ConsoleWriter {
 
         // Write content (body+attrs or just attrs)
         write_content(w, has_event_name);
+
+        // Write suffix (e.g., entity scope) before newline
+        write_suffix(w, self);
 
         let _ = w.write_all(b"\n");
     }
@@ -889,7 +866,7 @@ mod tests {
         let timestamp_ns: u64 = 1_705_321_845_678_000_000;
         let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
 
-        // Test with both entity keys
+        // Test with both entity keys - should be single line with EntityKey suffixes
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
@@ -899,51 +876,41 @@ mod tests {
         let writer = ConsoleWriter::no_color();
         let output = writer.format_log_record(Some(time), &record);
 
-        // Should have two lines
+        // Should be single line
         let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 2, "expected 2 lines, got: {:?}", lines);
+        assert_eq!(lines.len(), 1, "expected 1 line, got: {:?}", lines);
 
-        // First line is the normal log line
+        // Line should start with timestamp
         assert!(
             lines[0].starts_with("2024-01-15T12:30:45.678Z"),
             "got: {}",
             lines[0]
         );
 
-        // Second line is the scope continuation with entity keys
+        // Should contain EntityKey references inline
         assert!(
-            lines[1].contains("scope"),
-            "second line should contain 'scope', got: {}",
-            lines[1]
-        );
-        assert!(
-            lines[1].contains("pipeline="),
-            "should contain pipeline key, got: {}",
-            lines[1]
-        );
-        assert!(
-            lines[1].contains("node="),
-            "should contain node key, got: {}",
-            lines[1]
+            output.contains("EntityKey("),
+            "should contain EntityKey (raw format without registry), got: {}",
+            output
         );
 
-        // Test with only pipeline key
-        let record_pipeline_only = LogRecord {
+        // Test with only one entity key
+        let record_one_key = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
             context: smallvec![pipeline_key],
         };
 
-        let output = writer.format_log_record(Some(time), &record_pipeline_only);
+        let output = writer.format_log_record(Some(time), &record_one_key);
         let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 2, "expected 2 lines with pipeline only");
+        assert_eq!(lines.len(), 1, "expected 1 line with one entity key");
         assert!(
-            lines[1].contains("pipeline=") && !lines[1].contains("node="),
-            "should only have pipeline, got: {}",
-            lines[1]
+            output.contains("EntityKey("),
+            "should contain EntityKey, got: {}",
+            output
         );
 
-        // Test with no entity keys (should be single line)
+        // Test with no entity keys (should be single line, no EntityKey)
         let record_no_entity = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
@@ -958,19 +925,9 @@ mod tests {
             "expected 1 line without entity context, got: {:?}",
             lines
         );
-
-        // Test Grouped mode - scope continuation should be suppressed
-        let output = writer.format_log_record(Some(time), &record);
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(
-            lines.len(),
-            1,
-            "Grouped mode should produce 1 line even with entity context, got: {:?}",
-            lines
-        );
         assert!(
-            !output.contains("scope"),
-            "Grouped mode should not contain scope line, got: {}",
+            !output.contains("EntityKey("),
+            "should not contain EntityKey when context is empty, got: {}",
             output
         );
     }

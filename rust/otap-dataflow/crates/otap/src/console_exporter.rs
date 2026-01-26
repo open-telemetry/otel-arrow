@@ -243,6 +243,7 @@ impl HierarchicalFormatter {
                 |w, _| {
                     let _ = w.write_all(b"v1.Resource");
                 },
+                |_, _| {}, // no suffix
             );
         });
 
@@ -315,6 +316,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
                 },
+                |_, _| {}, // no suffix
             );
         });
 
@@ -369,6 +371,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(name.as_bytes());
                     }
                 },
+                |_, _| {}, // no suffix
             );
         });
     }

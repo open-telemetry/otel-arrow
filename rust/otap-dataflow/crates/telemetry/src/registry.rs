@@ -10,6 +10,7 @@ use crate::entity::EntityRegistry;
 use crate::metrics::{
     MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
+use crate::otel_info;
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::new_key_type;
@@ -61,11 +62,31 @@ impl TelemetryRegistryHandle {
     }
 
     /// Registers (or reuses) an entity for the provided attribute set.
+    /// Logs the entity definition when a new entity is created.
     pub fn register_entity(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
-        self.registry.lock().entities.register(attrs)
+        // Capture info for logging before registration
+        let schema_name = attrs.schema_name();
+        let primary_name = attrs.primary_name();
+        let all_attrs: String = attrs
+            .iter_attributes()
+            .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let entity_key = self.registry.lock().entities.register(attrs);
+
+        // Log the entity definition
+        otel_info!(
+            "registry.define_entity",
+            schema = schema_name,
+            name = primary_name.as_deref().unwrap_or("<unnamed>"),
+            attrs = all_attrs.as_str()
+        );
+
+        entity_key
     }
 
     /// Unregisters an entity by key.
@@ -98,15 +119,57 @@ impl TelemetryRegistryHandle {
         }
     }
 
+    /// Returns the primary (display) name for an entity.
+    /// By convention, this is the first attribute value.
+    #[must_use]
+    pub fn entity_primary_name(&self, key: EntityKey) -> Option<String> {
+        self.registry
+            .lock()
+            .entities
+            .get(key)
+            .and_then(|attrs| attrs.primary_name())
+    }
+
+    /// Returns the schema name for an entity (e.g., "pipeline.attrs").
+    #[must_use]
+    pub fn entity_schema_name(&self, key: EntityKey) -> Option<&'static str> {
+        self.registry
+            .lock()
+            .entities
+            .get(key)
+            .map(|attrs| attrs.schema_name())
+    }
+
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`
     /// instance that can be used to report metrics for that type.
     pub fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> MetricSet<T> {
-        let mut registry = self.registry.lock();
-        let entity_key = registry.entities.register(attrs);
-        registry.metrics.register(entity_key)
+        // Capture info for logging before registration
+        let schema_name = attrs.schema_name();
+        let primary_name = attrs.primary_name();
+        let all_attrs: String = attrs
+            .iter_attributes()
+            .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let metric_set = {
+            let mut registry = self.registry.lock();
+            let entity_key = registry.entities.register(attrs);
+            registry.metrics.register(entity_key)
+        };
+
+        // Log the entity definition
+        otel_info!(
+            "registry.define_entity",
+            schema = schema_name,
+            name = primary_name.as_deref().unwrap_or("<unnamed>"),
+            attrs = all_attrs.as_str()
+        );
+
+        metric_set
     }
 
     /// Registers a metric set type for an existing entity key.

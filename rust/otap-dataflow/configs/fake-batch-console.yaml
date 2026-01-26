@@ -5,7 +5,7 @@ settings:
   default_pdata_channel_size: 100
 
 nodes:
-  receiver:
+  generator:
     kind: receiver
     plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
     out_ports:
@@ -32,7 +32,7 @@ nodes:
       otap:
         min_size: 1000
         sizer: items
-      format: otap
+      format: preserve
       flush_timeout: 3s
   console:
     kind: exporter
@@ -45,6 +45,6 @@ service:
       level: debug
       providers:
         engine: console_async
-        admin: console_direct
         global: console_async
+        admin:    console_direct
         internal: console_direct

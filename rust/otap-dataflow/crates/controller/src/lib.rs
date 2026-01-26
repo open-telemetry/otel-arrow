@@ -124,10 +124,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let telemetry_registry = TelemetryRegistryHandle::new();
 
         // Create the observed state store for the telemetry system.
-        let obs_state_store = ObservedStateStore::new(
-            &engine_settings.observed_state,
-            telemetry_registry.clone(),
-        );
+        let obs_state_store =
+            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
