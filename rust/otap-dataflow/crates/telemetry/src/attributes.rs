@@ -121,12 +121,12 @@ pub trait AttributeSetHandler {
     }
 
     /// Returns the primary (display) name for this attribute set.
-    /// By convention, this is the first attribute value.
+    /// By convention, this is the first attribute value, or "<unnamed>" if empty.
     fn primary_name(&self) -> String {
         self.attribute_values()
             .first()
             .map(|v| v.to_string_value())
-            .expect("has_attrs")
+            .unwrap_or_else(|| "<unnamed>".to_string())
     }
 
     /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
