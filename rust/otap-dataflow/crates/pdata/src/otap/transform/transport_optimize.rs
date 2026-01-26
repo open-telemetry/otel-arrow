@@ -2425,22 +2425,25 @@ mod test {
                 true,
             ),
             Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
-            // Field::new()
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
         ]));
 
         // TODO:
         // - there ain't no null attrs
-        // - no vals not dict encoded
         // - should also have at least one vals dict w/ non pre-sorted keys
         // - an ID column
 
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 7, 8])),
+                Arc::new(UInt16Array::from_iter_values([
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Int as u8,
                     AttributeValueType::Int as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -2450,11 +2453,13 @@ mod test {
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([1, 0, 0, 1, 0, 1, 1, 1, 0]),
+                    UInt8Array::from_iter_values([1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
                     UInt16Array::from_iter([
+                        None,
+                        None,
                         None,
                         None,
                         Some(0),
@@ -2478,6 +2483,8 @@ mod test {
                         None,
                         None,
                         None,
+                        None,
+                        None,
                     ]),
                     Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
                 )),
@@ -2487,10 +2494,25 @@ mod test {
                     None,
                     None,
                     None,
+                    None,
+                    None,
                     Some(2.0),
                     Some(1.0),
                     None,
                     Some(1.0),
+                ])),
+                Arc::new(BooleanArray::from_iter([
+                    None,
+                    None,
+                    Some(true),
+                    Some(false),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 ])),
             ],
         )
@@ -2504,7 +2526,9 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values([2, 4, 3, 7, 1, 0, 8, 6, 5])),
+                Arc::new(UInt16Array::from_iter_values([
+                    4, 6, 5, 9, 1, 0, 10, 8, 7, 3, 2
+                ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -2515,9 +2539,11 @@ mod test {
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1, 0, 1, 1]),
+                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -2526,6 +2552,8 @@ mod test {
                         Some(0),
                         Some(1),
                         Some(1),
+                        None,
+                        None,
                         None,
                         None,
                         None,
@@ -2545,6 +2573,8 @@ mod test {
                         None,
                         None,
                         None,
+                        None,
+                        None,
                     ]),
                     Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
                 )),
@@ -2558,6 +2588,21 @@ mod test {
                     Some(1.0),
                     Some(1.0),
                     Some(2.0),
+                    None,
+                    None,
+                ])),
+                Arc::new(BooleanArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(false),
+                    Some(true),
                 ])),
             ],
         )
