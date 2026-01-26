@@ -500,7 +500,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         None, // map
         None, // slice
         record_batch
-            .column_by_name(consts::ATTRIBUTE_BOOL)
+            .column_by_name(consts::ATTRIBUTE_BYTES)
             .map(|col| SortedArrayBuilder::try_new(col))
             .transpose()?,
     ];
@@ -583,7 +583,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         }
 
         // push the unsorted values for columns not of this type to fill in gaps
-        for attr_type in AttributeValueType::Empty as u8..AttributeValueType::Bytes as u8 {
+        for attr_type in AttributeValueType::Empty as u8..AttributeValueType::Bytes as u8 + 1 {
             if attr_type == key_range_attr_type {
                 continue; // skip cause we already pushed the sorted section for this type
             }
@@ -610,7 +610,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     for field in record_batch.schema().fields() {
         let field_name = field.name();
 
-        // println!("field_name = {field_name}");
+        println!("field_name = {field_name}");
 
         if field_name == consts::ATTRIBUTE_TYPE {
             columns.push(type_col_sorted.clone());
@@ -678,9 +678,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         todo!("handle bad col name {field_name}")
     }
 
-    // for column in &columns {
-    //     println!("len = {}", column.len());
-    // }
+    for column in &columns {
+        println!("len = {}", column.len());
+    }
 
     // println!("columns = {columns:?}");
 
@@ -1988,13 +1988,12 @@ mod test {
 
     use arrow::{
         array::{
-            FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StructArray,
-            TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
+            BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StructArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array
         },
         datatypes::{Field, Fields, TimeUnit},
     };
 
-    use crate::schema::FieldExt;
+    use crate::{encode::record::array::UInt16ArrayBuilder, schema::FieldExt};
 
     use super::*;
 
@@ -2371,41 +2370,9 @@ mod test {
         assert_eq!(result, expected);
     }
 
-    // #[test]
-    // fn test_sort_multi_column_dict() {
-    //     let schema = Arc::new(Schema::new(vec![
-    //         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-    //         Field::new(
-    //             consts::ATTRIBUTE_KEY,
-    //             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-    //             false,
-    //         ),
-    //     ]));
-
-    //     let input = RecordBatch::try_new(
-    //         schema.clone(),
-    //         vec![
-    //             Arc::new(UInt8Array::from_iter_values([
-    //                 AttributeValueType::Str as u8,
-    //                 AttributeValueType::Int as u8,
-    //                 AttributeValueType::Int as u8,
-    //                 AttributeValueType::Str as u8,
-    //             ])),
-    //             Arc::new(DictionaryArray::new(
-    //                 UInt8Array::from_iter_values([0, 1, 2, 1]),
-    //                 Arc::new(StringArray::from_iter_values(["a", "b", "ccccc"])),
-    //             )),
-    //         ],
-    //     )
-    //     .unwrap();
-
-    //     let result = sort_record_batch(&ArrowPayloadType::LogAttrs, &input).unwrap();
-    //     arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
-    // }
 
     #[test]
     fn test_sort_attrs_record_batch() {
-        // TODO - add an ID column?
         let schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
             Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -2426,6 +2393,11 @@ mod test {
             ),
             Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+            Field::new(
+                consts::ATTRIBUTE_BYTES,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
         ]));
 
         // TODO:
@@ -2437,7 +2409,7 @@ mod test {
             schema.clone(),
             vec![
                 Arc::new(UInt16Array::from_iter_values([
-                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
                 ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Int as u8,
@@ -2450,10 +2422,15 @@ mod test {
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Bytes as u8,
                     AttributeValueType::Double as u8,
+
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0]),
+                    UInt8Array::from_iter_values([
+                        1, 0, 0, 0,
+                        0, 1, 0, 1,
+                        1, 1, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -2462,12 +2439,15 @@ mod test {
                         None,
                         None,
                         None,
+
                         Some(0),
                         Some(1),
                         Some(0),
                         None,
+
                         None,
                         Some(1),
+                        None,
                         None,
                     ]),
                     Arc::new(StringArray::from_iter_values(["va", "vb"])),
@@ -2476,6 +2456,7 @@ mod test {
                     UInt16Array::from_iter([
                         Some(1),
                         Some(0),
+                        None,
                         None,
                         None,
                         None,
@@ -2499,6 +2480,7 @@ mod test {
                     Some(2.0),
                     Some(1.0),
                     None,
+                    None,
                     Some(1.0),
                 ])),
                 Arc::new(BooleanArray::from_iter([
@@ -2513,11 +2495,32 @@ mod test {
                     None,
                     None,
                     None,
+                    None,
                 ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        None,
+                        None,
+
+                        None,
+                        None,
+                        None,
+                        None,
+
+                        None,
+                        None,
+                        Some(0),
+                        None,
+                    ]),
+                    Arc::new(BinaryArray::from_iter_values([b"a"])),
+                ))
             ],
         )
         .unwrap();
 
+        // TODO remove all the prints
         arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
 
         let result = sort_attrs_record_batch(&input).unwrap();
@@ -2527,7 +2530,7 @@ mod test {
             schema.clone(),
             vec![
                 Arc::new(UInt16Array::from_iter_values([
-                    4, 6, 5, 9, 1, 0, 10, 8, 7, 3, 2
+                    4, 6, 5, 9, 1, 0, 11, 8, 7, 3, 2, 10,
                 ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
@@ -2541,9 +2544,10 @@ mod test {
                     AttributeValueType::Double as u8,
                     AttributeValueType::Bool as u8,
                     AttributeValueType::Bool as u8,
+                    AttributeValueType::Bytes  as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0]),
+                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -2552,6 +2556,7 @@ mod test {
                         Some(0),
                         Some(1),
                         Some(1),
+                        None,
                         None,
                         None,
                         None,
@@ -2575,6 +2580,7 @@ mod test {
                         None,
                         None,
                         None,
+                        None,
                     ]),
                     Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
                 )),
@@ -2590,6 +2596,7 @@ mod test {
                     Some(2.0),
                     None,
                     None,
+                    None,
                 ])),
                 Arc::new(BooleanArray::from_iter([
                     None,
@@ -2603,10 +2610,172 @@ mod test {
                     None,
                     Some(false),
                     Some(true),
+                    None,
                 ])),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(0),
+                    ]),
+                    Arc::new(BinaryArray::from_iter_values([b"a"])),
+                ))
             ],
         )
         .unwrap();
+
+        // TODO - should this just be imported for the module?
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_attrs_record_batch_with_complex_value_types() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_SER,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Binary)),
+                true,
+            ),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 7])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Str as u8,
+
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(
+                    DictionaryArray::new(
+                        UInt8Array::from_iter_values([
+                            0, 0, 0, 0,
+                            0, 0, 0, 0
+                        ]),
+                        Arc::new(StringArray::from_iter_values(["ka"]))
+                    )
+                ),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        Some(0),
+                        None,
+                        None,
+                        Some(1),
+
+                        None,
+                        Some(1),
+                        None,
+                        Some(0)
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["b", "a"]))
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        None,
+                        Some(1),
+                        Some(0),
+                        None,
+                        Some(2),
+                        None,
+                        Some(3),
+                        None,
+                    ]),
+                    // Note - these aren't valid CBOR serialized attributes, but we're just testing
+                    // that they sort in increasing byte order, so it's OK
+                    Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c", b"d"]))
+                ))
+            ]
+        ).unwrap();
+
+        // TODO remove all the prints
+        arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([
+                    3, 5, 0, 7,
+
+                    4, 6, 2, 1,
+                ])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Slice as u8,
+                ])),
+                Arc::new(
+                    DictionaryArray::new(
+                        UInt8Array::from_iter_values([
+                            0, 0, 0, 0,
+                            0, 0, 0, 0
+                        ]),
+                        Arc::new(StringArray::from_iter_values(["ka"]))
+                    )
+                ),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        Some(1),
+                        Some(1),
+                        Some(0),
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["b", "a"]))
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(2),
+                        Some(3),
+                        Some(0),
+                        Some(1),
+                    ]),
+                    Arc::new(BinaryArray::from_iter_values([b"a", b"b", b"c", b"d"]))
+                ))
+            ]
+        ).unwrap();
 
         // TODO - should this just be imported for the module?
         pretty_assertions::assert_eq!(result, expected);
