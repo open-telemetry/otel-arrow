@@ -512,11 +512,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         .transpose()?;
 
     // TODO - proper error handling
-    let mut sorted_parent_id_column = record_batch
-        .column_by_name(consts::PARENT_ID)
-        .map(|col| SortedArrayBuilder::try_new(col))
-        .transpose()?
-        .unwrap();
+    let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
+    let parent_id_col_is_sorted = is_parent_id_column_sorted(parent_id_col);
+    let mut sorted_parent_id_column = SortedArrayBuilder::try_new(parent_id_col)?;
 
     // first sort all the values columns by type. This will make it easier to eventually sort them by key...
     // TODO - this might be inefficient
@@ -710,6 +708,19 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     // arrow::util::pretty::print_batches(&[batch.clone()]).unwrap();
 
     Ok(batch)
+}
+
+fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
+    match parent_id_col.data_type() {
+        DataType::UInt16 => {
+            let as_prim = parent_id_col.as_any().downcast_ref::<UInt16Array>().unwrap();
+            let values_buffer = as_prim.values().iter().as_slice();
+            values_buffer.is_sorted()
+        },
+        _ => {
+            todo!()
+        }
+    }
 }
 
 // TODO
@@ -2533,12 +2544,6 @@ mod test {
         )
         .unwrap();
 
-        // TODO remove all the prints
-        arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
-
-        let result = sort_attrs_record_batch(&input).unwrap();
-        arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
-
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -2646,7 +2651,7 @@ mod test {
         )
         .unwrap();
 
-        // TODO - should this just be imported for the module?
+        let result = sort_attrs_record_batch(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -2656,7 +2661,47 @@ mod test {
         // include test for not already sorted
         // "" "" "" both cases above but dict encoded
         // "" "" "" all cases above but for empty
-        todo!()
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, false),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([5, 4, 0, 3, 2, 1])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["b", "b", "b", "a", "a", "a", ])),
+                Arc::new(StringArray::from_iter_values(["1", "2", "1", "2", "1", "2"])),
+            ]
+        ).unwrap();
+
+        let expected =  RecordBatch::try_new(schema.clone(), vec![
+            Arc::new(UInt16Array::from_iter_values([2, 1, 3, 0, 5, 4])),
+            Arc::new(UInt8Array::from_iter_values([
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+            ])),
+            Arc::new(StringArray::from_iter_values(["a", "a", "a", "b", "b", "b",])),
+            Arc::new(StringArray::from_iter_values(["1", "2", "2", "1", "1", "2"])),
+        ]).unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
     }
 
     #[test]
