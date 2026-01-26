@@ -1,19 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use azure_core::credentials::TokenCredential;
 use bytes::Bytes;
 
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
-    header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},
 };
-use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
-use super::auth::Auth;
-use super::auth_header::AuthHeader;
 use super::config::ApiConfig;
 use super::error::Error;
 
@@ -34,7 +30,7 @@ pub struct LogsIngestionClient {
     endpoint: String,
 
     // Pre-formatted authorization header provider
-    auth_header: AuthHeader,
+    auth_header: HeaderValue,
 }
 
 pub struct LogsIngestionClientPool {
@@ -67,16 +63,21 @@ impl LogsIngestionClientPool {
         Ok(clients)
     }
 
-    pub async fn initialize(&mut self, config: &ApiConfig, auth: &Auth) -> Result<(), Error> {
+    pub async fn initialize(&mut self, config: &ApiConfig) -> Result<(), Error> {
         let http_clients = self.create_http_clients(self.clients.capacity())?;
 
         for http_client in http_clients {
-            let mut client = LogsIngestionClient::new(config, http_client, auth.clone())?;
-            client.auth_header.ensure_valid_token().await?;
+            let client = LogsIngestionClient::new(config, http_client)?;
             self.clients.push(client);
         }
 
         Ok(())
+    }
+
+    pub fn update_auth(&mut self, header: HeaderValue) {
+        for client in &mut self.clients {
+            client.update_auth(header.clone());
+        }
     }
 
     #[inline(always)]
@@ -106,13 +107,11 @@ impl LogsIngestionClient {
     pub fn from_parts(
         http_client: Client,
         endpoint: String,
-        credential: Arc<dyn TokenCredential>,
-        scope: String,
     ) -> Self {
         Self {
             http_client,
             endpoint,
-            auth_header: AuthHeader::new(Auth::from_credential(credential, scope)),
+            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
         }
     }
 
@@ -125,7 +124,7 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(LogsIngestionClient)` - A configured client instance
     /// * `Err(String)` - Error message if initialization fails
-    pub fn new(config: &ApiConfig, http_client: Client, auth: Auth) -> Result<Self, Error> {
+    pub fn new(config: &ApiConfig, http_client: Client) -> Result<Self, Error> {
         let endpoint = format!(
             "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",
             config.dcr_endpoint, config.dcr, config.stream_name
@@ -134,8 +133,13 @@ impl LogsIngestionClient {
         Ok(Self {
             http_client,
             endpoint,
-            auth_header: AuthHeader::new(auth),
+            auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
         })
+    }
+
+    /// Update the authorization header with a new access token.
+    pub fn update_auth(&mut self, header: HeaderValue) {
+        self.auth_header = header;
     }
 
     // TODO: Remove print_stdout after logging is set up
@@ -214,7 +218,7 @@ impl LogsIngestionClient {
             .post(&self.endpoint)
             .header(CONTENT_TYPE, "application/json")
             .header(CONTENT_ENCODING, "gzip")
-            .header(AUTHORIZATION, &self.auth_header.value)
+            .header(AUTHORIZATION, &self.auth_header)
             .body(body)
             .send()
             .await
@@ -236,15 +240,7 @@ impl LogsIngestionClient {
         let body = response.text().await.unwrap_or_default();
 
         match status.as_u16() {
-            401 => {
-                self.auth_header.invalidate_token().await;
-                self.auth_header
-                    .ensure_valid_token()
-                    .await
-                    .map_err(Error::token_refresh)?;
-
-                Err(Error::unauthorized(body))
-            }
+            401 => Err(Error::unauthorized(body)),
             403 => Err(Error::forbidden(body)),
             413 => Err(Error::PayloadTooLarge),
             429 => Err(Error::RateLimited { body, retry_after }),
@@ -261,70 +257,9 @@ impl LogsIngestionClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azure_core::credentials::TokenRequestOptions;
-    use azure_core::credentials::{AccessToken, TokenCredential};
-    use azure_core::time::OffsetDateTime;
     use reqwest::header::HeaderValue;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ==================== Test Helpers ====================
-
-    #[derive(Debug)]
-    struct MockCredential {
-        token: String,
-        expires_in: azure_core::time::Duration,
-        call_count: Arc<Mutex<usize>>,
-    }
-
-    impl MockCredential {
-        fn new(token: &str, expires_in_minutes: i64) -> (Arc<Self>, Arc<Mutex<usize>>) {
-            let call_count = Arc::new(Mutex::new(0));
-            let cred = Arc::new(Self {
-                token: token.to_string(),
-                expires_in: azure_core::time::Duration::minutes(expires_in_minutes),
-                call_count: call_count.clone(),
-            });
-            (cred, call_count)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl TokenCredential for MockCredential {
-        async fn get_token(
-            &self,
-            _scopes: &[&str],
-            _options: Option<TokenRequestOptions<'_>>,
-        ) -> azure_core::Result<AccessToken> {
-            let mut count = self.call_count.lock().unwrap();
-            *count += 1;
-
-            Ok(AccessToken {
-                token: self.token.clone().into(),
-                expires_on: OffsetDateTime::now_utc() + self.expires_in,
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct FailingCredential {
-        call_count: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl TokenCredential for FailingCredential {
-        async fn get_token(
-            &self,
-            _scopes: &[&str],
-            _options: Option<TokenRequestOptions<'_>>,
-        ) -> azure_core::Result<AccessToken> {
-            _ = self.call_count.fetch_add(1, Ordering::SeqCst);
-            Err(azure_core::Error::with_message(
-                azure_core::error::ErrorKind::Credential,
-                "Token acquisition failed",
-            ))
-        }
-    }
 
     fn create_test_api_config() -> ApiConfig {
         ApiConfig {
@@ -353,12 +288,9 @@ mod tests {
             schema: Default::default(),
         };
 
-        let (credential, _) = MockCredential::new("test_token", 60);
-        let auth =
-            Auth::from_credential(credential, "https://monitor.azure.com/.default".to_string());
         let http_client = create_test_http_client();
 
-        let client = LogsIngestionClient::new(&api_config, http_client, auth)
+        let client = LogsIngestionClient::new(&api_config, http_client)
             .expect("failed to create client");
 
         assert_eq!(
@@ -376,11 +308,9 @@ mod tests {
             schema: Default::default(),
         };
 
-        let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential, "scope".to_string());
         let http_client = create_test_http_client();
 
-        let client = LogsIngestionClient::new(&api_config, http_client, auth).unwrap();
+        let client = LogsIngestionClient::new(&api_config, http_client).unwrap();
 
         assert!(client.endpoint.contains("dcr-abc-123-def"));
         assert!(client.endpoint.contains("Custom-Stream_Name"));
@@ -388,42 +318,58 @@ mod tests {
 
     #[test]
     fn test_from_parts_creates_client() {
-        let (credential, _) = MockCredential::new("my_token", 60);
-
         let client = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com/endpoint".to_string(),
-            credential,
-            "https://scope.azure.com/.default".to_string(),
         );
 
         assert_eq!(client.endpoint, "https://example.com/endpoint");
-        // Token not yet fetched, so auth_header is placeholder
-        assert_eq!(
-            client.auth_header.value,
-            HeaderValue::from_static("Bearer ")
-        );
-        // Token validity should be in the past (not yet fetched)
-        assert!(client.auth_header.token_valid_until <= std::time::Instant::now());
-        assert!(client.auth_header.token_refresh_after <= std::time::Instant::now());
+        // auth_header is placeholder
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
     }
 
     #[test]
     fn test_new_initial_state() {
-        let (credential, call_count) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential, "scope".to_string());
         let http_client = create_test_http_client();
         let api_config = create_test_api_config();
 
-        let client = LogsIngestionClient::new(&api_config, http_client, auth).unwrap();
+        let client = LogsIngestionClient::new(&api_config, http_client).unwrap();
 
-        // No token fetch during construction
-        assert_eq!(*call_count.lock().unwrap(), 0);
         // Auth header is placeholder
-        assert_eq!(
-            client.auth_header.value,
-            HeaderValue::from_static("Bearer ")
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
+    }
+
+    // ==================== Auth Header Update Tests ====================
+
+    #[test]
+    fn test_update_auth_changes_header() {
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
         );
+
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
+
+        client.update_auth(HeaderValue::from_static("Bearer new_token"));
+
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer new_token"));
+    }
+
+    #[test]
+    fn test_update_auth_multiple_times() {
+        let mut client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+        );
+
+        client.update_auth(HeaderValue::from_static("Bearer token1"));
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token1"));
+
+        client.update_auth(HeaderValue::from_static("Bearer token2"));
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token2"));
+
+        client.update_auth(HeaderValue::from_static("Bearer token3"));
+        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token3"));
     }
 
     // ==================== LogsIngestionClientPool Tests ====================
@@ -446,13 +392,10 @@ mod tests {
 
     #[test]
     fn test_pool_take_and_release_single() {
-        let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
-        let client =
-            LogsIngestionClient::new(&api_config, create_test_http_client(), auth).unwrap();
+        let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
         pool.clients.push(client);
 
         assert_eq!(pool.clients.len(), 1);
@@ -466,15 +409,11 @@ mod tests {
 
     #[test]
     fn test_pool_take_and_release_multiple() {
-        let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(3);
         for _ in 0..3 {
-            let client =
-                LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone())
-                    .unwrap();
+            let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
             pool.clients.push(client);
         }
 
@@ -495,204 +434,26 @@ mod tests {
 
     #[test]
     fn test_pool_release_beyond_capacity() {
-        let (credential, _) = MockCredential::new("token", 60);
-        let auth = Auth::from_credential(credential, "scope".to_string());
         let api_config = create_test_api_config();
 
         let mut pool = LogsIngestionClientPool::new(1);
 
         // Release more than capacity (Vec will grow)
         for _ in 0..5 {
-            let client =
-                LogsIngestionClient::new(&api_config, create_test_http_client(), auth.clone())
-                    .unwrap();
+            let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
             pool.release(client);
         }
 
         assert_eq!(pool.clients.len(), 5);
     }
 
-    // ==================== Token Management Tests ====================
-
-    #[tokio::test]
-    async fn test_refresh_token_updates_header() {
-        let (credential, call_count) = MockCredential::new("fresh_token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        // Initially placeholder
-        assert_eq!(
-            client.auth_header.value,
-            HeaderValue::from_static("Bearer ")
-        );
-
-        client.auth_header.refresh_token().await.unwrap();
-
-        assert_eq!(
-            client.auth_header.value,
-            HeaderValue::from_str("Bearer fresh_token").unwrap()
-        );
-        assert_eq!(*call_count.lock().unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_refresh_token_updates_validity_times() {
-        let (credential, _) = MockCredential::new("token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        let before = std::time::Instant::now();
-        client.auth_header.refresh_token().await.unwrap();
-
-        // Token should be valid for ~60 minutes
-        assert!(client.auth_header.token_valid_until > before + Duration::from_secs(3500));
-        // Refresh should happen 5 minutes before expiry
-        assert!(client.auth_header.token_refresh_after > before + Duration::from_secs(3200));
-        assert!(client.auth_header.token_refresh_after < client.auth_header.token_valid_until);
-    }
-
-    #[tokio::test]
-    async fn test_ensure_valid_token_fetches_when_expired() {
-        let (credential, call_count) = MockCredential::new("token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        // Token starts expired
-        assert!(client.auth_header.token_refresh_after <= std::time::Instant::now());
-
-        client.auth_header.ensure_valid_token().await.unwrap();
-
-        assert_eq!(*call_count.lock().unwrap(), 1);
-        assert!(client.auth_header.token_refresh_after > std::time::Instant::now());
-    }
-
-    #[tokio::test]
-    async fn test_ensure_valid_token_caches_token() {
-        let (credential, call_count) = MockCredential::new("cached_token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        // First call fetches token
-        client.auth_header.ensure_valid_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // Subsequent calls should use cached token (fast path)
-        for _ in 0..10 {
-            client.auth_header.ensure_valid_token().await.unwrap();
-        }
-
-        // Should still be 1 - token was cached
-        assert_eq!(*call_count.lock().unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_ensure_valid_token_refreshes_when_in_refresh_window() {
-        let (credential, call_count) = MockCredential::new("token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        // First fetch
-        client.auth_header.ensure_valid_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // Simulate token about to expire (within 5 minute refresh window)
-        client.auth_header.token_refresh_after = std::time::Instant::now() - Duration::from_secs(1);
-
-        // Invalidate the cached token in Auth so it will fetch again
-        client.auth_header.invalidate_token().await;
-
-        // Should refresh
-        client.auth_header.ensure_valid_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_refresh_token_failure() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let credential = Arc::new(FailingCredential {
-            call_count: call_count.clone(),
-        }); // <-- cast here
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        let result = client.auth_header.refresh_token().await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("token acquisition")
-        );
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_ensure_valid_token_propagates_error() {
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let credential = Arc::new(FailingCredential {
-            call_count: call_count.clone(),
-        }); // <-- cast here
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        let result = client.auth_header.ensure_valid_token().await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("token acquisition")
-        );
-    }
-
     // ==================== Clone Tests ====================
 
-    #[tokio::test]
-    async fn test_client_clone_has_same_endpoint() {
-        let (credential, _) = MockCredential::new("token", 60);
-
+    #[test]
+    fn test_client_clone_has_same_endpoint() {
         let client1 = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com/endpoint".to_string(),
-            credential,
-            "scope".to_string(),
         );
 
         let client2 = client1.clone();
@@ -700,94 +461,47 @@ mod tests {
         assert_eq!(client1.endpoint, client2.endpoint);
     }
 
-    #[tokio::test]
-    async fn test_client_clone_shares_auth() {
-        let (credential, call_count) = MockCredential::new("shared_token", 60);
-
+    #[test]
+    fn test_client_clone_has_same_auth_header() {
         let mut client1 = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
         );
 
-        // Fetch token on client1
-        client1.auth_header.refresh_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // Clone shares the Auth (which has cached token)
-        let mut client2 = client1.clone();
-
-        // client2's refresh should use cached token from shared Auth
-        client2.auth_header.refresh_token().await.unwrap();
-        // Auth caches, so might be 1 or 2 depending on implementation
-        // The important thing is both clients work
-        assert!(*call_count.lock().unwrap() >= 1);
-    }
-
-    #[tokio::test]
-    async fn test_client_clone_has_independent_header() {
-        let (credential, _) = MockCredential::new("token", 60);
-
-        let mut client1 = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        client1.auth_header.refresh_token().await.unwrap();
-
+        client1.update_auth(HeaderValue::from_static("Bearer test_token"));
         let client2 = client1.clone();
 
-        // Both should have the same header value after clone
-        assert_eq!(client1.auth_header.value, client2.auth_header.value);
+        assert_eq!(client1.auth_header, client2.auth_header);
+    }
+
+    #[test]
+    fn test_client_clone_has_independent_header() {
+        let mut client1 = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "https://example.com".to_string(),
+        );
+
+        client1.update_auth(HeaderValue::from_static("Bearer token1"));
+        let mut client2 = client1.clone();
+
+        // Modify client2's header
+        client2.update_auth(HeaderValue::from_static("Bearer token2"));
+
+        // client1's header should be unchanged
+        assert_eq!(client1.auth_header, HeaderValue::from_static("Bearer token1"));
+        assert_eq!(client2.auth_header, HeaderValue::from_static("Bearer token2"));
     }
 
     // ==================== Edge Cases ====================
 
     #[test]
     fn test_client_with_empty_endpoint() {
-        let (credential, _) = MockCredential::new("token", 60);
-
         let client = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "".to_string(),
-            credential,
-            "scope".to_string(),
         );
 
         assert_eq!(client.endpoint, "");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_refresh_calls() {
-        let (credential, call_count) = MockCredential::new("token", 60);
-
-        let mut client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "https://example.com".to_string(),
-            credential,
-            "scope".to_string(),
-        );
-
-        // Multiple refresh calls - Auth caches the token, so credential
-        // is only called once unless we invalidate
-        client.auth_header.refresh_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // Subsequent refreshes use cached token from Auth
-        for _ in 0..4 {
-            client.auth_header.refresh_token().await.unwrap();
-        }
-
-        // Still 1 because Auth caches
-        assert_eq!(*call_count.lock().unwrap(), 1);
-
-        // If we invalidate, it will fetch again
-        client.auth_header.invalidate_token().await;
-        client.auth_header.refresh_token().await.unwrap();
-        assert_eq!(*call_count.lock().unwrap(), 2);
     }
 
     #[test]

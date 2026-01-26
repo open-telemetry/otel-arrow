@@ -19,7 +19,6 @@ use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
 
 mod auth;
-mod auth_header;
 mod client;
 mod config;
 mod error;
@@ -31,7 +30,6 @@ mod state;
 mod stats;
 mod transformer;
 
-pub use auth_header::AuthHeader;
 pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use error::Error;
