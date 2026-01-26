@@ -70,6 +70,14 @@ pub struct LoggingProviders {
 }
 
 impl LoggingProviders {
+    /// Returns true if any provider uses ITS mode.
+    #[must_use]
+    pub const fn uses_its_provider(&self) -> bool {
+        self.global.uses_its_provider()
+            || self.engine.uses_its_provider()
+            || self.admin.uses_its_provider()
+    }
+
     /// Returns true if this uses an OTel logs provider.
     #[must_use]
     pub const fn uses_otel_provider(&self) -> bool {
@@ -81,13 +89,24 @@ impl LoggingProviders {
 
     /// Returns true if this uses an async logs provider.
     #[must_use]
-    pub const fn uses_async_provider(&self) -> bool {
+    pub const fn uses_any_internal_provider(&self) -> bool {
         // Note: internal is not checked, it's not permitted.
-        debug_assert!(!self.internal.uses_async_provider());
+        debug_assert!(!self.internal.uses_any_internal_provider());
 
-        self.global.uses_async_provider()
-            || self.engine.uses_async_provider()
-            || self.admin.uses_async_provider()
+        self.global.uses_any_internal_provider()
+            || self.engine.uses_any_internal_provider()
+            || self.admin.uses_any_internal_provider()
+    }
+
+    /// Returns true if this uses an console_async provider.
+    #[must_use]
+    pub const fn uses_console_async_provider(&self) -> bool {
+        // Note: internal is not checked, it's not permitted.
+        debug_assert!(!self.internal.uses_any_internal_provider());
+
+        self.global.uses_console_async_provider()
+            || self.engine.uses_console_async_provider()
+            || self.admin.uses_console_async_provider()
     }
 }
 
@@ -117,13 +136,25 @@ pub enum ProviderMode {
 }
 
 impl ProviderMode {
-    /// Is this an Asynchronous logging mode?
+    /// Is this any console logging mode?
     #[must_use]
-    pub const fn uses_async_provider(&self) -> bool {
+    pub const fn uses_any_internal_provider(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
     }
 
-    /// Is this an OTel logging mode?
+    /// Is this a console_async mode?
+    #[must_use]
+    pub const fn uses_console_async_provider(&self) -> bool {
+        matches!(self, Self::ConsoleAsync)
+    }
+
+    /// Is this the ITS mode?
+    #[must_use]
+    pub const fn uses_its_provider(&self) -> bool {
+        matches!(self, Self::ITS)
+    }
+
+    /// Is this the OTel logging mode?
     #[must_use]
     pub const fn uses_otel_provider(&self) -> bool {
         matches!(self, Self::OpenTelemetry)
@@ -174,7 +205,7 @@ impl LogsConfig {
     /// - `engine` is `OpenTelemetry` but `global` is not
     ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
-        if self.providers.internal.uses_async_provider() {
+        if self.providers.internal.uses_any_internal_provider() {
             return Err(Error::InvalidUserConfig {
                 error: format!(
                     "internal provider is invalid: {:?}",
@@ -303,7 +334,7 @@ mod tests {
             (ConsoleAsync, true),
         ];
         for (mode, expected) in cases {
-            assert_eq!(mode.uses_async_provider(), expected, "{mode:?}");
+            assert_eq!(mode.uses_any_internal_provider(), expected, "{mode:?}");
         }
     }
 
@@ -354,5 +385,16 @@ mod tests {
             };
             assert!(config.validate().is_ok());
         }
+    }
+
+    #[test]
+    fn test_uses_its_provider() {
+        use ProviderMode::*;
+        assert!(!providers(Noop, Noop, Noop, Noop).uses_its_provider());
+        assert!(!providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).uses_its_provider());
+        assert!(providers(ITS, Noop, Noop, Noop).uses_its_provider());
+        assert!(providers(Noop, ITS, Noop, Noop).uses_its_provider());
+        assert!(providers(Noop, Noop, Noop, ITS).uses_its_provider());
+        assert!(!providers(Noop, Noop, ITS, Noop).uses_its_provider());
     }
 }
