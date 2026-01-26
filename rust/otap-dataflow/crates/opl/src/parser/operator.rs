@@ -430,7 +430,8 @@ mod tests {
 
     #[test]
     fn test_parse_set_operator_call_multiple() {
-        let query = "set attributes[\"a\"] = \"1\", attributes[\"b\"] = \"2\"";
+        // regression test for #1886
+        let query = "set attributes[\"foo\"] = \"1\", attributes[\"bar\"] = \"2\"";
         let mut state = ParserState::new(query);
         let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
         assert_eq!(parse_result.len(), 1);
@@ -438,13 +439,15 @@ mod tests {
         parse_operator_call(rule, &mut state).unwrap();
         let result = state.build().unwrap();
         let expressions = result.get_expressions();
+        
+        // should produce two separate set transforms 
         assert_eq!(expressions.len(), 2);
 
-        let expected1 = assign_attribute_expression("a", "1");
-        let expected2 = assign_attribute_expression("b", "2");
+        let first_assignment = assign_attribute_expression("foo", "1");
+        let second_assignment = assign_attribute_expression("bar", "2");
 
-        assert_eq!(&expressions[0], &expected1);
-        assert_eq!(&expressions[1], &expected2);
+        assert_eq!(&expressions[0], &first_assignment);
+        assert_eq!(&expressions[1], &second_assignment);
     }
 
     fn equals_logical_expr(field_name: &'static str, value: &'static str) -> LogicalExpression {
