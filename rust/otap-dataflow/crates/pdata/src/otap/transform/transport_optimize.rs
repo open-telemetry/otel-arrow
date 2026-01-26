@@ -579,7 +579,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 sorted_parent_id_column.append_external_sorted_range(parent_id_key_range_sorted)?;
             }
         } else {
-            todo!("handle case where type is for range, but there is no values column")
+            sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
         }
 
         // push the unsorted values for columns not of this type to fill in gaps
@@ -680,9 +680,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         todo!("handle bad col name {field_name}")
     }
 
-    for column in &columns {
-        println!("len = {}", column.len());
-    }
+    // for column in &columns {
+    //     println!("len = {}", column.len());
+    // }
 
     // println!("columns = {columns:?}");
 
@@ -2703,11 +2703,6 @@ mod test {
         )
         .unwrap();
 
-        // TODO remove all the prints
-        arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
-
-        let result = sort_attrs_record_batch(&input).unwrap();
-        arrow::util::pretty::print_batches(&[result.clone()]).unwrap();
 
         let expected = RecordBatch::try_new(
             schema.clone(),
@@ -2757,11 +2752,123 @@ mod test {
         )
         .unwrap();
 
-        // TODO - should this just be imported for the module?
+        let result = sort_attrs_record_batch(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
-    // TODO there are probably other test cases need to write for sort_attrs_record_batch
+    #[test]
+    fn test_sort_attrs_record_batch_empty_attrs() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_DOUBLE,
+                DataType::Float64,
+                true,
+            )
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 7])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 1, 0, 0, 0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        Some(0),
+                        None,
+                        None,
+                        Some(1),
+                        None,
+                        None,
+                        Some(0),
+                        None,
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(2.0),
+                    Some(1.9999),
+                    None,
+                    None,
+                ]))
+            ]
+        ).unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([2, 7, 1, 0, 6, 3, 5, 4])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 1, 0, 0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        None,
+                        Some(0),
+                        Some(0),
+                        Some(1),
+                        None,
+                        None,
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(1.9999),
+                    Some(2.0),
+                ]))
+            ]
+        ).unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
+    }
 
     #[test]
     fn test_create_delta_encoded_column() {
