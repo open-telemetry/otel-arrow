@@ -58,6 +58,7 @@ use otap_df_engine::entity_context::{
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
@@ -118,8 +119,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .sum::<usize>()
         );
 
+        // Create the shared telemetry registry first - it will be used by both
+        // the observed state store and the internal telemetry system.
+        let telemetry_registry = TelemetryRegistryHandle::new();
+
         // Create the observed state store for the telemetry system.
-        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
+        let obs_state_store = ObservedStateStore::new(
+            &engine_settings.observed_state,
+            telemetry_registry.clone(),
+        );
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
@@ -132,8 +140,12 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
         // providers use the ITS mode.
-        let telemetry_system =
-            InternalTelemetrySystem::new(telemetry_config, console_async_reporter, engine_keys)?;
+        let telemetry_system = InternalTelemetrySystem::new(
+            telemetry_config,
+            telemetry_registry.clone(),
+            console_async_reporter,
+            engine_keys,
+        )?;
 
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
@@ -198,13 +210,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // successful startup. This ensures the channel receiver is being consumed
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
-
-        // Start the metrics aggregation
-        let telemetry_registry = telemetry_system.registry();
-
-        // Set the registry on the observed state store so it can resolve entity keys
-        // to displayable attributes when printing log records.
-        obs_state_store.set_registry(telemetry_registry.clone());
 
         let internal_collector = telemetry_system.collector();
         let metrics_agg_handle = spawn_thread_local_task(

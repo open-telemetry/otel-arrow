@@ -15,7 +15,6 @@ use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEv
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LogContext};
 use otap_df_telemetry::{otel_error, otel_info};
-use parking_lot::RwLock;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
@@ -50,7 +49,7 @@ pub struct ObservedStateStore {
 
     /// Telemetry registry for resolving entity keys to attributes.
     #[serde(skip)]
-    registry: Arc<RwLock<Option<TelemetryRegistryHandle>>>,
+    registry: TelemetryRegistryHandle,
 
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
@@ -79,18 +78,9 @@ impl ObservedStateHandle {
 }
 
 impl ObservedStateStore {
-    /// Creates a new `ObservedStateStore` with the given configuration.
+    /// Creates a new `ObservedStateStore` with the given configuration and telemetry registry.
     #[must_use]
-    pub fn new(config: &ObservedStateSettings) -> Self {
-        Self::with_registry(config, None)
-    }
-
-    /// Creates a new `ObservedStateStore` with a telemetry registry for resolving entity keys.
-    #[must_use]
-    pub fn with_registry(
-        config: &ObservedStateSettings,
-        registry: Option<TelemetryRegistryHandle>,
-    ) -> Self {
+    pub fn new(config: &ObservedStateSettings, registry: TelemetryRegistryHandle) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
@@ -99,16 +89,9 @@ impl ObservedStateStore {
             sender,
             receiver,
             console: ConsoleWriter::color(),
-            registry: Arc::new(RwLock::new(registry)),
+            registry,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    /// Sets the telemetry registry for resolving entity keys to attributes.
-    /// This should be called after the telemetry system is created but before
-    /// the store is started.
-    pub fn set_registry(&self, registry: TelemetryRegistryHandle) {
-        *self.registry.write() = Some(registry);
     }
 
     /// Returns a reporter that can be used to send observed events to this store.
@@ -148,17 +131,13 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                // Get registry reference once for the scope formatter closure
-                let registry = self.registry.read();
                 let context = &log.record.context;
 
                 // Print log record and scope atomically in a single write
                 self.console
                     .print_log_record_with_scope(log.time, &log.record, |w, cw| {
                         if !context.is_empty() {
-                            if let Some(ref reg) = *registry {
-                                Self::format_scope_from_registry(w, cw, context, reg);
-                            }
+                            Self::format_scope_from_registry(w, cw, context, &self.registry);
                         }
                     });
             }

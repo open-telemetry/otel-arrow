@@ -178,6 +178,7 @@ impl InternalTelemetrySystem {
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
+        registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
     ) -> Result<Self, Error> {
@@ -188,11 +189,10 @@ impl InternalTelemetrySystem {
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
 
         // 1. Create internal metrics subsystem
-        let telemetry_registry = TelemetryRegistryHandle::new();
         let (collector, metrics_reporter) =
-            collector::InternalCollector::new(config, telemetry_registry.clone());
+            collector::InternalCollector::new(config, registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
-            telemetry_registry.clone(),
+            registry.clone(),
             config.reporting_interval,
         ));
 
@@ -221,7 +221,7 @@ impl InternalTelemetrySystem {
         };
 
         Ok(Self {
-            registry: telemetry_registry,
+            registry,
             collector: Arc::new(collector),
             metrics_reporter,
             dispatcher,
@@ -365,8 +365,13 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        Self::new(&config, Some(dummy_reporter), empty_log_context)
-            .expect("default telemetry config should be valid")
+        Self::new(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(dummy_reporter),
+            empty_log_context,
+        )
+        .expect("default telemetry config should be valid")
     }
 }
 
@@ -405,6 +410,7 @@ mod tests {
         // Default (no ITS) -> no receiver
         let its = InternalTelemetrySystem::new(
             &TelemetryConfig::default(),
+            TelemetryRegistryHandle::new(),
             Some(test_reporter()),
             empty_log_context,
         )
@@ -423,6 +429,7 @@ mod tests {
         };
         let its = InternalTelemetrySystem::new(
             &config_with_providers(providers),
+            TelemetryRegistryHandle::new(),
             Some(test_reporter()),
             empty_log_context,
         )
@@ -457,8 +464,13 @@ mod tests {
             .insert("service.id".to_string(), OTelI64(1234));
         config.logs.providers.global = ProviderMode::ITS;
 
-        let its = InternalTelemetrySystem::new(&config, Some(test_reporter()), empty_log_context)
-            .expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(test_reporter()),
+            empty_log_context,
+        )
+        .expect("should create");
 
         let settings = its.internal_telemetry_settings().expect("has ITS");
         let parse =
