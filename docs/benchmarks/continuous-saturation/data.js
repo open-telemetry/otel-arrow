@@ -1,212 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769438139526,
+  "lastUpdate": 1769439487172,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "76450334+andborja@users.noreply.github.com",
-            "name": "Andres Borja",
-            "username": "andborja"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "70e2d4934f8e0acf880b5429dcfe98433323d14d",
-          "message": "feat: Declarative configuration for logs and Console exporter (#1630)\n\nDeclarative configuration for logs and Console exporter.",
-          "timestamp": "2025-12-16T15:39:48Z",
-          "tree_id": "8443dc498d3c266c7f705e4c57bf45f39494395e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/70e2d4934f8e0acf880b5429dcfe98433323d14d"
-        },
-        "date": 1765900970448,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_total",
-            "value": 1001000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 99.50298309326172,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 0.05383520569941176,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 0.08224101555847976,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 0.05383520569941176,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 0.08224101555847976,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 31.557552083333334,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 31.70703125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 1006000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 5000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Log Counts"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 16766.303396759737,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 83.3315278168973,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.0013,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 16801.638148009297,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 734.0863681961725,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "dropped_logs_total",
-            "value": 371000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Dropped Log Count"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 4.2589826583862305,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_avg",
-            "value": 53.77815426135254,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_max",
-            "value": 64.891366265284,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU Percentage"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 53.77815426135254,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 64.891366265284,
-            "unit": "%",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 36.059375,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 38.328125,
-            "unit": "MiB",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_total",
-            "value": 8711000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "logs_received_total",
-            "value": 8340000,
-            "unit": "count",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Counts"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 145180.3377790305,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 138997.13202584253,
-            "unit": "logs/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001238,
-            "unit": "seconds",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2719648.6851215926,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2601137.5100851255,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Saturation/OTLP-ATTR-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -32608,6 +32404,330 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 32467712.039236147,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "29139614+renovate[bot]@users.noreply.github.com",
+            "name": "renovate[bot]",
+            "username": "renovate[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76c2cd4254a4ff1c141e0cbc1035d7dda6085641",
+          "message": "chore(deps): update rust crate nix to 0.31.0 (#1889)\n\n> ℹ️ **Note**\n> \n> This PR body was truncated due to platform limits.\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [nix](https://redirect.github.com/nix-rust/nix) |\nworkspace.dependencies | minor | `0.30.1` → `0.31.0` |\n\n---\n\n> [!WARNING]\n> Some dependencies could not be looked up. Check the Dependency\nDashboard for more information.\n\n---\n\n### Release Notes\n\n<details>\n<summary>nix-rust/nix (nix)</summary>\n\n###\n[`v0.31.1`](https://redirect.github.com/nix-rust/nix/blob/HEAD/CHANGELOG.md#0311---2026-01-23)\n\n[Compare\nSource](https://redirect.github.com/nix-rust/nix/compare/v0.31.0...v0.31.1)\n\n##### Added\n\n- termios: Add definition for IUCLC to supported platforms\n  ([#&#8203;2702](https://redirect.github.com/nix-rust/nix/pull/2702))\n- termios: Add definition for XCASE for supported platforms\n  ([#&#8203;2703](https://redirect.github.com/nix-rust/nix/pull/2703))\n\n###\n[`v0.31.0`](https://redirect.github.com/nix-rust/nix/blob/HEAD/CHANGELOG.md#0310---2026-01-22)\n\n[Compare\nSource](https://redirect.github.com/nix-rust/nix/compare/v0.30.1...v0.31.0)\n\n##### Added\n\n- Added the UDP GSO/GRO socket options and CMsgs on Android. This\nincludes the\n  following types:\n\n  - UdpGsoSegment\n  - UdpGroSegment\n  - ControlMessage::UdpGsoSegments\n  - ControlMessageOwned::UdpGroSegments\n\n  ([#&#8203;2666](https://redirect.github.com/nix-rust/nix/pull/2666))\n- Define errno EWOULDBLOCK as an alias of EAGAIN to match the AIX libc\ndefinition.\n([#&#8203;2692](https://redirect.github.com/nix-rust/nix/pull/2692))\n- Enable module `ifaddrs` on GNU Hurd\n  ([#&#8203;2697](https://redirect.github.com/nix-rust/nix/pull/2697))\n- Add termios `OutputFlags::OFILL` for Linux, Android, Aix, Cygwin,\nFuchsia,\n  Haiku,\n  GNU/Hurd, Nto, Redox, Illumos, Solaris and Apple OSes.\n  ([#&#8203;2701](https://redirect.github.com/nix-rust/nix/pull/2701))\n- add sync() for cygwin\n([#&#8203;2708](https://redirect.github.com/nix-rust/nix/pull/2708))\n\n##### Changed\n\n- changed `EpollEvent` methods to be `const`\n  ([#&#8203;2656](https://redirect.github.com/nix-rust/nix/pull/2656))\n- Bumped libc to\n\n[0.2.180](https://redirect.github.com/rust-lang/libc/releases/tag/0.2.180)\n  ([#&#8203;2724](https://redirect.github.com/nix-rust/nix/pull/2724))\n\n##### Fixed\n\n- Fixed `nix::sys::ptrace::syscall_info`, which was not setting the\n`data`\n  argument properly, causing garbage values to be returned.\n  ([#&#8203;2653](https://redirect.github.com/nix-rust/nix/pull/2653))\n- Cast the 'addr' argument of 'madvise()' to '\\*mut u8' on AIX to match\nthe\n  signature in the AIX libc.\n  ([#&#8203;2655](https://redirect.github.com/nix-rust/nix/pull/2655))\n- Fixed the Dir module on NTO, Solaris, Hurd, and possibly other\nplatforms.\n  The\nd\\_name field was not copied correctly on those platforms. For some\nother\nplatforms, it could be copied incorrectly for files with very long\npathnames.\n  ([#&#8203;2674](https://redirect.github.com/nix-rust/nix/pull/2674))\n- Fix the build on Illumos\n([#&#8203;2694](https://redirect.github.com/nix-rust/nix/pull/2694))\n\n##### Removed\n\n- Removed `Eq` and `PartialEq` implementations from `SigHandler`,\nbecause they\n  never worked reliably.  The suggested alternative is `matches!`.  For\n  example:\n  ````\n  let h: SigHandler = ...\n  if matches!(h, SigHandler::SigIgn) {\n      ...\n  }\n``` ([#&#8203;2642](https://redirect.github.com/nix-rust/nix/pull/2642))\n  ````\n- Removed `IFF_NOTRAILERS` by NetBSD, as it has been removed upstream\nand from\nlibc\n([#&#8203;2724](https://redirect.github.com/nix-rust/nix/pull/2724))\n\n#### \\[0.30.1] - 2025-05-04\n\n##### Fixed\n\n- doc.rs build\n  ([#&#8203;2634](https://redirect.github.com/nix-rust/nix/pull/2634))\n\n#### \\[0.30.0] - 2025-04-29\n\n##### Added\n\n- Add socket option `IPV6_PKTINFO` for BSDs/Linux/Android, also\n  `IPV6_RECVPKTINFO` for DragonFlyBSD\n  ([#&#8203;2113](https://redirect.github.com/nix-rust/nix/pull/2113))\n- Add `fcntl`'s `F_PREALLOCATE` constant for Apple targets.\n  ([#&#8203;2393](https://redirect.github.com/nix-rust/nix/pull/2393))\n- Improve support for extracting the TTL / Hop Limit from incoming\npackets\n  and support for DSCP (ToS / Traffic Class).\n  ([#&#8203;2425](https://redirect.github.com/nix-rust/nix/pull/2425))\n- Add socket option IP\\_TOS (nix::sys::socket::sockopt::IpTos)\nIPV6\\_TCLASS\n  (nix::sys::socket::sockopt::Ipv6TClass) on Android/FreeBSD\n  ([#&#8203;2464](https://redirect.github.com/nix-rust/nix/pull/2464))\n- Add `SeekData` and `SeekHole` to `Whence` for hurd and apple targets\n  ([#&#8203;2473](https://redirect.github.com/nix-rust/nix/pull/2473))\n- Add `From` trait implementation between `SocketAddr` and `Sockaddr`,\n`Sockaddr6`\n([#&#8203;2474](https://redirect.github.com/nix-rust/nix/pull/2474))\n- Added wrappers for `posix_spawn` API\n  ([#&#8203;2475](https://redirect.github.com/nix-rust/nix/pull/2475))\n- Add the support for Emscripten.\n  ([#&#8203;2477](https://redirect.github.com/nix-rust/nix/pull/2477))\n- Add fcntl constant `F_RDADVISE` for Apple target\n  ([#&#8203;2480](https://redirect.github.com/nix-rust/nix/pull/2480))\n- Add fcntl constant `F_RDAHEAD` for Apple target\n  ([#&#8203;2482](https://redirect.github.com/nix-rust/nix/pull/2482))\n- Add `F_LOG2PHYS` and `F_LOG2PHYS_EXT` for Apple target\n  ([#&#8203;2483](https://redirect.github.com/nix-rust/nix/pull/2483))\n- `MAP_SHARED_VALIDATE` was added for all linux targets. & `MAP_SYNC`\nwas added\n  for linux with the exclusion of mips architecures, and uclibc\n  ([#&#8203;2499](https://redirect.github.com/nix-rust/nix/pull/2499))\n- Add `getregs()`/`getregset()`/`setregset()` for Linux/musl/aarch64\n  ([#&#8203;2502](https://redirect.github.com/nix-rust/nix/pull/2502))\n- Add FcntlArgs `F_TRANSFEREXTENTS` constant for Apple targets\n  ([#&#8203;2504](https://redirect.github.com/nix-rust/nix/pull/2504))\n- Add `MapFlags::MAP_STACK` in `sys::man` for netbsd\n  ([#&#8203;2526](https://redirect.github.com/nix-rust/nix/pull/2526))\n- Add support for `libc::LOCAL_PEERTOKEN` in `getsockopt`.\n  ([#&#8203;2529](https://redirect.github.com/nix-rust/nix/pull/2529))\n- Add support for `syslog`, `openlog`, `closelog` on all `unix`.\n  ([#&#8203;2537](https://redirect.github.com/nix-rust/nix/pull/2537))\n- Add the `TCP_FUNCTION_BLK` sockopt, on FreeBSD.\n  ([#&#8203;2539](https://redirect.github.com/nix-rust/nix/pull/2539))\n- Implements `Into<OwnedFd>` for\n`PtyMaster/Fanotify/Inotify/SignalFd/TimerFd`\n  ([#&#8203;2548](https://redirect.github.com/nix-rust/nix/pull/2548))\n- Add `MremapFlags::MREMAP_DONTUNMAP` to `sys::mman::mremap` for linux\ntarget.\n  ([#&#8203;2555](https://redirect.github.com/nix-rust/nix/pull/2555))\n- Added `sockopt_impl!` to the public API. It's now possible for users\nto\n  define\n  their own sockopts without needing to make a PR to Nix.\n  ([#&#8203;2556](https://redirect.github.com/nix-rust/nix/pull/2556))\n- Add the `TCP_FUNCTION_ALIAS` sockopt, on FreeBSD.\n  ([#&#8203;2558](https://redirect.github.com/nix-rust/nix/pull/2558))\n- Add `sys::mman::MmapAdvise` `MADV_PAGEOUT`, `MADV_COLD`,\n`MADV_WIPEONFORK`,\n  `MADV_KEEPONFORK` for Linux and Android targets\n  ([#&#8203;2559](https://redirect.github.com/nix-rust/nix/pull/2559))\n- Add socket protocol `Sctp`, as well as `MSG_NOTIFICATION` for\nnon-Android\nLinux targets.\n([#&#8203;2562](https://redirect.github.com/nix-rust/nix/pull/2562))\n- Added `from_owned_fd` constructor to `EventFd`\n  ([#&#8203;2563](https://redirect.github.com/nix-rust/nix/pull/2563))\n- Add `sys::mman::MmapAdvise` `MADV_POPULATE_READ`,\n`MADV_POPULATE_WRITE` for\n  Linux and Android targets\n  ([#&#8203;2565](https://redirect.github.com/nix-rust/nix/pull/2565))\n- Added `from_owned_fd` constructor to\n  `PtyMaster/Fanotify/Inotify/SignalFd/TimerFd`\n  ([#&#8203;2566](https://redirect.github.com/nix-rust/nix/pull/2566))\n- Added `FcntlArg::F_READAHEAD` for FreeBSD target\n  ([#&#8203;2569](https://redirect.github.com/nix-rust/nix/pull/2569))\n- Added `sockopt::LingerSec` for Apple targets\n  ([#&#8203;2572](https://redirect.github.com/nix-rust/nix/pull/2572))\n- Added `sockopt::EsclBind` for solarish targets\n  ([#&#8203;2573](https://redirect.github.com/nix-rust/nix/pull/2573))\n- Exposed the `std::os::fd::AsRawFd` trait method for\n  `nix::sys::fanotify::Fanotify` struct\n  ([#&#8203;2575](https://redirect.github.com/nix-rust/nix/pull/2575))\n- Add support for syslog's `setlogmask` on all `unix`.\n  ([#&#8203;2579](https://redirect.github.com/nix-rust/nix/pull/2579))\n- Added Fuchsia support for `ioctl`.\n  ([#&#8203;2580](https://redirect.github.com/nix-rust/nix/pull/2580))\n- Add `sys::socket::SockProtocol::EthIp`,\n  `sys::socket::SockProtocol::EthIpv6`,\n  `sys::socket::SockProtocol::EthLoop`\n  ([#&#8203;2581](https://redirect.github.com/nix-rust/nix/pull/2581))\n- Add OpenHarmony target into CI and Update documents.\n  ([#&#8203;2599](https://redirect.github.com/nix-rust/nix/pull/2599))\n- Added the TcpMaxSeg `setsockopt` option for apple targets\n  ([#&#8203;2603](https://redirect.github.com/nix-rust/nix/pull/2603))\n- Add `FilAttach` and `FilDetach` to socket::sockopt for Illumos\n  ([#&#8203;2611](https://redirect.github.com/nix-rust/nix/pull/2611))\n- Add `PeerPidfd` (`SO_PEERPIDFD`) to `socket::sockopt` for Linux\n  ([#&#8203;2620](https://redirect.github.com/nix-rust/nix/pull/2620))\n- Added `socket::sockopt::AttachReusePortCbpf` for Linux\n  ([#&#8203;2621](https://redirect.github.com/nix-rust/nix/pull/2621))\n- Add `ptrace::syscall_info` for linux/glibc\n  ([#&#8203;2627](https://redirect.github.com/nix-rust/nix/pull/2627))\n\n##### Changed\n\n- Module sys/signal now adopts I/O safety\n  ([#&#8203;1936](https://redirect.github.com/nix-rust/nix/pull/1936))\n- Change the type of the `name` argument of `memfd_create()` from\n`&CStr` to\n`<P: NixPath>(name: &P)`\n([#&#8203;2431](https://redirect.github.com/nix-rust/nix/pull/2431))\n- Public interfaces in `fcntl.rs` and `dir.rs` now use I/O-safe types.\n  ([#&#8203;2434](https://redirect.github.com/nix-rust/nix/pull/2434))\n- Module `sys/stat` now adopts I/O safety.\n  ([#&#8203;2439](https://redirect.github.com/nix-rust/nix/pull/2439))\n- Module unistd now adopts I/O safety.\n  ([#&#8203;2440](https://redirect.github.com/nix-rust/nix/pull/2440))\n- Module sys/fanotify now adopts I/O safety\n  ([#&#8203;2443](https://redirect.github.com/nix-rust/nix/pull/2443))\n- Socket option `IpTos` has been renamed to `Ipv4Tos`, the old symbol is\ndeprecated since 0.30.0\n([#&#8203;2465](https://redirect.github.com/nix-rust/nix/pull/2465))\n- Rename Flags `EventFlag` to `EvFlags`, and `MemFdCreateFlag` to\n`MFdFlags`\n  ([#&#8203;2476](https://redirect.github.com/nix-rust/nix/pull/2476))\n- Made `nix::sys::socket::UnknownCmsg` public and more readable\n  ([#&#8203;2520](https://redirect.github.com/nix-rust/nix/pull/2520))\n- recvmsg: take slice for cmsg\\_buffer instead of Vec\n  ([#&#8203;2524](https://redirect.github.com/nix-rust/nix/pull/2524))\n- linkat: allow distinct types for path arguments\n  ([#&#8203;2582](https://redirect.github.com/nix-rust/nix/pull/2582))\n\n##### Fixed\n\n- Disable unsupported signals on sparc-linux\n  ([#&#8203;2454](https://redirect.github.com/nix-rust/nix/pull/2454))\n- Fix cmsg\\_len() return type on OpenHarmony\n  ([#&#8203;2456](https://redirect.github.com/nix-rust/nix/pull/2456))\n- The `ns` argument of `sys::prctl::set_timerslack()` should be of type\n`c_ulong`\n([#&#8203;2505](https://redirect.github.com/nix-rust/nix/pull/2505))\n- Properly exclude NUL characters from `OSString`s returned by\n`getsockopt`.\n  ([#&#8203;2557](https://redirect.github.com/nix-rust/nix/pull/2557))\n- Fixes the build on OpenHarmony\n  ([#&#8203;2587](https://redirect.github.com/nix-rust/nix/pull/2587))\n\n##### Removed\n\n- Type `SigevNotify` is no longer `PartialEq`, `Eq` and `Hash` due to\nthe use\nof `BorrowedFd`\n([#&#8203;1936](https://redirect.github.com/nix-rust/nix/pull/1936))\n- `EventFd::defuse()` is removed because it does nothing,\n`EventFd::arm()` is\n  also removed for symmetry reasons.\n  ([#&#8203;2452](https://redirect.github.com/nix-rust/nix/pull/2452))\n- Removed the `Copy` trait from `PollFd`\n  ([#&#8203;2631](https://redirect.github.com/nix-rust/nix/pull/2631))\n\n#### \\[0.29.0] - 2024-05-24\n\n##### Added\n\n- Add `getregset()/setregset()` for\nLinux/glibc/x86/x86\\_64/aarch64/riscv64 and\n  `getregs()/setregs()` for Linux/glibc/aarch64/riscv64\n  ([#&#8203;2044](https://redirect.github.com/nix-rust/nix/pull/2044))\n- Add socket option Ipv6Ttl for apple targets.\n  ([#&#8203;2287](https://redirect.github.com/nix-rust/nix/pull/2287))\n- Add socket option UtunIfname.\n  ([#&#8203;2325](https://redirect.github.com/nix-rust/nix/pull/2325))\n- make SigAction repr(transparent) & can be converted to the libc raw\ntype\n  ([#&#8203;2326](https://redirect.github.com/nix-rust/nix/pull/2326))\n- Add `From` trait implementation for conversions between `sockaddr_in`\nand\n  `SockaddrIn`, `sockaddr_in6` and `SockaddrIn6`\n  ([#&#8203;2328](https://redirect.github.com/nix-rust/nix/pull/2328))\n- Add socket option ReusePortLb for FreeBSD.\n  ([#&#8203;2332](https://redirect.github.com/nix-rust/nix/pull/2332))\n- Added support for openat2 on linux.\n  ([#&#8203;2339](https://redirect.github.com/nix-rust/nix/pull/2339))\n- Add if\\_indextoname function.\n  ([#&#8203;2340](https://redirect.github.com/nix-rust/nix/pull/2340))\n- Add `mount` and `unmount` API for apple targets.\n  ([#&#8203;2347](https://redirect.github.com/nix-rust/nix/pull/2347))\n- Added `_PC_MIN_HOLE_SIZE` for `pathconf` and `fpathconf`.\n  ([#&#8203;2349](https://redirect.github.com/nix-rust/nix/pull/2349))\n- Added `impl AsFd for pty::PtyMaster`\n  ([#&#8203;2355](https://redirect.github.com/nix-rust/nix/pull/2355))\n- Add `open` flag `O_SEARCH` to AIX, Empscripten, FreeBSD, Fuchsia,\nsolarish,\nWASI\n([#&#8203;2374](https://redirect.github.com/nix-rust/nix/pull/2374))\n- Add prctl function `prctl_set_vma_anon_name` for Linux/Android.\n  ([#&#8203;2378](https://redirect.github.com/nix-rust/nix/pull/2378))\n- Add `sync(2)` for `apple_targets/solarish/haiku/aix/hurd`, `syncfs(2)`\nfor\n  `hurd` and `fdatasync(2)` for `aix/hurd`\n  ([#&#8203;2379](https://redirect.github.com/nix-rust/nix/pull/2379))\n- Add fdatasync support for Apple targets.\n  ([#&#8203;2380](https://redirect.github.com/nix-rust/nix/pull/2380))\n- Add `fcntl::OFlag::O_PATH` for FreeBSD and Fuchsia\n  ([#&#8203;2382](https://redirect.github.com/nix-rust/nix/pull/2382))\n- Added `PathconfVar::MIN_HOLE_SIZE` for apple\\_targets.\n  ([#&#8203;2388](https://redirect.github.com/nix-rust/nix/pull/2388))\n- Add `open` flag `O_SEARCH` to apple\\_targets\n  ([#&#8203;2391](https://redirect.github.com/nix-rust/nix/pull/2391))\n- `O_DSYNC` may now be used with `aio_fsync` and `fcntl` on FreeBSD.\n  ([#&#8203;2404](https://redirect.github.com/nix-rust/nix/pull/2404))\n- Added `Flock::relock` for upgrading and downgrading locks.\n  ([#&#8203;2407](https://redirect.github.com/nix-rust/nix/pull/2407))\n\n##### Changed\n\n- Change the `ForkptyResult` type to the following repr so that the\n  uninitialized\n  `master` field won't be accessed in the child process:\n\n  ````rs\n  pub enum ForkptyResult {\n      Parent {\n          child: Pid,\n          master: OwnedFd,\n      },\n      Child,\n  }\n``` ([#&#8203;2315](https://redirect.github.com/nix-rust/nix/pull/2315))\n  ````\n- Updated `cfg_aliases` dependency from version 0.1 to 0.2\n  ([#&#8203;2322](https://redirect.github.com/nix-rust/nix/pull/2322))\n- Change the signature of `ptrace::write` and `ptrace::write_user` to\nmake them\nsafe\n([#&#8203;2324](https://redirect.github.com/nix-rust/nix/pull/2324))\n- Allow use of `SignalFd` through shared reference\n\nLike with many other file descriptors, concurrent use of signalfds is\nsafe.\nChanging the signal mask of and reading signals from a signalfd can now\nbe\n  done\n  with the `SignalFd` API even if other references to it exist.\n  ([#&#8203;2367](https://redirect.github.com/nix-rust/nix/pull/2367))\n- Changed tee, splice and vmsplice RawFd arguments to AsFd.\n  ([#&#8203;2387](https://redirect.github.com/nix-rust/nix/pull/2387))\n- Added I/O safety to the sys/aio module. Most functions that previously\n  accepted a `AsRawFd` argument now accept an `AsFd` instead.\n  ([#&#8203;2401](https://redirect.github.com/nix-rust/nix/pull/2401))\n- `RecvMsg::cmsgs()` now returns a `Result`, and checks that cmsgs were\nnot\ntruncated.\n([#&#8203;2413](https://redirect.github.com/nix-rust/nix/pull/2413))\n\n##### Fixed\n\n- No longer panics when the `fanotify` queue overflows.\n  ([#&#8203;2399](https://redirect.github.com/nix-rust/nix/pull/2399))\n- Fixed ControlMessageOwned::UdpGroSegments wrapped type from u16 to i32\nto\n  reflect the used kernel's one.\n  ([#&#8203;2406](https://redirect.github.com/nix-rust/nix/pull/2406))\n\n#### \\[0.28.0] - 2024-02-24\n\n##### Added\n\n- Added `mkdtemp` wrapper\n([#&#8203;1297](https://redirect.github.com/nix-rust/nix/pull/1297))\n- Add associated constants `UTIME_OMIT` `UTIME_NOW` for `TimeSpec`\n  ([#&#8203;1879](https://redirect.github.com/nix-rust/nix/pull/1879))\n- Added `EventFd` type.\n([#&#8203;1945](https://redirect.github.com/nix-rust/nix/pull/1945))\n- - Added `impl From<Signal> for SigSet`.\n  - Added `impl std::ops::BitOr for SigSet`.\n  - Added `impl std::ops::BitOr for Signal`.\n  - Added `impl std::ops::BitOr<Signal> for SigSet`\n\n  ([#&#8203;1959](https://redirect.github.com/nix-rust/nix/pull/1959))\n- Added `TlsGetRecordType` control message type and corresponding enum\nfor\nlinux\n([#&#8203;2065](https://redirect.github.com/nix-rust/nix/pull/2065))\n- Added `Ipv6HopLimit` to `::nix::sys::socket::ControlMessage` for\nLinux,\n  MacOS, FreeBSD, DragonflyBSD, Android, iOS and Haiku.\n  ([#&#8203;2074](https://redirect.github.com/nix-rust/nix/pull/2074))\n- Added `Icmp` and `IcmpV6` to `SockProtocol`\n  ([#&#8203;2103](https://redirect.github.com/nix-rust/nix/pull/2103))\n- Added rfork support for FreeBSD in `unistd`\n  ([#&#8203;2121](https://redirect.github.com/nix-rust/nix/pull/2121))\n- Added `MapFlags::map_hugetlb_with_size_log2` method for Linux targets\n  ([#&#8203;2125](https://redirect.github.com/nix-rust/nix/pull/2125))\n- Added `mmap_anonymous` function\n  ([#&#8203;2127](https://redirect.github.com/nix-rust/nix/pull/2127))\n- Added `mips32r6` and `mips64r6` support for signal, ioctl and ptrace\n  ([#&#8203;2138](https://redirect.github.com/nix-rust/nix/pull/2138))\n- Added `F_GETPATH` FcntlFlags entry on Apple/NetBSD/DragonflyBSD for\n`::nix::fcntl`.\n([#&#8203;2142](https://redirect.github.com/nix-rust/nix/pull/2142))\n- Added `F_KINFO` FcntlFlags entry on FreeBSD for `::nix::fcntl`.\n  ([#&#8203;2152](https://redirect.github.com/nix-rust/nix/pull/2152))\n- Added `F_GETPATH_NOFIRMLINK` and `F_BARRIERFSYNC` FcntlFlags entry\n  on Apple for `::nix::fcntl`.\n  ([#&#8203;2155](https://redirect.github.com/nix-rust/nix/pull/2155))\n- Added newtype `Flock` to automatically unlock a held flock upon drop.\n  Added `Flockable` trait to represent valid types for `Flock`.\n  ([#&#8203;2170](https://redirect.github.com/nix-rust/nix/pull/2170))\n- Added `SetSockOpt` impls to enable Linux Kernel TLS on a TCP socket\nand to\nimport TLS parameters.\n([#&#8203;2175](https://redirect.github.com/nix-rust/nix/pull/2175))\n- - Added the `::nix::sys::socket::SocketTimestamp` enum for configuring\nthe\n    `TsClock` (a.k.a `SO_TS_CLOCK`) sockopt\n  - Added FreeBSD's `ScmRealtime` and `ScmMonotonic` as new options in\n    `::nix::sys::socket::ControlMessageOwned`\n\n  ([#&#8203;2187](https://redirect.github.com/nix-rust/nix/pull/2187))\n- Added new fanotify API: wrappers for `fanotify_init` and\n`fanotify_mark`\n  ([#&#8203;2194](https://redirect.github.com/nix-rust/nix/pull/2194))\n- Added `SpecialCharacterindices` support for haiku.\n  ([#&#8203;2195](https://redirect.github.com/nix-rust/nix/pull/2195))\n- Added `sys::sendfile` support for solaris/illumos.\n  ([#&#8203;2198](https://redirect.github.com/nix-rust/nix/pull/2198))\n- impl Display for InterfaceFlags\n  ([#&#8203;2206](https://redirect.github.com/nix-rust/nix/pull/2206))\n- Added `sendfilev` in sys::sendfile for solarish\n  ([#&#8203;2207](https://redirect.github.com/nix-rust/nix/pull/2207))\n- Added `fctrl::SealFlag::F_SEAL_FUTURE_WRITE`\n  ([#&#8203;2213](https://redirect.github.com/nix-rust/nix/pull/2213))\n- Added `Ipv6MulticastHops` as socket option to set and read.\n  ([#&#8203;2234](https://redirect.github.com/nix-rust/nix/pull/2234))\n- Enable `ControlMessageOwned::Ipv4RecvIf` and\n  `ControlMessageOwned::Ipv4RecvDstAddr` for DragonFlyBSD\n  ([#&#8203;2240](https://redirect.github.com/nix-rust/nix/pull/2240))\n- `ClockId::set_time()` and `time::clock_settime()` are now enabled on\nmacOS\n  ([#&#8203;2241](https://redirect.github.com/nix-rust/nix/pull/2241))\n- Added `IpBindAddressNoPort` sockopt to support\n`IP_BIND_ADDRESS_NO_PORT`\navailable on linux.\n([#&#8203;2244](https://redirect.github.com/nix-rust/nix/pull/2244))\n- Enable `MapFlags::map_hugetlb_with_size_log2` method for\nAndroid/Fuchsia\n  ([#&#8203;2245](https://redirect.github.com/nix-rust/nix/pull/2245))\n- Added `TcpFastOpenConnect` sockopt to support `TCP_FASTOPEN_CONNECT`\navailable on linux.\n([#&#8203;2247](https://redirect.github.com/nix-rust/nix/pull/2247))\n- Add `reboot(2)` for OpenBSD/NetBSD\n  ([#&#8203;2251](https://redirect.github.com/nix-rust/nix/pull/2251))\n- Added new `MemFdCreateFlag` constants to `sys::memfd` on Linux and\nAndroid\n  related to hugetlbfs support.\n  ([#&#8203;2252](https://redirect.github.com/nix-rust/nix/pull/2252))\n- Expose the inner fd of `Kqueue` through:\n\n  - impl AsFd for Kqueue\n  - impl From\\<Kqueue> for OwnedFd\n\n  ([#&#8203;2258](https://redirect.github.com/nix-rust/nix/pull/2258))\n- Added `sys::eventfd` support on FreeBSD\n  ([#&#8203;2259](https://redirect.github.com/nix-rust/nix/pull/2259))\n- Added `MmapFlags::MAP_FIXED` constant in `sys::mman` for netbsd and\nopenbsd\n  ([#&#8203;2260](https://redirect.github.com/nix-rust/nix/pull/2260))\n- Added the `SO_LISTENQLIMIT` sockopt.\n  ([#&#8203;2263](https://redirect.github.com/nix-rust/nix/pull/2263))\n- Enable the `AT_EMPTY_PATH` flag for the `fchownat()` function\n  ([#&#8203;2267](https://redirect.github.com/nix-rust/nix/pull/2267))\n- Add `AtFlags::AT_EMPTY_PATH` for FreeBSD and Hurd\n  ([#&#8203;2270](https://redirect.github.com/nix-rust/nix/pull/2270))\n- Enable \\`OFlag::O\\_DIRECTORY for Solarish\n  ([#&#8203;2275](https://redirect.github.com/nix-rust/nix/pull/2275))\n- Added the `Backlog` wrapper type for the `listen` call.\n  ([#&#8203;2276](https://redirect.github.com/nix-rust/nix/pull/2276))\n- Add `clock_nanosleep()`\n([#&#8203;2277](https://redirect.github.com/nix-rust/nix/pull/2277))\n- Enabled `O_DIRECT` in `fcntl::OFlags` for solarish\n  ([#&#8203;2278](https://redirect.github.com/nix-rust/nix/pull/2278))\n- Added a new API sigsuspend.\n  ([#&#8203;2279](https://redirect.github.com/nix-rust/nix/pull/2279))\n- - Added `errno::Errno::set` function\n  - Added `errno::Errno::set_raw` function\n  - Added `errno::Errno::last_raw` function\n  - Added `errno::Errno::from_raw` function\n\n  ([#&#8203;2283](https://redirect.github.com/nix-rust/nix/pull/2283))\n- Enable the `AT_EMPTY_PATH` flag for the `linkat()` function\n  ([#&#8203;2284](https://redirect.github.com/nix-rust/nix/pull/2284))\n- Enable unistd::{sync, syncfs} for Android\n  ([#&#8203;2296](https://redirect.github.com/nix-rust/nix/pull/2296))\n\n##### Changed\n\n- `poll` now takes `PollTimeout` replacing `libc::c_int`.\n  ([#&#8203;1876](https://redirect.github.com/nix-rust/nix/pull/1876))\n- Deprecated `sys::eventfd::eventfd`.\n  ([#&#8203;1945](https://redirect.github.com/nix-rust/nix/pull/1945))\n- `mmap`, `mmap_anonymous`, `munmap`, `mremap`, `madvise`, `msync`,\n`mprotect`,\n  `munlock` and `mlock` updated to use `NonNull`.\n  ([#&#8203;2000](https://redirect.github.com/nix-rust/nix/pull/2000))\n- `mmap` function now accepts `F` instead of `Option<F>`\n  ([#&#8203;2127](https://redirect.github.com/nix-rust/nix/pull/2127))\n- `PollFd::new` now takes a `BorrowedFd` argument, with relaxed lifetime\n  requirements relative to the previous version.\n  ([#&#8203;2134](https://redirect.github.com/nix-rust/nix/pull/2134))\n- `FdSet::{insert, remove, contains}` now take `BorrowedFd` arguments,\nand have\n  relaxed lifetime requirements relative to 0.27.1.\n  ([#&#8203;2136](https://redirect.github.com/nix-rust/nix/pull/2136))\n- The following APIs now take an implementation of `AsFd` rather than a\n  `RawFd`:\n\n  - `unistd::tcgetpgrp`\n  - `unistd::tcsetpgrp`\n  - `unistd::fpathconf`\n  - `unistd::ttyname`\n- `unistd::getpeereid`\n([#&#8203;2137](https://redirect.github.com/nix-rust/nix/pull/2137))\n- Changed `openat()` and `Dir::openat()`, now take optional `dirfd`s\n  ([#&#8203;2139](https://redirect.github.com/nix-rust/nix/pull/2139))\n- The MSRV is now 1.69\n([#&#8203;2144](https://redirect.github.com/nix-rust/nix/pull/2144))\n- Changed function `SockaddrIn::ip()` to return `net::Ipv4Addr` and\nrefactored\n  `SocketAddrV6::ip()` to be `const`\n  ([#&#8203;2151](https://redirect.github.com/nix-rust/nix/pull/2151))\n- The following APIs now take optional `dirfd`s:\n\n  - `readlinkat()`\n  - `fstatat()`\n  - `mknodat()`\n  - `mkdirat()`\n  - `execveat()`\n\n  ([#&#8203;2157](https://redirect.github.com/nix-rust/nix/pull/2157))\n- `Epoll::wait` now takes `EpollTimeout` replacing `isize`.\n  ([#&#8203;2202](https://redirect.github.com/nix-rust/nix/pull/2202))\n- - Deprecated `errno::errno()` function (use `Errno::last_raw()`)\n  - Deprecated `errno::from_i32()` function (use `Errno::from_raw()`)\n- Deprecated `errno::Errno::from_i32()` function (use\n`Errno::from_raw()`)\n\n  ([#&#8203;2283](https://redirect.github.com/nix-rust/nix/pull/2283))\n\n##### Fixed\n\n- Fix `SigSet` incorrect implementation of `Eq`, `PartialEq` and `Hash`\n  ([#&#8203;1946](https://redirect.github.com/nix-rust/nix/pull/1946))\n- Fixed `::sys::socket::sockopt::IpMulticastTtl` by fixing the value of\noptlen\n  passed to `libc::setsockopt` and added tests.\n  ([#&#8203;2072](https://redirect.github.com/nix-rust/nix/pull/2072))\n- Fixed the function signature of `recvmmsg`, potentially causing UB\n  ([#&#8203;2119](https://redirect.github.com/nix-rust/nix/pull/2119))\n- Fix `SignalFd::set_mask`.  In 0.27.0 it would actually close the file\ndescriptor.\n([#&#8203;2141](https://redirect.github.com/nix-rust/nix/pull/2141))\n- Fixed UnixAddr::new for haiku, it did not record the `sun_len` value\nas\n  needed.\n  Fixed `sys::socket::addr::from_raw_parts` and\n  `sys::socket::Sockaddrlike::len` build for solaris.\n  ([#&#8203;2242](https://redirect.github.com/nix-rust/nix/pull/2242))\n- Fixed solaris build globally.\n  ([#&#8203;2248](https://redirect.github.com/nix-rust/nix/pull/2248))\n- Changed the `dup3` wrapper to perform a real call to `dup3` instead of\n  emulating it via `dup2` and `fcntl` to get rid of race condition\n  ([#&#8203;2268](https://redirect.github.com/nix-rust/nix/pull/2268))\n- Fixed `::unistd::Group::members` using read\\_unaligned to avoid crash\non\nmisaligned pointers\n([#&#8203;2311](https://redirect.github.com/nix-rust/nix/pull/2311))\n\n##### Removed\n\n- The `FchownatFlags` type has been deprecated, please use `AtFlags`\ninstead.\n  ([#&#8203;2267](https://redirect.github.com/nix-rust/nix/pull/2267))\n- Removed the `dup3` wrapper on macOS, which was emulated via `dup2` and\n`fcntl` and could cause a race condition. The `dup3` system call is not\nsupported on macOS.\n([#&#8203;2268](https://redirect.github.com/nix-rust/nix/pull/2268))\n- The `LinkatFlags` type has been deprecated, please use `AtFlags`\ninstead.\n  ([#&#8203;2284](https://redirect.github.com/nix-rust/nix/pull/2284))\n\n#### \\[0.27.1] - 2023-08-28\n\n##### Fixed\n\n- Fixed generating the documentation on docs.rs.\n  ([#&#8203;2111](https://redirect.github.com/nix-rust/nix/pull/2111))\n\n#### \\[0.27.0] - 2023-08-28\n\n##### Added\n\n- Added `AT_EACCESS` to `AtFlags` on all platforms but android\n  ([#&#8203;1995](https://redirect.github.com/nix-rust/nix/pull/1995))\n- Add `PF_ROUTE` to `SockType` on macOS, iOS, all of the BSDs, Fuchsia,\nHaiku, Illumos.\n  ([#&#8203;1867](https://redirect.github.com/nix-rust/nix/pull/1867))\n- Added `nix::ucontext` module on `aarch64-unknown-linux-gnu`.\n  (#[1662](https://redirect.github.com/nix-rust/nix/pull/1662))\n- Added `CanRaw` to `SockProtocol` and `CanBcm` as a separate\n`SocProtocol` constant.\n  ([#&#8203;1912](https://redirect.github.com/nix-rust/nix/pull/1912))\n- Added `Generic` and `NFLOG` to `SockProtocol`.\n  ([#&#8203;2092](https://redirect.github.com/nix-rust/nix/pull/2092))\n- Added `mq_timedreceive` to `::nix::mqueue`.\n\n(\\[[#&#8203;1966](https://redirect.github.com/nix-rust/nix/issues/1966)])([#&#8203;1966](https://redirect.github.com/nix-rust/nix/pull/1966))\n- Added `LocalPeerPid` to `nix::sys::socket::sockopt` for macOS.\n([#&#8203;1967](https://redirect.github.com/nix-rust/nix/pull/1967))\n- Added `TFD_TIMER_CANCEL_ON_SET` to\n`::nix::sys::time::TimerSetTimeFlags` on Linux and Android.\n  ([#&#8203;2040](https://redirect.github.com/nix-rust/nix/pull/2040))\n- Added `SOF_TIMESTAMPING_OPT_ID` and `SOF_TIMESTAMPING_OPT_TSONLY` to\n`nix::sys::socket::TimestampingFlag`.\n  ([#&#8203;2048](https://redirect.github.com/nix-rust/nix/pull/2048))\n- Enabled socket timestamping options on Android.\n([#&#8203;2077](https://redirect.github.com/nix-rust/nix/pull/2077))\n- Added vsock support for macOS\n([#&#8203;2056](https://redirect.github.com/nix-rust/nix/pull/2056))\n- Added `SO_SETFIB` and `SO_USER_COOKIE` to `nix::sys::socket::sockopt`\nfor FreeBSD.\n  ([#&#8203;2085](https://redirect.github.com/nix-rust/nix/pull/2085))\n- Added `SO_RTABLE` for OpenBSD and `SO_ACCEPTFILTER` for FreeBSD/NetBSD\nto `nix::sys::socket::sockopt`.\n  ([#&#8203;2085](https://redirect.github.com/nix-rust/nix/pull/2085))\n- Added `MSG_WAITFORONE` to `MsgFlags` on Android, Fuchsia, Linux,\nNetBSD,\n  FreeBSD, OpenBSD, and Solaris.\n  ([#&#8203;2014](https://redirect.github.com/nix-rust/nix/pull/2014))\n- Added `SO_TS_CLOCK` for FreeBSD to `nix::sys::socket::sockopt`.\n  ([#&#8203;2093](https://redirect.github.com/nix-rust/nix/pull/2093))\n- Added support for prctl in Linux.\n  (#[1550](https://redirect.github.com/nix-rust/nix/pull/1550))\n- `nix::socket` and `nix::select` are now available on Redox.\n  ([#&#8203;2012](https://redirect.github.com/nix-rust/nix/pull/2012))\n- Implemented AsFd, AsRawFd, FromRawFd, and IntoRawFd for\n`mqueue::MqdT`.\n  ([#&#8203;2097](https://redirect.github.com/nix-rust/nix/pull/2097))\n- Add the ability to set `kevent_flags` on `SigEvent`.\n  ([#&#8203;1731](https://redirect.github.com/nix-rust/nix/pull/1731))\n\n##### Changed\n\n- All Cargo features have been removed from the default set. Users will\nneed to\n  specify which features they depend on in their Cargo.toml.\n  ([#&#8203;2091](https://redirect.github.com/nix-rust/nix/pull/2091))\n- Implemented I/O safety for many, but not all, of Nix's APIs. Many\npublic\n  functions argument and return types have changed:\n\n  | Original Type | New Type              |\n  | ------------- | --------------------- |\n  | AsRawFd       | AsFd                  |\n  | RawFd         | BorrowedFd or OwnedFd |\n\n  (#[1906](https://redirect.github.com/nix-rust/nix/pull/1906))\n- Use I/O safety with `copy_file_range`, and expose it on FreeBSD.\n  (#[1906](https://redirect.github.com/nix-rust/nix/pull/1906))\n- The MSRV is now 1.65\n  ([#&#8203;1862](https://redirect.github.com/nix-rust/nix/pull/1862))\n  ([#&#8203;2104](https://redirect.github.com/nix-rust/nix/pull/2104))\n- The epoll interface now uses a type.\n  ([#&#8203;1882](https://redirect.github.com/nix-rust/nix/pull/1882))\n- With I/O-safe type applied in `pty::OpenptyResult` and\n`pty::ForkptyResult`,\nusers no longer need to manually close the file descriptors in these\ntypes.\n  ([#&#8203;1921](https://redirect.github.com/nix-rust/nix/pull/1921))\n- Refactored `name` parameter of `mq_open` and `mq_unlink` to be generic\nover\n  `NixPath`.\n  ([#&#8203;2102](https://redirect.github.com/nix-rust/nix/pull/2102)).\n- Made `clone` unsafe, like `fork`.\n  ([#&#8203;1993](https://redirect.github.com/nix-rust/nix/pull/1993))\n\n##### Removed\n\n- `sys::event::{kevent, kevent_ts}` are deprecated in favor of\n`sys::kevent::Kqueue::kevent`, and `sys::event::kqueue` is deprecated in\n  favor of `sys::kevent::Kqueue::new`.\n  ([#&#8203;1943](https://redirect.github.com/nix-rust/nix/pull/1943))\n- Removed deprecated IoVec API.\n  ([#&#8203;1855](https://redirect.github.com/nix-rust/nix/pull/1855))\n- Removed deprecated net APIs.\n  ([#&#8203;1861](https://redirect.github.com/nix-rust/nix/pull/1861))\n- `nix::sys::signalfd::signalfd` is deprecated.  Use\n  `nix::sys::signalfd::SignalFd` instead.\n  ([#&#8203;1938](https://redirect.github.com/nix-rust/nix/pull/1938))\n- Removed `SigEvent` support on Fuchsia, where it was unsound.\n  ([#&#8203;2079](https://redirect.github.com/nix-rust/nix/pull/2079))\n- Removed `flock` from `::nix::fcntl` on Solaris.\n  ([#&#8203;2082](https://redirect.github.com/nix-rust/nix/pull/2082))\n\n#### \\[0.26.3] - 2023-08-27\n\n##### Fixed\n\n- Fix: send `ETH_P_ALL` in htons format\n  ([#&#8203;1925](https://redirect.github.com/nix-rust/nix/pull/1925))\n- Fix: `recvmsg` now sets the length of the received `sockaddr_un` field\ncorrectly on Linux platforms.\n([#&#8203;2041](https://redirect.github.com/nix-rust/nix/pull/2041))\n- Fix potentially invalid conversions in\n  `SockaddrIn::from<std::net::SocketAddrV4>`,\n`SockaddrIn6::from<std::net::SockaddrV6>`, `IpMembershipRequest::new`,\nand\n  `Ipv6MembershipRequest::new` with future Rust versions.\n  ([#&#8203;2061](https://redirect.github.com/nix-rust/nix/pull/2061))\n- Fixed an incorrect lifetime returned from `recvmsg`.\n  ([#&#8203;2095](https://redirect.github.com/nix-rust/nix/pull/2095))\n\n#### \\[0.26.2] - 2023-01-18\n\n##### Fixed\n\n- Fix `SockaddrIn6` bug that was swapping `flowinfo` and `scope_id` byte\n  ordering.\n  ([#&#8203;1964](https://redirect.github.com/nix-rust/nix/pull/1964))\n\n#### \\[0.26.1] - 2022-11-29\n\n##### Fixed\n\n- Fix UB with `sys::socket::sockopt::SockType` using `SOCK_PACKET`.\n  ([#&#8203;1821](https://redirect.github.com/nix-rust/nix/pull/1821))\n\n#### \\[0.26.0] - 2022-11-29\n\n##### Added\n\n- Added `SockaddrStorage::{as_unix_addr, as_unix_addr_mut}`\n  ([#&#8203;1871](https://redirect.github.com/nix-rust/nix/pull/1871))\n- Added `MntFlags` and `unmount` on all of the BSDs.\n- Added `any()` and `all()` to `poll::PollFd`.\n  ([#&#8203;1877](https://redirect.github.com/nix-rust/nix/pull/1877))\n- Add `MntFlags` and `unmount` on all of the BSDs.\n  ([#&#8203;1849](https://redirect.github.com/nix-rust/nix/pull/1849))\n- Added a `Statfs::flags` method.\n  ([#&#8203;1849](https://redirect.github.com/nix-rust/nix/pull/1849))\n- Added `NSFS_MAGIC` FsType on Linux and Android.\n  ([#&#8203;1829](https://redirect.github.com/nix-rust/nix/pull/1829))\n- Added `sched_getcpu` on platforms that support it.\n  ([#&#8203;1825](https://redirect.github.com/nix-rust/nix/pull/1825))\n- Added `sched_getaffinity` and `sched_setaffinity` on FreeBSD.\n  ([#&#8203;1804](https://redirect.github.com/nix-rust/nix/pull/1804))\n- Added `line_discipline` field to `Termios` on Linux, Android and Haiku\n  ([#&#8203;1805](https://redirect.github.com/nix-rust/nix/pull/1805))\n- Expose the memfd module on FreeBSD (memfd was added in FreeBSD 13)\n  ([#&#8203;1808](https://redirect.github.com/nix-rust/nix/pull/1808))\n- Added `domainname` field of `UtsName` on Android and Linux\n  ([#&#8203;1817](https://redirect.github.com/nix-rust/nix/pull/1817))\n- Re-export `RLIM_INFINITY` from `libc`\n  ([#&#8203;1831](https://redirect.github.com/nix-rust/nix/pull/1831))\n- Added `syncfs(2)` on Linux\n  ([#&#8203;1833](https://redirect.github.com/nix-rust/nix/pull/1833))\n- Added `faccessat(2)` on illumos\n  ([#&#8203;1841](https://redirect.github.com/nix-rust/nix/pull/1841))\n- Added `eaccess()` on FreeBSD, DragonFly and Linux (glibc and musl).\n  ([#&#8203;1842](https://redirect.github.com/nix-rust/nix/pull/1842))\n- Added `IP_TOS` `SO_PRIORITY` and `IPV6_TCLASS` sockopts for Linux\n  ([#&#8203;1853](https://redirect.github.com/nix-rust/nix/pull/1853))\n- Added `new_unnamed` and `is_unnamed` for `UnixAddr` on Linux and\nAndroid.\n  ([#&#8203;1857](https://redirect.github.com/nix-rust/nix/pull/1857))\n- Added `SockProtocol::Raw` for raw sockets\n  ([#&#8203;1848](https://redirect.github.com/nix-rust/nix/pull/1848))\n- added `IP_MTU` (`IpMtu`) `IPPROTO_IP` sockopt on Linux and Android.\n  ([#&#8203;1865](https://redirect.github.com/nix-rust/nix/pull/1865))\n\n##### Changed\n\n- The MSRV is now 1.56.1\n  ([#&#8203;1792](https://redirect.github.com/nix-rust/nix/pull/1792))\n- The `addr` argument of `sys::mman::mmap` is now of type\n`Option<NonZeroUsize>`.\n  ([#&#8203;1870](https://redirect.github.com/nix-rust/nix/pull/1870))\n- The `length` argument of `sys::mman::mmap` is now of type\n`NonZeroUsize`.\n  ([#&#8203;1873](https://redirect.github.com/nix-rust/nix/pull/1873))\n\n##### Fixed\n\n- Fixed using `SockaddrStorage` to store a Unix-domain socket address on\nLinux.\n  ([#&#8203;1871](https://redirect.github.com/nix-rust/nix/pull/1871))\n- Fix microsecond calculation for `TimeSpec`.\n  ([#&#8203;1801](https://redirect.github.com/nix-rust/nix/pull/1801))\n- Fix `User::from_name` and `Group::from_name` panicking\n  when given a name containing a nul.\n  ([#&#8203;1815](https://redirect.github.com/nix-rust/nix/pull/1815))\n- Fix `User::from_uid` and `User::from_name` crash on Android platform.\n  ([#&#8203;1824](https://redirect.github.com/nix-rust/nix/pull/1824))\n- Workaround XNU bug causing netmasks returned by `getifaddrs` to\nmisbehave.\n  ([#&#8203;1788](https://redirect.github.com/nix-rust/nix/pull/1788))\n\n##### Removed\n\n- Removed deprecated error constants and conversions.\n  ([#&#8203;1860](https://redirect.github.com/nix-rust/nix/pull/1860))\n\n#### \\[0.25.0] - 2022-08-13\n\n##### Added\n\n- Added `faccessat`\n  ([#&#8203;1780](https://redirect.github.com/nix-rust/nix/pull/1780))\n- Added `memfd` on Android.\n  (#[1773](https://redirect.github.com/nix-rust/nix/pull/1773))\n- Added `ETH_P_ALL` to `SockProtocol` enum\n  (#[1768](https://redirect.github.com/nix-rust/nix/pull/1768))\n- Added four non-standard Linux `SysconfVar` variants\n  (#[1761](https://redirect.github.com/nix-rust/nix/pull/1761))\n- Added const constructors for `TimeSpec` and `TimeVal`\n  (#[1760](https://redirect.github.com/nix-rust/nix/pull/1760))\n- Added `chflags`.\n  (#[1758](https://redirect.github.com/nix-rust/nix/pull/1758))\n- Added `aio_writev` and `aio_readv`.\n  (#[1713](https://redirect.github.com/nix-rust/nix/pull/1713))\n- impl `From<uid_t>` for `Uid` and `From<gid_t>` for `Gid`\n  (#[1727](https://redirect.github.com/nix-rust/nix/pull/1727))\n- impl `From<SockaddrIn>` for `std::net::SocketAddrV4` and\n  impl `From<SockaddrIn6>` for `std::net::SocketAddrV6`.\n  (#[1711](https://redirect.github.com/nix-rust/nix/pull/1711))\n- Added support for the `x86_64-unknown-haiku` target.\n  (#[1703](https://redirect.github.com/nix-rust/nix/pull/1703))\n- Added `ptrace::read_user` and `ptrace::write_user` for Linux.\n  (#[1697](https://redirect.github.com/nix-rust/nix/pull/1697))\n- Added `getrusage` and helper types `UsageWho` and `Usage`\n  (#[1747](https://redirect.github.com/nix-rust/nix/pull/1747))\n- Added the `DontRoute` SockOpt\n  (#[1752](https://redirect.github.com/nix-rust/nix/pull/1752))\n- Added `signal::SigSet::from_sigset_t_unchecked()`.\n  (#[1741](https://redirect.github.com/nix-rust/nix/pull/1741))\n- Added the `Ipv4OrigDstAddr` sockopt and control message.\n  (#[1772](https://redirect.github.com/nix-rust/nix/pull/1772))\n- Added the `Ipv6OrigDstAddr` sockopt and control message.\n  (#[1772](https://redirect.github.com/nix-rust/nix/pull/1772))\n- Added the `Ipv4SendSrcAddr` control message.\n  (#[1776](https://redirect.github.com/nix-rust/nix/pull/1776))\n\n##### Changed\n\n- Reimplemented sendmmsg/recvmmsg to avoid allocations and with better\nAPI\n  (#[1744](https://redirect.github.com/nix-rust/nix/pull/1744))\n\n- Rewrote the aio module.  The new module:\n  - Does more type checking at compile time rather than runtime.\n- Gives the caller control over whether and when to `Box` an aio\noperation.\n  - Changes the type of the `priority` arguments to `i32`.\n  - Changes the return type of `aio_return` to `usize`.\n    (#[1713](https://redirect.github.com/nix-rust/nix/pull/1713))\n\n- `nix::poll::ppoll`: `sigmask` parameter is now optional.\n  (#[1739](https://redirect.github.com/nix-rust/nix/pull/1739))\n\n- Changed `gethostname` to return an owned `OsString`.\n  (#[1745](https://redirect.github.com/nix-rust/nix/pull/1745))\n\n- `signal:SigSet` is now marked as `repr(transparent)`.\n  (#[1741](https://redirect.github.com/nix-rust/nix/pull/1741))\n\n##### Removed\n\n- Removed support for resubmitting partially complete `lio_listio`\noperations.\nIt was too complicated, and didn't fit Nix's theme of zero-cost\nabstractions.\n  Instead, it can be reimplemented downstream.\n  (#[1713](https://redirect.github.com/nix-rust/nix/pull/1713))\n\n#### \\[0.24.2] - 2022-07-17\n\n##### Fixed\n\n- Fixed buffer overflow in `nix::sys::socket::recvfrom`.\n  (#[1763](https://redirect.github.com/nix-rust/nix/pull/1763))\n- Enabled `SockaddrStorage::{as_link_addr, as_link_addr_mut}` for\nLinux-like\n  operating systems.\n  (#[1729](https://redirect.github.com/nix-rust/nix/pull/1729))\n- Fixed `SockaddrLike::from_raw` implementations for `VsockAddr` and\n  `SysControlAddr`.\n  (#[1736](https://redirect.github.com/nix-rust/nix/pull/1736))\n\n#### \\[0.24.1] - 2022-04-22\n\n##### Fixed\n\n- Fixed `UnixAddr::size` on Linux-based OSes.\n  (#[1702](https://redirect.github.com/nix-rust/nix/pull/1702))\n\n#### \\[0.24.0] - 2022-04-21\n\n##### Added\n\n- Added fine-grained features flags.  Most Nix functionality can now be\n  conditionally enabled.  By default, all features are enabled.\n  (#[1611](https://redirect.github.com/nix-rust/nix/pull/1611))\n- Added statfs FS type magic constants for `target_os = \"android\"`\n  and synced constants with libc v0.2.121.\n  (#[1690](https://redirect.github.com/nix-rust/nix/pull/1690))\n- Added `fexecve` on DragonFly.\n  (#[1577](https://redirect.github.com/nix-rust/nix/pull/1577))\n- `sys::uio::IoVec` is now `Send` and `Sync`\n  (#[1582](https://redirect.github.com/nix-rust/nix/pull/1582))\n- Added `EPOLLEXCLUSIVE` on Android.\n  (#[1567](https://redirect.github.com/nix-rust/nix/pull/1567))\n- Added `fdatasync` for FreeBSD, Fuchsia, NetBSD, and OpenBSD.\n  (#[1581](https://redirect.github.com/nix-rust/nix/pull/1581))\n- Added `sched_setaffinity` and `sched_getaffinity` on DragonFly.\n  (#[1537](https://redirect.github.com/nix-rust/nix/pull/1537))\n- Added `posix_fallocate` on DragonFly.\n  (#[1621](https://redirect.github.com/nix-rust/nix/pull/1621))\n- Added `SO_TIMESTAMPING` support\n  (#[1547](https://redirect.github.com/nix-rust/nix/pull/1547))\n- Added getter methods to `MqAttr` struct\n  (#[1619](https://redirect.github.com/nix-rust/nix/pull/1619))\n- Added the `TxTime` sockopt and control message.\n  (#[1564](https://redirect.github.com/nix-rust/nix/pull/1564))\n- Added POSIX per-process timer support\n  (#[1622](https://redirect.github.com/nix-rust/nix/pull/1622))\n- Added `sendfile` on DragonFly.\n  (#[1615](https://redirect.github.com/nix-rust/nix/pull/1615))\n- Added `UMOUNT_NOFOLLOW`, `FUSE_SUPER_MAGIC` on Linux.\n  (#[1634](https://redirect.github.com/nix-rust/nix/pull/1634))\n- Added `getresuid`, `setresuid`, `getresgid`, and `setresgid` on\nDragonFly, FreeBSD, and OpenBSD.\n  (#[1628](https://redirect.github.com/nix-rust/nix/pull/1628))\n- Added `MAP_FIXED_NOREPLACE` on Linux.\n  (#[1636](https://redirect.github.com/nix-rust/nix/pull/1636))\n- Added `fspacectl` on FreeBSD\n  (#[1640](https://redirect.github.com/nix-rust/nix/pull/1640))\n- Added `accept4` on DragonFly, Emscripten, Fuchsia, Illumos, and\nNetBSD.\n  (#[1654](https://redirect.github.com/nix-rust/nix/pull/1654))\n- Added `AsRawFd` implementation on `OwningIter`.\n  (#[1563](https://redirect.github.com/nix-rust/nix/pull/1563))\n- Added `process_vm_readv` and `process_vm_writev` on Android.\n  (#[1557](https://redirect.github.com/nix-rust/nix/pull/1557))\n- Added `nix::ucontext` module on s390x.\n  (#[1662](https://redirect.github.com/nix-rust/nix/pull/1662))\n- Implemented `Extend`, `FromIterator`, and `IntoIterator` for `SigSet`\nand\n  added `SigSet::iter` and `SigSetIter`.\n  (#[1553](https://redirect.github.com/nix-rust/nix/pull/1553))\n- Added `ENOTRECOVERABLE` and `EOWNERDEAD` error codes on DragonFly.\n  (#[1665](https://redirect.github.com/nix-rust/nix/pull/1665))\n- Implemented `Read` and `Write` for `&PtyMaster`\n  (#[1664](https://redirect.github.com/nix-rust/nix/pull/1664))\n- Added `MSG_NOSIGNAL` for Android, Dragonfly, FreeBSD, Fuchsia, Haiku,\nIllumos, Linux, NetBSD, OpenBSD and Solaris.\n  (#[1670](https://redirect.github.com/nix-rust/nix/pull/1670))\n- Added `waitid`.\n  (#[1584](https://redirect.github.com/nix-rust/nix/pull/1584))\n- Added `Ipv6DontFrag` for android, iOS, linux and macOS.\n- Added `IpDontFrag` for iOS, macOS.\n  (#[1692](https://redirect.github.com/nix-rust/nix/pull/1692))\n\n##### Changed\n\n- `mqueue` functions now operate on a distinct type,\n`nix::mqueue::MqdT`.\n  Accessors take this type by reference, not by value.\n  (#[1639](https://redirect.github.com/nix-rust/nix/pull/1639))\n- Removed `SigSet::extend` in favor of `<SigSet as\nExtend<Signal>>::extend`.\nBecause of this change, you now need `use std::iter::Extend` to call\n`extend`\n  on a `SigSet`.\n  (#[1553](https://redirect.github.com/nix-rust/nix/pull/1553))\n- Removed the the `PATH_MAX` restriction from APIs accepting paths.\nPaths\nwill now be allocated on the heap if they are too long. In addition,\nlarge\n  instruction count improvements (\\~30x) were made to path handling.\n  (#[1656](https://redirect.github.com/nix-rust/nix/pull/1656))\n- Changed `getrlimit` and `setrlimit` to use `rlim_t` directly\n  instead of `Option<rlim_t>`.\n  (#[1668](https://redirect.github.com/nix-rust/nix/pull/1668))\n- Deprecated `InetAddr` and `SockAddr` in favor of `SockaddrIn`,\n`SockaddrIn6`,\n  and `SockaddrStorage`.\n  (#[1684](https://redirect.github.com/nix-rust/nix/pull/1684))\n- Deprecated `IpAddr`, `Ipv4Addr`, and `Ipv6Addr` in favor of their\nequivalents\n  from the standard library.\n  (#[1685](https://redirect.github.com/nix-rust/nix/pull/1685))\n- `uname` now returns a `Result<UtsName>` instead of just a `UtsName`\nand\nignoring failures from libc. And getters on the `UtsName` struct now\nreturn\n  an `&OsStr` instead of `&str`.\n  (#[1672](https://redirect.github.com/nix-rust/nix/pull/1672))\n- Replaced `IoVec` with `IoSlice` and `IoSliceMut`, and replaced\n`IoVec::from_slice` with\n`IoSlice::new`.\n(#[1643](https://redirect.github.com/nix-rust/nix/pull/1643))\n\n##### Fixed\n\n- `InetAddr::from_std` now sets the `sin_len`/`sin6_len` fields on the\nBSDs.\n  (#[1642](https://redirect.github.com/nix-rust/nix/pull/1642))\n- Fixed a panic in `LinkAddr::addr`. That function now returns an\n`Option`.\n  (#[1675](https://redirect.github.com/nix-rust/nix/pull/1675))\n  (#[1677](https://redirect.github.com/nix-rust/nix/pull/1677))\n\n##### Removed\n\n- Removed public access to the inner fields of `NetlinkAddr`, `AlgAddr`,\n  `SysControlAddr`, `LinkAddr`, and `VsockAddr`.\n  (#[1614](https://redirect.github.com/nix-rust/nix/pull/1614))\n- Removed `EventFlag::EV_SYSFLAG`.\n  (#[1635](https://redirect.github.com/nix-rust/nix/pull/1635))\n\n#### \\[0.23.1] - 2021-12-16\n\n##### Changed\n\n- Relaxed the bitflags requirement from 1.3.1 to 1.1. This partially\nreverts\n[#&#8203;1492](https://redirect.github.com/nix-rust/nix/issues/1492).\nFrom now on, the MSRV is not guaranteed to work with all versions of\n  all dependencies, just with some version of all dependencies.\n  (#[1607](https://redirect.github.com/nix-rust/nix/pull/1607))\n\n##### Fixed\n\n- Fixed soundness issues in `FdSet::insert`, `FdSet::remove`, and\n  `FdSet::contains` involving file descriptors outside of the range\n  `0..FD_SETSIZE`.\n  (#[1575](https://redirect.github.com/nix-rust/nix/pull/1575))\n\n#### \\[0.23.0] - 2021-09-28\n\n##### Added\n\n- Added the `LocalPeerCred` sockopt.\n  (#[1482](https://redirect.github.com/nix-rust/nix/pull/1482))\n- Added `TimeSpec::from_duration` and `TimeSpec::from_timespec`\n  (#[1465](https://redirect.github.com/nix-rust/nix/pull/1465))\n- Added `IPV6_V6ONLY` sockopt.\n  (#[1470](https://redirect.github.com/nix-rust/nix/pull/1470))\n- Added `impl From<User> for libc::passwd` trait implementation to\nconvert a `User`\ninto a `libc::passwd`. Consumes the `User` struct to give ownership over\n  the member pointers.\n  (#[1471](https://redirect.github.com/nix-rust/nix/pull/1471))\n- Added `pthread_kill`.\n  (#[1472](https://redirect.github.com/nix-rust/nix/pull/1472))\n- Added `mknodat`.\n  (#[1473](https://redirect.github.com/nix-rust/nix/pull/1473))\n- Added `setrlimit` and `getrlimit`.\n  (#[1302](https://redirect.github.com/nix-rust/nix/pull/1302))\n- Added `ptrace::interrupt` method for platforms that support\n`PTRACE_INTERRUPT`\n  (#[1422](https://redirect.github.com/nix-rust/nix/pull/1422))\n- Added `IP6T_SO_ORIGINAL_DST` sockopt.\n  (#[1490](https://redirect.github.com/nix-rust/nix/pull/1490))\n- Added the `PTRACE_EVENT_STOP` variant to the `sys::ptrace::Event` enum\n  (#[1335](https://redirect.github.com/nix-rust/nix/pull/1335))\n- Exposed `SockAddr::from_raw_sockaddr`\n  (#[1447](https://redirect.github.com/nix-rust/nix/pull/1447))\n- Added `TcpRepair`\n  (#[1503](https://redirect.github.com/nix-rust/nix/pull/1503))\n- Enabled `pwritev` and `preadv` for more operating systems.\n  (#[1511](https://redirect.github.com/nix-rust/nix/pull/1511))\n- Added support for `TCP_MAXSEG` TCP Maximum Segment Size socket options\n  (#[1292](https://redirect.github.com/nix-rust/nix/pull/1292))\n- Added `Ipv4RecvErr` and `Ipv6RecvErr` sockopts and associated control\nmessages.\n  (#[1514](https://redirect.github.com/nix-rust/nix/pull/1514))\n- Added `AsRawFd` implementation on `PollFd`.\n  (#[1516](https://redirect.github.com/nix-rust/nix/pull/1516))\n- Added `Ipv4Ttl` and `Ipv6Ttl` sockopts.\n  (#[1515](https://redirect.github.com/nix-rust/nix/pull/1515))\n- Added `MAP_EXCL`, `MAP_ALIGNED_SUPER`, and `MAP_CONCEAL` mmap flags,\nand\n  exposed `MAP_ANONYMOUS` for all operating systems.\n  (#[1522](https://redirect.github.com/nix-rust/nix/pull/1522))\n  (#[1525](https://redirect.github.com/nix-rust/nix/pull/1525))\n  (#[1531](https://redirect.github.com/nix-rust/nix/pull/1531))\n  (#[1534](https://redirect.github.com/nix-rust/nix/pull/1534))\n- Added read/write accessors for 'events' on `PollFd`.\n  (#[1517](https://redirect.github.com/nix-rust/nix/pull/1517))\n\n##### Changed\n\n- `FdSet::{contains, highest, fds}` no longer require a mutable\nreference.\n  (#[1464](https://redirect.github.com/nix-rust/nix/pull/1464))\n- `User::gecos` and corresponding `libc::passwd::pw_gecos` are supported\non\n  64-bit Android, change conditional compilation to include the field in\n  64-bit Android builds\n  (#[1471](https://redirect.github.com/nix-rust/nix/pull/1471))\n- `eventfd`s are supported on Android, change conditional compilation to\ninclude `sys::eventfd::eventfd` and `sys::eventfd::EfdFlags`for Android\n  builds.\n  (#[1481](https://redirect.github.com/nix-rust/nix/pull/1481))\n- Most enums that come from C, for example `Errno`, are now marked as\n  `#[non_exhaustive]`.\n  (#[1474](https://redirect.github.com/nix-rust/nix/pull/1474))\n- Many more functions, mostly contructors, are now `const`.\n  (#[1476](https://redirect.github.com/nix-rust/nix/pull/1476))\n  (#[1492](https://redirect.github.com/nix-rust/nix/pull/1492))\n- `sys::event::KEvent::filter` now returns a `Result` instead of being\ninfalliable. The only cases where it will now return an error are cases\n  where it previously would've had undefined behavior.\n  (#[1484](https://redirect.github.com/nix-rust/nix/pull/1484))\n- Minimum supported Rust version is now 1.46.0.\n  ([#&#8203;1492](https://redirect.github.com/nix-rust/nix/pull/1492))\n- Rework `UnixAddr` to encapsulate internals better in order to fix\nsoundness\nissues. No longer allows creating a `UnixAddr` from a raw `sockaddr_un`.\n  ([#&#8203;1496](https://redirect.github.com/nix-rust/nix/pull/1496))\n- Raised bitflags to 1.3.0 and the MSRV to 1.46.0.\n  ([#&#8203;1492](https://redirect.github.com/nix-rust/nix/pull/1492))\n\n##### Fixed\n\n- `posix_fadvise` now returns errors in the conventional way, rather\nthan as a\n  non-zero value in `Ok()`.\n  (#[1538](https://redirect.github.com/nix-rust/nix/pull/1538))\n- Added more errno definitions for better backwards compatibility with\n  Nix 0.21.0.\n  (#[1467](https://redirect.github.com/nix-rust/nix/pull/1467))\n- Fixed potential undefined behavior in `Signal::try_from` on some\nplatforms.\n  (#[1484](https://redirect.github.com/nix-rust/nix/pull/1484))\n- Fixed buffer overflow in `unistd::getgrouplist`.\n  (#[1545](https://redirect.github.com/nix-rust/nix/pull/1545))\n\n##### Removed\n\n- Removed a couple of termios constants on redox that were never\nactually\n  supported.\n  (#[1483](https://redirect.github.com/nix-rust/nix/pull/1483))\n- Removed `nix::sys::signal::NSIG`. It was of dubious utility, and not\ncorrect\n  for all platforms.\n  (#[1484](https://redirect.github.com/nix-rust/nix/pull/1484))\n- Removed support for 32-bit Apple targets, since they've been dropped\nby both\n  Rustc and Xcode.\n  (#[1492](https://redirect.github.com/nix-rust/nix/pull/1492))\n- Deprecated `SockAddr/InetAddr::to_str` in favor of\n`ToString::to_string`\n  (#[1495](https://redirect.github.com/nix-rust/nix/pull/1495))\n- Removed `SigevNotify` on OpenBSD and Redox.\n  (#[1511](https://redirect.github.com/nix-rust/nix/pull/1511))\n\n#### \\[0.22.3] - 22 January 2022\n\n##### Changed\n\n- Relaxed the bitflags requirement from 1.3.1 to 1.1. This partially\nreverts\n[#&#8203;1492](https://redirect.github.com/nix-rust/nix/issues/1492).\nFrom now on, the MSRV is not guaranteed to work with all versions of\n  all dependencies, just with some version of all dependencies.\n  (#[1607](https://redirect.github.com/nix-rust/nix/pull/1607))\n\n#### \\[0.22.2] - 28 September 2021\n\n##### Fixed\n\n- Fixed buffer overflow in `unistd::getgrouplist`.\n  (#[1545](https://redirect.github.com/nix-rust/nix/pull/1545))\n- Added more errno definitions for better backwards compatibility with\n  Nix 0.21.0.\n  (#[1467](https://redirect.github.com/nix-rust/nix/pull/1467))\n\n#### \\[0.22.1] - 13 August 2021\n\n##### Fixed\n\n- Locked bitflags to < 1.3.0 to fix the build with rust < 1.46.0.\n\n##### Removed\n\n- Removed a couple of termios constants on redox that were never\nactually\n  supported.\n  (#[1483](https://redirect.github.com/nix-rust/nix/pull/1483))\n\n#### \\[0.22.0] - 9 July 2021\n\n##### Added\n\n- Added `if_nameindex`\n(#[1445](https://redirect.github.com/nix-rust/nix/pull/1445))\n- Added `nmount` for FreeBSD.\n  (#[1453](https://redirect.github.com/nix-rust/nix/pull/1453))\n- Added `IpFreebind` socket option (sockopt) on Linux, Fuchsia and\nAndroid.\n  (#[1456](https://redirect.github.com/nix-rust/nix/pull/1456))\n- Added `TcpUserTimeout` socket option (sockopt) on Linux and Fuchsia.\n  (#[1457](https://redirect.github.com/nix-rust/nix/pull/1457))\n- Added `renameat2` for Linux\n  (#[1458](https://redirect.github.com/nix-rust/nix/pull/1458))\n- Added `RxqOvfl` support on Linux, Fuchsia and Android.\n  (#[1455](https://redirect.github.com/nix-rust/nix/pull/1455))\n\n##### Changed\n\n- `ptsname_r` now returns a lossily-converted string in the event of bad\nUTF,\n  just like `ptsname`.\n  ([#&#8203;1446](https://redirect.github.com/nix-rust/nix/pull/1446))\n- Nix's error type is now a simple wrapper around the platform's Errno.\nThis\nmeans it is now `Into<std::io::Error>`. It's also `Clone`, `Copy`, `Eq`,\nand\nhas a small fixed size. It also requires less typing. For example, the\nold\nenum variant `nix::Error::Sys(nix::errno::Errno::EINVAL)` is now simply\n  `nix::Error::EINVAL`.\n  ([#&#8203;1446](https://redirect.github.com/nix-rust/nix/pull/1446))\n\n#### \\[0.21.2] - 29 September 2021\n\n##### Fixed\n\n- Fixed buffer overflow in `unistd::getgrouplist`.\n  (#[1545](https://redirect.github.com/nix-rust/nix/pull/1545))\n\n#### \\[0.21.1] - 13 August 2021\n\n##### Fixed\n\n- Locked bitflags to < 1.3.0 to fix the build with rust < 1.46.0.\n\n##### Removed\n\n- Removed a couple of termios constants on redox that were never\nactually\n  supported.\n  (#[1483](https://redirect.github.com/nix-rust/nix/pull/1483))\n\n#### \\[0.21.0] - 31 May 2021\n\n##### Added\n\n- Added `getresuid` and `getresgid`\n  (#[1430](https://redirect.github.com/nix-rust/nix/pull/1430))\n- Added TIMESTAMPNS support for linux\n  (#[1402](https://redirect.github.com/nix-rust/nix/pull/1402))\n- Added `sendfile64`\n(#[1439](https://redirect.github.com/nix-rust/nix/pull/1439))\n- Added `MS_LAZYTIME` to `MsFlags`\n  (#[1437](https://redirect.github.com/nix-rust/nix/pull/1437))\n\n##### Changed\n\n- Made `forkpty` unsafe, like `fork`\n  (#[1390](https://redirect.github.com/nix-rust/nix/pull/1390))\n- Made `Uid`, `Gid` and `Pid` methods `from_raw` and `as_raw` a `const\nfn`\n  (#[1429](https://redirect.github.com/nix-rust/nix/pull/1429))\n- Made `Uid::is_root` a `const fn`\n  (#[1429](https://redirect.github.com/nix-rust/nix/pull/1429))\n- `AioCb` is now always pinned. Once a `libc::aiocb` gets sent to the\nkernel,\n  its address in memory must not change.  Nix now enforces that by using\n`std::pin`. Most users won't need to change anything, except when using\n  `aio_suspend`.  See that method's documentation fo\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: Branch creation - \"before 8am on Monday\" (UTC),\nAutomerge - At any time (no schedule defined).\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n🔕 **Ignore**: Close this PR and you won't be reminded about this update\nagain.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0Mi45Mi4xIiwidXBkYXRlZEluVmVyIjoiNDIuOTIuMSIsInRhcmdldEJyYW5jaCI6Im1haW4iLCJsYWJlbHMiOlsiZGVwZW5kZW5jaWVzIl19-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>\nCo-authored-by: albertlockett <a.lockett@f5.com>",
+          "timestamp": "2026-01-26T14:21:39Z",
+          "tree_id": "a9242ed3107581dd6865df85112a0cb645902126",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/76c2cd4254a4ff1c141e0cbc1035d7dda6085641"
+        },
+        "date": 1769439486780,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.368272066116333,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 98.86301076973555,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 98.9817494464659,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 39.70169270833333,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 41.640625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 235115.99830195453,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 238333.02480940695,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.000749,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 5328855.916115258,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 5054901.237003241,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 1 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.1849842071533203,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 98.60859553153179,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 98.76206459496991,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 86.54596354166667,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 89.31640625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 767387.9634716456,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 784155.269305184,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002484,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 17567153.45145398,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 16616500.862067668,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 4 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.218350648880005,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 98.17986570074527,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 98.3976729377357,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 52.869921875,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 54.40625,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 421208.1592961082,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 430552.03268662374,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.000813,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 9564993.95992583,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 9073779.748206487,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 2 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.7654322981834412,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 81.83371281231281,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 82.03023423294793,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 274.84192708333336,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 284.30078125,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 2138545.676604802,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 2154914.795872654,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.023266,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 48967586.788366936,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 46085888.16678498,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 16 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.002487732330337167,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 85.91209390635595,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 86.25155797780518,
+            "unit": "%",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 145.68424479166666,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 151.02734375,
+            "unit": "MiB",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 1371982.7625141311,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 1371948.6312548406,
+            "unit": "logs/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003646,
+            "unit": "seconds",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 30957551.97441209,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 29371487.525713827,
             "unit": "bytes/sec",
             "extra": "Continuous - Saturation - 8 Core(s)/OTLP-ATTR-OTLP - Network Utilization"
           }
