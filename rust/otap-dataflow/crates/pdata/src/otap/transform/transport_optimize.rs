@@ -21,7 +21,8 @@ use arrow::{
     },
     buffer::{Buffer, MutableBuffer, ScalarBuffer},
     compute::{
-        SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take, take_record_batch
+        SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take,
+        take_record_batch,
     },
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
     util::bit_iterator::{BitIndexIterator, BitSliceIterator},
@@ -468,10 +469,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let type_col = record_batch.column_by_name(consts::ATTRIBUTE_TYPE).unwrap();
     let key_col = record_batch.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
 
-    let type_and_key_indices = sort_attrs_type_and_keys_to_indices(
-        type_col.clone(),
-        key_col.clone(),
-    ).unwrap();
+    let type_and_key_indices =
+        sort_attrs_type_and_keys_to_indices(type_col.clone(), key_col.clone()).unwrap();
 
     // let type_col_sorted_indices = arrow::compute::sort_to_indices(type_col, None, None).unwrap();
     let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap();
@@ -552,7 +551,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         //         .downcast_ref::<UInt32Array>()
         //         .unwrap();
 
-        let type_col_sorted_indices_type_range_by_key_prim = type_and_key_indices.slice(type_range.start, type_range.len());
+        let type_col_sorted_indices_type_range_by_key_prim =
+            type_and_key_indices.slice(type_range.start, type_range.len());
 
         let parent_id_type_range_by_key =
             sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
@@ -593,13 +593,25 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
                 // TODO we could try using "create next eq array to get bounds here"
                 let values_partition = partition(&[values_key_range_sorted]).unwrap();
-                for values_range in values_partition.ranges() {
-                    // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
-                    let parent_ids_range =
-                        parent_id_key_range_sorted.slice(values_range.start, values_range.len());
-                    let parent_ids_sorted =
-                        arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
-                    sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
+                let values_ranges = values_partition.ranges();
+                let all_parent_id_sorted = values_ranges.iter().all(|range| {
+                    is_parent_id_column_sorted(
+                        parent_id_col.slice(range.start, range.len()).as_ref(),
+                    )
+                });
+                if all_parent_id_sorted {
+                    // TODO needs tests
+                    sorted_parent_id_column
+                        .append_external_sorted_range(parent_id_key_range_sorted)?;
+                } else {
+                    for values_range in values_ranges {
+                        // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
+                        let parent_ids_range = parent_id_key_range_sorted
+                            .slice(values_range.start, values_range.len());
+                        let parent_ids_sorted =
+                            arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
+                        sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
+                    }
                 }
             }
         } else {
@@ -765,12 +777,12 @@ fn sort_attrs_type_and_keys_to_indices(
                     to_sort[i] += rank as u16;
                 }
 
-                let mut with_ranks = to_sort.into_iter()
-                    .enumerate()
-                    .collect::<Vec<_>>();
+                let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
                 with_ranks.sort_by(|a, b| a.1.cmp(&b.1));
 
-                Ok(PrimitiveArray::from_iter_values(with_ranks.into_iter().map(|(rank, _)| rank as u32)))
+                Ok(PrimitiveArray::from_iter_values(
+                    with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                ))
             }
             DataType::UInt16 => {
                 todo!()
