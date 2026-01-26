@@ -16,11 +16,6 @@ use serde::{Deserialize, Serialize};
 pub enum AuthMethod {
     /// See [azure_identity::AzureCliCredential].
     AzureCli {
-        /// Additional tenants that the credential should be allowed to
-        /// authenticate in.
-        #[serde(default)]
-        additionally_allowed_tenants: Vec<String>,
-
         /// Set this to specify a subscription other than the currently active
         /// one in the Azure cli.
         subscription: Option<String>,
@@ -77,12 +72,10 @@ impl From<UserAssignedId> for azure_identity::UserAssignedId {
 pub fn from_auth_method(value: AuthMethod) -> Result<Arc<dyn TokenCredential>, azure_core::Error> {
     match value {
         AuthMethod::AzureCli {
-            additionally_allowed_tenants,
             subscription,
             tenant_id,
         } => {
             let options = Some(azure_identity::AzureCliCredentialOptions {
-                additionally_allowed_tenants,
                 subscription,
                 tenant_id,
                 ..Default::default()
@@ -177,7 +170,6 @@ mod test {
         })
         .to_string();
         let expected = AuthMethod::AzureCli {
-            additionally_allowed_tenants: vec![],
             subscription: None,
             tenant_id: None,
         };
