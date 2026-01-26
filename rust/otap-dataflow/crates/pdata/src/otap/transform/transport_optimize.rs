@@ -566,8 +566,15 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 // get values
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
-                let values_key_range_sorted_indices =
-                    arrow::compute::sort_to_indices(&values_key_range, None, None).unwrap();
+                let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
+                    &values_key_range,
+                    Some(SortOptions {
+                        nulls_first: false,
+                        ..Default::default()
+                    }),
+                    None,
+                )
+                .unwrap();
                 let values_key_range_sorted =
                     take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
                 sorted_val_col.append_external_sorted_range(values_key_range_sorted)?;
@@ -2703,7 +2710,6 @@ mod test {
         )
         .unwrap();
 
-
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -2771,11 +2777,7 @@ mod test {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
                 true,
             ),
-            Field::new(
-                consts::ATTRIBUTE_DOUBLE,
-                DataType::Float64,
-                true,
-            )
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
         ]));
 
         let input = RecordBatch::try_new(
@@ -2818,9 +2820,10 @@ mod test {
                     Some(1.9999),
                     None,
                     None,
-                ]))
-            ]
-        ).unwrap();
+                ])),
+            ],
+        )
+        .unwrap();
 
         let expected = RecordBatch::try_new(
             schema.clone(),
@@ -2862,9 +2865,112 @@ mod test {
                     None,
                     Some(1.9999),
                     Some(2.0),
-                ]))
-            ]
-        ).unwrap();
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_attrs_record_batch_null_attrs() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+        ]));
+
+        // create a record batch with some null attrs, both dict encoded and non-dict encoded
+        // just to ensure that both are handled correctly:
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        Some(0),
+                        Some(1),
+                        None,
+                        None,
+                        None, // null str attr (dict encoded)
+                        None,
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    Some(2.0),
+                    None, // null float attr (not dict encoded)
+                    None,
+                    Some(1.5),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([0, 1, 4, 5, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([
+                        Some(0),
+                        Some(1),
+                        None, // null str attr (dict encoded)
+                        None,
+                        None,
+                        None,
+                    ]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    Some(1.5),
+                    Some(2.0),
+                    None, // null float attr (not dict encoded)
+                ])),
+            ],
+        )
+        .unwrap();
 
         let result = sort_attrs_record_batch(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
