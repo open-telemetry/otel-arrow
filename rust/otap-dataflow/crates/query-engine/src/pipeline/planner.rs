@@ -4,10 +4,10 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    DataExpression, Expression, LogicalExpression, MapSelector, MoveTransformExpression,
-    MutableValueExpression, OutputExpression, PipelineExpression, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, TransformExpression, ValueAccessor,
+    DataExpression, LogicalExpression, MapSelector, MoveTransformExpression,
+    MutableValueExpression, OutputExpression, PipelineExpression,
+    ReduceMapTransformExpression, RenameMapKeysTransformExpression, ScalarExpression,
+    SetTransformExpression, StaticScalarExpression, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -437,7 +437,7 @@ impl PipelinePlanner {
         let literal_value = Self::static_scalar_to_literal(static_val)?;
 
         let mut entries = std::collections::BTreeMap::new();
-        entries.insert(key, literal_value);
+        let _ = entries.insert(key, literal_value);
         let insert_transform = InsertTransform::new(entries);
         let transform = AttributesTransform::default().with_insert(insert_transform);
 

@@ -493,4 +493,59 @@ mod test {
     async fn test_insert_attributes_opl_parser() {
         test_insert_attributes::<OplParser>().await;
     }
+
+    async fn test_insert_attributes_types<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    attributes[\"int_attr\"] = 1,
+                    attributes[\"float_attr\"] = 1.0,
+                    attributes[\"bool_attr\"] = true",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        let attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(attrs.contains(&KeyValue::new("int_attr", AnyValue::new_int(1))));
+        assert!(attrs.contains(&KeyValue::new("float_attr", AnyValue::new_double(1.0))));
+        assert!(attrs.contains(&KeyValue::new("bool_attr", AnyValue::new_bool(true))));
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_types_kql_parser() {
+        test_insert_attributes_types::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_types_opl_parser() {
+        test_insert_attributes_types::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_scopes<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    resource.attributes[\"res_new\"] = \"test\",
+                    instrumentation_scope.attributes[\"scope_new\"] = \"test\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        let res_attrs = &result.resource_logs[0].resource.as_ref().unwrap().attributes;
+        assert!(res_attrs.contains(&KeyValue::new("res_new", AnyValue::new_string("test"))));
+
+        let scope_attrs =
+            &result.resource_logs[0].scope_logs[0].scope.as_ref().unwrap().attributes;
+        assert!(scope_attrs.contains(&KeyValue::new("scope_new", AnyValue::new_string("test"))));
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_scopes_kql_parser() {
+        test_insert_attributes_scopes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_scopes_opl_parser() {
+        test_insert_attributes_scopes::<OplParser>().await;
+    }
 }
