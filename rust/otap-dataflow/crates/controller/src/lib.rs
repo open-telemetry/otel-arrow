@@ -408,21 +408,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .sum::<usize>()
         );
 
-        // Create the observed state store first - the telemetry system needs its reporter
+        // Create the observed state store for the telemetry system.
         let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
-        let logging_evt_reporter =
-            obs_state_store.reporter(engine_settings.observed_state.logging_events);
+        let console_async_reporter = telemetry_config
+            .logs
+            .providers
+            .uses_console_async_provider()
+            .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
 
-        // Create the telemetry system, pass the observed state store
-        // as the admin reporter for console_async support.
+        // Create the telemetry system. The console_async_reporter is passed when any
+        // providers use ConsoleAsync. The its_logs_receiver is passed when any
+        // providers use the ITS mode.
         let telemetry_system =
-            InternalTelemetrySystem::new(telemetry_config, logging_evt_reporter)?;
+            InternalTelemetrySystem::new(telemetry_config, console_async_reporter)?;
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
-
-        telemetry_system.init_global_subscriber();
+        let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
@@ -437,6 +440,53 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 );
             }
         }
+
+        let pipeline_count: usize = pipeline_groups
+            .values()
+            .map(|group| group.pipelines.len())
+            .sum();
+        let all_cores =
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
+        let its_core = *all_cores.first().expect("a cpu core");
+        let its_key = Self::internal_pipeline_key(its_core);
+        let available_core_ids = if pipeline_count == 0 {
+            Vec::new()
+        } else {
+            all_cores
+        };
+
+        let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
+            its_key.clone(),
+            its_core,
+            &pipeline_groups,
+            &telemetry_system,
+            self.pipeline_factory,
+            &controller_ctx,
+            &engine_evt_reporter,
+            &metrics_reporter,
+            internal_tracing_setup,
+        )?;
+
+        // TODO: This should be validated somewhere, that internal node are defined when
+        // its is requested. Possibly we could fill in a default.
+        let has_internal_pipeline = internal_pipeline_handle.is_some();
+        match (
+            has_internal_pipeline,
+            telemetry_config.logs.providers.uses_its_provider(),
+        ) {
+            (false, true) => {
+                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
+            }
+            (true, false) => {
+                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+            }
+            _ => {}
+        };
+
+        // Initialize the global subscriber AFTER the internal pipeline has signaled
+        // successful startup. This ensures the channel receiver is being consumed
+        // before we start sending logs.
+        telemetry_system.init_global_subscriber();
 
         // Start the metrics aggregation
         let telemetry_registry = telemetry_system.registry();
@@ -465,17 +515,17 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             move |cancellation_token| obs_state_store.run(cancellation_token),
         )?;
 
-        let pipeline_count: usize = pipeline_groups
-            .values()
-            .map(|group| group.pipelines.len())
-            .sum();
-        let available_core_ids = if pipeline_count == 0 {
-            Vec::new()
-        } else {
-            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?
-        };
         let mut threads = Vec::new();
         let mut ctrl_msg_senders = Vec::new();
+
+        // TODO: We do not have proper thread::current().id assignment.
+        let mut next_thread_id: usize = 1;
+        let its_thread_id: usize = 0;
+
+        // Add internal pipeline to threads list if present
+        if let Some((thread_name, handle)) = internal_pipeline_handle {
+            threads.push((thread_name, its_thread_id, its_key, handle));
+        }
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
@@ -485,7 +535,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     &quota.core_allocation,
                 )?;
 
-                for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+                for core_id in requested_cores {
                     let pipeline_key = DeployedPipelineKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
@@ -500,6 +550,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                     let pipeline_config = pipeline.clone();
                     let pipeline_factory = self.pipeline_factory;
+                    let thread_id = next_thread_id;
+                    next_thread_id += 1;
                     let pipeline_handle = controller_ctx.pipeline_context_with(
                         pipeline_group_id.clone(),
                         pipeline_id.clone(),
@@ -515,15 +567,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         core_id.id
                     );
 
-                    let group_id = pipeline_group_id.clone();
-                    let pipeline_id = pipeline_id.clone();
+                    let run_key = pipeline_key.clone();
                     let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                     let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
                             Self::run_pipeline_thread(
-                                pipeline_key,
+                                run_key,
                                 core_id,
                                 pipeline_config,
                                 pipeline_factory,
@@ -533,6 +584,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 pipeline_ctrl_msg_tx,
                                 pipeline_ctrl_msg_rx,
                                 engine_tracing_setup,
+                                None,
                             )
                         })
                         .map_err(|e| Error::ThreadSpawnError {
@@ -540,14 +592,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             source: e,
                         })?;
 
-                    threads.push((
-                        thread_name,
-                        thread_id,
-                        core_id.id,
-                        group_id,
-                        pipeline_id,
-                        handle,
-                    ));
+                    threads.push((thread_name, thread_id, pipeline_key, handle));
                 }
             }
         }
@@ -582,12 +627,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, core_id, group_id, pipeline_id, handle) in threads {
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                core_id,
-            };
+        for (thread_name, thread_id, pipeline_key, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
                     engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
@@ -613,6 +653,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         err_summary,
                     ));
                     // Thread join failed, handle the error
+                    let core_id = pipeline_key.core_id;
                     return Err(Error::ThreadPanic {
                         thread_name,
                         thread_id,
