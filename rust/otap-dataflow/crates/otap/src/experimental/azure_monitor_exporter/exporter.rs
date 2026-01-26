@@ -84,7 +84,7 @@ impl AzureMonitorExporter {
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
             stats: AzureMonitorExporterStats::new(),
-            heartbeat: heartbeat,
+            heartbeat,
         })
     }
 

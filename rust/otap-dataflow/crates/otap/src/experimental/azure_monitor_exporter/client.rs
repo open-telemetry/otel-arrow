@@ -104,6 +104,7 @@ impl LogsIngestionClient {
     ///
     /// # Returns
     /// * `LogsIngestionClient` - A configured client instance
+    #[must_use]
     pub fn from_parts(http_client: Client, endpoint: String) -> Self {
         Self {
             http_client,
