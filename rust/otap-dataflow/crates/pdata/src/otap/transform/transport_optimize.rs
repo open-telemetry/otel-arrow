@@ -594,6 +594,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 // TODO we could try using "create next eq array to get bounds here"
                 let values_partition = partition(&[values_key_range_sorted]).unwrap();
                 let values_ranges = values_partition.ranges();
+
+                // TODO - would it be faster to check this on ranges in values_key_range_sorted_indices?
                 let all_parent_id_sorted = values_ranges.iter().all(|range| {
                     is_parent_id_column_sorted(
                         parent_id_col.slice(range.start, range.len()).as_ref(),
