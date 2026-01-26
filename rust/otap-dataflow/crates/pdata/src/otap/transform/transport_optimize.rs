@@ -19,8 +19,11 @@ use arrow::{
         PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
     },
     buffer::{Buffer, MutableBuffer, ScalarBuffer},
-    compute::{SortColumn, SortOptions, and, cast, concat, not, partition, take, take_record_batch},
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type}, util::bit_iterator::{BitIndexIterator, BitSliceIterator},
+    compute::{
+        SortColumn, SortOptions, and, cast, concat, not, partition, take, take_record_batch,
+    },
+    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
+    util::bit_iterator::{BitIndexIterator, BitSliceIterator},
 };
 use arrow_schema::Field;
 
@@ -1401,7 +1404,9 @@ pub fn remove_transport_optimized_encodings(
 ///
 /// See the comments on [`super::materialize_parent_id_for_attributes`] for more information about
 /// the encoding scheme.
-pub fn transport_encode_parent_id_for_attributes_slow<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
+pub fn transport_encode_parent_id_for_attributes_slow<T>(
+    record_batch: &RecordBatch,
+) -> Result<ArrayRef>
 where
     T: ArrowPrimitiveType,
     T::Native: ParentId + Sub<Output = T::Native> + AttributesRecordBatchBuilderConstructorHelper,
@@ -1540,7 +1545,6 @@ where
 
     Ok(encoded_parent_ids)
 }
-
 
 pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
 where
@@ -1734,7 +1738,6 @@ where
         .map(|arr| compute_val_eq(arr, AttributeValueType::Bytes as u8))
         .transpose()?;
 
-
     // in the next phase of this function, we use the "eq bitmask"s created above to fill in a
     // new parent ID column, removing delta encoding in subsequent rows of equal type, key and
     // non-null value ...
@@ -1747,11 +1750,10 @@ where
     // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
     // dictionary encoded, so we should revisit this for metrics/traces which have attributes
     // that use this kind of ID
-    let parent_id_arr = cast(&parent_id_arr_ref, &T::DATA_TYPE).map_err(|e| {
-        Error::UnexpectedRecordBatchState {
+    let parent_id_arr =
+        cast(&parent_id_arr_ref, &T::DATA_TYPE).map_err(|e| Error::UnexpectedRecordBatchState {
             reason: format!("Failed to cast parent_id column: {}", e),
-        }
-    })?;
+        })?;
     let parent_id_arr = parent_id_arr
         .as_any()
         .downcast_ref::<PrimitiveArray<T>>()
@@ -1879,9 +1881,7 @@ where
         ScalarBuffer::from(encoded_parent_ids),
         parent_id_arr.nulls().cloned(),
     );
-    let orig_parent_id = record_batch
-        .column_by_name(consts::PARENT_ID)
-        .unwrap(); // TODO no unwrap
+    let orig_parent_id = record_batch.column_by_name(consts::PARENT_ID).unwrap(); // TODO no unwrap
     // TODO no unwrap
     let result = cast(&arr_as_prim, orig_parent_id.data_type()).unwrap();
 
@@ -2424,6 +2424,8 @@ mod test {
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Int64)),
                 true,
             ),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            // Field::new()
         ]));
 
         // TODO:
@@ -2435,27 +2437,61 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5])),
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 7, 8])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Int as u8,
                     AttributeValueType::Int as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([1, 0, 0, 1, 0, 1]),
+                    UInt8Array::from_iter_values([1, 0, 0, 1, 0, 1, 1, 1, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([None, None, Some(0), Some(1), Some(0), Some(1)]),
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        Some(0),
+                        Some(1),
+                        Some(0),
+                        None,
+                        None,
+                        Some(1),
+                        None,
+                    ]),
                     Arc::new(StringArray::from_iter_values(["va", "vb"])),
                 )),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([Some(1), Some(0), None, None, None, None]),
+                    UInt16Array::from_iter([
+                        Some(1),
+                        Some(0),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ]),
                     Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
                 )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(2.0),
+                    Some(1.0),
+                    None,
+                    Some(1.0),
+                ])),
             ],
         )
         .unwrap();
@@ -2468,7 +2504,7 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(UInt16Array::from_iter_values([2, 4, 3, 5, 1, 0])),
+                Arc::new(UInt16Array::from_iter_values([2, 4, 3, 7, 1, 0, 8, 6, 5])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -2476,19 +2512,53 @@ mod test {
                     AttributeValueType::Str as u8,
                     AttributeValueType::Int as u8,
                     AttributeValueType::Int as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1]),
+                    UInt8Array::from_iter_values([0, 0, 1, 1, 0, 1, 0, 1, 1]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([Some(0), Some(0), Some(1), Some(1), None, None]),
+                    UInt16Array::from_iter([
+                        Some(0),
+                        Some(0),
+                        Some(1),
+                        Some(1),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ]),
                     Arc::new(StringArray::from_iter_values(["va", "vb"])),
                 )),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([None, None, None, None, Some(0), Some(1)]),
+                    UInt16Array::from_iter([
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(0),
+                        Some(1),
+                        None,
+                        None,
+                        None,
+                    ]),
                     Arc::new(Int64Array::from_iter_values([0i64, 1i64])),
                 )),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(1.0),
+                    Some(1.0),
+                    Some(2.0),
+                ])),
             ],
         )
         .unwrap();
