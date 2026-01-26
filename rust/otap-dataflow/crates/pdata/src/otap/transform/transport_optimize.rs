@@ -566,6 +566,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 // get values
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
+
                 let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
                     &values_key_range,
                     Some(SortOptions {
@@ -577,15 +578,26 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 .unwrap();
                 let values_key_range_sorted =
                     take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
-                sorted_val_col.append_external_sorted_range(values_key_range_sorted)?;
+                sorted_val_col.append_external_sorted_range(values_key_range_sorted.clone())?;
 
                 let parent_id_key_range =
                     parent_id_type_range_by_key.slice(key_range.start, key_range.len());
                 let parent_id_key_range_sorted =
                     take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap();
-                sorted_parent_id_column.append_external_sorted_range(parent_id_key_range_sorted)?;
+
+                // TODO there's an optimization we can make here to check if the parent IDs are sorted
+                // and if so, don't partition by values etc.
+
+                let values_partition = partition(&[values_key_range_sorted]).unwrap();
+                for values_range in values_partition.ranges() {
+                    // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
+                    let parent_ids_range = parent_id_key_range_sorted.slice(values_range.start, values_range.len());
+                    let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
+                    sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
+                }
             }
         } else {
+            // TODO what we're doing here is not right. We need to sort by the parent_id column
             sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
         }
 
@@ -2636,6 +2648,15 @@ mod test {
 
         // TODO - should this just be imported for the module?
         pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_attrs_record_batch_sorts_by_parent_id() {
+        // include test for already sorted
+        // include test for not already sorted
+        // "" "" "" both cases above but dict encoded
+        // "" "" "" all cases above but for empty
+        todo!()
     }
 
     #[test]
