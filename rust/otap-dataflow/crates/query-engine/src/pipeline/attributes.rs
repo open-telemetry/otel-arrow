@@ -457,4 +457,80 @@ mod test {
     async fn test_delete_all_attributes_opl_parser() {
         test_delete_all_attributes::<OplParser>().await;
     }
+
+    async fn test_set_multiple_attributes_same_destination<P: Parser>() {
+        // Test setting multiple attributes at once in the same destination
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    attributes[\"new_x\"] = \"value_x\",
+                    attributes[\"new_y\"] = \"value_y\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        // Verify both new attributes were added to both log records
+        let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        
+        // First log record should have original "x" plus two new attributes
+        assert!(log_records[0].attributes.contains(&KeyValue::new("x", AnyValue::new_string("a"))));
+        assert!(log_records[0].attributes.contains(&KeyValue::new("new_x", AnyValue::new_string("value_x"))));
+        assert!(log_records[0].attributes.contains(&KeyValue::new("new_y", AnyValue::new_string("value_y"))));
+        
+        // Second log record should have original "x2" plus two new attributes
+        assert!(log_records[1].attributes.contains(&KeyValue::new("x2", AnyValue::new_string("b"))));
+        assert!(log_records[1].attributes.contains(&KeyValue::new("new_x", AnyValue::new_string("value_x"))));
+        assert!(log_records[1].attributes.contains(&KeyValue::new("new_y", AnyValue::new_string("value_y"))));
+    }
+
+    #[tokio::test]
+    async fn test_set_multiple_attributes_same_destination_kql_parser() {
+        test_set_multiple_attributes_same_destination::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_set_multiple_attributes_same_destination_opl_parser() {
+        test_set_multiple_attributes_same_destination::<OplParser>().await;
+    }
+
+    async fn test_set_multiple_attributes_different_destinations<P: Parser>() {
+        // Test setting attributes across different destinations simultaneously
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    attributes[\"log_new\"] = \"log_value\",
+                    resource.attributes[\"resource_new\"] = \"resource_value\",
+                    instrumentation_scope.attributes[\"scope_new\"] = \"scope_value\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        // Verify log attributes
+        let log_records = &result.resource_logs[0].scope_logs[0].log_records;
+        assert!(log_records[0].attributes.contains(&KeyValue::new("log_new", AnyValue::new_string("log_value"))));
+        
+        // Verify resource attributes
+        let resource_attrs = &result.resource_logs[0].resource.as_ref().unwrap().attributes;
+        assert!(resource_attrs.contains(&KeyValue::new("resource_new", AnyValue::new_string("resource_value"))));
+        // Original resource attributes should still be there
+        assert!(resource_attrs.contains(&KeyValue::new("xr1", AnyValue::new_string("a"))));
+        assert!(resource_attrs.contains(&KeyValue::new("xr2", AnyValue::new_string("a"))));
+        
+        // Verify instrumentation scope attributes
+        let scope_attrs = &result.resource_logs[0].scope_logs[0].scope.as_ref().unwrap().attributes;
+        assert!(scope_attrs.contains(&KeyValue::new("scope_new", AnyValue::new_string("scope_value"))));
+        // Original scope attributes should still be there
+        assert!(scope_attrs.contains(&KeyValue::new("xs1", AnyValue::new_string("a"))));
+        assert!(scope_attrs.contains(&KeyValue::new("xs2", AnyValue::new_string("a"))));
+    }
+
+    #[tokio::test]
+    async fn test_set_multiple_attributes_different_destinations_kql_parser() {
+        test_set_multiple_attributes_different_destinations::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_set_multiple_attributes_different_destinations_opl_parser() {
+        test_set_multiple_attributes_different_destinations::<OplParser>().await;
+    }
 }
