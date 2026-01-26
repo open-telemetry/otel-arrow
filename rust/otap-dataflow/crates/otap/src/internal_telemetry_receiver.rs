@@ -25,7 +25,8 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_telemetry::event::{LogEvent, ObservedEvent};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
-use otap_df_telemetry::self_tracing::encode_export_logs_request;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::{ScopeAttributeCache, encode_export_logs_request_with_scope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -43,8 +44,10 @@ pub struct InternalTelemetryReceiver {
     #[allow(dead_code)]
     config: Config,
     /// Internal telemetry settings obtained from the pipeline context during construction.
-    /// Contains the logs receiver channel and pre-encoded resource bytes.
+    /// Contains the logs receiver channel, pre-encoded resource bytes, and registry handle.
     internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
+    /// Cache for pre-encoded scope attribute bytes, keyed by EntityKey.
+    scope_cache: ScopeAttributeCache,
 }
 
 /// Declares the internal telemetry receiver as a local receiver factory.
@@ -85,6 +88,7 @@ impl InternalTelemetryReceiver {
         Self {
             config,
             internal_telemetry,
+            scope_cache: ScopeAttributeCache::new(),
         }
     }
 
@@ -101,13 +105,15 @@ impl InternalTelemetryReceiver {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         // Use the internal telemetry settings provided at construction
-        let logs_receiver = &self.internal_telemetry.logs_receiver;
+        // Clone the receiver to avoid borrow conflicts with the scope cache
+        let logs_receiver = self.internal_telemetry.logs_receiver.clone();
         let resource_bytes = self.internal_telemetry.resource_bytes.clone();
+        let registry = self.internal_telemetry.registry.clone();
 
         // Start periodic telemetry collection
         let _ = effect_handler
@@ -125,7 +131,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    self.send_log_event(&effect_handler, log_event, &resource_bytes).await?;
+                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut self.scope_cache, &registry).await?;
                                 }
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
@@ -146,7 +152,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            self.send_log_event(&effect_handler, log_event, &resource_bytes).await?;
+                            Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut self.scope_cache, &registry).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed
@@ -163,16 +169,23 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 }
 
 impl InternalTelemetryReceiver {
-    /// Send a log event as OTLP logs.
+    /// Send a log event as OTLP logs with scope attributes from entity context.
     async fn send_log_event(
-        &self,
         effect_handler: &local::EffectHandler<OtapPdata>,
         log_event: LogEvent,
         resource_bytes: &Bytes,
+        scope_cache: &mut ScopeAttributeCache,
+        registry: &TelemetryRegistryHandle,
     ) -> Result<(), Error> {
         let mut buf = ProtoBuffer::with_capacity(512);
 
-        encode_export_logs_request(&mut buf, &log_event, resource_bytes);
+        encode_export_logs_request_with_scope(
+            &mut buf,
+            &log_event,
+            resource_bytes,
+            scope_cache,
+            registry,
+        );
 
         let pdata = OtapPdata::new(
             Context::default(),

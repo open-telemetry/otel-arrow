@@ -22,7 +22,9 @@ use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
+pub use encoder::ScopeAttributeCache;
 pub use encoder::encode_export_logs_request;
+pub use encoder::encode_export_logs_request_with_scope;
 pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
@@ -47,7 +49,8 @@ pub struct LogRecord {
 }
 
 /// Context keys refer to attribute sets in the telemetry registry.
-pub type LogContext = SmallVec<[EntityKey; 2]>;
+/// Note: Currently we use at most 1 entity context key per callsite.
+pub type LogContext = SmallVec<[EntityKey; 1]>;
 
 /// Saved callsite information. This is information that can easily be
 /// populated from Metadata, for example in a `register_callsite` hook

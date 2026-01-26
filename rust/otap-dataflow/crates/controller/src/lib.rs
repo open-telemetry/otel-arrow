@@ -85,12 +85,14 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     pipeline_factory: &'static PipelineFactory<PData>,
 }
 
-fn engine_keys() -> LogContext {
-    match (node_entity_key(), pipeline_entity_key()) {
-        (Some(k1), Some(k2)) => smallvec![k1, k2],
-        (Some(k1), None) => smallvec![k1],
-        (None, Some(k2)) => smallvec![k2],
-        (None, None) => smallvec![],
+fn engine_context() -> LogContext {
+    // Return only the most specific entity key to avoid attribute duplication.
+    if let Some(node) = node_entity_key() {
+        smallvec![node]
+    } else if let Some(pipeline) = pipeline_entity_key() {
+        smallvec![pipeline]
+    } else {
+        smallvec![]
     }
 }
 
@@ -142,7 +144,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             telemetry_config,
             telemetry_registry.clone(),
             console_async_reporter,
-            engine_keys,
+            engine_context,
         )?;
 
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();

@@ -82,20 +82,23 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:r
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
-/// This bundles the receiver end of the logs channel and pre-encoded resource bytes
-/// for injection into the ITR via the EffectHandler.
+/// This bundles the receiver end of the logs channel, pre-encoded resource bytes,
+/// and a telemetry registry handle for resolving entity keys to scope attributes.
 #[derive(Clone)]
 pub struct InternalTelemetrySettings {
     /// Receiver end of the logs channel for `ObservedEvent::Log` events.
     pub logs_receiver: flume::Receiver<ObservedEvent>,
     /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
     pub resource_bytes: bytes::Bytes,
+    /// Telemetry registry for resolving entity keys to attributes for scope encoding.
+    pub registry: TelemetryRegistryHandle,
 }
 
 impl std::fmt::Debug for InternalTelemetrySettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InternalTelemetrySettings")
             .field("resource_bytes", &self.resource_bytes)
+            .field("registry", &self.registry)
             .finish_non_exhaustive()
     }
 }
@@ -214,6 +217,7 @@ impl InternalTelemetrySystem {
                 Some(InternalTelemetrySettings {
                     logs_receiver,
                     resource_bytes,
+                    registry: registry.clone(),
                 }),
             )
         } else {
