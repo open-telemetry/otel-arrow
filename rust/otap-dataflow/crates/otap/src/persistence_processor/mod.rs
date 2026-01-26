@@ -83,7 +83,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_pdata::OtapPayload;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -422,8 +422,15 @@ impl PersistenceProcessor {
         data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // Ensure engine is initialized
-        self.ensure_engine_initialized().await?;
+        // Ensure engine is initialized - NACK if initialization fails
+        if let Err(e) = self.ensure_engine_initialized().await {
+            self.metrics.ingest_errors.add(1);
+            error!(error = %e, "engine initialization failed");
+            effect_handler
+                .notify_nack(NackMsg::new(format!("engine not available: {}", e), data))
+                .await?;
+            return Ok(());
+        }
 
         let (context, payload) = data.into_parts();
 
@@ -431,8 +438,22 @@ impl PersistenceProcessor {
         let signal_type = payload.signal_type();
         let num_items = payload.num_items() as u64;
 
-        // Get the engine reference
-        let (engine, _) = self.engine()?;
+        // Get the engine reference - NACK if unavailable
+        let engine = match self.engine() {
+            Ok((engine, _)) => engine,
+            Err(e) => {
+                self.metrics.ingest_errors.add(1);
+                error!(error = %e, "failed to get engine reference");
+                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+                effect_handler
+                    .notify_nack(NackMsg::new(
+                        format!("engine not available: {}", e),
+                        nack_pdata,
+                    ))
+                    .await?;
+                return Ok(());
+            }
+        };
 
         // Ingest based on payload type and configuration
         let ingest_result = match payload {
@@ -446,10 +467,27 @@ impl PersistenceProcessor {
                     }
                     OtlpHandling::ConvertToArrow => {
                         // Convert to Arrow for queryability
-                        let records: OtapArrowRecords =
-                            OtapPayload::OtlpBytes(otlp_bytes).try_into()?;
-                        let adapter = OtapRecordBundleAdapter::new(records);
-                        engine.ingest(&adapter).await
+                        match OtapPayload::OtlpBytes(otlp_bytes).try_into() {
+                            Ok(records) => {
+                                let adapter = OtapRecordBundleAdapter::new(records);
+                                engine.ingest(&adapter).await
+                            }
+                            Err(e) => {
+                                // Conversion failed - NACK upstream so they can retry or handle
+                                self.metrics.ingest_errors.add(1);
+                                error!(error = %e, "failed to convert OTLP to Arrow");
+
+                                let nack_pdata =
+                                    OtapPdata::new(context, OtapPayload::empty(signal_type));
+                                effect_handler
+                                    .notify_nack(NackMsg::new(
+                                        format!("OTLP to Arrow conversion failed: {}", e),
+                                        nack_pdata,
+                                    ))
+                                    .await?;
+                                return Ok(());
+                            }
+                        }
                     }
                 }
             }
@@ -474,7 +512,7 @@ impl PersistenceProcessor {
 
                 // ACK upstream after successful WAL write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
-                let ack_pdata = OtapPdata::new(context, OtapPayload::empty(SignalType::Logs));
+                let ack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
                 effect_handler.notify_ack(AckMsg::new(ack_pdata)).await?;
                 Ok(())
             }
@@ -482,7 +520,7 @@ impl PersistenceProcessor {
                 self.metrics.ingest_errors.add(1);
                 error!(error = %e, "failed to ingest bundle to Quiver");
 
-                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(SignalType::Logs));
+                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
                 effect_handler
                     .notify_nack(NackMsg::new(
                         format!("persistence failed: {}", e),
