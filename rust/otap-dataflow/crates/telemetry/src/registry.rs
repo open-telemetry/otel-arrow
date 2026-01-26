@@ -67,7 +67,6 @@ impl TelemetryRegistryHandle {
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
-        // Capture info for logging before registration
         let schema_name = attrs.schema_name();
         let primary_name = attrs.primary_name();
         let all_attrs: String = attrs
@@ -82,8 +81,8 @@ impl TelemetryRegistryHandle {
         otel_info!(
             "registry.define_entity",
             schema = schema_name,
-            name = primary_name.as_deref().unwrap_or("<unnamed>"),
-            attrs = all_attrs.as_str()
+            entity_name = primary_name.as_str(),
+            definition = all_attrs.as_str()
         );
 
         entity_key
@@ -127,7 +126,7 @@ impl TelemetryRegistryHandle {
             .lock()
             .entities
             .get(key)
-            .and_then(|attrs| attrs.primary_name())
+            .map(|attrs| attrs.primary_name())
     }
 
     /// Returns the schema name for an entity (e.g., "pipeline.attrs").
@@ -165,7 +164,7 @@ impl TelemetryRegistryHandle {
         otel_info!(
             "registry.define_entity",
             schema = schema_name,
-            name = primary_name.as_deref().unwrap_or("<unnamed>"),
+            name = primary_name.as_str(),
             attrs = all_attrs.as_str()
         );
 

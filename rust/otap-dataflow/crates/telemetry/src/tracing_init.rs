@@ -124,7 +124,7 @@ impl ProviderSetup {
             ProviderSetup::ConsoleDirect => Dispatch::new(
                 Registry::default()
                     .with(filter())
-                    .with(RawLoggingLayer::new(ConsoleWriter::color())),
+                    .with(RawLoggingLayer::new(ConsoleWriter::color(), context_fn)),
             ),
 
             ProviderSetup::InternalAsync { reporter } => {

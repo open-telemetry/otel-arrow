@@ -16,7 +16,7 @@ use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
 use serde::Serialize;
 use serde::ser::Serializer;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
@@ -25,7 +25,9 @@ pub use encoder::DirectLogRecordEncoder;
 pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
+pub use formatter::{
+    AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, StyledBufWriter,
+};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -95,13 +97,6 @@ impl SavedCallsite {
 }
 
 impl LogRecord {
-    /// Construct a log record, partially encoding its dynamic content.
-    /// Entity keys are not captured; use `new_with_context` for that.
-    #[must_use]
-    pub fn new(event: &Event<'_>) -> Self {
-        Self::new_with_context(event, smallvec![])
-    }
-
     /// Construct a log record with entity context, partially encoding its dynamic content.
     #[must_use]
     pub fn new_with_context(event: &Event<'_>, context: LogContext) -> Self {

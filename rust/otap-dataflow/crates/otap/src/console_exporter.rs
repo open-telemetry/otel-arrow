@@ -27,7 +27,7 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
-use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE};
+use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, StyledBufWriter, LOG_BUFFER_SIZE};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -234,16 +234,16 @@ impl HierarchicalFormatter {
                 w,
                 Some(first_ts),
                 resource_logs.resource().iter().flat_map(|r| r.attributes()),
-                |w, cw| {
-                    cw.write_styled(w, AnsiCode::Cyan, |w| {
+                |w| {
+                    w.write_styled(AnsiCode::Cyan, |w| {
                         let _ = w.write_all(b"RESOURCE");
                     });
                     let _ = w.write_all(b"   ");
                 },
-                |w, _| {
+                |w| {
                     let _ = w.write_all(b"v1.Resource");
                 },
-                |_, _| {}, // no suffix
+                |_| {}, // no suffix
             );
         });
 
@@ -295,15 +295,15 @@ impl HierarchicalFormatter {
                 w,
                 Some(first_ts),
                 scope.iter().flat_map(|s| s.attributes()),
-                |w, cw| {
+                |w| {
                     let _ = w.write_all(prefix.as_bytes());
                     let _ = w.write_all(b" ");
-                    cw.write_styled(w, AnsiCode::Magenta, |w| {
+                    w.write_styled(AnsiCode::Magenta, |w| {
                         let _ = w.write_all(b"SCOPE");
                     });
                     let _ = w.write_all(b"    ");
                 },
-                |w, _| match (name, version) {
+                |w| match (name, version) {
                     (Some(n), Some(v)) => {
                         let _ = w.write_all(n);
                         let _ = w.write_all(b"/");
@@ -316,7 +316,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
                 },
-                |_, _| {}, // no suffix
+                |_| {}, // no suffix
             );
         });
 
@@ -355,7 +355,7 @@ impl HierarchicalFormatter {
                 w,
                 Some(time),
                 log_record,
-                |w, cw| {
+                |w| {
                     let _ = w.write_all(tree.vertical.as_bytes());
                     let _ = w.write_all(b" ");
                     if is_last_record && is_last_scope {
@@ -364,14 +364,14 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(tree.tee.as_bytes());
                     }
                     let _ = w.write_all(b" ");
-                    cw.write_severity(w, severity, severity_text.as_ref().map(|s| s.as_ref()));
+                    w.write_severity(severity, severity_text.as_ref().map(|s| s.as_ref()));
                 },
-                |w, _| {
+                |w| {
                     if let Some(name) = event_name {
                         let _ = w.write_all(name.as_bytes());
                     }
                 },
-                |_, _| {}, // no suffix
+                |_| {}, // no suffix
             );
         });
     }
@@ -379,10 +379,10 @@ impl HierarchicalFormatter {
     /// Format a line to the output buffer.
     fn format_line<F>(&self, output: &mut Vec<u8>, f: F)
     where
-        F: FnOnce(&mut BufWriter<'_>),
+        F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = std::io::Cursor::new(buf.as_mut_slice());
+        let mut w = StyledBufWriter::new(&mut buf, self.writer.color_mode());
         f(&mut w);
         let len = w.position() as usize;
         output.extend_from_slice(&buf[..len]);

@@ -13,7 +13,7 @@ use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::self_tracing::{AnsiCode, BufWriter, ConsoleWriter, LogContext};
+use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -133,12 +133,14 @@ impl ObservedStateStore {
             ObservedEvent::Log(log) => {
                 let context = &log.record.context;
 
-                // Print log record and scope atomically in a single write
-                self.console.print_log_record(log.time, &log.record, |w, cw| {
-                    if !context.is_empty() {
-                        Self::format_scope_from_registry(w, cw, context, &self.registry);
-                    }
-                });
+                self.console
+                    .print_log_record(log.time, &log.record, |w| {
+                        if !context.is_empty() {
+                            w.write_styled(AnsiCode::Cyan, |w| {
+                                Self::format_scope_from_registry(w, context, &self.registry);
+                            });
+                        }
+                    });
             }
         }
         Ok(())
@@ -148,20 +150,18 @@ impl ObservedStateStore {
     /// Appends entity references inline after the log message.
     /// Format: ` entity/schema=name entity/schema=name ...`
     fn format_scope_from_registry(
-        w: &mut BufWriter<'_>,
-        cw: &ConsoleWriter,
+        w: &mut StyledBufWriter<'_>,
         context: &LogContext,
         registry: &TelemetryRegistryHandle,
     ) {
         for entity_key in context.iter() {
             registry.visit_entity(*entity_key, |attrs| {
-                let schema = attrs.schema_name();
-                if let Some(name) = attrs.primary_name() {
-                    let _ = w.write_all(b" ");
-                    cw.write_styled(w, AnsiCode::Cyan, |w| {
-                        let _ = write!(w, "entity/{}={}", schema, name);
-                    });
-                }
+                let _ = write!(
+                    w,
+                    " entity/{}={}",
+                    attrs.schema_name(),
+                    attrs.primary_name()
+                );
             });
         }
     }
