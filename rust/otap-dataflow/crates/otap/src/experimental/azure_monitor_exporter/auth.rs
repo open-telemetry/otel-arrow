@@ -40,10 +40,7 @@ impl Auth {
 
     #[cfg(test)]
     pub fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
-        Self {
-            credential,
-            scope,
-        }
+        Self { credential, scope }
     }
 
     async fn get_token_internal(&self) -> Result<AccessToken, Error> {
@@ -101,7 +98,6 @@ impl Auth {
         }
     }
 
-
     fn create_credential(auth_config: &AuthConfig) -> Result<Arc<dyn TokenCredential>, Error> {
         match auth_config.method {
             AuthMethod::ManagedIdentity => {
@@ -119,10 +115,10 @@ impl Auth {
             }
             AuthMethod::Development => {
                 println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
-                Ok(DeveloperToolsCredential::new(Some(
-                    DeveloperToolsCredentialOptions::default(),
-                ))
-                .map_err(|e| Error::create_credential(AuthMethod::Development, e))?)
+                Ok(
+                    DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                        .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
+                )
             }
         }
     }

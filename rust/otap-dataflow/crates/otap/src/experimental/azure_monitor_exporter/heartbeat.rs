@@ -537,10 +537,8 @@ mod tests {
 
     #[test]
     fn test_from_parts_creates_heartbeat() {
-        let heartbeat = Heartbeat::from_parts(
-            create_test_client(),
-            "https://example.com".to_string(),
-        );
+        let heartbeat =
+            Heartbeat::from_parts(create_test_client(), "https://example.com".to_string());
 
         assert_eq!(heartbeat.endpoint, "https://example.com");
         // Verify heartbeat row has default values
@@ -553,15 +551,16 @@ mod tests {
 
     #[test]
     fn test_update_auth_changes_header() {
-        let mut heartbeat = Heartbeat::from_parts(
-            create_test_client(),
-            "https://example.com".to_string(),
-        );
+        let mut heartbeat =
+            Heartbeat::from_parts(create_test_client(), "https://example.com".to_string());
 
         assert_eq!(heartbeat.auth_header, HeaderValue::from_static("Bearer "));
 
         heartbeat.update_auth(HeaderValue::from_static("Bearer new_token"));
 
-        assert_eq!(heartbeat.auth_header, HeaderValue::from_static("Bearer new_token"));
+        assert_eq!(
+            heartbeat.auth_header,
+            HeaderValue::from_static("Bearer new_token")
+        );
     }
 }

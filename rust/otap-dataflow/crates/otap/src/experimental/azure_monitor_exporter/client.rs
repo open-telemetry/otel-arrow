@@ -104,10 +104,7 @@ impl LogsIngestionClient {
     ///
     /// # Returns
     /// * `LogsIngestionClient` - A configured client instance
-    pub fn from_parts(
-        http_client: Client,
-        endpoint: String,
-    ) -> Self {
+    pub fn from_parts(http_client: Client, endpoint: String) -> Self {
         Self {
             http_client,
             endpoint,
@@ -290,8 +287,8 @@ mod tests {
 
         let http_client = create_test_http_client();
 
-        let client = LogsIngestionClient::new(&api_config, http_client)
-            .expect("failed to create client");
+        let client =
+            LogsIngestionClient::new(&api_config, http_client).expect("failed to create client");
 
         assert_eq!(
             client.endpoint,
@@ -352,7 +349,10 @@ mod tests {
 
         client.update_auth(HeaderValue::from_static("Bearer new_token"));
 
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer new_token"));
+        assert_eq!(
+            client.auth_header,
+            HeaderValue::from_static("Bearer new_token")
+        );
     }
 
     #[test]
@@ -363,13 +363,22 @@ mod tests {
         );
 
         client.update_auth(HeaderValue::from_static("Bearer token1"));
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token1"));
+        assert_eq!(
+            client.auth_header,
+            HeaderValue::from_static("Bearer token1")
+        );
 
         client.update_auth(HeaderValue::from_static("Bearer token2"));
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token2"));
+        assert_eq!(
+            client.auth_header,
+            HeaderValue::from_static("Bearer token2")
+        );
 
         client.update_auth(HeaderValue::from_static("Bearer token3"));
-        assert_eq!(client.auth_header, HeaderValue::from_static("Bearer token3"));
+        assert_eq!(
+            client.auth_header,
+            HeaderValue::from_static("Bearer token3")
+        );
     }
 
     // ==================== LogsIngestionClientPool Tests ====================
@@ -488,18 +497,21 @@ mod tests {
         client2.update_auth(HeaderValue::from_static("Bearer token2"));
 
         // client1's header should be unchanged
-        assert_eq!(client1.auth_header, HeaderValue::from_static("Bearer token1"));
-        assert_eq!(client2.auth_header, HeaderValue::from_static("Bearer token2"));
+        assert_eq!(
+            client1.auth_header,
+            HeaderValue::from_static("Bearer token1")
+        );
+        assert_eq!(
+            client2.auth_header,
+            HeaderValue::from_static("Bearer token2")
+        );
     }
 
     // ==================== Edge Cases ====================
 
     #[test]
     fn test_client_with_empty_endpoint() {
-        let client = LogsIngestionClient::from_parts(
-            create_test_http_client(),
-            "".to_string(),
-        );
+        let client = LogsIngestionClient::from_parts(create_test_http_client(), "".to_string());
 
         assert_eq!(client.endpoint, "");
     }

@@ -115,10 +115,7 @@ mod tests {
             .build()
             .expect("failed to create HTTP client");
 
-        LogsIngestionClient::from_parts(
-            http_client,
-            "http://localhost".to_string()
-        )
+        LogsIngestionClient::from_parts(http_client, "http://localhost".to_string())
     }
 
     /// Create a future that completes immediately with a success result.
