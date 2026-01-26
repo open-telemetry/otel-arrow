@@ -2977,6 +2977,86 @@ mod test {
     }
 
     #[test]
+    fn test_sort_attrs_record_batch_dict_encoded_ids() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                consts::PARENT_ID,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                false,
+            ),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(
+                consts::ATTRIBUTE_KEY,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(
+                consts::ATTRIBUTE_STR,
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                true,
+            ),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+        ]));
+
+        // create a record batch with some null attrs, both dict encoded and non-dict encoded
+        // just to ensure that both are handled correctly:
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 1, 2, 3]),
+                    Arc::new(UInt32Array::from_iter_values([0, 1, 2, 3])),
+                )),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(0), None, Some(1), None]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([None, Some(2.0), None, Some(1.5)])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 2, 3, 1]),
+                    Arc::new(UInt32Array::from_iter_values([0, 1, 2, 3])),
+                )),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 0, 0, 0]),
+                    Arc::new(StringArray::from_iter_values(["ka"])),
+                )),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter([Some(0), Some(1), None, None]),
+                    Arc::new(StringArray::from_iter_values(["a", "b"])),
+                )),
+                Arc::new(Float64Array::from_iter([None, None, Some(1.5), Some(2.0)])),
+            ],
+        )
+        .unwrap();
+
+        let result = sort_attrs_record_batch(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_create_delta_encoded_column() {
         let test_cases = vec![
             (
