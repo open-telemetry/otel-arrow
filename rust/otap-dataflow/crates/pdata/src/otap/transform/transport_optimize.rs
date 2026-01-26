@@ -21,7 +21,7 @@ use arrow::{
     },
     buffer::{Buffer, MutableBuffer, ScalarBuffer},
     compute::{
-        SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, take, take_record_batch
+        SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take, take_record_batch
     },
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
     util::bit_iterator::{BitIndexIterator, BitSliceIterator},
@@ -466,32 +466,18 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     // println!("input batch size = {}", record_batch.num_rows());
 
     let type_col = record_batch.column_by_name(consts::ATTRIBUTE_TYPE).unwrap();
-    let type_col_sorted_indices = arrow::compute::sort_to_indices(type_col, None, None).unwrap();
-    let type_col_sorted = take(type_col, &type_col_sorted_indices, None).unwrap();
-
-
-    let type_prim_arr = type_col_sorted
-        .as_any()
-        .downcast_ref::<UInt8Array>()
-        .unwrap();
-    let type_col_sorted_bytes = type_prim_arr.values().inner().as_slice();
-
     let key_col = record_batch.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
-    let key_col_by_type = take(key_col, &type_col_sorted_indices, None).unwrap();
 
+    let type_and_key_indices = sort_attrs_type_and_keys_to_indices(
+        type_col.clone(),
+        key_col.clone(),
+    ).unwrap();
 
-    // let _type_and_key_col_sorted = lexsort_to_indices(&[
-    //     SortColumn {
-    //         values: type_col.clone(),
-    //         options: None
-    //     },
-    //     SortColumn {
-    //         values: key_col.clone(),
-    //         options: None
-    //     }
-    // ], None).unwrap();
+    // let type_col_sorted_indices = arrow::compute::sort_to_indices(type_col, None, None).unwrap();
+    let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap();
+    let key_col_sorted = take(key_col, &type_and_key_indices, None).unwrap();
 
-    let mut sorted_keys = vec![];
+    // let mut sorted_keys = vec![];
 
     let mut sorted_val_columns: [Option<SortedArrayBuilder>; 8] = [
         None, // empty
@@ -529,13 +515,19 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
     let mut sorted_parent_id_column = SortedArrayBuilder::try_new(parent_id_col)?;
 
+    let type_prim_arr = type_col_sorted
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .unwrap();
+    let type_col_sorted_bytes = type_prim_arr.values().inner().as_slice();
+
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
-        let keys_range = key_col_by_type.slice(type_range.start, type_range.len());
-        let keys_range_sorted_indices =
-            arrow::compute::sort_to_indices(&keys_range, None, None).unwrap();
-        let keys_range_sorted = take(&keys_range, &keys_range_sorted_indices, None).unwrap();
-        sorted_keys.push(keys_range_sorted.clone());
+        // let keys_range = key_col_by_type.slice(type_range.start, type_range.len());
+        // let keys_range_sorted_indices =
+        //     arrow::compute::sort_to_indices(&keys_range, None, None).unwrap();
+        // let keys_range_sorted = take(&keys_range, &keys_range_sorted_indices, None).unwrap();
+        // sorted_keys.push(keys_range_sorted.clone());
 
         let key_range_attr_type = type_col_sorted_bytes[type_range.start];
         let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
@@ -546,30 +538,32 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             sorted_val_columns[key_range_attr_type as usize].as_mut()
         };
 
-        let type_col_sorted_indices_type_range =
-            type_col_sorted_indices.slice(type_range.start, type_range.len());
-        let type_col_sorted_indices_type_range_by_key = take(&type_col_sorted_indices_type_range,  &keys_range_sorted_indices, None).unwrap();
-        let type_col_sorted_indices_type_range_by_key_prim = type_col_sorted_indices_type_range_by_key.as_any()
-            .downcast_ref::<UInt32Array>()
-            .unwrap();
+        // let type_col_sorted_indices_type_range =
+        //     type_col_sorted_indices.slice(type_range.start, type_range.len());
+        // let type_col_sorted_indices_type_range_by_key = take(
+        //     &type_col_sorted_indices_type_range,
+        //     &keys_range_sorted_indices,
+        //     None,
+        // )
+        // .unwrap();
+        // let type_col_sorted_indices_type_range_by_key_prim =
+        //     type_col_sorted_indices_type_range_by_key
+        //         .as_any()
+        //         .downcast_ref::<UInt32Array>()
+        //         .unwrap();
 
-        // let parent_id_type_range = sorted_parent_id_column.slice_source(&type_range)?;
-        // let parent_id_type_range =
-        //     sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
-        // let parent_id_type_range_by_key =
-        //     take(&parent_id_type_range, &keys_range_sorted_indices, None).unwrap();
-        let parent_id_type_range_by_key = sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
+        let type_col_sorted_indices_type_range_by_key_prim = type_and_key_indices.slice(type_range.start, type_range.len());
+
+        let parent_id_type_range_by_key =
+            sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
 
         // sort the values columns for values of this type
         if let Some(sorted_val_col) = sorted_val_col {
-            // get values w/in this of types
-            // let values_type_range =
-            //     sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
-            // let values_type_range_by_key =
-            //     take(&values_type_range, &keys_range_sorted_indices, None).unwrap();
-            let values_type_range_by_key = sorted_val_col.take_source(type_col_sorted_indices_type_range_by_key_prim)?;
+            let values_type_range_by_key =
+                sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
 
             // TODO we could try using "create next eq array to get bounds here"
+            let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
             let key_partitions = partition(&[keys_range_sorted]).unwrap();
             for key_range in key_partitions.ranges() {
                 // get values
@@ -626,7 +620,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             }
 
             if let Some(sorted_val_col) = sorted_val_columns[attr_type as usize].as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range);
+                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
 
@@ -636,7 +630,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             && key_range_attr_type != AttributeValueType::Slice as u8
         {
             if let Some(sorted_val_col) = sorted_ser_column.as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range);
+                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
     }
@@ -651,8 +645,9 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         }
 
         if field_name == consts::ATTRIBUTE_KEY {
-            let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
-            columns.push(concat(&sorted_keys_refs).unwrap());
+            columns.push(key_col_sorted.clone());
+            // let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
+            // columns.push(concat(&sorted_keys_refs).unwrap());
             continue;
         }
 
@@ -740,6 +735,56 @@ fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
     }
 }
 
+fn sort_attrs_type_and_keys_to_indices(
+    type_col: ArrayRef,
+    key_col: ArrayRef,
+) -> Result<UInt32Array> {
+    let len = type_col.len();
+    // TODO assert same len
+    // TODO no unwrap
+    let type_col = type_col.as_any().downcast_ref::<UInt8Array>().unwrap();
+    let type_bytes = type_col.values().inner().as_slice();
+
+    match key_col.data_type() {
+        DataType::Dictionary(key, _) => match **key {
+            DataType::UInt8 => {
+                let dict_arr = key_col
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt8Type>>()
+                    .unwrap();
+                let keys = dict_arr.keys();
+                let keys_values = keys.values().inner().as_slice();
+                let val_ranks = rank(dict_arr.values(), None).unwrap();
+
+                let mut to_sort = vec![0u16; len];
+                for i in 0..len {
+                    to_sort[i] += (type_bytes[i] as u16) << 8u16;
+                }
+                for i in 0..len {
+                    let rank = val_ranks[keys_values[i] as usize];
+                    to_sort[i] += rank as u16;
+                }
+
+                let mut with_ranks = to_sort.into_iter()
+                    .enumerate()
+                    .collect::<Vec<_>>();
+                with_ranks.sort_by(|a, b| a.1.cmp(&b.1));
+
+                Ok(PrimitiveArray::from_iter_values(with_ranks.into_iter().map(|(rank, _)| rank as u32)))
+            }
+            DataType::UInt16 => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
+        },
+        _ => {
+            todo!()
+        }
+    }
+}
+
 // TODO
 // struct SortedArrayBuilderSourceDict {
 //     key_type: DataType,
@@ -811,8 +856,6 @@ impl SortedArrayBuilder {
         Ok(sorted_column)
     }
 }
-
-
 
 struct EncodedColumnResult {
     new_column: ArrayRef,
