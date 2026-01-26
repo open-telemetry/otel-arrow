@@ -840,9 +840,18 @@ impl PersistenceProcessor {
 
     /// Handle shutdown by flushing the Quiver engine and draining remaining bundles.
     ///
-    /// Flush is critical here: it finalizes any open segment so that data
-    /// in the WAL becomes visible to subscribers. Without flush, data that
-    /// hasn't triggered segment finalization would be lost.
+    /// The shutdown sequence is:
+    /// 1. Flush to finalize any open segment (makes data visible to subscribers)
+    /// 2. Drain remaining bundles to downstream (best-effort, respects deadline)
+    /// 3. Engine shutdown (always attempted - also finalizes open segment if flush was skipped)
+    ///
+    /// Note: Quiver's `shutdown()` internally calls `finalize_current_segment()`, so even
+    /// if we skip the explicit flush due to deadline pressure, the engine shutdown will
+    /// still persist any buffered data. The explicit flush + drain sequence is for
+    /// orderly delivery to downstream, not for data durability.
+    ///
+    /// The deadline is enforced for the drain loop: if we run out of time, we skip
+    /// remaining drain iterations and proceed to engine shutdown.
     async fn handle_shutdown(
         &mut self,
         deadline: Instant,
@@ -855,58 +864,76 @@ impl PersistenceProcessor {
             return Ok(());
         }
 
-        // Flush to finalize any open segment - this makes buffered data visible
-        info!("flushing open segment to finalize pending data");
-        {
-            let (engine, _) = self.engine()?;
-            if let Err(e) = engine.flush().await {
-                error!(error = %e, "failed to flush Quiver engine");
-            }
-        }
-
-        // Drain any remaining bundles that became available after flush
-        let mut drained = 0u64;
-        loop {
-            let poll_result = {
-                let (engine, subscriber_id) = self.engine()?;
-                engine.poll_next_bundle(subscriber_id)
-            };
-
-            match poll_result {
-                Ok(Some(handle)) => {
-                    match self.try_process_bundle_handle(handle, effect_handler) {
-                        ProcessBundleResult::Sent => drained += 1,
-                        ProcessBundleResult::Skipped => {
-                            // Continue draining
-                        }
-                        ProcessBundleResult::Backpressure => {
-                            // During shutdown, if we hit backpressure just log and continue
-                            // The bundle is deferred and will be picked up on next run
-                            warn!(
-                                "backpressure during shutdown drain, some bundles may not be forwarded"
-                            );
-                            break;
-                        }
-                        ProcessBundleResult::Error(e) => {
-                            warn!(error = %e, "failed to process bundle during shutdown drain");
-                        }
-                    }
+        // Check deadline before flush/drain sequence
+        if Instant::now() >= deadline {
+            warn!("shutdown deadline reached, skipping flush and drain (engine shutdown will still finalize data)");
+        } else {
+            // Flush to finalize any open segment - this makes buffered data visible
+            // for the drain loop below. Even if this is skipped, engine.shutdown()
+            // will finalize the segment.
+            info!("flushing open segment to finalize pending data");
+            {
+                let (engine, _) = self.engine()?;
+                if let Err(e) = engine.flush().await {
+                    error!(error = %e, "failed to flush Quiver engine");
                 }
-                Ok(None) => break,
-                Err(e) => {
-                    warn!(error = %e, "error polling during shutdown drain");
+            }
+
+            // Drain any remaining bundles that became available after flush
+            let mut drained = 0u64;
+            loop {
+                // Check deadline on each iteration
+                if Instant::now() >= deadline {
+                    warn!(
+                        bundles_drained = drained,
+                        "shutdown deadline reached during drain, stopping drain loop"
+                    );
                     break;
                 }
+
+                let poll_result = {
+                    let (engine, subscriber_id) = self.engine()?;
+                    engine.poll_next_bundle(subscriber_id)
+                };
+
+                match poll_result {
+                    Ok(Some(handle)) => {
+                        match self.try_process_bundle_handle(handle, effect_handler) {
+                            ProcessBundleResult::Sent => drained += 1,
+                            ProcessBundleResult::Skipped => {
+                                // Continue draining
+                            }
+                            ProcessBundleResult::Backpressure => {
+                                // During shutdown, if we hit backpressure just log and continue
+                                // The bundle is deferred and will be picked up on next run
+                                warn!(
+                                    "backpressure during shutdown drain, some bundles may not be forwarded"
+                                );
+                                break;
+                            }
+                            ProcessBundleResult::Error(e) => {
+                                warn!(error = %e, "failed to process bundle during shutdown drain");
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        warn!(error = %e, "error polling during shutdown drain");
+                        break;
+                    }
+                }
+            }
+            if drained > 0 {
+                info!(
+                    bundles_drained = drained,
+                    "drained remaining bundles during shutdown"
+                );
             }
         }
-        if drained > 0 {
-            info!(
-                bundles_drained = drained,
-                "drained remaining bundles during shutdown"
-            );
-        }
 
-        // Now shutdown the engine
+        // Always attempt engine shutdown - this finalizes any open segment and
+        // performs cleanup. Even if past deadline, this is fast (especially after
+        // flush) and critical for data durability.
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.shutdown().await {
