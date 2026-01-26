@@ -9,30 +9,43 @@ Enable with `--features persistence`.
 ## Configuration
 
 ```yaml
-processors:
+nodes:
   persistence:
-    # Directory for persistent storage (required)
-    path: /var/lib/otap/persistence
+    kind: processor
+    plugin_urn: "urn:otap:processor:persistence"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      # Directory for persistent storage (required)
+      path: /var/lib/otap/persistence
 
-    # Maximum disk space (default: 10 GiB)
-    retention_size_cap: 10 GiB
+      # Maximum disk space (default: 10 GiB)
+      retention_size_cap: 10 GiB
 
-    # Maximum age of data to retain (optional, no default)
-    # When set, data older than this becomes eligible for removal.
-    # Can be combined with retention_size_cap for dual-constraint retention.
-    # max_age: 24h
+      # Maximum age of data to retain (optional, no default)
+      # When set, data older than this becomes eligible for removal.
+      # Can be combined with retention_size_cap for dual-constraint retention.
+      # max_age: 24h
 
-    # Policy when size cap is reached (default: backpressure)
-    # - backpressure: Block ingestion (no data loss)
-    # - drop_oldest: Remove oldest segments (controlled data loss)
-    size_cap_policy: backpressure
+      # Policy when size cap is reached (default: backpressure)
+      # - backpressure: Block ingestion (no data loss)
+      # - drop_oldest: Remove oldest segments (controlled data loss)
+      size_cap_policy: backpressure
 
-    # Interval for polling Quiver for bundles (default: 100ms)
-    poll_interval: 100ms
+      # Interval for polling Quiver for bundles (default: 100ms)
+      poll_interval: 100ms
 
-    # Maximum time a segment stays open before finalization (default: 1s)
-    # Lower values reduce latency but increase I/O overhead
-    max_segment_open_duration: 1s
+      # Maximum time a segment stays open before finalization (default: 1s)
+      # Lower values reduce latency but increase I/O overhead
+      max_segment_open_duration: 1s
+
+      # OTLP handling mode (default: pass_through)
+      # - pass_through: Store OTLP as opaque binary, very CPU efficient
+      # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
+      otlp_handling: pass_through
 ```
 
 ## Architecture
