@@ -539,23 +539,48 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
 
             let values_arr_for_sorting: ArrayRef = match values_type_range_by_key.data_type() {
-                DataType::Dictionary(k, v) => {
-                    match **k {
-                        DataType::UInt8 => {
-                            let dict_arr = values_type_range_by_key.as_any().downcast_ref::<DictionaryArray::<UInt8Type>>().unwrap();
-                            let value_ranks = rank(dict_arr.values(), Some(SortOptions { nulls_first: false, ..Default::default() })).unwrap();
-                            let key_ranks = dict_arr.keys().iter().map(|k| k.map(|k| value_ranks[k as usize] as u8));
-                            Arc::new(UInt8Array::from_iter(key_ranks))
-                        },
-                        DataType::UInt16 => {
-                            let dict_arr = values_type_range_by_key.as_any().downcast_ref::<DictionaryArray::<UInt16Type>>().unwrap();
-                            let value_ranks = rank(dict_arr.values(), Some(SortOptions { nulls_first: false, ..Default::default() })).unwrap();
-                            let key_ranks = dict_arr.keys().iter().map(|k| k.map(|k| value_ranks[k as usize] as u16));
-                            Arc::new(UInt16Array::from_iter(key_ranks))
-                        }
-                        _ => {
-                            todo!("bad dict key")
-                        }
+                DataType::Dictionary(k, v) => match **k {
+                    DataType::UInt8 => {
+                        let dict_arr = values_type_range_by_key
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .unwrap();
+                        let value_ranks = rank(
+                            dict_arr.values(),
+                            Some(SortOptions {
+                                nulls_first: false,
+                                ..Default::default()
+                            }),
+                        )
+                        .unwrap();
+                        let key_ranks = dict_arr
+                            .keys()
+                            .iter()
+                            .map(|k| k.map(|k| value_ranks[k as usize] as u8));
+                        Arc::new(UInt8Array::from_iter(key_ranks))
+                    }
+                    DataType::UInt16 => {
+                        let dict_arr = values_type_range_by_key
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .unwrap();
+                        let value_ranks = rank(
+                            dict_arr.values(),
+                            Some(SortOptions {
+                                nulls_first: false,
+                                ..Default::default()
+                            }),
+                        )
+                        .unwrap();
+                        // TODO - just copy the null buffer b/c doing it this way is slow ...
+                        let key_ranks = dict_arr
+                            .keys()
+                            .iter()
+                            .map(|k| k.map(|k| value_ranks[k as usize] as u16));
+                        Arc::new(UInt16Array::from_iter(key_ranks))
+                    }
+                    _ => {
+                        todo!("bad dict key")
                     }
                 },
                 _ => {
@@ -574,7 +599,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             for key_range in key_ranges {
                 // let values_key_range =
                 //     values_type_range_by_key.slice(key_range.start, key_range.len());
-                let values_key_range = values_arr_for_sorting.slice(key_range.start, key_range.len());
+                let values_key_range =
+                    values_arr_for_sorting.slice(key_range.start, key_range.len());
 
                 let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
                     &values_key_range,
@@ -588,8 +614,10 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
                 // let values_key_range_sorted =
                 //     take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
-                let values_key_range = values_type_range_by_key.slice(key_range.start, key_range.len());
-                let values_key_range_sorted = take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
+                let values_key_range =
+                    values_type_range_by_key.slice(key_range.start, key_range.len());
+                let values_key_range_sorted =
+                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
                 sorted_val_col.append_external_sorted_range(values_key_range_sorted.clone())?;
 
                 let parent_id_key_range =
