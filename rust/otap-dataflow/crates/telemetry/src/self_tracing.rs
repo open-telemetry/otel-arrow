@@ -27,7 +27,7 @@ pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
     AnsiCode, BufWriter, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer,
-    StyledBufWriter,
+    StyledBufWriter, format_log_record_to_string,
 };
 
 /// A log record with structural metadata and pre-encoded body/attributes.
@@ -124,21 +124,11 @@ impl LogRecord {
     pub fn callsite(&self) -> SavedCallsite {
         SavedCallsite::new(self.callsite_id.0.metadata())
     }
-
-    /// Returns true if this log record has any entity context (pipeline or node).
-    #[must_use]
-    pub fn has_entity_context(&self) -> bool {
-        !self.context.is_empty()
-    }
 }
 
 impl fmt::Display for LogRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            ConsoleWriter::no_color().format_log_record(None, self)
-        )
+        write!(f, "{}", format_log_record_to_string(None, self))
     }
 }
 

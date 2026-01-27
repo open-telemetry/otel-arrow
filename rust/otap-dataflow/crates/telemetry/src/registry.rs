@@ -118,30 +118,12 @@ impl TelemetryRegistryHandle {
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> MetricSet<T> {
-        // Capture info for logging before registration
-        let schema_name = attrs.schema_name();
-        let primary_name = attrs.primary_name();
-        let all_attrs: String = attrs
-            .iter_attributes()
-            .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let metric_set = {
-            let mut registry = self.registry.lock();
-            let (entity_key, _) = registry.entities.register(attrs);
-            registry.metrics.register(entity_key)
-        };
-
-        // Log the entity definition
-        otel_info!(
-            "registry.define_entity",
-            schema = schema_name,
-            name = primary_name.as_str(),
-            attrs = all_attrs.as_str()
-        );
-
-        metric_set
+        // TODO: Note this code path is not logged the way entity registration
+        // does for referring to in console logs. Will be needed to print metrics
+        // to the console.
+        let mut registry = self.registry.lock();
+        let (entity_key, _) = registry.entities.register(attrs);
+        registry.metrics.register(entity_key)
     }
 
     /// Registers a metric set type for an existing entity key.

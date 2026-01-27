@@ -387,7 +387,7 @@ impl HierarchicalFormatter {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
         let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
         f(&mut w);
-        let len = w.position() as usize;
+        let len = w.position();
         output.extend_from_slice(&buf[..len]);
     }
 }

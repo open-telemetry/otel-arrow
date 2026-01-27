@@ -26,6 +26,7 @@ otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
 
+smallvec.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
 

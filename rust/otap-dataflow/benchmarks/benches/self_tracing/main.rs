@@ -12,7 +12,10 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_telemetry::self_tracing::{ConsoleWriter, DirectLogRecordEncoder, LogRecord};
+use otap_df_telemetry::self_tracing::{
+    DirectLogRecordEncoder, LogRecord, format_log_record_to_string,
+};
+use smallvec::smallvec;
 use std::time::SystemTime;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Layer;
@@ -65,26 +68,23 @@ where
         match self.op {
             BenchOp::NewRecord => {
                 for _ in 0..self.iterations {
-                    let record = LogRecord::new(event);
+                    let record = LogRecord::new(event, smallvec![]);
                     let _ = std::hint::black_box(record);
                 }
             }
             BenchOp::Format => {
                 // Encode once, format N times
-                let record = LogRecord::new(event);
-                let writer = ConsoleWriter::no_color();
+                let record = LogRecord::new(event, smallvec![]);
 
                 for _ in 0..self.iterations {
-                    let line = writer.format_log_record(Some(now), &record);
+                    let line = format_log_record_to_string(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
             BenchOp::EncodeAndFormat => {
-                let writer = ConsoleWriter::no_color();
-
                 for _ in 0..self.iterations {
-                    let record = LogRecord::new(event);
-                    let line = writer.format_log_record(Some(now), &record);
+                    let record = LogRecord::new(event, smallvec![]);
+                    let line = format_log_record_to_string(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
@@ -94,7 +94,7 @@ where
 
                 for _ in 0..self.iterations {
                     encoder.clear();
-                    let size = encoder.encode_log_record(now, &LogRecord::new(event));
+                    let size = encoder.encode_log_record(now, &LogRecord::new(event, smallvec![]));
                     let _ = std::hint::black_box(size);
                 }
             }

@@ -242,6 +242,9 @@ impl InternalTelemetrySystem {
     }
 
     /// Initialize the global tracing subscriber.
+    ///
+    /// This sets up the global subscriber based on the configured `global` provider mode.
+    /// The event reporter passed to `new()` is used internally for async modes.
     pub fn init_global_subscriber(&self) {
         let setup = self.tracing_setup_for(self.provider_modes.global);
 
@@ -251,6 +254,9 @@ impl InternalTelemetrySystem {
     }
 
     /// Returns a `TracingSetup` for the given provider mode.
+    ///
+    /// This is useful for per-thread subscriber configuration in the engine.
+    /// The event reporter is taken from the internal state.
     #[must_use]
     fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
         let provider = match mode {
