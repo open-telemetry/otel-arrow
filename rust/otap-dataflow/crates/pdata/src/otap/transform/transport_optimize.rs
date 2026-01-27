@@ -1042,10 +1042,15 @@ impl SortedValuesArrayBuilder {
                             .downcast_ref::<DictionaryArray<UInt8Type>>()
                             .unwrap();
                         // TODO - either use new_unchecked here, or add a method to arrow-rs to speed this up if it's all null
-                        let new_dict = DictionaryArray::new(
-                            UInt8Array::new_null(count),
-                            dict_arr.values().clone(),
-                        );
+                        // TOOD - safety comments
+                        // TODO - feature unsafe gate?
+                        #[allow(unsafe_code)]
+                        let new_dict = unsafe {
+                            DictionaryArray::new_unchecked(
+                                UInt8Array::new_null(count),
+                                dict_arr.values().clone(),
+                            )
+                        };
                         self.sorted_segments.push(Arc::new(new_dict));
                     }
                     DataType::UInt16 => {
@@ -1054,10 +1059,13 @@ impl SortedValuesArrayBuilder {
                             .as_any()
                             .downcast_ref::<DictionaryArray<UInt16Type>>()
                             .unwrap();
-                        let new_dict = DictionaryArray::new(
-                            UInt16Array::new_null(count),
-                            dict_arr.values().clone(),
-                        );
+                        #[allow(unsafe_code)]
+                        let new_dict = unsafe {
+                            DictionaryArray::new_unchecked(
+                                UInt16Array::new_null(count),
+                                dict_arr.values().clone(),
+                            )
+                        };
                         self.sorted_segments.push(Arc::new(new_dict));
                     }
                     _ => {
