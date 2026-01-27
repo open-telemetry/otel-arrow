@@ -15,9 +15,10 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
-        Float64Array, Int64Array, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
-        StructArray, UInt8Array, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray,
+        DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray, 
+        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, 
+        UInt32Array,
     },
     buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
     compute::{
@@ -646,11 +647,12 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     let parent_ids_range =
                         parent_id_key_range_sorted.slice(values_range.start, values_range.len());
-                    let parent_ids_sorted = if !is_parent_id_column_sorted(&parent_ids_range) {
-                        arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap()
-                    } else {
-                        parent_ids_range.clone()
-                    };
+                    // let parent_ids_sorted = if !is_parent_id_column_sorted(&parent_ids_range) {
+                        // arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap()
+                    // } else {
+                        // parent_ids_range.clone()
+                    // };
+                    let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
                     let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted);
                     sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
                 }
@@ -846,7 +848,7 @@ fn sort_attrs_type_and_keys_to_indices(
     match key_col.data_type() {
         DataType::Dictionary(key, val) => match (*key.clone(), *val.clone()) {
             (DataType::UInt8, DataType::Utf8) => {
-                // saefty: we've just checked the datatype for this
+                // safety: we've just checked that the datatype is what we're casting to
                 let dict_arr = key_col
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
@@ -877,7 +879,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 ))
             }
             (DataType::UInt16, DataType::Utf8) => {
-                // safety: we've just checked the datatype for this
+                // safety: we've just checked that the datatype is what we're casting to
                 let dict_arr = key_col
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
@@ -1018,8 +1020,37 @@ impl SortedValuesArrayBuilder {
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
+        if self.sorted_segments.is_empty() {
+            return Ok(self.gen_source_nulls(0));
+        }
+
+        // Calculate total length upfront
+        let total_len: usize = self.sorted_segments.iter().map(|seg| match seg {
+            SortedValuesArraySegment::Nulls(count) => *count,
+            SortedValuesArraySegment::NonNull(arr) => arr.len(),
+        }).sum();
+
+        // Fast path: if only nulls or single segment, avoid concat
+        if self.sorted_segments.len() == 1 {
+            match &self.sorted_segments[0] {
+                SortedValuesArraySegment::Nulls(count) => {
+                    return Ok(self.gen_source_nulls(*count));
+                }
+                SortedValuesArraySegment::NonNull(arr) => {
+                    return Ok(arr.clone());
+                }
+            }
+        }
+
+        // For dictionary arrays with many segments, build directly to avoid concat overhead
+        if let DataType::Dictionary(key_type, _) = self.source.data_type() {
+            return self.finish_dictionary_direct(total_len, &**key_type);
+        }
+
+        // For other types, use the concat approach (with preallocated vec)
+        let mut arrays = Vec::with_capacity(self.sorted_segments.len());
         let mut curr_nulls = 0;
-        let mut arrays = vec![]; // todo could preallocate
+        
         for segment in &self.sorted_segments {
             match segment {
                 SortedValuesArraySegment::Nulls(count) => curr_nulls += count,
@@ -1037,12 +1068,104 @@ impl SortedValuesArrayBuilder {
             arrays.push(self.gen_source_nulls(curr_nulls));
         }
 
-        // println!("self.segements = {:?}", self.sorted_segments);
-        // println!("arrays = {:?}", arrays);
-
         let sorted_keys_refs = arrays.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
         let sorted_column = concat(sorted_keys_refs.as_ref()).unwrap();
         Ok(sorted_column)
+    }
+
+    fn finish_dictionary_direct(&self, total_len: usize, key_type: &DataType) -> Result<Arc<dyn Array>> {
+        match *key_type {
+            DataType::UInt8 => {
+                let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+                let mut keys_builder = Vec::with_capacity(total_len);
+                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
+
+                for segment in &self.sorted_segments {
+                    match segment {
+                        SortedValuesArraySegment::Nulls(count) => {
+                            // Append null keys
+                            keys_builder.resize(keys_builder.len() + count, 0u8);
+                            null_buffer_builder.append_n_nulls(*count);
+                        }
+                        SortedValuesArraySegment::NonNull(arr) => {
+                            let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+                            let segment_keys = dict_arr.keys().values();
+                            keys_builder.extend_from_slice(segment_keys);
+                            
+                            // Handle nulls in this segment
+                            if let Some(nulls) = dict_arr.nulls() {
+                                for i in 0..dict_arr.len() {
+                                    if nulls.is_valid(i) {
+                                        null_buffer_builder.append_non_null();
+                                    } else {
+                                        null_buffer_builder.append_null();
+                                    }
+                                }
+                            } else {
+                                for _ in 0..dict_arr.len() {
+                                    null_buffer_builder.append_non_null();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let null_buffer = null_buffer_builder.finish();
+                let keys_array = UInt8Array::new(ScalarBuffer::from(keys_builder), null_buffer);
+                #[allow(unsafe_code)]
+                let result = unsafe {
+                    DictionaryArray::new_unchecked(keys_array, source_dict.values().clone())
+                };
+                Ok(Arc::new(result))
+            }
+            DataType::UInt16 => {
+                let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+                let mut keys_builder = Vec::with_capacity(total_len);
+                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
+
+                for segment in &self.sorted_segments {
+                    match segment {
+                        SortedValuesArraySegment::Nulls(count) => {
+                            keys_builder.resize(keys_builder.len() + count, 0u16);
+                            null_buffer_builder.append_n_nulls(*count);
+                        }
+                        SortedValuesArraySegment::NonNull(arr) => {
+                            let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+                            let segment_keys = dict_arr.keys().values();
+                            keys_builder.extend_from_slice(segment_keys);
+                            
+                            if let Some(nulls) = dict_arr.nulls() {
+                                for i in 0..dict_arr.len() {
+                                    if nulls.is_valid(i) {
+                                        null_buffer_builder.append_non_null();
+                                    } else {
+                                        null_buffer_builder.append_null();
+                                    }
+                                }
+                            } else {
+                                for _ in 0..dict_arr.len() {
+                                    null_buffer_builder.append_non_null();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let null_buffer = null_buffer_builder.finish();
+                let keys_array = UInt16Array::new(ScalarBuffer::from(keys_builder), null_buffer);
+                #[allow(unsafe_code)]
+                let result = unsafe {
+                    DictionaryArray::new_unchecked(keys_array, source_dict.values().clone())
+                };
+                Ok(Arc::new(result))
+            }
+            _ => {
+                // Fallback to concat for unsupported key types
+                Err(Error::Format {
+                    error: "Unsupported dictionary key type".to_string()
+                })
+            }
+        }
     }
 }
 
