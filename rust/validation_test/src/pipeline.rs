@@ -137,20 +137,30 @@ impl PipelineValidation {
     /// render_template generates the validation pipeline group with the pipeline that will be validated
     pub fn render_template(&mut self, template_path: &str) -> Result<String, PipelineError> {
         // get suv pipeline defintion
-        let pipeline_config = fs::read_to_string(&self.pipeline_config_path)?;
+        let pipeline_config = fs::read_to_string(&self.pipeline_config_path).map_err(|_| {
+            PipelineError::Io(format!(
+                "Failed to read in from {}",
+                &self.pipeline_config_path.display()
+            ))
+        })?;
         // get pipeline group template to run validation test
-        let template = fs::read_to_string(template_path)?;
+        let template = fs::read_to_string(template_path)
+            .map_err(|_| PipelineError::Io(format!("Failed to read in from {template_path}")))?;
 
         let mut env = Environment::new();
         let _ = env.add_template("template", template.as_str());
-        let tmpl = env.get_template("template")?;
+        let tmpl = env
+            .get_template("template")
+            .map_err(|e| PipelineError::Template(e.to_string()))?;
         let ctx = context! {
             loadgen_exporter_type => &self.variables.loadgen_exporter_type,
             backend_receiver_type => &self.variables.backend_receiver_type,
             expect_failure => self.variables.expect_failure,
             pipeline_config => pipeline_config,
         };
-        let rendered = tmpl.render(ctx)?;
+        let rendered = tmpl
+            .render(ctx)
+            .map_err(|e| PipelineError::Template(e.to_string()))?;
         Ok(rendered)
     }
 }
