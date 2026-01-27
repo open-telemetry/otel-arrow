@@ -407,7 +407,6 @@ impl PipelinePlanner {
             }
         }
 
-
         Ok(pipeline_stages)
     }
 
@@ -437,7 +436,7 @@ impl PipelinePlanner {
         let literal_value = Self::static_scalar_to_literal(static_val)?;
 
         let mut entries = std::collections::BTreeMap::new();
-        let _ = entries.insert(key, literal_value);
+        entries.insert(key, literal_value);
         let insert_transform = InsertTransform::new(entries);
         let transform = AttributesTransform::default().with_insert(insert_transform);
 
