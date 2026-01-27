@@ -865,55 +865,69 @@ fn sort_attrs_type_and_keys_to_indices(
                 let keys_values = keys.values().inner().as_slice();
                 let val_ranks = rank(dict_arr.values(), None).unwrap();
 
-                let key_ranks = keys_values
-                    .iter()
-                    .map(|i| val_ranks[*i as usize] as u8)
-                    .collect::<Vec<_>>();
+                // -----------------------------------------
+                // OPTION 1: Partition (SIMD), take and sort
+                // -----------------------------------------
+                // currently the sorting when we do this is like 11% of the algorithm, but there's an extra 7-8%
+                // book keeping which makes this slow. This is from MutableBuffer::collect_bool and the
+                // capacity cehcking in extend
 
-                let mut indices_by_keys_for_types = Vec::with_capacity(len);
-                let mut type_range_start = 0;
-                let mut type_ranges = Vec::new();
+                // let key_ranks = keys_values
+                //     .iter()
+                //     .map(|i| val_ranks[*i as usize] as u8)
+                //     .collect::<Vec<_>>();
 
-                for i in 0..8 {
-                    let types_eq: Buffer = MutableBuffer::collect_bool(len, |idx| {
-                        #[allow(unsafe_code)]
-                        let byte = unsafe { *type_bytes.get_unchecked(idx) };
-                        byte == i
-                    })
-                    .into();
+                // let mut indices_by_keys_for_types = Vec::with_capacity(len);
+                // let mut type_range_start = 0;
+                // let mut type_ranges = Vec::new();
+
+                // for i in 0..8 {
+                //     let types_eq: Buffer = MutableBuffer::collect_bool(len, |idx| {
+                //         #[allow(unsafe_code)]
+                //         let byte = unsafe { *type_bytes.get_unchecked(idx) };
+                //         byte == i
+                //     })
+                //     .into();
 
 
-                    let indices_by_key = BitIndexIterator::new(types_eq.iter().as_slice(), 0, len)
-                        .map(|idx| (idx, key_ranks[idx]));
-                    indices_by_keys_for_types.extend(indices_by_key.into_iter());
-                    let type_range_end = indices_by_keys_for_types.len();
-                    type_ranges.push((type_range_start, type_range_end));
-                    type_range_start = type_range_end;
-                }
-
-                for (start, end) in type_ranges {
-                    indices_by_keys_for_types[start..end].sort_unstable_by(|a, b| a.1.cmp(&b.1));
-                }
-
-                Ok(PrimitiveArray::from_iter_values(
-                    indices_by_keys_for_types.into_iter().map(|(idx, _)| idx as u32),
-                ))
-
-                // let mut to_sort = vec![0u16; len];
-                // for i in 0..len {
-                //     to_sort[i] += (type_bytes[i] as u16) << 8u16;
-                // }
-                // for i in 0..len {
-                //     let rank = val_ranks[keys_values[i] as usize];
-                //     to_sort[i] += rank as u16;
+                //     let indices_by_key = BitIndexIterator::new(types_eq.iter().as_slice(), 0, len)
+                //         .map(|idx| (idx, key_ranks[idx]));
+                //     indices_by_keys_for_types.extend(indices_by_key.into_iter());
+                //     let type_range_end = indices_by_keys_for_types.len();
+                //     type_ranges.push((type_range_start, type_range_end));
+                //     type_range_start = type_range_end;
                 // }
 
-                // let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                // with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                // for (start, end) in type_ranges {
+                //     indices_by_keys_for_types[start..end].sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                // }
 
                 // Ok(PrimitiveArray::from_iter_values(
-                //     with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                //     indices_by_keys_for_types.into_iter().map(|(idx, _)| idx as u32),
                 // ))
+                //
+
+                // ---------------------------
+                // OTPION 2: Sort together
+                // this is faster for now due to extra bookpeeing in above loop, by about 7%
+                // ---------------------------
+                // Currently this spends an extra 2% time sorting, but ver little book keeping overhead makes up for it
+
+                let mut to_sort = vec![0u16; len];
+                for i in 0..len {
+                    to_sort[i] += (type_bytes[i] as u16) << 8u16;
+                }
+                for i in 0..len {
+                    let rank = val_ranks[keys_values[i] as usize];
+                    to_sort[i] += rank as u16;
+                }
+
+                let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
+                with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+                Ok(PrimitiveArray::from_iter_values(
+                    with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                ))
             }
             DataType::UInt16 => {
                 todo!()
