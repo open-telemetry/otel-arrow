@@ -555,9 +555,12 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                         .unwrap();
                         let key_ranks = dict_arr
                             .keys()
+                            .values()
                             .iter()
-                            .map(|k| k.map(|k| value_ranks[k as usize] as u8));
-                        Arc::new(UInt8Array::from_iter(key_ranks))
+                            .map(|k| value_ranks[*k as usize] as u8)
+                            .collect::<Vec<_>>();
+                         Arc::new(UInt8Array::new(ScalarBuffer::from(key_ranks), dict_arr.keys().nulls().cloned()))
+                        // Arc::new(UInt8Array::from_iter(key_ranks))
                     }
                     DataType::UInt16 => {
                         let dict_arr = values_type_range_by_key
@@ -575,9 +578,12 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                         // TODO - just copy the null buffer b/c doing it this way is slow ...
                         let key_ranks = dict_arr
                             .keys()
+                            .values()
                             .iter()
-                            .map(|k| k.map(|k| value_ranks[k as usize] as u16));
-                        Arc::new(UInt16Array::from_iter(key_ranks))
+                            .map(|k| value_ranks[*k as usize] as u16)
+                            .collect::<Vec<_>>();
+                        Arc::new(UInt16Array::new(ScalarBuffer::from(key_ranks), dict_arr.keys().nulls().cloned()))
+                        // Arc::new(UInt16Array::from_iter(key_ranks))
                     }
                     _ => {
                         todo!("bad dict key")
