@@ -976,12 +976,15 @@ fn sort_attrs_type_and_keys_to_indices(
     }
 }
 
+#[derive(Debug)]
+enum SortedValuesArraySegment {
+    Nulls(usize),
+    NonNull(Arc<dyn Array>)
+}
+
 struct SortedValuesArrayBuilder {
-    // TODO
-    // source_dict: Option<SortedArrayBuilderSourceDict>,
-    //
     // TODO - we might consider refactoring this into something not Arc to reduce heap allocations?
-    sorted_segments: Vec<Arc<dyn Array>>,
+    sorted_segments: Vec<SortedValuesArraySegment>,
 
     // TODO - we could get into the internals of `take` and figure out if it's faster not to take from
     // an Arc dyn array, then we'd avoid a heap allocation here as well
@@ -996,42 +999,16 @@ impl SortedValuesArrayBuilder {
         })
     }
 
-    fn sort_source(&mut self, indices: &dyn Array) -> Result<()> {
-        self.source = Arc::new(take(self.source.as_ref(), indices, None).unwrap());
-        Ok(())
-    }
-
     fn take_source(&self, indices: &UInt32Array) -> Result<Arc<dyn Array>> {
         Ok(take(self.source.as_ref(), indices, None).unwrap())
     }
 
-    fn slice_source(&self, range: &Range<usize>) -> Result<Arc<dyn Array>> {
-        Ok(self.source.slice(range.start, range.len()))
-    }
-
-    // TODO this might not need to take a &Range b/c range is copy?
-    // fn append_sorted_range(&mut self, range: &Range<usize>, indices: &dyn Array) -> Result<()> {
-    //     todo!()
-    // }
-
     fn append_external_sorted_range(&mut self, arr: Arc<dyn Array>) -> Result<()> {
-        self.sorted_segments.push(arr);
+        self.sorted_segments.push(SortedValuesArraySegment::NonNull(arr));
         Ok(())
     }
 
-    // TODO this might not need to take a &Range b/c range is copy?
-    fn append_range(&mut self, range: &Range<usize>) {
-        let arr = self.source.slice(range.start, range.len());
-        self.sorted_segments.push(arr);
-        // todo!()
-    }
-
-    fn take_and_append(&mut self, indices: &UInt32Array) {
-        let arr = take(self.source.as_ref(), indices, None).unwrap();
-        self.sorted_segments.push(arr)
-    }
-
-    fn append_nulls(&mut self, count: usize) {
+    fn gen_source_nulls(&self, count: usize) -> Arc<dyn Array> {
         match self.source.data_type() {
             DataType::Dictionary(k, _) => {
                 match **k {
@@ -1051,7 +1028,7 @@ impl SortedValuesArrayBuilder {
                                 dict_arr.values().clone(),
                             )
                         };
-                        self.sorted_segments.push(Arc::new(new_dict));
+                        Arc::new(new_dict)
                     }
                     DataType::UInt16 => {
                         let dict_arr = self
@@ -1066,7 +1043,7 @@ impl SortedValuesArrayBuilder {
                                 dict_arr.values().clone(),
                             )
                         };
-                        self.sorted_segments.push(Arc::new(new_dict));
+                        Arc::new(new_dict)
                     }
                     _ => {
                         todo!("invalid dict")
@@ -1074,24 +1051,19 @@ impl SortedValuesArrayBuilder {
                 }
             }
             DataType::Binary => {
-                self.sorted_segments
-                    .push(Arc::new(BinaryArray::new_null(count)));
+                Arc::new(BinaryArray::new_null(count))
             }
             DataType::Boolean => {
-                self.sorted_segments
-                    .push(Arc::new(BooleanArray::new_null(count)));
+                Arc::new(BooleanArray::new_null(count))
             }
             DataType::Int64 => {
-                self.sorted_segments
-                    .push(Arc::new(Int64Array::new_null(count)));
+                Arc::new(Int64Array::new_null(count))
             }
             DataType::Float64 => {
-                self.sorted_segments
-                    .push(Arc::new(Float64Array::new_null(count)));
+                Arc::new(Float64Array::new_null(count))
             }
             DataType::Utf8 => {
-                self.sorted_segments
-                    .push(Arc::new(StringArray::new_null(count)));
+                Arc::new(StringArray::new_null(count))
             }
             _ => {
                 todo!("invalid attrs array")
@@ -1099,9 +1071,35 @@ impl SortedValuesArrayBuilder {
         }
     }
 
+    fn append_nulls(&mut self, count: usize) {
+        self.sorted_segments.push(SortedValuesArraySegment::Nulls(count))
+    }
+
     fn finish(&self) -> Result<Arc<dyn Array>> {
-        let sorted_keys_refs = self
-            .sorted_segments
+        let mut curr_nulls = 0;
+        let mut arrays = vec![]; // todo could preallocate
+        for segment in &self.sorted_segments {
+            match segment {
+                SortedValuesArraySegment::Nulls(count) => curr_nulls += count,
+                SortedValuesArraySegment::NonNull(arr) => {
+                    if curr_nulls > 0 {
+                        arrays.push(self.gen_source_nulls(curr_nulls));
+                        curr_nulls = 0;
+                    }
+                    arrays.push(arr.clone());
+                }
+            }
+        }
+
+        if curr_nulls > 0 {
+            arrays.push(self.gen_source_nulls(curr_nulls));
+        }
+
+        // println!("self.segements = {:?}", self.sorted_segments);
+        // println!("arrays = {:?}", arrays);
+
+
+        let sorted_keys_refs = arrays
             .iter()
             .map(|k| k.as_ref())
             .collect::<Vec<_>>();
