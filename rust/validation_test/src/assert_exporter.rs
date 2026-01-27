@@ -126,6 +126,7 @@ impl Exporter<OtapPdata> for AssertValidExporter {
                     // compare and update metric
                     // if we expect_failure -> suv pipeline contains processors that can alter the data then we use the inverted result of assert_equivlent
                     // otherwise use assert_equivelent 
+                    assert_equivalent(&self.control_msg, &self.suv_msg)
                 }
             }
         }

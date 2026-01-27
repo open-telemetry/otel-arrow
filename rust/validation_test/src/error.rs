@@ -12,20 +12,18 @@ pub enum PipelineError {
     Io(io::Error),
     Template(MiniJinjaError),
     Config(String),
-    Http(reqwest::Error),
-    Status(String),
+    Http(String),
     Ready(String),
 }
 
 impl fmt::Display for PipelineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PipelineError::Io(e) => write!(f, "io error: {}", e),
-            PipelineError::Template(e) => write!(f, "template error: {}", e),
-            PipelineError::Config(e) => write!(f, "config error: {}", e),
-            PipelineError::Http(e) => write!(f, "http error: {}", e),
-            PipelineError::Status(e) => write!(f, "status error: {}", e),
-            PipelineError::Ready(e) => write!(f, "ready check failed: {}", e),
+            PipelineError::Io(e) => write!(f, "io error: {e}"),
+            PipelineError::Template(e) => write!(f, "template error: {e}"),
+            PipelineError::Config(e) => write!(f, "config error: {e}"),
+            PipelineError::Http(e) => write!(f, "http error: {e}"),
+            PipelineError::Ready(e) => write!(f, "ready check failed: {e}"),
         }
     }
 }
@@ -41,11 +39,5 @@ impl From<io::Error> for PipelineError {
 impl From<MiniJinjaError> for PipelineError {
     fn from(err: MiniJinjaError) -> Self {
         PipelineError::Template(err)
-    }
-}
-
-impl From<reqwest::Error> for PipelineError {
-    fn from(err: reqwest::Error) -> Self {
-        PipelineError::Http(err)
     }
 }

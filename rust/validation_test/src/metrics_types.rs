@@ -3,6 +3,12 @@
 
 //! Deserialization types for the admin telemetry metrics endpoint.
 
+use otap_df_telemetry::attributes::AttributeValue;
+#[allow(unused_imports)]
+use otap_df_telemetry::descriptor::{
+    Instrument, MetricValueType, MetricsDescriptor, MetricsField, Temporality,
+};
+pub use otap_df_telemetry::metrics::MetricValue;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -22,18 +28,40 @@ impl std::fmt::Display for MetricsSnapshot {
             writeln!(f, "  brief: {}", set.brief)?;
             writeln!(f, "  attributes:")?;
             for (k, v) in &set.attributes {
-                writeln!(f, "    {k}: {v}")?;
+                writeln!(f, "    {k}: {}", format_attribute_value(v))?;
             }
             writeln!(f, "  metrics:")?;
             for m in &set.metrics {
                 writeln!(
                     f,
                     "    {} [{}] instrument={:?} temporality={:?} value_type={:?} value={}",
-                    m.name, m.unit, m.instrument, m.temporality, m.value_type, m.value
+                    m.name,
+                    m.unit,
+                    m.instrument,
+                    m.temporality,
+                    m.value_type,
+                    format_metric_value(&m.value)
                 )?;
             }
         }
         Ok(())
+    }
+}
+
+fn format_attribute_value(value: &AttributeValue) -> String {
+    match value {
+        AttributeValue::String(v) => v.clone(),
+        AttributeValue::Int(v) => v.to_string(),
+        AttributeValue::UInt(v) => v.to_string(),
+        AttributeValue::Double(v) => v.to_string(),
+        AttributeValue::Boolean(v) => v.to_string(),
+    }
+}
+
+fn format_metric_value(value: &MetricValue) -> String {
+    match value {
+        MetricValue::U64(v) => v.to_string(),
+        MetricValue::F64(v) => v.to_string(),
     }
 }
 
@@ -55,65 +83,4 @@ pub struct MetricDataPoint {
     pub temporality: Option<Temporality>,
     pub value_type: MetricValueType,
     pub value: MetricValue,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Instrument {
-    Counter,
-    UpDownCounter,
-    Gauge,
-    Histogram,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Temporality {
-    Delta,
-    Cumulative,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MetricValueType {
-    U64,
-    F64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum MetricValue {
-    U64(u64),
-    F64(f64),
-}
-
-impl std::fmt::Display for MetricValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MetricValue::U64(v) => write!(f, "{v}"),
-            MetricValue::F64(v) => write!(f, "{v}"),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum AttributeValue {
-    String { String: String },
-    Int { Int: i64 },
-    UInt { UInt: u64 },
-    Double { Double: f64 },
-    Boolean { Boolean: bool },
-}
-
-impl std::fmt::Display for AttributeValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AttributeValue::String { String: v } => write!(f, "{v}"),
-            AttributeValue::Int { Int: v } => write!(f, "{v}"),
-            AttributeValue::UInt { UInt: v } => write!(f, "{v}"),
-            AttributeValue::Double { Double: v } => write!(f, "{v}"),
-            AttributeValue::Boolean { Boolean: v } => write!(f, "{v}"),
-        }
-    }
 }

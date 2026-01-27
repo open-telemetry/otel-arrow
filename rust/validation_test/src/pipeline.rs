@@ -1,6 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(dead_code)]
+
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
 use minijinja::{Environment, context};
@@ -15,7 +17,7 @@ use std::time::Instant;
 use tokio::time::{Duration, sleep};
 
 use crate::error::PipelineError;
-use crate::metrics_types::{MetricValue, MetricsSnapshot};
+use crate::metrics_types::MetricsSnapshot;
 
 const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
 const ADMIN_ENDPOINT: &str = "http://127.0.0.1:8085";
@@ -87,6 +89,10 @@ impl PipelineSimulator {
 impl PipelineValidation {
     /// validates a pipeline, returns true if valid, false if not
     pub async fn validate(&self, pipeline: String) -> Result<bool, PipelineError> {
+        let base = ADMIN_ENDPOINT;
+        let max_signals_sent = LOADGEN_MAX_SIGNALS;
+        let metric_poll_cooldown = METRICS_POLL_SECS;
+        let pipeline_delay_sec = PROPAGATION_DELAY_SECS;
         let pipeline_simulator = PipelineSimulator::new(pipeline.as_str())?;
 
         // start pipeline groups in the background
@@ -96,38 +102,35 @@ impl PipelineValidation {
 
         let admin_client = Client::new();
 
-        let _ = wait_for_ready(&admin_client, ADMIN_ENDPOINT).await;
+        let _ = wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await;
 
-        let loadgen_deadline =
-            std::time::Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
+        let loadgen_deadline = Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
         loop {
-            let snapshot = fetch_metrics(&admin_client, ADMIN_ENDPOINT).await?;
+            let snapshot = fetch_metrics(&admin_client, base).await?;
             if loadgen_reached_limit(&snapshot) {
                 break;
             }
-            if std::time::Instant::now() >= loadgen_deadline {
-                return Err(PipelineError::Status(format!(
-                    "load generator did not reach {} signals before timeout",
-                    LOADGEN_MAX_SIGNALS
+            if Instant::now() >= loadgen_deadline {
+                return Err(PipelineError::Ready(format!(
+                    "load generator did not reach {max_signals_sent} signals before timeout"
                 )));
             }
-            sleep(Duration::from_secs(METRICS_POLL_SECS)).await;
+            sleep(Duration::from_secs(metric_poll_cooldown)).await;
         }
 
-        sleep(Duration::from_secs(PROPAGATION_DELAY_SECS)).await;
+        sleep(Duration::from_secs(pipeline_delay_sec)).await;
 
-        let assert_snapshot = fetch_metrics(&admin_client, ADMIN_ENDPOINT).await?;
+        let assert_snapshot = fetch_metrics(&admin_client, base).await?;
         let result = assert_valid_from_metrics(&assert_snapshot);
 
         // shutdown the pipeline
         let _ = admin_client
-            .post(format!(
-                "{ADMIN_ENDPOINT}/pipeline-groups/shutdown?wait=true"
-            ))
+            .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
             .send()
-            .await?
+            .await
+            .map_err(|e| PipelineError::Http(e.to_string()))?
             .error_for_status()
-            .map_err(|e| PipelineError::Status(e.to_string()))?;
+            .map_err(|e| PipelineError::Http(e.to_string()))?;
         Ok(result)
     }
 
@@ -152,10 +155,15 @@ impl PipelineValidation {
     }
 }
 
-async fn wait_for_ready(client: &Client, base: &str) -> Result<(), PipelineError> {
+async fn wait_for_ready(
+    client: &Client,
+    base: &str,
+    max_retry: usize,
+    retry_cooldown: u64,
+) -> Result<(), PipelineError> {
     let readyz_url = format!("{base}/readyz");
     let mut last_error: Option<String> = None;
-    for _attempt in 0..READY_MAX_ATTEMPTS {
+    for _attempt in 0..max_retry {
         match client.get(&readyz_url).send().await {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             Ok(resp) => match resp.text().await {
@@ -167,7 +175,7 @@ async fn wait_for_ready(client: &Client, base: &str) -> Result<(), PipelineError
             }
         }
 
-        sleep(Duration::from_secs(READY_BACKOFF_SECS)).await;
+        sleep(Duration::from_secs(retry_cooldown)).await;
     }
 
     Err(PipelineError::Ready(
@@ -176,22 +184,17 @@ async fn wait_for_ready(client: &Client, base: &str) -> Result<(), PipelineError
 }
 
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, PipelineError> {
-    Ok(client
+    client
         .get(format!("{base}/telemetry/metrics"))
         .query(&[("reset", false), ("keep_all_zeroes", false)])
         .send()
-        .await?
+        .await
+        .map_err(|_| PipelineError::Http(format!("No Response from {base}/telemetry/metrics")))?
         .error_for_status()
-        .map_err(|e| PipelineError::Status(e.to_string()))?
+        .map_err(|e| PipelineError::Http(e.to_string()))?
         .json()
-        .await?)
-}
-
-fn metric_value_u64(value: &MetricValue) -> Option<u64> {
-    match value {
-        MetricValue::U64(v) => Some(*v),
-        MetricValue::F64(v) => Some(*v as u64),
-    }
+        .await
+        .map_err(|e| PipelineError::Http(e.to_string()))
 }
 
 fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
@@ -204,7 +207,7 @@ fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
             set.metrics
                 .iter()
                 .find(|m| m.name == "logs.produced")
-                .and_then(|m| metric_value_u64(&m.value))
+                .map(|m| m.value.to_u64_lossy())
         })
     {
         return v >= LOADGEN_MAX_SIGNALS;
@@ -221,7 +224,7 @@ fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
             set.metrics
                 .iter()
                 .find(|m| m.name == "valid")
-                .and_then(|m| metric_value_u64(&m.value))
+                .map(|m| m.value.to_u64_lossy())
         })
     {
         return v >= 1;
@@ -233,8 +236,6 @@ fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
 mod test {
     use super::*;
     use otap_df_otap::OTAP_PIPELINE_FACTORY;
-    use otap_df_pdata::testing::equiv::assert_equivalent;
-    use std::fs;
     use std::fs::File;
 
     const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
@@ -245,6 +246,8 @@ mod test {
         let file = File::open(PIPELINE_CONFIG_YAML).expect("failed to get config file");
         let config: PipelineValidationConfig =
             serde_yaml::from_reader(file).expect("Could not deserialize config");
+        println!("========== Running Pipeline Validation ===========");
+        println!("========== Pipeline Validation Results ===========");
         for mut config in config.tests {
             match config.render_template(VALIDATION_TEMPLATE_PATH) {
                 Ok(rendered_template) => match config.validate(rendered_template).await {
