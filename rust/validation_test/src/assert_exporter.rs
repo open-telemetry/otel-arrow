@@ -40,10 +40,10 @@ struct AssertValidExporterConfig {
 #[derive(Debug, Default, Clone)]
 struct AssertValidExporterMetrics {
     /// Number of comparisons that did not match expectation
-    #[metric(name = "send.count", unit = "{comparison")]
+    #[metric(name = "comparison.failed", unit = "{comparison}")]
     failed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
     /// Number of comparisons that did match expectation
-    #[metric(name = "send.count", unit = "{comparison}")]
+    #[metric(name = "comparison.passed", unit = "{comparison}")]
     passed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
     /// The value of the last comparison result
     /// 0 -> not valid
@@ -53,8 +53,8 @@ struct AssertValidExporterMetrics {
 
 pub struct AssertValidExporter {
     config: AssertValidExporterConfig,
-    control_msg: Vec<OtlpProtoMessage>,
-    suv_msg: Vec<OtlpProtoMessage>,
+    control_msgs: Vec<OtlpProtoMessage>,
+    suv_msgs: Vec<OtlpProtoMessage>,
     metrics: MetricSet<AssertValidExporterMetrics>,
 }
 
@@ -81,8 +81,8 @@ pub fn create_assert_exporter(
     Ok(ExporterWrapper::local(
         AssertValidExporter {
             config,
-            left: Vec::new(),
-            right: Vec::new(),
+            control_msgs: Vec::new(),
+            suv_msgs: Vec::new(),
             metrics,
         },
         node,
@@ -120,13 +120,36 @@ impl Exporter<OtapPdata> for AssertValidExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData(pdata) => {
-                    // if message read in is from SUV update suv vector
-                    // if message read in is from control update control vector
-                    // compare and update metric
-                    // if we expect_failure -> suv pipeline contains processors that can alter the data then we use the inverted result of assert_equivlent
-                    // otherwise use assert_equivelent 
-                    assert_equivalent(&self.control_msg, &self.suv_msg)
+                Message::PData{port_id, pdata} => {
+                    if let Some(msg) = to_otlp(pdata) {
+                        // TODO: route by port when multi-port exporters are supported.
+                        // For now, alternate into control/suv buffers to keep comparisons balanced.
+                        if self.control_msgs.len() <= self.suv_msgs.len() {
+                            self.control_msgs.push(msg);
+                        } else {
+                            self.suv_msgs.push(msg);
+                        }
+
+                        let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                            assert_equivalent(&self.control_msgs, &self.suv_msgs)
+                        }))
+                        .is_ok();
+
+                        let passed = if self.config.expect_failure {
+                            !equiv
+                        } else {
+                            equiv
+                        };
+
+                        if passed {
+                            self.metrics.metrics.passed_comparisons.add(1);
+                            self.metrics.metrics.valid.set(1);
+                        } else {
+                            self.metrics.metrics.failed_comparisons.add(1);
+                            self.metrics.metrics.valid.set(0);
+                        }
+                        
+                    }
                 }
             }
         }
