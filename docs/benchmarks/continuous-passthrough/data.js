@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769448936161,
+  "lastUpdate": 1769533663041,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1930,6 +1930,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11286210.911037732,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "4431eac5b920adcde80feb83ec32289fcb7eb31f",
+          "message": "Fix cargo warning about 'profiles for the non root package will be ignored' (#1897)\n\n# Change Summary\n\nFixes a cargo warning about 'profiles for the non root package will be\nignored' from the `query-engine` crate.\n\n## What issue does this PR close?\nn/a\n\n## How are these changes tested?\nValidated that build warning is resolved\n\n## Are there any user-facing changes?\nNo.",
+          "timestamp": "2026-01-27T16:29:34Z",
+          "tree_id": "bbb6476c4a7413943919972e391048abdce9b468",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4431eac5b920adcde80feb83ec32289fcb7eb31f"
+        },
+        "date": 1769533662634,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.3727128505706787,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.09547841178238,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.48463485398334,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.42747395833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 48.44921875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 520903.98788884043,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 528054.5037512226,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003503,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11447318.343064303,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11401969.178601988,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
