@@ -4,11 +4,10 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    BooleanValue, DataExpression, DateTimeValue, DoubleValue, IntegerValue,
-    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
-    OutputExpression, PipelineExpression, ReduceMapTransformExpression,
+    DataExpression, Expression, LogicalExpression, MapSelector, MoveTransformExpression,
+    MutableValueExpression, OutputExpression, PipelineExpression, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
+    StaticScalarExpression, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
@@ -19,12 +18,12 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
+use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
+use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
 use crate::pipeline::routing::RouteToPipelineStage;
-use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
 ///
