@@ -17,10 +17,9 @@ use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array
     },
-    buffer::{Buffer, MutableBuffer, ScalarBuffer},
+    buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
     compute::{
-        SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take,
-        take_record_batch,
+        Partitions, SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take, take_record_batch
     },
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
     util::bit_iterator::{BitIndexIterator, BitSliceIterator},
@@ -562,8 +561,29 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
             // TODO we could try using "create next eq array to get bounds here"
             let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
-            let key_partitions = partition(&[keys_range_sorted]).unwrap();
-            for key_range in key_partitions.ranges() {
+            // let key_partitions = partition(&[keys_range_sorted.clone()]).unwrap();
+
+            // println!("keys_sorted = {:?}", key_col_sorted);
+            // println!("key_partitions = {:?}", key_partitions);
+            let next_eq_arr_key = create_next_element_equality_array(&keys_range_sorted)?;
+            // println!("next_eq_arr_key = {:?}", next_eq_arr_key);
+            // println!("next_eq_arr_as_buff = {:?}", next_eq_arr_key.values());
+
+            let next_eq_inverted = not(&next_eq_arr_key).unwrap();
+            // println!("next_eq_arr_key inverted = {:?}", next_eq_inverted);
+            // println!("next_eq_arr_as_buff inverted = {:?}", next_eq_inverted.values());
+
+            // let ranges1 = key_partitions.ranges();
+            let ranges2 = ranges(next_eq_inverted.values());
+
+            // println!("ranges1 = {ranges1:?}");
+            // println!("ranges2 = {ranges2:?}");
+
+            // println!("herE");
+
+
+            for key_range in ranges2 {
+            // for key_range in key_partitions.ranges() {
                 // get values
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
@@ -737,6 +757,22 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     Ok(batch)
 }
 
+
+fn ranges(boundaries: &BooleanBuffer) -> Vec<Range<usize>> {
+    let mut out = vec![];
+    let mut current = 0;
+    for idx in boundaries.set_indices() {
+        let t = current;
+        current = idx + 1;
+        out.push(t..current)
+    }
+    let last = boundaries.len() + 1;
+    if current != last {
+        out.push(current..last)
+    }
+    out
+}
+
 fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
     match parent_id_col.data_type() {
         DataType::UInt16 => {
@@ -849,6 +885,13 @@ fn sort_attrs_type_and_keys_to_indices(
         }
     }
 }
+
+// TODO comments
+// fn partition_sorted(arr: &ArrayRef) -> Partitions {
+//     let next_eq_arr = create_next_element_equality_array(arr);
+
+
+// }
 
 // TODO
 // struct SortedArrayBuilderSourceDict {
