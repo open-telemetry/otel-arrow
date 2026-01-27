@@ -15,9 +15,7 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
-        UInt32Array,
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array
     },
     buffer::{Buffer, MutableBuffer, ScalarBuffer},
     compute::{
@@ -621,6 +619,10 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
         }
 
+        // TODO -- 11% of our time is currently spent in take_and_append below
+        // which is dumb because we know that these are just supposed to be a
+        // bunch of null values. We could just create new null arrays instead
+
         // push the unsorted values for columns not of this type to fill in gaps
         for attr_type in [
             AttributeValueType::Str as u8,
@@ -634,7 +636,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             }
 
             if let Some(sorted_val_col) = sorted_val_columns[attr_type as usize].as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
+                sorted_val_col.append_nulls(type_range.len());
+                // sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
 
@@ -644,7 +647,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             && key_range_attr_type != AttributeValueType::Slice as u8
         {
             if let Some(sorted_val_col) = sorted_ser_column.as_mut() {
-                sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
+                sorted_val_col.append_nulls(type_range.len());
+                // sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
     }
@@ -759,6 +763,53 @@ fn sort_attrs_type_and_keys_to_indices(
     let type_col = type_col.as_any().downcast_ref::<UInt8Array>().unwrap();
     let type_bytes = type_col.values().inner().as_slice();
 
+    // TODO - there is a faster way to do what's happening in her ...
+    // put all the indices of each type into a vector and the use the indices to
+    // partition keys
+    //
+    // // TODO - this is unfortunately slower than what's happening below
+    // // calculate lengths so we can preallocate arrays
+    // let mut lens = [0usize; 8];
+    // for i in 0..len {
+    //     lens[type_bytes[i] as usize] += 1;
+    // }
+    // let mut indices_for_types: [Vec<usize>; 8] = [
+    //     Vec::with_capacity(lens[0]),
+    //     Vec::with_capacity(lens[1]),
+    //     Vec::with_capacity(lens[2]),
+    //     Vec::with_capacity(lens[3]),
+    //     Vec::with_capacity(lens[4]),
+    //     Vec::with_capacity(lens[5]),
+    //     Vec::with_capacity(lens[6]),
+    //     Vec::with_capacity(lens[7]),
+    // ];
+
+    // for i in 0..len {
+    //     // TODO bounds check on type_bytes?
+    //     let indices_for_type = &mut indices_for_types[type_bytes[i] as usize];
+    //     indices_for_type.push(i); // TODO would push uncheded be faster here?
+    // }
+
+    // let mut result_segments_by_type = vec![];
+    // // let mut total_added = 0;
+    // for indices_for_type in indices_for_types {
+    //     if indices_for_type.is_empty() {
+    //         continue;
+    //     }
+    //     let indices_as_arr = UInt32Array::from_iter_values(indices_for_type.into_iter().map(|i| i as u32));
+    //     let keys_for_type = take(key_col.as_ref(), &indices_as_arr, None).unwrap();
+    //     let sorted_key_indices_for_type = arrow::compute::sort_to_indices(&keys_for_type, None, None).unwrap();
+    //     let indices_for_type_sorted_by_key = take(&indices_as_arr, &sorted_key_indices_for_type, None).unwrap();
+    //     result_segments_by_type.push(indices_for_type_sorted_by_key);
+    // }
+
+    // // TODO better var names & type handling this is kind of a mess
+    // let refs = result_segments_by_type.iter().map(|i| i as &dyn Array).collect::<Vec<_>>();
+    // let result = concat(&refs).unwrap();
+
+    // // println!("result = {result:?}");
+    // Ok(result.as_any().downcast_ref::<UInt32Array>().unwrap().clone())
+
     match key_col.data_type() {
         DataType::Dictionary(key, _) => match **key {
             DataType::UInt8 => {
@@ -858,6 +909,53 @@ impl SortedArrayBuilder {
     fn take_and_append(&mut self, indices: &UInt32Array) {
         let arr = take(self.source.as_ref(), indices, None).unwrap();
         self.sorted_segments.push(arr)
+    }
+
+    fn append_nulls(&mut self, count: usize)  {
+        match self.source.data_type() {
+            DataType::Dictionary(k,_) => {
+                match **k {
+                    DataType::UInt8 => {
+                        let dict_arr = self.source.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+                        // TODO - either use new_unchecked here, or add a method to arrow-rs to speed this up if it's all null
+                        let new_dict = DictionaryArray::new(
+                            UInt8Array::new_null(count),
+                            dict_arr.values().clone()
+                        );
+                        self.sorted_segments.push(Arc::new(new_dict));
+                    },
+                    DataType::UInt16 => {
+                        let dict_arr = self.source.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+                        let new_dict = DictionaryArray::new(
+                            UInt16Array::new_null(count),
+                            dict_arr.values().clone()
+                        );
+                        self.sorted_segments.push(Arc::new(new_dict));
+                    },
+                    _ => {
+                        todo!("invalid dict")
+                    }
+                }
+            },
+            DataType::Binary => {
+                self.sorted_segments.push(Arc::new(BinaryArray::new_null(count)));
+            },
+            DataType::Boolean => {
+                self.sorted_segments.push(Arc::new(BooleanArray::new_null(count)));
+            },
+            DataType::Int64 => {
+                self.sorted_segments.push(Arc::new(Int64Array::new_null(count)));
+            },
+            DataType::Float64 => {
+                self.sorted_segments.push(Arc::new(Float64Array::new_null(count)));
+            },
+            DataType::Utf8 => {
+                self.sorted_segments.push(Arc::new(StringArray::new_null(count)));
+            },
+            _ => {
+                todo!("invalid attrs array")
+            }
+        }
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
