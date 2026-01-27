@@ -418,10 +418,6 @@ fn sort_record_batch(
     payload_type: &ArrowPayloadType,
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch> {
-    if *payload_type == ArrowPayloadType::LogAttrs {
-        return sort_attrs_record_batch(record_batch);
-    }
-
     let sort_columns_paths = get_sort_column_paths(payload_type);
 
     // choose which columns to sort by -- only sort by the columns that are present
@@ -464,7 +460,9 @@ fn sort_record_batch(
     }
 }
 
-fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
+fn sort_and_apply_transport_delta_encoding_for_attrs(
+    record_batch: &RecordBatch,
+) -> Result<RecordBatch> {
     let type_col = record_batch.column_by_name(consts::ATTRIBUTE_TYPE).unwrap();
     let key_col = record_batch.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
 
@@ -559,7 +557,10 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                             .iter()
                             .map(|k| value_ranks[*k as usize] as u8)
                             .collect::<Vec<_>>();
-                         Arc::new(UInt8Array::new(ScalarBuffer::from(key_ranks), dict_arr.keys().nulls().cloned()))
+                        Arc::new(UInt8Array::new(
+                            ScalarBuffer::from(key_ranks),
+                            dict_arr.keys().nulls().cloned(),
+                        ))
                         // Arc::new(UInt8Array::from_iter(key_ranks))
                     }
                     DataType::UInt16 => {
@@ -582,7 +583,10 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                             .iter()
                             .map(|k| value_ranks[*k as usize] as u16)
                             .collect::<Vec<_>>();
-                        Arc::new(UInt16Array::new(ScalarBuffer::from(key_ranks), dict_arr.keys().nulls().cloned()))
+                        Arc::new(UInt16Array::new(
+                            ScalarBuffer::from(key_ranks),
+                            dict_arr.keys().nulls().cloned(),
+                        ))
                         // Arc::new(UInt16Array::from_iter(key_ranks))
                     }
                     _ => {
@@ -636,24 +640,17 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 let next_eq_inverted = not(&next_eq_arr_key).unwrap();
                 let values_ranges = ranges(next_eq_inverted.values());
 
-                let all_parent_id_sorted = values_ranges.iter().all(|range| {
-                    is_parent_id_column_sorted(
-                        parent_id_col.slice(range.start, range.len()).as_ref(),
-                    )
-                });
-                if all_parent_id_sorted {
-                    // TODO needs tests
-                    sorted_parent_id_column
-                        .append_external_sorted_range(parent_id_key_range_sorted)?;
-                } else {
-                    for values_range in values_ranges {
-                        // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
-                        let parent_ids_range = parent_id_key_range_sorted
-                            .slice(values_range.start, values_range.len());
-                        let parent_ids_sorted =
-                            arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
-                        sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
-                    }
+                for values_range in values_ranges {
+                    // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
+                    let parent_ids_range =
+                        parent_id_key_range_sorted.slice(values_range.start, values_range.len());
+                    let parent_ids_sorted = if !is_parent_id_column_sorted(&parent_ids_range) {
+                        arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap()
+                    } else {
+                        parent_ids_range.clone()
+                    };
+                    let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted);
+                    sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
                 }
             }
         } else {
@@ -689,9 +686,21 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         }
     }
 
+    let mut fields = vec![];
     let mut columns = vec![];
     for field in record_batch.schema().fields() {
         let field_name = field.name();
+
+        if field.name() == consts::PARENT_ID {
+            fields.push(
+                field
+                    .as_ref()
+                    .clone()
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+            );
+        } else {
+            fields.push(field.as_ref().clone());
+        }
 
         if field_name == consts::ATTRIBUTE_TYPE {
             columns.push(type_col_sorted.clone());
@@ -760,7 +769,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         todo!("handle bad col name {field_name}")
     }
 
-    let batch = RecordBatch::try_new(record_batch.schema().clone(), columns).unwrap();
+    let schema = Schema::new(fields);
+    let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
     Ok(batch)
 }
@@ -789,7 +799,32 @@ fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
                 .downcast_ref::<UInt16Array>()
                 .unwrap();
             let values_buffer = as_prim.values().iter().as_slice();
+            // println!("checking if val buffer is sortde {:?}", values_buffer);
             values_buffer.is_sorted()
+        }
+        _ => {
+            todo!()
+        }
+    }
+}
+
+fn delta_encode_parent_id(array: ArrayRef) -> ArrayRef {
+    match array.data_type() {
+        DataType::UInt16 => {
+            let prim_arr = array.as_any().downcast_ref::<UInt16Array>().unwrap();
+            if prim_arr.nulls().is_some() {
+                todo!()
+            }
+
+            let mut values = prim_arr.values().to_vec();
+            let mut acc = values[0];
+            for i in 1..values.len() {
+                let val = values[i];
+                values[i] -= acc;
+                acc = val;
+            }
+
+            Arc::new(UInt16Array::new(values.into(), None))
         }
         _ => {
             todo!()
@@ -1488,6 +1523,14 @@ pub fn apply_transport_optimized_encodings(
     if count_to_apply == 0 {
         // nothing to do - the entire record batch already has the columns transport-optimized
         return Ok((record_batch.clone(), None));
+    }
+
+    // TODO - also do this for other attribtue types
+    if *payload_type == ArrowPayloadType::LogAttrs {
+        return Ok((
+            sort_and_apply_transport_delta_encoding_for_attrs(record_batch)?,
+            None,
+        ));
     }
 
     // sort record batch before applying the encoding. This will give us the best compression ratio
@@ -2684,6 +2727,8 @@ mod test {
         assert_eq!(result, expected);
     }
 
+    // TODO need to change the names of all these tests
+
     #[test]
     fn test_sort_attrs_record_batch() {
         let schema = Arc::new(Schema::new(vec![
@@ -2829,7 +2874,12 @@ mod test {
             schema.clone(),
             vec![
                 Arc::new(UInt16Array::from_iter_values([
-                    4, 6, 5, 9, 1, 0, 11, 8, 7, 3, 2, 10,
+                    // 4, 6, 5, 9,
+                    // 1, 0,
+                    // 11, 8, 7,
+                    // 3, 2,
+                    // 10,
+                    4, 2, 5, 4, 1, 0, 11, 8, 7, 3, 2, 10,
                 ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
@@ -2932,7 +2982,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -2994,7 +3044,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -3118,7 +3168,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -3230,7 +3280,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -3332,7 +3382,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -3412,7 +3462,7 @@ mod test {
         )
         .unwrap();
 
-        let result = sort_attrs_record_batch(&input).unwrap();
+        let result = sort_and_apply_transport_delta_encoding_for_attrs(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
