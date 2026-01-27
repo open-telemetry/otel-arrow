@@ -113,7 +113,7 @@ macro_rules! raw_error {
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
         let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
-        ConsoleWriter::no_color().print_log_record(now, &record);
+        ConsoleWriter::no_color().print_log_record(now, &record, |_| {});
     }};
 }
 
@@ -138,7 +138,7 @@ macro_rules! __log_record_impl {
         // Use closure to extend valueset lifetime (same pattern as tracing::event!)
         (|valueset: $crate::_private::ValueSet<'_>| {
             let event = $crate::_private::Event::new(meta, &valueset);
-            LogRecord::new(&event)
+            LogRecord::new(&event, $crate::LogContext::new())
         })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
     }};
 }

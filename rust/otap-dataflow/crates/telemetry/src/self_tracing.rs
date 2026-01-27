@@ -10,20 +10,25 @@
 pub mod encoder;
 pub mod formatter;
 
+use crate::registry::EntityKey;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
 use serde::Serialize;
 use serde::ser::Serializer;
+use smallvec::SmallVec;
 use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
+pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
-pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
+pub use formatter::{
+    AnsiCode, BufWriter, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer,
+    StyledBufWriter, format_log_record_to_string,
+};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -37,7 +42,14 @@ pub struct LogRecord {
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
+
+    /// The context of this log record, typically pipeline and node context keys.
+    pub context: LogContext,
 }
+
+/// Context keys refer to attribute sets in the telemetry registry.
+/// Note: Currently we use at most 1 entity context key per callsite.
+pub type LogContext = SmallVec<[EntityKey; 1]>;
 
 /// Saved callsite information. This is information that can easily be
 /// populated from Metadata, for example in a `register_callsite` hook
@@ -87,9 +99,9 @@ impl SavedCallsite {
 }
 
 impl LogRecord {
-    /// Construct a log record, partially encoding its dynamic content.
+    /// Construct a log record with entity context, partially encoding its dynamic content.
     #[must_use]
-    pub fn new(event: &Event<'_>) -> Self {
+    pub fn new(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
@@ -103,6 +115,7 @@ impl LogRecord {
         Self {
             callsite_id: metadata.callsite(),
             body_attrs_bytes: buf.into_bytes(),
+            context,
         }
     }
 
@@ -115,11 +128,7 @@ impl LogRecord {
 
 impl fmt::Display for LogRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            ConsoleWriter::no_color().format_log_record(None, self)
-        )
+        write!(f, "{}", format_log_record_to_string(None, self))
     }
 }
 

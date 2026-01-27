@@ -3,17 +3,19 @@
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
-use std::time::SystemTime;
-
+use super::{LogRecord, SavedCallsite};
+use crate::event::LogEvent;
+use crate::registry::EntityKey;
+use crate::registry::TelemetryRegistryHandle;
+use bytes::Bytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
+use std::collections::HashMap;
+use std::time::SystemTime;
 use tracing::Level;
-
-use super::{LogRecord, SavedCallsite};
-use crate::event::LogEvent;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf> {
@@ -298,7 +300,7 @@ pub fn level_to_severity_number(level: &Level) -> u8 {
 /// Encode an SDK Resource as OTLP Resource bytes (field 1 of ResourceLogs).
 ///
 /// The buffer is NOT cleared; bytes are appended.
-pub fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
+fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
 where
     I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
 {
@@ -322,7 +324,7 @@ where
 
 /// Encode an SDK Resource to bytes for later reuse.
 #[must_use]
-pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> bytes::Bytes {
+pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
     let mut buf = ProtoBuffer::with_capacity(256);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
@@ -372,11 +374,111 @@ fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelem
 // Field numbers for ExportLogsServiceRequest and related messages
 const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 
+/// Pre-encoded scope attribute bytes keyed by EntityKey.
+///
+/// The Internal Telemetry Receiver uses this to avoid re-encoding scope
+/// attributes for each log event. Entity attributes are looked up once
+/// from the registry and encoded as InstrumentationScope.attributes bytes.
+///
+/// TODO: ScopeToBytesMap grows without any attention to managing memory.
+/// We will require a way to de-register entities that are no longer use
+/// or to flush memory to maintain a fixed size.
+#[derive(Debug)]
+pub struct ScopeToBytesMap {
+    cache: HashMap<EntityKey, Bytes>,
+    registry: TelemetryRegistryHandle,
+}
+
+impl ScopeToBytesMap {
+    /// Create a new empty scope attribute cache.
+    #[must_use]
+    pub fn new(registry: TelemetryRegistryHandle) -> Self {
+        Self {
+            cache: HashMap::new(),
+            registry,
+        }
+    }
+
+    /// Get or compute the encoded scope attribute bytes for an entity key.
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Bytes {
+        if let Some(cached) = self.cache.get(&key) {
+            return cached.clone();
+        }
+
+        // Encode the entity attributes as KeyValue messages
+        let mut buf = ProtoBuffer::with_capacity(128);
+        self.registry.visit_entity(key, |attrs| {
+            for (attr_key, attr_value) in attrs.iter_attributes() {
+                encode_scope_attribute(&mut buf, attr_key, attr_value);
+            }
+        });
+
+        let bytes = buf.into_bytes();
+        let _ = self.cache.insert(key, bytes.clone());
+        bytes
+    }
+
+    /// Clear the cache. Call this when entities may have been updated.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+}
+
+/// Encode a single scope attribute as a KeyValue message for InstrumentationScope.attributes.
+#[inline]
+fn encode_scope_attribute(
+    buf: &mut ProtoBuffer,
+    key: &str,
+    value: &crate::attributes::AttributeValue,
+) {
+    use crate::attributes::AttributeValue;
+
+    proto_encode_len_delimited_unknown_size!(
+        INSTRUMENTATION_SCOPE_ATTRIBUTES,
+        {
+            buf.encode_string(KEY_VALUE_KEY, key);
+            proto_encode_len_delimited_unknown_size!(
+                KEY_VALUE_VALUE,
+                {
+                    match value {
+                        AttributeValue::String(s) => {
+                            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
+                        }
+                        AttributeValue::Boolean(b) => {
+                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                            buf.encode_varint(u64::from(*b));
+                        }
+                        AttributeValue::Int(i) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*i as u64);
+                        }
+                        AttributeValue::UInt(u) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*u);
+                        }
+                        AttributeValue::Double(f) => {
+                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                            buf.extend_from_slice(&f.to_le_bytes());
+                        }
+                    }
+                },
+                buf
+            );
+        },
+        buf
+    );
+}
+
 /// Encode a LogEvent as a complete ExportLogsServiceRequest.
+///
+/// This version resolves entity keys from the log record's context to populate
+/// the InstrumentationScope.attributes field. The scope cache is used to avoid
+/// re-encoding entity attributes for each log event.
 pub fn encode_export_logs_request(
     buf: &mut ProtoBuffer,
     event: &LogEvent,
-    resource_bytes: &bytes::Bytes,
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
 ) {
     buf.clear();
 
@@ -392,8 +494,19 @@ pub fn encode_export_logs_request(
             proto_encode_len_delimited_unknown_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
                 {
-                    // ScopeLogs.scope: TODO: add scope attributes referring to
-                    // component identity or somehow produce instrumentation scope.
+                    // ScopeLogs.scope (field 1, InstrumentationScope message)
+                    // Encode scope with attributes from entity context
+                    proto_encode_len_delimited_unknown_size!(
+                        SCOPE_LOG_SCOPE,
+                        {
+                            // For each entity key in the log context, append its pre-encoded attributes
+                            for entity_key in event.record.context.iter() {
+                                let scope_bytes = scope_cache.get_or_encode(*entity_key);
+                                buf.extend_from_slice(&scope_bytes);
+                            }
+                        },
+                        buf
+                    );
 
                     // ScopeLogs.log_records (field 2, repeated LogRecord)
                     proto_encode_len_delimited_unknown_size!(

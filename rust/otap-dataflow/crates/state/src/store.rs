@@ -124,7 +124,7 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                self.console.print_log_record(log.time, &log.record);
+                self.console.print_log_record(log.time, &log.record, |_| {});
             }
         }
         Ok(())
