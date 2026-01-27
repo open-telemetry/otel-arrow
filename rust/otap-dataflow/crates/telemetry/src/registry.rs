@@ -75,15 +75,17 @@ impl TelemetryRegistryHandle {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let entity_key = self.registry.lock().entities.register(attrs);
+        let (entity_key, created) = self.registry.lock().entities.register(attrs);
 
-        // Log the entity definition
-        otel_info!(
-            "registry.define_entity",
-            schema = schema_name,
-            entity_name = primary_name.as_str(),
-            definition = all_attrs.as_str()
-        );
+        if created {
+            // Log the entity definition
+            otel_info!(
+                "registry.define_entity",
+                schema = schema_name,
+                entity_name = primary_name.as_str(),
+                definition = all_attrs.as_str()
+            );
+        }
 
         entity_key
     }
@@ -100,14 +102,6 @@ impl TelemetryRegistryHandle {
         self.registry.lock().entities.len()
     }
 
-    /// Visits all registered entities.
-    pub fn visit_entities<F>(&self, f: F)
-    where
-        F: FnMut(EntityKey, &dyn AttributeSetHandler),
-    {
-        self.registry.lock().entities.visit_entities(f);
-    }
-
     /// Visits a single entity by key, if it exists.
     pub fn visit_entity<F>(&self, key: EntityKey, mut f: F)
     where
@@ -116,27 +110,6 @@ impl TelemetryRegistryHandle {
         if let Some(attrs) = self.registry.lock().entities.get(key) {
             f(attrs);
         }
-    }
-
-    /// Returns the primary (display) name for an entity.
-    /// By convention, this is the first attribute value.
-    #[must_use]
-    pub fn entity_primary_name(&self, key: EntityKey) -> Option<String> {
-        self.registry
-            .lock()
-            .entities
-            .get(key)
-            .map(|attrs| attrs.primary_name())
-    }
-
-    /// Returns the schema name for an entity (e.g., "pipeline.attrs").
-    #[must_use]
-    pub fn entity_schema_name(&self, key: EntityKey) -> Option<&'static str> {
-        self.registry
-            .lock()
-            .entities
-            .get(key)
-            .map(|attrs| attrs.schema_name())
     }
 
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`
@@ -156,7 +129,7 @@ impl TelemetryRegistryHandle {
 
         let metric_set = {
             let mut registry = self.registry.lock();
-            let entity_key = registry.entities.register(attrs);
+            let (entity_key, _) = registry.entities.register(attrs);
             registry.metrics.register(entity_key)
         };
 

@@ -27,7 +27,7 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
-use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, StyledBufWriter, LOG_BUFFER_SIZE};
+use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -179,7 +179,7 @@ impl TreeChars {
 
 /// Hierarchical formatter for OTLP data.
 pub struct HierarchicalFormatter {
-    writer: ConsoleWriter,
+    color_mode: ColorMode,
     tree: TreeChars,
 }
 
@@ -188,10 +188,10 @@ impl HierarchicalFormatter {
     #[must_use]
     pub fn new(use_color: bool, use_unicode: bool) -> Self {
         Self {
-            writer: if use_color {
-                ConsoleWriter::color()
+            color_mode: if use_color {
+                ColorMode::Color
             } else {
-                ConsoleWriter::no_color()
+                ColorMode::NoColor
             },
             tree: if use_unicode {
                 TreeChars::UNICODE
@@ -230,8 +230,7 @@ impl HierarchicalFormatter {
 
         // Format resource header
         self.format_line(output, |w| {
-            self.writer.format_header_line(
-                w,
+            w.format_header_line(
                 Some(first_ts),
                 resource_logs.resource().iter().flat_map(|r| r.attributes()),
                 |w| {
@@ -243,7 +242,9 @@ impl HierarchicalFormatter {
                 |w| {
                     let _ = w.write_all(b"v1.Resource");
                 },
-                |_| {}, // no suffix
+                |_| {
+                    // no suffix
+                },
             );
         });
 
@@ -291,8 +292,7 @@ impl HierarchicalFormatter {
         let version = scope.as_ref().and_then(|s| s.version());
 
         self.format_line(output, |w| {
-            self.writer.format_header_line(
-                w,
+            w.format_header_line(
                 Some(first_ts),
                 scope.iter().flat_map(|s| s.attributes()),
                 |w| {
@@ -316,7 +316,9 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
                 },
-                |_| {}, // no suffix
+                |_| {
+                    // no suffix
+                },
             );
         });
 
@@ -351,8 +353,7 @@ impl HierarchicalFormatter {
         let tree = self.tree;
 
         self.format_line(output, |w| {
-            self.writer.format_log_line(
-                w,
+            w.format_log_line(
                 Some(time),
                 log_record,
                 |w| {
@@ -371,7 +372,9 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(name.as_bytes());
                     }
                 },
-                |_| {}, // no suffix
+                |_| {
+                    // no suffix
+                },
             );
         });
     }
@@ -382,7 +385,7 @@ impl HierarchicalFormatter {
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = StyledBufWriter::new(&mut buf, self.writer.color_mode());
+        let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
         f(&mut w);
         let len = w.position() as usize;
         output.extend_from_slice(&buf[..len]);

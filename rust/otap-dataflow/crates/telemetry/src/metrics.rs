@@ -585,7 +585,8 @@ mod tests {
     }
 
     fn register_entity(registry: &mut EntityRegistry, value: &str) -> EntityKey {
-        registry.register(MockAttributeSet::new(value.to_string()))
+        let (key, _) = registry.register(MockAttributeSet::new(value.to_string()));
+        key
     }
 
     #[test]

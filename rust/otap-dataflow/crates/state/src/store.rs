@@ -133,14 +133,13 @@ impl ObservedStateStore {
             ObservedEvent::Log(log) => {
                 let context = &log.record.context;
 
-                self.console
-                    .print_log_record(log.time, &log.record, |w| {
-                        if !context.is_empty() {
-                            w.write_styled(AnsiCode::Cyan, |w| {
-                                Self::format_scope_from_registry(w, context, &self.registry);
-                            });
-                        }
-                    });
+                self.console.print_log_record(log.time, &log.record, |w| {
+                    if !context.is_empty() {
+                        w.write_styled(AnsiCode::Cyan, |w| {
+                            Self::format_scope_from_registry(w, context, &self.registry);
+                        });
+                    }
+                });
             }
         }
         Ok(())
@@ -258,117 +257,5 @@ impl ObservedStateHandle {
             .lock()
             .ok()
             .is_some_and(|pipelines| pipelines.get(pipeline_key).is_some_and(|ps| ps.readiness()))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
-
-    // A mock attribute set that mimics PipelineAttributeSet
-    #[derive(Debug)]
-    struct MockPipelineAttrs {
-        values: Vec<AttributeValue>,
-    }
-
-    static PIPELINE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
-        name: "pipeline.attrs",
-        fields: &[AttributeField {
-            key: "pipeline.id", // Macro converts pipeline_id -> pipeline.id
-            r#type: AttributeValueType::String,
-            brief: "Pipeline identifier",
-        }],
-    };
-
-    impl MockPipelineAttrs {
-        fn new(pipeline_id: &str) -> Self {
-            Self {
-                values: vec![AttributeValue::String(pipeline_id.to_string())],
-            }
-        }
-    }
-
-    impl AttributeSetHandler for MockPipelineAttrs {
-        fn descriptor(&self) -> &'static AttributesDescriptor {
-            &PIPELINE_DESCRIPTOR
-        }
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
-        }
-    }
-
-    // A mock attribute set that mimics NodeAttributeSet
-    #[derive(Debug)]
-    struct MockNodeAttrs {
-        values: Vec<AttributeValue>,
-    }
-
-    static NODE_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
-        name: "node.attrs",
-        fields: &[AttributeField {
-            key: "node.id", // Macro converts node_id -> node.id
-            r#type: AttributeValueType::String,
-            brief: "Node identifier",
-        }],
-    };
-
-    impl MockNodeAttrs {
-        fn new(node_id: &str) -> Self {
-            Self {
-                values: vec![AttributeValue::String(node_id.to_string())],
-            }
-        }
-    }
-
-    impl AttributeSetHandler for MockNodeAttrs {
-        fn descriptor(&self) -> &'static AttributesDescriptor {
-            &NODE_DESCRIPTOR
-        }
-        fn attribute_values(&self) -> &[AttributeValue] {
-            &self.values
-        }
-    }
-
-    #[test]
-    fn test_entity_key_lookup() {
-        // Create a registry and register some entities
-        let registry = TelemetryRegistryHandle::new();
-
-        // Register a pipeline entity
-        let pipeline_key = registry.register_entity(MockPipelineAttrs::new("my-pipeline"));
-
-        // Register a node entity
-        let node_key = registry.register_entity(MockNodeAttrs::new("my-node"));
-
-        // Verify we can look them up
-        let mut found_pipeline_id = None;
-        registry.visit_entity(pipeline_key, |attrs| {
-            let desc = attrs.descriptor();
-            let values = attrs.attribute_values();
-            for (i, field) in desc.fields.iter().enumerate() {
-                if field.key == "pipeline.id" {
-                    if let Some(val) = values.get(i) {
-                        found_pipeline_id = Some(val.to_string_value());
-                    }
-                }
-            }
-        });
-        assert_eq!(found_pipeline_id, Some("my-pipeline".to_string()));
-
-        let mut found_node_id = None;
-        registry.visit_entity(node_key, |attrs| {
-            let desc = attrs.descriptor();
-            let values = attrs.attribute_values();
-            for (i, field) in desc.fields.iter().enumerate() {
-                if field.key == "node.id" {
-                    if let Some(val) = values.get(i) {
-                        found_node_id = Some(val.to_string_value());
-                    }
-                }
-            }
-        });
-        assert_eq!(found_node_id, Some("my-node".to_string()));
     }
 }

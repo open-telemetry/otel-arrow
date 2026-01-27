@@ -3,17 +3,19 @@
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
-use std::time::SystemTime;
-
+use super::{LogRecord, SavedCallsite};
+use crate::event::LogEvent;
+use crate::registry::EntityKey;
+use crate::registry::TelemetryRegistryHandle;
+use bytes::Bytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
+use std::collections::HashMap;
+use std::time::SystemTime;
 use tracing::Level;
-
-use super::{LogRecord, SavedCallsite};
-use crate::event::LogEvent;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf> {
@@ -298,7 +300,7 @@ pub fn level_to_severity_number(level: &Level) -> u8 {
 /// Encode an SDK Resource as OTLP Resource bytes (field 1 of ResourceLogs).
 ///
 /// The buffer is NOT cleared; bytes are appended.
-pub fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
+fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
 where
     I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
 {
@@ -322,7 +324,7 @@ where
 
 /// Encode an SDK Resource to bytes for later reuse.
 #[must_use]
-pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> bytes::Bytes {
+pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
     let mut buf = ProtoBuffer::with_capacity(256);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
@@ -372,39 +374,36 @@ fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelem
 // Field numbers for ExportLogsServiceRequest and related messages
 const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 
-/// Cache for pre-encoded scope attribute bytes keyed by EntityKey.
+/// Pre-encoded scope attribute bytes keyed by EntityKey.
 ///
 /// The Internal Telemetry Receiver uses this to avoid re-encoding scope
 /// attributes for each log event. Entity attributes are looked up once
 /// from the registry and encoded as InstrumentationScope.attributes bytes.
-#[derive(Debug, Default)]
-pub struct ScopeAttributeCache {
-    cache: std::collections::HashMap<crate::registry::EntityKey, bytes::Bytes>,
+#[derive(Debug)]
+pub struct ScopeToBytesMap {
+    cache: HashMap<EntityKey, Bytes>,
+    registry: TelemetryRegistryHandle,
 }
 
-impl ScopeAttributeCache {
+impl ScopeToBytesMap {
     /// Create a new empty scope attribute cache.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(registry: TelemetryRegistryHandle) -> Self {
+        Self {
+            cache: HashMap::new(),
+            registry,
+        }
     }
 
     /// Get or compute the encoded scope attribute bytes for an entity key.
-    ///
-    /// Returns pre-encoded bytes suitable for appending to InstrumentationScope.attributes
-    /// (field 3, repeated KeyValue messages).
-    pub fn get_or_encode(
-        &mut self,
-        key: crate::registry::EntityKey,
-        registry: &crate::registry::TelemetryRegistryHandle,
-    ) -> bytes::Bytes {
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Bytes {
         if let Some(cached) = self.cache.get(&key) {
             return cached.clone();
         }
 
         // Encode the entity attributes as KeyValue messages
         let mut buf = ProtoBuffer::with_capacity(128);
-        registry.visit_entity(key, |attrs| {
+        self.registry.visit_entity(key, |attrs| {
             for (attr_key, attr_value) in attrs.iter_attributes() {
                 encode_scope_attribute(&mut buf, attr_key, attr_value);
             }
@@ -467,57 +466,15 @@ fn encode_scope_attribute(
 }
 
 /// Encode a LogEvent as a complete ExportLogsServiceRequest.
-pub fn encode_export_logs_request(
-    buf: &mut ProtoBuffer,
-    event: &LogEvent,
-    resource_bytes: &bytes::Bytes,
-) {
-    buf.clear();
-
-    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    proto_encode_len_delimited_unknown_size!(
-        EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
-        {
-            // ResourceLogs.resource (field 1, Resource message)
-            // Copy pre-encoded resource bytes directly
-            buf.extend_from_slice(resource_bytes);
-
-            // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-            proto_encode_len_delimited_unknown_size!(
-                RESOURCE_LOGS_SCOPE_LOGS,
-                {
-                    // ScopeLogs.scope: TODO: add scope attributes referring to
-                    // component identity or somehow produce instrumentation scope.
-
-                    // ScopeLogs.log_records (field 2, repeated LogRecord)
-                    proto_encode_len_delimited_unknown_size!(
-                        SCOPE_LOGS_LOG_RECORDS,
-                        {
-                            // Encode the LogRecord fields
-                            let mut encoder = DirectLogRecordEncoder::new(buf);
-                            let _ = encoder.encode_log_record(event.time, &event.record);
-                        },
-                        buf
-                    );
-                },
-                buf
-            );
-        },
-        buf
-    );
-}
-
-/// Encode a LogEvent as a complete ExportLogsServiceRequest with scope attributes.
 ///
 /// This version resolves entity keys from the log record's context to populate
 /// the InstrumentationScope.attributes field. The scope cache is used to avoid
 /// re-encoding entity attributes for each log event.
-pub fn encode_export_logs_request_with_scope(
+pub fn encode_export_logs_request(
     buf: &mut ProtoBuffer,
     event: &LogEvent,
-    resource_bytes: &bytes::Bytes,
-    scope_cache: &mut ScopeAttributeCache,
-    registry: &crate::registry::TelemetryRegistryHandle,
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
 ) {
     buf.clear();
 
@@ -540,7 +497,7 @@ pub fn encode_export_logs_request_with_scope(
                         {
                             // For each entity key in the log context, append its pre-encoded attributes
                             for entity_key in event.record.context.iter() {
-                                let scope_bytes = scope_cache.get_or_encode(*entity_key, registry);
+                                let scope_bytes = scope_cache.get_or_encode(*entity_key);
                                 buf.extend_from_slice(&scope_bytes);
                             }
                         },

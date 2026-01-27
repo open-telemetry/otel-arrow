@@ -22,13 +22,12 @@ use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
-pub use encoder::ScopeAttributeCache;
+pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
-pub use encoder::encode_export_logs_request_with_scope;
-pub use encoder::encode_resource;
 pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
-    AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, StyledBufWriter,
+    AnsiCode, BufWriter, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer,
+    StyledBufWriter,
 };
 
 /// A log record with structural metadata and pre-encoded body/attributes.
@@ -102,7 +101,7 @@ impl SavedCallsite {
 impl LogRecord {
     /// Construct a log record with entity context, partially encoding its dynamic content.
     #[must_use]
-    pub fn new_with_context(event: &Event<'_>, context: LogContext) -> Self {
+    pub fn new(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.

@@ -137,20 +137,20 @@ impl Debug for EntityRegistry {
 impl EntityRegistry {
     /// Registers (or reuses) an entity for the provided attribute set and returns its key.
     #[must_use]
-    pub fn register(&mut self, attrs: impl AttributeSetHandler) -> EntityKey {
+    pub(crate) fn register(&mut self, attrs: impl AttributeSetHandler) -> (EntityKey, bool) {
         let entity = EntityAttributeSet::new(attrs);
         if let Some(existing) = self.entities_by_signature.get(&entity) {
             if let Some(entry) = self.entities.get_mut(*existing) {
                 entry.refs = entry.refs.saturating_add(1);
             }
-            return *existing;
+            return (*existing, false);
         }
 
         let attrs = Arc::new(entity.clone());
 
         let entity_key = self.entities.insert(EntityEntry { attrs, refs: 1 });
         let _ = self.entities_by_signature.insert(entity, entity_key);
-        entity_key
+        (entity_key, true)
     }
 
     /// Increments the reference count for an existing entity key.
@@ -397,7 +397,7 @@ mod tests {
     fn test_get_attributes() {
         let mut registry = EntityRegistry::default();
 
-        let key = registry.register(MockAttributeSet::new("value".to_string()));
+        let (key, _) = registry.register(MockAttributeSet::new("value".to_string()));
         let attrs = registry.get_shared(key).expect("missing attributes");
 
         let collected: Vec<_> = attrs.iter_attributes().collect();
@@ -410,8 +410,11 @@ mod tests {
     fn test_unregister() {
         let mut registry = EntityRegistry::default();
 
-        let key = registry.register(MockAttributeSet::new("value".to_string()));
-        let _dup = registry.register(MockAttributeSet::new("value".to_string()));
+        let (key, key_created) = registry.register(MockAttributeSet::new("value".to_string()));
+        let (_dup, dup_created) = registry.register(MockAttributeSet::new("value".to_string()));
+
+        assert!(key_created);
+        assert!(!dup_created);
 
         assert!(registry.unregister(key));
         assert_eq!(registry.len(), 1);

@@ -181,7 +181,7 @@ impl InternalTelemetrySystem {
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
-        registry: TelemetryRegistryHandle,
+        telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
         context_fn: LogContextFn,
     ) -> Result<Self, Error> {
@@ -193,9 +193,9 @@ impl InternalTelemetrySystem {
 
         // 1. Create internal metrics subsystem
         let (collector, metrics_reporter) =
-            collector::InternalCollector::new(config, registry.clone());
+            collector::InternalCollector::new(config, telemetry_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
-            registry.clone(),
+            telemetry_registry.clone(),
             config.reporting_interval,
         ));
 
@@ -217,7 +217,7 @@ impl InternalTelemetrySystem {
                 Some(InternalTelemetrySettings {
                     logs_receiver,
                     resource_bytes,
-                    registry: registry.clone(),
+                    registry: telemetry_registry.clone(),
                 }),
             )
         } else {
@@ -225,7 +225,7 @@ impl InternalTelemetrySystem {
         };
 
         Ok(Self {
-            registry,
+            registry: telemetry_registry,
             collector: Arc::new(collector),
             metrics_reporter,
             dispatcher,
@@ -242,10 +242,6 @@ impl InternalTelemetrySystem {
     }
 
     /// Initialize the global tracing subscriber.
-    ///
-    /// This sets up the global subscriber based on the configured `global` provider mode.
-    /// The event reporter passed to `new()` is used internally for async modes.
-    /// If entity providers have been set, they will be used to associate logs with context.
     pub fn init_global_subscriber(&self) {
         let setup = self.tracing_setup_for(self.provider_modes.global);
 
@@ -255,11 +251,8 @@ impl InternalTelemetrySystem {
     }
 
     /// Returns a `TracingSetup` for the given provider mode.
-    ///
-    /// This is useful for per-thread subscriber configuration in the engine.
-    /// The event reporter is taken from the internal state.
     #[must_use]
-    pub fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
+    fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
         let provider = match mode {
             ProviderMode::Noop => ProviderSetup::Noop,
 

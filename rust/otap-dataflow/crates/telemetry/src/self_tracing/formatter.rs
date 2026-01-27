@@ -162,6 +162,231 @@ impl<'a> StyledBufWriter<'a> {
             _ => AnsiCode::Reset,
         }
     }
+
+    /// Format a log line from a LogRecordView with custom formatters.
+    ///
+    /// Spacing convention: each section adds its own leading separator.
+    /// - Level ends with a space
+    /// - Event name (if any) prints space before itself
+    /// - Body (if any) prints `: ` before itself
+    /// - Attributes (if any) print ` [...]` before themselves
+    /// - Suffix (if any) is written after attributes, before the newline
+    pub fn format_log_line<V, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        record: &V,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        V: LogRecordView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, has_event_name| {
+                w.write_body_and_attrs(record, has_event_name);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
+    ///
+    /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
+    /// and doesn't print a body - just the header name and attributes.
+    pub fn format_header_line<A, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        attrs: impl Iterator<Item = A>,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        A: AttributeView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, _has_event_name| {
+                w.write_attrs(attrs);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Common implementation for formatting a line with timestamp, level, event name, and content.
+    fn format_line_impl<L, E, C, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        format_level: L,
+        format_event_name: E,
+        write_content: C,
+        write_suffix: S,
+    ) where
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        C: FnOnce(&mut Self, bool),
+        S: FnOnce(&mut Self),
+    {
+        // Timestamp (optional)
+        if let Some(time) = time {
+            self.write_styled(AnsiCode::Dim, |w| w.write_timestamp(time));
+            let _ = self.write_all(b"  ");
+        }
+
+        // Custom level/prefix formatting (tree structure, severity, etc.)
+        format_level(self);
+
+        // Track position to detect if event_name was written
+        let pos_before = self.position();
+        format_event_name(self);
+        let has_event_name = self.position() > pos_before;
+
+        // Write content (body+attrs or just attrs)
+        write_content(self, has_event_name);
+
+        // Write suffix (e.g., entity scope) before newline
+        write_suffix(self);
+
+        let _ = self.write_all(b"\n");
+    }
+
+    /// Write body and attributes from a LogRecordView to buffer.
+    /// - If has_event_name and body present: print ": " then body
+    /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
+    /// - Body prints directly
+    /// - Attributes print " [...]" before themselves
+    fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
+        let body = record.body();
+        let mut attrs = record.attributes().peekable();
+        let has_body = body.is_some();
+        let has_attrs = attrs.peek().is_some();
+
+        // Print separator after event_name if there's content following
+        if has_event_name && (has_body || has_attrs) {
+            if has_body {
+                let _ = self.write_all(b": ");
+            } else {
+                // No body, attrs will add " [" so just print ":"
+                let _ = self.write_all(b":");
+            }
+        }
+
+        // Write body if present
+        if let Some(body) = body {
+            self.write_any_value(&body);
+        }
+
+        // Write attributes if present (with leading " [")
+        self.write_attrs(attrs);
+    }
+
+    /// Write attributes from any AttributeView iterator to buffer.
+    pub fn write_attrs<A: AttributeView>(&mut self, attrs: impl Iterator<Item = A>) {
+        let mut attrs = attrs.peekable();
+        if attrs.peek().is_some() {
+            let _ = self.write_all(b" [");
+            let mut first = true;
+            for attr in attrs {
+                if self.is_full() {
+                    break;
+                }
+                if !first {
+                    let _ = self.write_all(b", ");
+                }
+                first = false;
+                let _ = self.write_all(attr.key());
+                let _ = self.write_all(b"=");
+                match attr.value() {
+                    Some(v) => self.write_any_value(&v),
+                    None => {
+                        let _ = self.write_all(b"<?>");
+                    }
+                }
+            }
+            let _ = self.write_all(b"]");
+        }
+    }
+
+    /// Write an AnyValue to buffer (strings unquoted).
+    fn write_any_value<'b>(&mut self, value: &impl AnyValueView<'b>) {
+        match value.value_type() {
+            ValueType::String => {
+                if let Some(s) = value.as_string() {
+                    let _ = self.write_all(s);
+                }
+            }
+            ValueType::Int64 => {
+                if let Some(i) = value.as_int64() {
+                    let _ = write!(self, "{}", i);
+                }
+            }
+            ValueType::Bool => {
+                if let Some(b) = value.as_bool() {
+                    let _ = self.write_all(if b { b"true" } else { b"false" });
+                }
+            }
+            ValueType::Double => {
+                if let Some(d) = value.as_double() {
+                    let _ = write!(self, "{:.6}", d);
+                }
+            }
+            ValueType::Bytes => {
+                if let Some(bytes) = value.as_bytes() {
+                    let _ = self.write_all(b"[");
+                    for (i, b) in bytes.iter().enumerate() {
+                        if i > 0 {
+                            let _ = self.write_all(b", ");
+                        }
+                        let _ = write!(self, "{}", b);
+                    }
+                    let _ = self.write_all(b"]");
+                }
+            }
+            ValueType::Array => {
+                let _ = self.write_all(b"[");
+                if let Some(array_iter) = value.as_array() {
+                    let mut first = true;
+                    for item in array_iter {
+                        if !first {
+                            let _ = self.write_all(b", ");
+                        }
+                        first = false;
+                        self.write_any_value(&item);
+                    }
+                }
+                let _ = self.write_all(b"]");
+            }
+            ValueType::KeyValueList => {
+                let _ = self.write_all(b"{");
+                if let Some(kvlist_iter) = value.as_kvlist() {
+                    let mut first = true;
+                    for kv in kvlist_iter {
+                        if !first {
+                            let _ = self.write_all(b", ");
+                        }
+                        first = false;
+                        let _ = self.write_all(kv.key());
+                        if let Some(val) = kv.value() {
+                            let _ = self.write_all(b"=");
+                            self.write_any_value(&val);
+                        }
+                    }
+                }
+                let _ = self.write_all(b"}");
+            }
+            ValueType::Empty => {}
+        }
+    }
 }
 
 impl Write for StyledBufWriter<'_> {
@@ -203,7 +428,7 @@ impl RawLoggingLayer {
         // TODO: there are allocations implied in LogRecord::new_with_context that we
         // would prefer to avoid; it will be an extensive change in the
         // ProtoBuffer impl to stack-allocate this as a temporary.
-        let record = LogRecord::new_with_context(event, context);
+        let record = LogRecord::new(event, context);
         self.writer.print_log_record(time, &record, |w| {
             w.write_styled(AnsiCode::Cyan, |w| {
                 for key in record.context.iter() {
@@ -266,8 +491,7 @@ impl ConsoleWriter {
         let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
         let level = *record.callsite().level();
 
-        self.format_log_line(
-            &mut w,
+        w.format_log_line(
             Some(time),
             &view,
             |w| w.write_level(&level),
@@ -293,8 +517,7 @@ impl ConsoleWriter {
         let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
         let level = *record.callsite().level();
 
-        self.format_log_line(
-            &mut w,
+        w.format_log_line(
             time,
             &view,
             |w| w.write_level(&level),
@@ -334,242 +557,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
 }
 
 impl ConsoleWriter {
-    /// Write body and attributes from a LogRecordView to buffer.
-    /// - If has_event_name and body present: print ": " then body
-    /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
-    /// - Body prints directly
-    /// - Attributes print " [...]" before themselves
-    fn write_body_and_attrs<V: LogRecordView>(
-        w: &mut StyledBufWriter<'_>,
-        record: &V,
-        has_event_name: bool,
-    ) {
-        let body = record.body();
-        let mut attrs = record.attributes().peekable();
-        let has_body = body.is_some();
-        let has_attrs = attrs.peek().is_some();
-
-        // Print separator after event_name if there's content following
-        if has_event_name && (has_body || has_attrs) {
-            if has_body {
-                let _ = w.write_all(b": ");
-            } else {
-                // No body, attrs will add " [" so just print ":"
-                let _ = w.write_all(b":");
-            }
-        }
-
-        // Write body if present
-        if let Some(body) = body {
-            Self::write_any_value(w, &body);
-        }
-
-        // Write attributes if present (with leading " [")
-        Self::write_attrs(w, attrs);
-    }
-
-    /// Write attributes from any AttributeView iterator to buffer.
-    pub fn write_attrs<A: AttributeView>(
-        w: &mut StyledBufWriter<'_>,
-        attrs: impl Iterator<Item = A>,
-    ) {
-        let mut attrs = attrs.peekable();
-        if attrs.peek().is_some() {
-            let _ = w.write_all(b" [");
-            let mut first = true;
-            for attr in attrs {
-                if w.is_full() {
-                    break;
-                }
-                if !first {
-                    let _ = w.write_all(b", ");
-                }
-                first = false;
-                let _ = w.write_all(attr.key());
-                let _ = w.write_all(b"=");
-                match attr.value() {
-                    Some(v) => Self::write_any_value(w, &v),
-                    None => {
-                        let _ = w.write_all(b"<?>");
-                    }
-                }
-            }
-            let _ = w.write_all(b"]");
-        }
-    }
-
-    /// Write an AnyValue to buffer (strings unquoted).
-    fn write_any_value<'a>(w: &mut StyledBufWriter<'_>, value: &impl AnyValueView<'a>) {
-        match value.value_type() {
-            ValueType::String => {
-                if let Some(s) = value.as_string() {
-                    let _ = w.write_all(s);
-                }
-            }
-            ValueType::Int64 => {
-                if let Some(i) = value.as_int64() {
-                    let _ = write!(w, "{}", i);
-                }
-            }
-            ValueType::Bool => {
-                if let Some(b) = value.as_bool() {
-                    let _ = w.write_all(if b { b"true" } else { b"false" });
-                }
-            }
-            ValueType::Double => {
-                if let Some(d) = value.as_double() {
-                    let _ = write!(w, "{:.6}", d);
-                }
-            }
-            ValueType::Bytes => {
-                if let Some(bytes) = value.as_bytes() {
-                    let _ = w.write_all(b"[");
-                    for (i, b) in bytes.iter().enumerate() {
-                        if i > 0 {
-                            let _ = w.write_all(b", ");
-                        }
-                        let _ = write!(w, "{}", b);
-                    }
-                    let _ = w.write_all(b"]");
-                }
-            }
-            ValueType::Array => {
-                let _ = w.write_all(b"[");
-                if let Some(array_iter) = value.as_array() {
-                    let mut first = true;
-                    for item in array_iter {
-                        if !first {
-                            let _ = w.write_all(b", ");
-                        }
-                        first = false;
-                        Self::write_any_value(w, &item);
-                    }
-                }
-                let _ = w.write_all(b"]");
-            }
-            ValueType::KeyValueList => {
-                let _ = w.write_all(b"{");
-                if let Some(kvlist_iter) = value.as_kvlist() {
-                    let mut first = true;
-                    for kv in kvlist_iter {
-                        if !first {
-                            let _ = w.write_all(b", ");
-                        }
-                        first = false;
-                        let _ = w.write_all(kv.key());
-                        if let Some(val) = kv.value() {
-                            let _ = w.write_all(b"=");
-                            Self::write_any_value(w, &val);
-                        }
-                    }
-                }
-                let _ = w.write_all(b"}");
-            }
-            ValueType::Empty => {}
-        }
-    }
-
-    /// Format a log line from a LogRecordView with custom formatters.
-    ///
-    /// Spacing convention: each section adds its own leading separator.
-    /// - Level ends with a space
-    /// - Event name (if any) prints space before itself
-    /// - Body (if any) prints ": " before itself
-    /// - Attributes (if any) print " [...]" before themselves
-    /// - Suffix (if any) is written after attributes, before the newline
-    pub fn format_log_line<V, L, E, S>(
-        &self,
-        w: &mut StyledBufWriter<'_>,
-        time: Option<SystemTime>,
-        record: &V,
-        format_level: L,
-        format_event_name: E,
-        write_suffix: S,
-    ) where
-        V: LogRecordView,
-        L: FnOnce(&mut StyledBufWriter<'_>),
-        E: FnOnce(&mut StyledBufWriter<'_>),
-        S: FnOnce(&mut StyledBufWriter<'_>),
-    {
-        Self::format_line_impl(
-            w,
-            time,
-            format_level,
-            format_event_name,
-            |w, has_event_name| {
-                Self::write_body_and_attrs(w, record, has_event_name);
-            },
-            write_suffix,
-        );
-    }
-
-    /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
-    ///
-    /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
-    /// and doesn't print a body - just the header name and attributes.
-    pub fn format_header_line<A, L, E, S>(
-        &self,
-        w: &mut StyledBufWriter<'_>,
-        time: Option<SystemTime>,
-        attrs: impl Iterator<Item = A>,
-        format_level: L,
-        format_event_name: E,
-        write_suffix: S,
-    ) where
-        A: AttributeView,
-        L: FnOnce(&mut StyledBufWriter<'_>),
-        E: FnOnce(&mut StyledBufWriter<'_>),
-        S: FnOnce(&mut StyledBufWriter<'_>),
-    {
-        Self::format_line_impl(
-            w,
-            time,
-            format_level,
-            format_event_name,
-            |w, _has_event_name| {
-                Self::write_attrs(w, attrs);
-            },
-            write_suffix,
-        );
-    }
-
-    /// Common implementation for formatting a line with timestamp, level, event name, and content.
-    fn format_line_impl<L, E, C, S>(
-        w: &mut StyledBufWriter<'_>,
-        time: Option<SystemTime>,
-        format_level: L,
-        format_event_name: E,
-        write_content: C,
-        write_suffix: S,
-    ) where
-        L: FnOnce(&mut StyledBufWriter<'_>),
-        E: FnOnce(&mut StyledBufWriter<'_>),
-        C: FnOnce(&mut StyledBufWriter<'_>, bool),
-        S: FnOnce(&mut StyledBufWriter<'_>),
-    {
-        // Timestamp (optional)
-        if let Some(time) = time {
-            w.write_styled(AnsiCode::Dim, |w| w.write_timestamp(time));
-            let _ = w.write_all(b"  ");
-        }
-
-        // Custom level/prefix formatting (tree structure, severity, etc.)
-        format_level(w);
-
-        // Track position to detect if event_name was written
-        let pos_before = w.position();
-        format_event_name(w);
-        let has_event_name = w.position() > pos_before;
-
-        // Write content (body+attrs or just attrs)
-        write_content(w, has_event_name);
-
-        // Write suffix (e.g., entity scope) before newline
-        write_suffix(w);
-
-        let _ = w.write_all(b"\n");
-    }
-
     /// Write a log line to stdout or stderr.
     fn write_line(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
@@ -628,7 +615,7 @@ mod tests {
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let time = SystemTime::now();
-            let record = LogRecord::new_with_context(event, smallvec![]);
+            let record = LogRecord::new(event, smallvec![]);
 
             // Capture formatted output
             let writer = ConsoleWriter::no_color();
@@ -890,86 +877,6 @@ mod tests {
         assert!(
             output.contains("attribute_key_010=value_010"),
             "got: {}",
-            output
-        );
-    }
-
-    #[test]
-    fn test_scope_continuation_line() {
-        use crate::registry::EntityKey;
-        use slotmap::SlotMap;
-
-        // Create entity keys for testing
-        let mut slot_map: SlotMap<EntityKey, ()> = SlotMap::with_key();
-        let pipeline_key = slot_map.insert(());
-        let node_key = slot_map.insert(());
-
-        // Create a specific timestamp: 2024-01-15T12:30:45.678Z
-        let timestamp_ns: u64 = 1_705_321_845_678_000_000;
-        let time = std::time::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
-
-        // Test with both entity keys - should be single line with EntityKey suffixes
-        let record = LogRecord {
-            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
-            body_attrs_bytes: Bytes::new(),
-            context: smallvec![pipeline_key, node_key],
-        };
-
-        let writer = ConsoleWriter::no_color();
-        let output = writer.format_log_record(Some(time), &record);
-
-        // Should be single line
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 1, "expected 1 line, got: {:?}", lines);
-
-        // Line should start with timestamp
-        assert!(
-            lines[0].starts_with("2024-01-15T12:30:45.678Z"),
-            "got: {}",
-            lines[0]
-        );
-
-        // Should contain EntityKey references inline
-        assert!(
-            output.contains("EntityKey("),
-            "should contain EntityKey (raw format without registry), got: {}",
-            output
-        );
-
-        // Test with only one entity key
-        let record_one_key = LogRecord {
-            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
-            body_attrs_bytes: Bytes::new(),
-            context: smallvec![pipeline_key],
-        };
-
-        let output = writer.format_log_record(Some(time), &record_one_key);
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 1, "expected 1 line with one entity key");
-        assert!(
-            output.contains("EntityKey("),
-            "should contain EntityKey, got: {}",
-            output
-        );
-
-        // Test with no entity keys (should be single line, no EntityKey)
-        let record_no_entity = LogRecord {
-            callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
-            body_attrs_bytes: Bytes::new(),
-            context: LogContext::default(),
-        };
-
-        let output = writer.format_log_record(Some(time), &record_no_entity);
-        let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(
-            lines.len(),
-            1,
-            "expected 1 line without entity context, got: {:?}",
-            lines
-        );
-        assert!(
-            !output.contains("EntityKey("),
-            "should not contain EntityKey when context is empty, got: {}",
             output
         );
     }

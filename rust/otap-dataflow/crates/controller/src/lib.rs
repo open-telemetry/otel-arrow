@@ -85,8 +85,8 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     pipeline_factory: &'static PipelineFactory<PData>,
 }
 
+/// Returns the set of entity keys relevant to this context.
 fn engine_context() -> LogContext {
-    // Return only the most specific entity key to avoid attribute duplication.
     if let Some(node) = node_entity_key() {
         smallvec![node]
     } else if let Some(pipeline) = pipeline_entity_key() {

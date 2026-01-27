@@ -138,7 +138,7 @@ macro_rules! __log_record_impl {
         // Use closure to extend valueset lifetime (same pattern as tracing::event!)
         (|valueset: $crate::_private::ValueSet<'_>| {
             let event = $crate::_private::Event::new(meta, &valueset);
-            LogRecord::new_with_context(&event, smallvec::smallvec![])
+            LogRecord::new(&event, smallvec::smallvec![])
         })($crate::_private::valueset!(meta.fields(), $($($fields)*)?))
     }};
 }

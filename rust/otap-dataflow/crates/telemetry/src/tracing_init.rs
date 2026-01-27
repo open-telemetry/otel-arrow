@@ -183,7 +183,7 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
         let context = (self.context_fn)();
-        let record = LogRecord::new_with_context(event, context);
+        let record = LogRecord::new(event, context);
         self.reporter.log(LogEvent { time, record });
     }
 }
