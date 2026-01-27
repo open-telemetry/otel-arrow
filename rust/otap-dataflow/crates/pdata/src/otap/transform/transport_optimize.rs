@@ -465,55 +465,50 @@ fn sort_record_batch(
 }
 
 fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
-    // println!("input batch size = {}", record_batch.num_rows());
-
     let type_col = record_batch.column_by_name(consts::ATTRIBUTE_TYPE).unwrap();
     let key_col = record_batch.column_by_name(consts::ATTRIBUTE_KEY).unwrap();
 
     let type_and_key_indices =
         sort_attrs_type_and_keys_to_indices(type_col.clone(), key_col.clone()).unwrap();
 
-    // let type_col_sorted_indices = arrow::compute::sort_to_indices(type_col, None, None).unwrap();
     let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap();
     let key_col_sorted = take(key_col, &type_and_key_indices, None).unwrap();
 
-    // let mut sorted_keys = vec![];
-
-    let mut sorted_val_columns: [Option<SortedArrayBuilder>; 8] = [
+    let mut sorted_val_columns: [Option<SortedValuesArrayBuilder>; 8] = [
         None, // empty
         record_batch
             .column_by_name(consts::ATTRIBUTE_STR)
-            .map(|col| SortedArrayBuilder::try_new(col))
+            .map(|col| SortedValuesArrayBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_INT)
-            .map(|col| SortedArrayBuilder::try_new(col))
+            .map(|col| SortedValuesArrayBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_DOUBLE)
-            .map(|col| SortedArrayBuilder::try_new(col))
+            .map(|col| SortedValuesArrayBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_BOOL)
-            .map(|col| SortedArrayBuilder::try_new(col))
+            .map(|col| SortedValuesArrayBuilder::try_new(col))
             .transpose()?,
         None, // map
         None, // slice
         record_batch
             .column_by_name(consts::ATTRIBUTE_BYTES)
-            .map(|col| SortedArrayBuilder::try_new(col))
+            .map(|col| SortedValuesArrayBuilder::try_new(col))
             .transpose()?,
     ];
 
     // ser column is special case b/c more than one attr type maps to it
     let mut sorted_ser_column = record_batch
         .column_by_name(consts::ATTRIBUTE_SER)
-        .map(|col| SortedArrayBuilder::try_new(col))
+        .map(|col| SortedValuesArrayBuilder::try_new(col))
         .transpose()?;
 
     // TODO - proper error handling
     let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
-    let mut sorted_parent_id_column = SortedArrayBuilder::try_new(parent_id_col)?;
+    let mut sorted_parent_id_column = SortedValuesArrayBuilder::try_new(parent_id_col)?;
 
     let type_prim_arr = type_col_sorted
         .as_any()
@@ -523,12 +518,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
     let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
     for type_range in type_partitions.ranges() {
-        // let keys_range = key_col_by_type.slice(type_range.start, type_range.len());
-        // let keys_range_sorted_indices =
-        //     arrow::compute::sort_to_indices(&keys_range, None, None).unwrap();
-        // let keys_range_sorted = take(&keys_range, &keys_range_sorted_indices, None).unwrap();
-        // sorted_keys.push(keys_range_sorted.clone());
-
         let key_range_attr_type = type_col_sorted_bytes[type_range.start];
         let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
             || key_range_attr_type == AttributeValueType::Slice as u8
@@ -537,20 +526,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         } else {
             sorted_val_columns[key_range_attr_type as usize].as_mut()
         };
-
-        // let type_col_sorted_indices_type_range =
-        //     type_col_sorted_indices.slice(type_range.start, type_range.len());
-        // let type_col_sorted_indices_type_range_by_key = take(
-        //     &type_col_sorted_indices_type_range,
-        //     &keys_range_sorted_indices,
-        //     None,
-        // )
-        // .unwrap();
-        // let type_col_sorted_indices_type_range_by_key_prim =
-        //     type_col_sorted_indices_type_range_by_key
-        //         .as_any()
-        //         .downcast_ref::<UInt32Array>()
-        //         .unwrap();
 
         let type_col_sorted_indices_type_range_by_key_prim =
             type_and_key_indices.slice(type_range.start, type_range.len());
@@ -565,29 +540,13 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
             // TODO we could try using "create next eq array to get bounds here"
             let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
-            // let key_partitions = partition(&[keys_range_sorted.clone()]).unwrap();
 
-            // println!("keys_sorted = {:?}", key_col_sorted);
-            // println!("key_partitions = {:?}", key_partitions);
+            // partition key ranges (using SIMD)
             let next_eq_arr_key = create_next_element_equality_array(&keys_range_sorted)?;
-            // println!("next_eq_arr_key = {:?}", next_eq_arr_key);
-            // println!("next_eq_arr_as_buff = {:?}", next_eq_arr_key.values());
-
             let next_eq_inverted = not(&next_eq_arr_key).unwrap();
-            // println!("next_eq_arr_key inverted = {:?}", next_eq_inverted);
-            // println!("next_eq_arr_as_buff inverted = {:?}", next_eq_inverted.values());
+            let key_ranges = ranges(next_eq_inverted.values());
 
-            // let ranges1 = key_partitions.ranges();
-            let ranges2 = ranges(next_eq_inverted.values());
-
-            // println!("ranges1 = {ranges1:?}");
-            // println!("ranges2 = {ranges2:?}");
-
-            // println!("herE");
-
-            for key_range in ranges2 {
-                // for key_range in key_partitions.ranges() {
-                // get values
+            for key_range in key_ranges {
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
 
@@ -600,6 +559,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                     None,
                 )
                 .unwrap();
+
                 let values_key_range_sorted =
                     take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
                 sorted_val_col.append_external_sorted_range(values_key_range_sorted.clone())?;
@@ -609,19 +569,11 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 let parent_id_key_range_sorted =
                     take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap();
 
-                // TODO there's an optimization we can make here to check if the parent IDs are sorted
-                // and if so, don't partition by values etc.
-
-                // TODO we could try using "create next eq array to get bounds here"
-                // let values_partition = partition(&[values_key_range_sorted]).unwrap();
-                // let values_ranges = values_partition.ranges();
-                //
                 // TODO - am not convinced this is correct when there are nulls?
                 let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?;
                 let next_eq_inverted = not(&next_eq_arr_key).unwrap();
                 let values_ranges = ranges(next_eq_inverted.values());
 
-                // TODO - would it be faster to check this on ranges in values_key_range_sorted_indices?
                 let all_parent_id_sorted = values_ranges.iter().all(|range| {
                     is_parent_id_column_sorted(
                         parent_id_col.slice(range.start, range.len()).as_ref(),
@@ -647,10 +599,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
             sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
         }
 
-        // TODO -- 11% of our time is currently spent in take_and_append below
-        // which is dumb because we know that these are just supposed to be a
-        // bunch of null values. We could just create new null arrays instead
-
         // push the unsorted values for columns not of this type to fill in gaps
         for attr_type in [
             AttributeValueType::Str as u8,
@@ -665,7 +613,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
             if let Some(sorted_val_col) = sorted_val_columns[attr_type as usize].as_mut() {
                 sorted_val_col.append_nulls(type_range.len());
-                // sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
 
@@ -676,7 +623,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         {
             if let Some(sorted_val_col) = sorted_ser_column.as_mut() {
                 sorted_val_col.append_nulls(type_range.len());
-                // sorted_val_col.take_and_append(&type_col_sorted_indices_type_range_by_key_prim);
             }
         }
     }
@@ -752,15 +698,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
         todo!("handle bad col name {field_name}")
     }
 
-    // for column in &columns {
-    //     println!("len = {}", column.len());
-    // }
-
-    // println!("columns = {columns:?}");
-
     let batch = RecordBatch::try_new(record_batch.schema().clone(), columns).unwrap();
-
-    // arrow::util::pretty::print_batches(&[batch.clone()]).unwrap();
 
     Ok(batch)
 }
@@ -889,7 +827,6 @@ fn sort_attrs_type_and_keys_to_indices(
                 //     })
                 //     .into();
 
-
                 //     let indices_by_key = BitIndexIterator::new(types_eq.iter().as_slice(), 0, len)
                 //         .map(|idx| (idx, key_ranks[idx]));
                 //     indices_by_keys_for_types.extend(indices_by_key.into_iter());
@@ -942,19 +879,7 @@ fn sort_attrs_type_and_keys_to_indices(
     }
 }
 
-// TODO comments
-// fn partition_sorted(arr: &ArrayRef) -> Partitions {
-//     let next_eq_arr = create_next_element_equality_array(arr);
-
-// }
-
-// TODO
-// struct SortedArrayBuilderSourceDict {
-//     key_type: DataType,
-//     values: Arc<dyn Array>,
-// }
-
-struct SortedArrayBuilder {
+struct SortedValuesArrayBuilder {
     // TODO
     // source_dict: Option<SortedArrayBuilderSourceDict>,
     //
@@ -966,7 +891,7 @@ struct SortedArrayBuilder {
     source: Arc<dyn Array>,
 }
 
-impl SortedArrayBuilder {
+impl SortedValuesArrayBuilder {
     fn try_new(source: &Arc<dyn Array>) -> Result<Self> {
         Ok(Self {
             sorted_segments: Vec::new(),
@@ -2752,11 +2677,7 @@ mod test {
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([
-                        1, 0, 0, 0, 0,
-                        1, 0, 1, 1, 1,
-                        0, 0
-                    ]),
+                    UInt8Array::from_iter_values([1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
