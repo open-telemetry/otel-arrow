@@ -2040,8 +2040,6 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
     }
 }
 
-
-
 #[cfg(test)]
 mod test {
     use super::*;
