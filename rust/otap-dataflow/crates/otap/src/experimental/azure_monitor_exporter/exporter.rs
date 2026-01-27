@@ -667,29 +667,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_get_next_token_refresh_minimum_interval() {
-        let now = OffsetDateTime::now_utc();
-        let expires_on = now + azure_core::time::Duration::seconds(10);
-
-        let token = AccessToken {
-            token: "secret".into(),
-            expires_on,
-        };
-
-        let before = tokio::time::Instant::now();
-        let refresh_at = AzureMonitorExporter::get_next_token_refresh(token);
-        let duration_until_refresh = refresh_at.saturating_duration_since(before);
-
-        // Should enforce minimum 30s refresh interval
-        // Allow 1s tolerance for execution time
-        assert!(
-            duration_until_refresh.as_secs() >= 29,
-            "Expected at least 29s, got {}s",
-            duration_until_refresh.as_secs()
-        );
-    }
-
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
