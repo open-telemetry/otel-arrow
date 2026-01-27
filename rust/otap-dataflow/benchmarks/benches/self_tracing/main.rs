@@ -98,6 +98,13 @@ enum BenchOp {
     FormatWithEntity,
 }
 
+impl BenchOp {
+    /// Returns true if this operation requires entity context.
+    fn needs_entity(self) -> bool {
+        matches!(self, BenchOp::EncodeProtoWithScope | BenchOp::FormatWithEntity)
+    }
+}
+
 /// A layer that performs a configurable operation N times per event.
 struct BenchLayer {
     iterations: usize,
@@ -188,6 +195,7 @@ where
                 let mut buf = ProtoBuffer::with_capacity(512);
 
                 for _ in 0..self.iterations {
+                    buf.clear();
                     let record = LogRecord::new(event, ctx.context.clone());
                     let log_event = LogEvent { time: now, record };
                     encode_export_logs_request(
@@ -265,12 +273,16 @@ where
 fn bench_op(c: &mut Criterion, group_name: &str, op: BenchOp) {
     let mut group = c.benchmark_group(group_name);
 
-    for &iterations in &[100, 1000] {
+    for &iterations in &[1000] {
         for &(attr_count, attr_label) in &[(0, "0_attrs"), (3, "3_attrs"), (10, "10_attrs")] {
             let id = BenchmarkId::new(attr_label, format!("{}_events", iterations));
 
             let _ = group.bench_with_input(id, &iterations, |b, &iters| {
-                let layer = BenchLayer::new(iters, op);
+                let layer = if op.needs_entity() {
+                    BenchLayer::with_entity(iters, op)
+                } else {
+                    BenchLayer::new(iters, op)
+                };
                 match attr_count {
                     0 => run_bench(b, layer, || emit_log!(0)),
                     3 => run_bench(b, layer, || emit_log!(3)),
@@ -299,34 +311,12 @@ fn bench_encode_proto(c: &mut Criterion) {
     bench_op(c, "encode_proto", BenchOp::EncodeProto);
 }
 
-/// Benchmark entity-aware operations across different iteration counts.
-fn bench_op_with_entity(c: &mut Criterion, group_name: &str, op: BenchOp) {
-    let mut group = c.benchmark_group(group_name);
-
-    for &iterations in &[100, 1000] {
-        for &(attr_count, attr_label) in &[(0, "0_attrs"), (3, "3_attrs"), (10, "10_attrs")] {
-            let id = BenchmarkId::new(attr_label, format!("{}_events", iterations));
-
-            let _ = group.bench_with_input(id, &iterations, |b, &iters| {
-                let layer = BenchLayer::with_entity(iters, op);
-                match attr_count {
-                    0 => run_bench(b, layer, || emit_log!(0)),
-                    3 => run_bench(b, layer, || emit_log!(3)),
-                    _ => run_bench(b, layer, || emit_log!(10)),
-                }
-            });
-        }
-    }
-
-    group.finish();
-}
-
 fn bench_encode_proto_with_scope(c: &mut Criterion) {
-    bench_op_with_entity(c, "encode_proto_with_scope", BenchOp::EncodeProtoWithScope);
+    bench_op(c, "encode_proto_with_scope", BenchOp::EncodeProtoWithScope);
 }
 
 fn bench_format_with_entity(c: &mut Criterion) {
-    bench_op_with_entity(c, "format_with_entity", BenchOp::FormatWithEntity);
+    bench_op(c, "format_with_entity", BenchOp::FormatWithEntity);
 }
 
 #[allow(missing_docs)]
