@@ -871,8 +871,8 @@ fn sort_attrs_type_and_keys_to_indices(
                     .collect::<Vec<_>>();
 
                 let mut indices_by_keys_for_types = Vec::with_capacity(len);
-                // let mut curr_range_start = 0;
-                // let mut ranges = Vec::new();
+                let mut type_range_start = 0;
+                let mut type_ranges = Vec::new();
 
                 for i in 0..8 {
                     let types_eq: Buffer = MutableBuffer::collect_bool(len, |idx| {
@@ -884,16 +884,19 @@ fn sort_attrs_type_and_keys_to_indices(
 
 
                     let indices_by_key = BitIndexIterator::new(types_eq.iter().as_slice(), 0, len)
-                        .map(|idx| (idx, key_ranks[idx]))
-                        .sorted_unstable_by(|a, b| a.1.cmp(&b.1))
-                        .map(|(idx, _)| idx);
-
+                        .map(|idx| (idx, key_ranks[idx]));
                     indices_by_keys_for_types.extend(indices_by_key.into_iter());
+                    let type_range_end = indices_by_keys_for_types.len();
+                    type_ranges.push((type_range_start, type_range_end));
+                    type_range_start = type_range_end;
                 }
 
+                for (start, end) in type_ranges {
+                    indices_by_keys_for_types[start..end].sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                }
 
                 Ok(PrimitiveArray::from_iter_values(
-                    indices_by_keys_for_types.into_iter().map(|idx| idx as u32),
+                    indices_by_keys_for_types.into_iter().map(|(idx, _)| idx as u32),
                 ))
 
                 // let mut to_sort = vec![0u16; len];
