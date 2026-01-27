@@ -610,8 +610,14 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 // and if so, don't partition by values etc.
 
                 // TODO we could try using "create next eq array to get bounds here"
-                let values_partition = partition(&[values_key_range_sorted]).unwrap();
-                let values_ranges = values_partition.ranges();
+                // let values_partition = partition(&[values_key_range_sorted]).unwrap();
+                // let values_ranges = values_partition.ranges();
+                //
+                // TODO - am not convinced this is correct when there are nulls?
+                let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?;
+                let next_eq_inverted = not(&next_eq_arr_key).unwrap();
+                let values_ranges = ranges(next_eq_inverted.values());
+
 
                 // TODO - would it be faster to check this on ranges in values_key_range_sorted_indices?
                 let all_parent_id_sorted = values_ranges.iter().all(|range| {
@@ -758,6 +764,7 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 }
 
 
+// TODO better method naming
 fn ranges(boundaries: &BooleanBuffer) -> Vec<Range<usize>> {
     let mut out = vec![];
     let mut current = 0;
