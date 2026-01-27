@@ -15,16 +15,20 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array
+        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
+        Float64Array, Int64Array, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray,
+        StructArray, UInt8Array, UInt16Array, UInt32Array,
     },
     buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
     compute::{
-        Partitions, SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition, rank, take, take_record_batch
+        Partitions, SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition,
+        rank, take, take_record_batch,
     },
     datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
     util::bit_iterator::{BitIndexIterator, BitSliceIterator},
 };
 use arrow_schema::Field;
+use itertools::Itertools;
 
 use crate::{
     arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array},
@@ -581,9 +585,8 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
             // println!("herE");
 
-
             for key_range in ranges2 {
-            // for key_range in key_partitions.ranges() {
+                // for key_range in key_partitions.ranges() {
                 // get values
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
@@ -617,7 +620,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
                 let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?;
                 let next_eq_inverted = not(&next_eq_arr_key).unwrap();
                 let values_ranges = ranges(next_eq_inverted.values());
-
 
                 // TODO - would it be faster to check this on ranges in values_key_range_sorted_indices?
                 let all_parent_id_sorted = values_ranges.iter().all(|range| {
@@ -763,7 +765,6 @@ fn sort_attrs_record_batch(record_batch: &RecordBatch) -> Result<RecordBatch> {
     Ok(batch)
 }
 
-
 // TODO better method naming
 fn ranges(boundaries: &BooleanBuffer) -> Vec<Range<usize>> {
     let mut out = vec![];
@@ -864,21 +865,52 @@ fn sort_attrs_type_and_keys_to_indices(
                 let keys_values = keys.values().inner().as_slice();
                 let val_ranks = rank(dict_arr.values(), None).unwrap();
 
-                let mut to_sort = vec![0u16; len];
-                for i in 0..len {
-                    to_sort[i] += (type_bytes[i] as u16) << 8u16;
-                }
-                for i in 0..len {
-                    let rank = val_ranks[keys_values[i] as usize];
-                    to_sort[i] += rank as u16;
+                let key_ranks = keys_values
+                    .iter()
+                    .map(|i| val_ranks[*i as usize] as u8)
+                    .collect::<Vec<_>>();
+
+                let mut indices_by_keys_for_types = Vec::with_capacity(len);
+                // let mut curr_range_start = 0;
+                // let mut ranges = Vec::new();
+
+                for i in 0..8 {
+                    let types_eq: Buffer = MutableBuffer::collect_bool(len, |idx| {
+                        #[allow(unsafe_code)]
+                        let byte = unsafe { *type_bytes.get_unchecked(idx) };
+                        byte == i
+                    })
+                    .into();
+
+
+                    let indices_by_key = BitIndexIterator::new(types_eq.iter().as_slice(), 0, len)
+                        .map(|idx| (idx, key_ranks[idx]))
+                        .sorted_unstable_by(|a, b| a.1.cmp(&b.1))
+                        .map(|(idx, _)| idx);
+
+                    indices_by_keys_for_types.extend(indices_by_key.into_iter());
                 }
 
-                let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
                 Ok(PrimitiveArray::from_iter_values(
-                    with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                    indices_by_keys_for_types.into_iter().map(|idx| idx as u32),
                 ))
+
+                // let mut to_sort = vec![0u16; len];
+                // for i in 0..len {
+                //     to_sort[i] += (type_bytes[i] as u16) << 8u16;
+                // }
+                // for i in 0..len {
+                //     let rank = val_ranks[keys_values[i] as usize];
+                //     to_sort[i] += rank as u16;
+                // }
+
+                // let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
+                // with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+                // Ok(PrimitiveArray::from_iter_values(
+                //     with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                // ))
             }
             DataType::UInt16 => {
                 todo!()
@@ -896,7 +928,6 @@ fn sort_attrs_type_and_keys_to_indices(
 // TODO comments
 // fn partition_sorted(arr: &ArrayRef) -> Partitions {
 //     let next_eq_arr = create_next_element_equality_array(arr);
-
 
 // }
 
@@ -961,47 +992,60 @@ impl SortedArrayBuilder {
         self.sorted_segments.push(arr)
     }
 
-    fn append_nulls(&mut self, count: usize)  {
+    fn append_nulls(&mut self, count: usize) {
         match self.source.data_type() {
-            DataType::Dictionary(k,_) => {
+            DataType::Dictionary(k, _) => {
                 match **k {
                     DataType::UInt8 => {
-                        let dict_arr = self.source.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+                        let dict_arr = self
+                            .source
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .unwrap();
                         // TODO - either use new_unchecked here, or add a method to arrow-rs to speed this up if it's all null
                         let new_dict = DictionaryArray::new(
                             UInt8Array::new_null(count),
-                            dict_arr.values().clone()
+                            dict_arr.values().clone(),
                         );
                         self.sorted_segments.push(Arc::new(new_dict));
-                    },
+                    }
                     DataType::UInt16 => {
-                        let dict_arr = self.source.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+                        let dict_arr = self
+                            .source
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .unwrap();
                         let new_dict = DictionaryArray::new(
                             UInt16Array::new_null(count),
-                            dict_arr.values().clone()
+                            dict_arr.values().clone(),
                         );
                         self.sorted_segments.push(Arc::new(new_dict));
-                    },
+                    }
                     _ => {
                         todo!("invalid dict")
                     }
                 }
-            },
+            }
             DataType::Binary => {
-                self.sorted_segments.push(Arc::new(BinaryArray::new_null(count)));
-            },
+                self.sorted_segments
+                    .push(Arc::new(BinaryArray::new_null(count)));
+            }
             DataType::Boolean => {
-                self.sorted_segments.push(Arc::new(BooleanArray::new_null(count)));
-            },
+                self.sorted_segments
+                    .push(Arc::new(BooleanArray::new_null(count)));
+            }
             DataType::Int64 => {
-                self.sorted_segments.push(Arc::new(Int64Array::new_null(count)));
-            },
+                self.sorted_segments
+                    .push(Arc::new(Int64Array::new_null(count)));
+            }
             DataType::Float64 => {
-                self.sorted_segments.push(Arc::new(Float64Array::new_null(count)));
-            },
+                self.sorted_segments
+                    .push(Arc::new(Float64Array::new_null(count)));
+            }
             DataType::Utf8 => {
-                self.sorted_segments.push(Arc::new(StringArray::new_null(count)));
-            },
+                self.sorted_segments
+                    .push(Arc::new(StringArray::new_null(count)));
+            }
             _ => {
                 todo!("invalid attrs array")
             }
@@ -2691,7 +2735,11 @@ mod test {
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([1, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0]),
+                    UInt8Array::from_iter_values([
+                        1, 0, 0, 0, 0,
+                        1, 0, 1, 1, 1,
+                        0, 0
+                    ]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
