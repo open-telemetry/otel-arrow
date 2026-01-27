@@ -45,6 +45,26 @@ fn default_max_segment_open_duration() -> Duration {
     Duration::from_secs(1)
 }
 
+/// Default initial retry interval (1 second).
+fn default_initial_retry_interval() -> Duration {
+    Duration::from_secs(1)
+}
+
+/// Default maximum retry interval (30 seconds).
+fn default_max_retry_interval() -> Duration {
+    Duration::from_secs(30)
+}
+
+/// Default retry backoff multiplier.
+fn default_retry_multiplier() -> f64 {
+    2.0
+}
+
+/// Default maximum bundles in-flight to downstream.
+fn default_max_in_flight() -> usize {
+    1000
+}
+
 /// How to handle incoming OTLP data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -118,6 +138,37 @@ pub struct PersistenceProcessorConfig {
         default = "default_max_segment_open_duration"
     )]
     pub max_segment_open_duration: Duration,
+
+    // ─── Retry Configuration ────────────────────────────────────────────────
+
+    /// Initial retry delay after first NACK (default: 1s).
+    ///
+    /// Used as the base for exponential backoff calculation.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_initial_retry_interval"
+    )]
+    pub initial_retry_interval: Duration,
+
+    /// Maximum retry delay (default: 30s).
+    ///
+    /// Caps the exponential backoff to prevent excessively long waits.
+    #[serde(with = "humantime_serde", default = "default_max_retry_interval")]
+    pub max_retry_interval: Duration,
+
+    /// Multiplier for exponential backoff (default: 2.0).
+    ///
+    /// Each retry delay is: min(initial * multiplier^retry_count, max_interval).
+    #[serde(default = "default_retry_multiplier")]
+    pub retry_multiplier: f64,
+
+    /// Maximum bundles in-flight to downstream (default: 1000).
+    ///
+    /// Limits concurrent downstream delivery attempts to prevent thundering
+    /// herd problems after extended outages or restarts with large backlogs.
+    /// When at limit, new sends are deferred until ACKs free up slots.
+    #[serde(default = "default_max_in_flight")]
+    pub max_in_flight: usize,
 }
 
 impl PersistenceProcessorConfig {
@@ -186,6 +237,27 @@ mod tests {
         assert!(config.max_age.is_none());
         // Default OTLP handling is pass_through
         assert_eq!(config.otlp_handling, OtlpHandling::PassThrough);
+        // Default retry configuration
+        assert_eq!(config.initial_retry_interval, Duration::from_secs(1));
+        assert_eq!(config.max_retry_interval, Duration::from_secs(30));
+        assert!((config.retry_multiplier - 2.0).abs() < f64::EPSILON);
+        assert_eq!(config.max_in_flight, 1000);
+    }
+
+    #[test]
+    fn test_retry_config_serde() {
+        let json = r#"{
+            "path": "/tmp/test",
+            "initial_retry_interval": "500ms",
+            "max_retry_interval": "1m",
+            "retry_multiplier": 1.5,
+            "max_in_flight": 500
+        }"#;
+        let config: PersistenceProcessorConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.initial_retry_interval, Duration::from_millis(500));
+        assert_eq!(config.max_retry_interval, Duration::from_secs(60));
+        assert!((config.retry_multiplier - 1.5).abs() < f64::EPSILON);
+        assert_eq!(config.max_in_flight, 500);
     }
 
     #[test]

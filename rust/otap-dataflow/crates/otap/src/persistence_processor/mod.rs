@@ -44,13 +44,35 @@
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
 //! - `Nack`: Call handle.defer() and schedule retry via delay_data()
 //! - `Shutdown`: Flush storage engine
+//!
+//! # Retry Behavior and Error Handling
+//!
+//! On NACK from downstream, bundles are retried with exponential backoff until
+//! either delivery succeeds or the data is evicted by the configured retention
+//! policy (`retention_size_cap` + `drop_oldest`).
+//!
+//! There is no `max_retries` limit: without machine-readable error classification
+//! in NACKs, we cannot distinguish temporary failures (network outage—retry will
+//! succeed) from permanent failures (malformed data—retry is futile). A retry
+//! limit would cause **data loss** during legitimate extended outages.
+//!
+//! **Operational guidance:**
+//!
+//! - Monitor `retries_scheduled` metric to detect persistently failing data
+//! - Use `retention_size_cap` to bound storage; `drop_oldest` policy evicts
+//!   stuck data when space is needed for new data
+//! - `max_in_flight` limit prevents thundering herd after recovery
+//!
+//! **Future improvement:** When NACK messages carry error categorization
+//! (e.g., `retryable: bool` or error codes), we can drop permanently-failed
+//! data immediately while still retrying transient failures.
 
 mod bundle_adapter;
 mod config;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -177,13 +199,22 @@ pub struct PersistenceProcessorMetrics {
     /// Non-zero values indicate data loss.
     #[metric(unit = "{bundle}")]
     pub dropped_bundles: Gauge<u64>,
+
+    // ─── Retry metrics ──────────────────────────────────────────────────────
+    /// Number of retry attempts scheduled.
+    #[metric(unit = "{retry}")]
+    pub retries_scheduled: Counter<u64>,
+
+    /// Current number of bundles in-flight to downstream.
+    #[metric(unit = "{bundle}")]
+    pub in_flight: Gauge<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BundleRef CallData Encoding
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Encode a BundleRef into CallData.
+/// Encode a BundleRef into CallData for ACK/NACK tracking.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32 packed into u64)]
 fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
@@ -206,6 +237,38 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
+/// Encode a retry ticket into CallData for DelayedData scheduling.
+///
+/// Layout: [segment_seq (u64), bundle_index (u32), retry_count (u32) packed into u64]
+fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
+    // Pack bundle_index (low 32 bits) and retry_count (high 32 bits) into one u64
+    let packed = (bundle_ref.bundle_index.raw() as u64) | ((retry_count as u64) << 32);
+    smallvec![
+        Context8u8::from(bundle_ref.segment_seq.raw()),
+        Context8u8::from(packed),
+    ]
+}
+
+/// Decode a retry ticket from CallData.
+///
+/// Returns (BundleRef, retry_count) if valid.
+fn decode_retry_ticket(calldata: &CallData) -> Option<(BundleRef, u32)> {
+    if calldata.len() < 2 {
+        return None;
+    }
+    let segment_seq = SegmentSeq::new(u64::from(calldata[0]));
+    let packed = u64::from(calldata[1]);
+    let bundle_index = BundleIndex::new((packed & 0xFFFF_FFFF) as u32);
+    let retry_count = (packed >> 32) as u32;
+    Some((
+        BundleRef {
+            segment_seq,
+            bundle_index,
+        },
+        retry_count,
+    ))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pending Bundle Tracking
 // ─────────────────────────────────────────────────────────────────────────────
@@ -226,7 +289,7 @@ struct PendingBundle {
 enum ProcessBundleResult {
     /// Bundle was successfully sent downstream.
     Sent,
-    /// Bundle was skipped (already in-flight, waiting for ACK/NACK).
+    /// Bundle was skipped (already in-flight or scheduled for retry).
     Skipped,
     /// The downstream channel is full (backpressure).
     /// The bundle has been deferred and will be retried on the next tick.
@@ -264,6 +327,11 @@ pub struct PersistenceProcessor {
     /// Key is the (segment_seq, bundle_index) pair encoded as a u128 for fast lookup.
     pending_bundles: HashMap<(u64, u32), PendingBundle>,
 
+    /// Bundles scheduled for retry via delay_data.
+    /// These are skipped by poll_next_bundle to enforce backoff.
+    /// Removed when the delay fires and claim_bundle is called.
+    retry_scheduled: HashSet<(u64, u32)>,
+
     /// Configuration.
     config: PersistenceProcessorConfig,
 
@@ -293,11 +361,79 @@ impl PersistenceProcessor {
         Ok(Self {
             engine_state: EngineState::Uninitialized,
             pending_bundles: HashMap::new(),
+            retry_scheduled: HashSet::new(),
             config,
             core_id,
             metrics,
             timer_started: false,
         })
+    }
+
+    /// Calculate exponential backoff delay with jitter.
+    ///
+    /// Formula: min(initial * multiplier^retry_count, max_interval) * (0.5 + random(0.5))
+    fn calculate_backoff(&self, retry_count: u32) -> Duration {
+        let base = self.config.initial_retry_interval.as_secs_f64()
+            * self.config.retry_multiplier.powi(retry_count as i32);
+        let capped = base.min(self.config.max_retry_interval.as_secs_f64());
+
+        // Add jitter: 50-100% of the capped value
+        // Use a simple deterministic "jitter" based on retry_count to avoid rand dependency
+        // This spreads retries but is deterministic for testing
+        let jitter_factor = 0.5 + (((retry_count as f64 * 0.618033988749895) % 1.0) * 0.5);
+        let with_jitter = capped * jitter_factor;
+
+        Duration::from_secs_f64(with_jitter)
+    }
+
+    /// Check if we can send more bundles downstream (respects max_in_flight limit).
+    fn can_send_more(&self) -> bool {
+        self.pending_bundles.len() < self.config.max_in_flight
+    }
+
+    /// Schedule a retry for a bundle via delay_data.
+    ///
+    /// This is the single point of coordination between `delay_data` scheduling
+    /// and `retry_scheduled` tracking. Always use this method instead of calling
+    /// `delay_data` directly to ensure the two stay in sync.
+    ///
+    /// Returns true if scheduling succeeded, false if it failed (caller should
+    /// let poll_next_bundle pick up the bundle instead).
+    async fn schedule_retry(
+        &mut self,
+        bundle_ref: BundleRef,
+        retry_count: u32,
+        delay: Duration,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> bool {
+        let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
+
+        // Create a lightweight retry ticket
+        let retry_ticket = OtapPdata::new(
+            Default::default(),
+            OtapPayload::empty(SignalType::Traces), // Signal type doesn't matter for empty payload
+        );
+        let calldata = encode_retry_ticket(bundle_ref, retry_count);
+        let mut retry_ticket = Box::new(retry_ticket);
+        effect_handler.subscribe_to(Interests::empty(), calldata, &mut retry_ticket);
+
+        let retry_at = Instant::now() + delay;
+        if effect_handler.delay_data(retry_at, retry_ticket).await.is_ok() {
+            // Track that this bundle is scheduled - poll_next_bundle will skip it
+            let _ = self.retry_scheduled.insert(key);
+            true
+        } else {
+            // Failed to schedule - don't add to retry_scheduled, poll will pick it up
+            false
+        }
+    }
+
+    /// Remove a bundle from retry_scheduled tracking.
+    ///
+    /// Call this when the delay has fired and we're about to process the retry.
+    fn unschedule_retry(&mut self, bundle_ref: BundleRef) {
+        let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
+        let _ = self.retry_scheduled.remove(&key);
     }
 
     /// Lazily initialize the Quiver engine on first use.
@@ -578,6 +714,17 @@ impl PersistenceProcessor {
                 break;
             }
 
+            // Check max_in_flight limit to prevent thundering herd
+            if !self.can_send_more() {
+                debug!(
+                    bundles_processed = bundles_processed,
+                    in_flight = self.pending_bundles.len(),
+                    max_in_flight = self.config.max_in_flight,
+                    "max_in_flight limit reached, deferring remaining to next tick"
+                );
+                break;
+            }
+
             // Get engine inside loop to avoid borrow conflict with self in process_bundle_handle
             let poll_result = {
                 let (engine, subscriber_id) = self.engine()?;
@@ -591,12 +738,8 @@ impl PersistenceProcessor {
                             bundles_processed += 1;
                         }
                         ProcessBundleResult::Skipped => {
-                            // Bundle was already in-flight (waiting for ACK/NACK).
-                            // Break out of the loop - we need to wait for downstream
-                            // to respond before sending more bundles.
-                            // This prevents busy-looping when all available bundles
-                            // are already pending.
-                            break;
+                            // Bundle was skipped (in-flight or scheduled for retry).
+                            // Continue looking for other sendable bundles.
                         }
                         ProcessBundleResult::Backpressure => {
                             // Downstream channel is full, stop processing and let the
@@ -650,6 +793,19 @@ impl PersistenceProcessor {
         handle: QuiverBundleHandle,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> ProcessBundleResult {
+        self.try_process_bundle_handle_with_retry_count(handle, 0, effect_handler)
+    }
+
+    /// Process a bundle handle with a specific retry count.
+    ///
+    /// This is the core send logic, used by both initial sends (retry_count=0)
+    /// and retry attempts (retry_count > 0).
+    fn try_process_bundle_handle_with_retry_count(
+        &mut self,
+        handle: QuiverBundleHandle,
+        retry_count: u32,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> ProcessBundleResult {
         let bundle_ref = handle.bundle_ref();
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
@@ -665,6 +821,16 @@ impl PersistenceProcessor {
                 bundle_index = bundle_ref.bundle_index.raw(),
                 "received duplicate handle for in-flight bundle"
             );
+            drop(handle); // Implicit defer
+            return ProcessBundleResult::Skipped;
+        }
+
+        // Skip if this bundle is scheduled for retry (waiting for backoff).
+        // This enforces the exponential backoff - poll_next_bundle() returns
+        // deferred bundles immediately, but we should wait for delay_data to fire.
+        if self.retry_scheduled.contains(&key) {
+            // Bundle is waiting for backoff. Release the claim; it will be
+            // re-claimed when the delay_data retry ticket fires.
             drop(handle); // Implicit defer
             return ProcessBundleResult::Skipped;
         }
@@ -702,6 +868,7 @@ impl PersistenceProcessor {
                             core_id = self.core_id,
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
+                            retry_count = retry_count,
                             "forwarded bundle downstream from finalized segment"
                         );
 
@@ -711,9 +878,10 @@ impl PersistenceProcessor {
                             key,
                             PendingBundle {
                                 handle,
-                                retry_count: 0,
+                                retry_count,
                             },
                         );
+                        self.metrics.in_flight.set(self.pending_bundles.len() as u64);
                         ProcessBundleResult::Sent
                     }
                     Err(otap_df_engine::error::TypedError::ChannelSendError(
@@ -776,6 +944,7 @@ impl PersistenceProcessor {
         if let Some(pending) = self.pending_bundles.remove(&key) {
             pending.handle.ack();
             self.metrics.bundles_acked.add(1);
+            self.metrics.in_flight.set(self.pending_bundles.len() as u64);
             debug!(
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
@@ -793,6 +962,11 @@ impl PersistenceProcessor {
     }
 
     /// Handle NACK from downstream.
+    ///
+    /// Schedules a retry with exponential backoff using `delay_data()`.
+    /// The bundle is deferred in Quiver (releasing the claim) and a lightweight
+    /// retry ticket is scheduled. When the delay expires, `handle_delayed_retry`
+    /// will re-claim the bundle and attempt redelivery.
     async fn handle_nack(
         &mut self,
         nack: NackMsg<OtapPdata>,
@@ -806,33 +980,159 @@ impl PersistenceProcessor {
 
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
-        // Handle retry
+        // Handle retry scheduling
         if let Some(pending) = self.pending_bundles.remove(&key) {
             let retry_count = pending.retry_count + 1;
             self.metrics.bundles_nacked.add(1);
+            self.metrics.in_flight.set(self.pending_bundles.len() as u64);
+
+            // Calculate backoff delay with jitter
+            let backoff = self.calculate_backoff(retry_count);
 
             debug!(
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 retry_count = retry_count,
+                backoff_ms = backoff.as_millis(),
                 reason = %nack.reason,
-                "bundle nacked, will retry on next poll"
+                "bundle nacked, scheduling retry with backoff"
             );
 
             // Drop the handle to trigger implicit defer, releasing the claim.
-            // The bundle will be redelivered on the next poll_next_bundle() call.
-            // We rely on the timer tick to retry naturally.
-            //
-            // TODO: For more sophisticated retry with exponential backoff, the embedding
-            // layer could use effect_handler.delay_data(). We could also track retry_count
-            // separately and reject bundles that exceed a maximum retry limit.
+            // The bundle stays in Quiver but is now available for re-claiming.
             drop(pending.handle);
+
+            // Schedule the retry
+            if self.schedule_retry(bundle_ref, retry_count, backoff, effect_handler).await {
+                self.metrics.retries_scheduled.add(1);
+            } else {
+                warn!(
+                    segment_seq = bundle_ref.segment_seq.raw(),
+                    bundle_index = bundle_ref.bundle_index.raw(),
+                    "failed to schedule retry, bundle will retry via poll"
+                );
+            }
         } else {
             warn!(
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 "received NACK for unknown bundle"
             );
+        }
+
+        Ok(())
+    }
+
+    /// Handle a delayed retry ticket.
+    ///
+    /// Re-claims the bundle from Quiver and attempts redelivery downstream.
+    async fn handle_delayed_retry(
+        &mut self,
+        retry_ticket: Box<OtapPdata>,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), Error> {
+        // Decode the retry ticket
+        let Some(calldata) = retry_ticket.current_calldata() else {
+            warn!("delayed retry ticket missing calldata");
+            return Ok(());
+        };
+
+        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
+            warn!("delayed retry ticket has invalid calldata");
+            return Ok(());
+        };
+
+        // Check max_in_flight limit
+        if !self.can_send_more() {
+            // At capacity - re-schedule with a short delay.
+            // Bundle stays in retry_scheduled (wasn't removed yet).
+            debug!(
+                segment_seq = bundle_ref.segment_seq.raw(),
+                bundle_index = bundle_ref.bundle_index.raw(),
+                in_flight = self.pending_bundles.len(),
+                max_in_flight = self.config.max_in_flight,
+                "retry deferred due to max_in_flight limit"
+            );
+
+            // Re-schedule - note: bundle is still in retry_scheduled, schedule_retry
+            // will just update it (insert is idempotent for HashSet)
+            if !self.schedule_retry(bundle_ref, retry_count, self.config.poll_interval, effect_handler).await {
+                // Failed to re-schedule - remove from retry_scheduled so poll can pick it up
+                self.unschedule_retry(bundle_ref);
+                warn!("failed to re-schedule retry, bundle will retry via poll");
+            }
+            return Ok(());
+        }
+
+        // Backoff period has elapsed and we have capacity - remove from retry_scheduled.
+        // This allows poll_next_bundle to see it again if claim_bundle fails.
+        self.unschedule_retry(bundle_ref);
+
+        // Ensure engine is initialized
+        self.ensure_engine_initialized().await?;
+
+        // Re-claim the bundle from Quiver
+        let claim_result = {
+            let (engine, subscriber_id) = self.engine()?;
+            engine.claim_bundle(subscriber_id, bundle_ref)
+        };
+
+        match claim_result {
+            Ok(handle) => {
+                // Successfully re-claimed, now send downstream
+                match self.try_process_bundle_handle_with_retry_count(
+                    handle,
+                    retry_count,
+                    effect_handler,
+                ) {
+                    ProcessBundleResult::Sent => {
+                        debug!(
+                            segment_seq = bundle_ref.segment_seq.raw(),
+                            bundle_index = bundle_ref.bundle_index.raw(),
+                            retry_count = retry_count,
+                            "retry sent downstream"
+                        );
+                    }
+                    ProcessBundleResult::Skipped => {
+                        // Shouldn't happen - we just claimed it and removed from retry_scheduled
+                        warn!(
+                            segment_seq = bundle_ref.segment_seq.raw(),
+                            bundle_index = bundle_ref.bundle_index.raw(),
+                            "retry skipped unexpectedly"
+                        );
+                    }
+                    ProcessBundleResult::Backpressure => {
+                        // Channel full - the handle was dropped (deferred).
+                        // Re-schedule retry with a short delay.
+                        debug!(
+                            segment_seq = bundle_ref.segment_seq.raw(),
+                            bundle_index = bundle_ref.bundle_index.raw(),
+                            "retry hit backpressure, re-scheduling"
+                        );
+
+                        // Short delay for backpressure (not exponential - this isn't a failure).
+                        // If scheduling fails, poll will pick it up.
+                        let _ = self.schedule_retry(
+                            bundle_ref,
+                            retry_count,
+                            self.config.poll_interval,
+                            effect_handler,
+                        ).await;
+                    }
+                    ProcessBundleResult::Error(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+            Err(e) => {
+                // Claim failed - bundle may have been resolved or segment dropped
+                debug!(
+                    segment_seq = bundle_ref.segment_seq.raw(),
+                    bundle_index = bundle_ref.bundle_index.raw(),
+                    error = %e,
+                    "failed to re-claim bundle for retry (may have been resolved or dropped)"
+                );
+            }
         }
 
         Ok(())
@@ -1021,8 +1321,16 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
                     Ok(())
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
-                    // Handle delayed data as regular data
-                    self.handle_data(*data, effect_handler).await
+                    // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
+                    if let Some(calldata) = data.current_calldata() {
+                        if decode_retry_ticket(&calldata).is_some() {
+                            // This is a retry ticket - handle retry
+                            return self.handle_delayed_retry(data, effect_handler).await;
+                        }
+                    }
+                    // Not a retry ticket - shouldn't happen, but handle gracefully
+                    warn!("received unexpected DelayedData without retry ticket");
+                    Ok(())
                 }
             },
         }
@@ -1096,5 +1404,93 @@ mod tests {
     fn test_decode_bundle_ref_insufficient_calldata() {
         let calldata: CallData = smallvec![Context8u8::from(123u64)];
         assert!(decode_bundle_ref(&calldata).is_none());
+    }
+
+    #[test]
+    fn test_retry_ticket_encoding_roundtrip() {
+        let bundle_ref = BundleRef {
+            segment_seq: SegmentSeq::new(98765),
+            bundle_index: BundleIndex::new(123),
+        };
+        let retry_count = 7u32;
+
+        let calldata = encode_retry_ticket(bundle_ref, retry_count);
+        let decoded = decode_retry_ticket(&calldata);
+
+        assert!(decoded.is_some());
+        let (decoded_ref, decoded_count) = decoded.unwrap();
+        assert_eq!(decoded_ref.segment_seq.raw(), 98765);
+        assert_eq!(decoded_ref.bundle_index.raw(), 123);
+        assert_eq!(decoded_count, 7);
+    }
+
+    #[test]
+    fn test_retry_ticket_encoding_max_values() {
+        let bundle_ref = BundleRef {
+            segment_seq: SegmentSeq::new(u64::MAX),
+            bundle_index: BundleIndex::new(u32::MAX),
+        };
+        let retry_count = u32::MAX;
+
+        let calldata = encode_retry_ticket(bundle_ref, retry_count);
+        let decoded = decode_retry_ticket(&calldata);
+
+        assert!(decoded.is_some());
+        let (decoded_ref, decoded_count) = decoded.unwrap();
+        assert_eq!(decoded_ref.segment_seq.raw(), u64::MAX);
+        assert_eq!(decoded_ref.bundle_index.raw(), u32::MAX);
+        assert_eq!(decoded_count, u32::MAX);
+    }
+
+    #[test]
+    fn test_decode_retry_ticket_empty_calldata() {
+        let calldata: CallData = smallvec![];
+        assert!(decode_retry_ticket(&calldata).is_none());
+    }
+
+    #[test]
+    fn test_backoff_calculation() {
+        use otap_df_engine::context::ControllerContext;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+        let registry = TelemetryRegistryHandle::default();
+        let controller_ctx = ControllerContext::new(registry);
+        let pipeline_ctx = controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 0);
+
+        let config = PersistenceProcessorConfig {
+            path: std::path::PathBuf::from("/tmp/test"),
+            retention_size_cap: byte_unit::Byte::from_u64(1024),
+            max_age: None,
+            size_cap_policy: SizeCapPolicy::Backpressure,
+            poll_interval: Duration::from_millis(100),
+            otlp_handling: OtlpHandling::PassThrough,
+            max_segment_open_duration: Duration::from_secs(1),
+            initial_retry_interval: Duration::from_secs(1),
+            max_retry_interval: Duration::from_secs(30),
+            retry_multiplier: 2.0,
+            max_in_flight: 1000,
+        };
+
+        let processor = PersistenceProcessor::new(config, &pipeline_ctx).unwrap();
+
+        // retry 0: 1s * 2^0 = 1s (with jitter 0.5-1.0x)
+        let backoff0 = processor.calculate_backoff(0);
+        assert!(backoff0 >= Duration::from_millis(500));
+        assert!(backoff0 <= Duration::from_millis(1000));
+
+        // retry 1: 1s * 2^1 = 2s (with jitter 0.5-1.0x)
+        let backoff1 = processor.calculate_backoff(1);
+        assert!(backoff1 >= Duration::from_millis(1000));
+        assert!(backoff1 <= Duration::from_millis(2000));
+
+        // retry 5: 1s * 2^5 = 32s, capped to 30s (with jitter 0.5-1.0x)
+        let backoff5 = processor.calculate_backoff(5);
+        assert!(backoff5 >= Duration::from_millis(15000)); // 30s * 0.5
+        assert!(backoff5 <= Duration::from_millis(30000)); // 30s * 1.0
+
+        // Large retry count: should stay capped at max_retry_interval
+        let backoff100 = processor.calculate_backoff(100);
+        assert!(backoff100 >= Duration::from_millis(15000));
+        assert!(backoff100 <= Duration::from_millis(30000));
     }
 }

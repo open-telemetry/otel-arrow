@@ -46,6 +46,25 @@ nodes:
       # - pass_through: Store OTLP as opaque binary, very CPU efficient
       # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
       otlp_handling: pass_through
+
+      # ─── Retry Configuration ───────────────────────────────────────────
+      # Controls exponential backoff for failed downstream deliveries.
+      # Bundles that receive NACK from downstream are retried with backoff.
+
+      # Initial retry delay after first NACK (default: 1s)
+      initial_retry_interval: 1s
+
+      # Maximum retry delay cap (default: 30s)
+      max_retry_interval: 30s
+
+      # Backoff multiplier (default: 2.0)
+      # Each retry: min(initial * multiplier^retry_count, max_interval)
+      retry_multiplier: 2.0
+
+      # Maximum bundles in-flight to downstream (default: 1000)
+      # Limits concurrent delivery attempts to prevent thundering herd
+      # after extended network outages or restarts with large backlogs.
+      max_in_flight: 1000
 ```
 
 ## Architecture
