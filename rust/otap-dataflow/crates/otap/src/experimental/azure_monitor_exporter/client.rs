@@ -94,16 +94,17 @@ impl LogsIngestionClientPool {
 // TODO: Remove print_stdout after logging is set up
 #[allow(clippy::print_stdout)]
 impl LogsIngestionClient {
-    /// Creates a new Azure Monitor logs ingestion client instance from provided components, mainly for testing purposes.
+    /// Creates a new Azure Monitor logs ingestion client instance from provided components.
+    ///
+    /// Primarily used for testing. The auth header is initialized with a placeholder
+    /// and should be updated via `update_auth()` before making requests.
     ///
     /// # Arguments
     /// * `http_client` - The HTTP client to use for requests
     /// * `endpoint` - The full endpoint URL for the Azure Monitor ingestion API
-    /// * `credential` - The token credential for authentication
-    /// * `scope` - The OAuth scope for token acquisition
     ///
     /// # Returns
-    /// * `LogsIngestionClient` - A configured client instance
+    /// A configured client instance with a placeholder auth header
     #[must_use]
     pub fn from_parts(http_client: Client, endpoint: String) -> Self {
         Self {
@@ -115,13 +116,16 @@ impl LogsIngestionClient {
 
     /// Creates a new Azure Monitor logs ingestion client instance from the configuration.
     ///
+    /// The auth header is initialized with a placeholder and should be updated
+    /// via `update_auth()` before making requests.
+    ///
     /// # Arguments
-    /// * `config` - The Azure Monitor Exporter configuration
+    /// * `config` - The API configuration containing endpoint, DCR, and stream info
     /// * `http_client` - The HTTP client to use for requests
     ///
     /// # Returns
     /// * `Ok(LogsIngestionClient)` - A configured client instance
-    /// * `Err(String)` - Error message if initialization fails
+    /// * `Err(Error)` - If client initialization fails
     pub fn new(config: &ApiConfig, http_client: Client) -> Result<Self, Error> {
         let endpoint = format!(
             "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",

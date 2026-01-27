@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
-use otap_df_engine::ConsumerEffectHandlerExtension; // Add this import
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -44,7 +44,6 @@ const TOKEN_EXPIRY_BUFFER_SECS: u64 = 295;
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
-    // Define the fields of the AzureMonitorExporter struct
     config: Config,
     transformer: Transformer,
     gzip_batcher: GzipBatcher,
