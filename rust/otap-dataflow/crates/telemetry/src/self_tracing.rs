@@ -26,8 +26,8 @@ pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
 pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
-    AnsiCode, BufWriter, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer,
-    StyledBufWriter, format_log_record_to_string,
+    AnsiCode, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, StyledBufWriter,
+    format_log_record_to_string,
 };
 
 /// A log record with structural metadata and pre-encoded body/attributes.
@@ -105,7 +105,7 @@ impl LogRecord {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
-        // Note! TODO: we could potentially avoid allocating for the intermediate
+        // TODO(#1746): we could potentially avoid allocating for the intermediate
         // protobuf slice with work to support a fixed-size buffer and cursor
         // instead of a Vec<u8>.
         let mut buf = ProtoBuffer::with_capacity(256);
@@ -128,6 +128,9 @@ impl LogRecord {
 
 impl fmt::Display for LogRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Note: it _should_ be possible to format directly without the
+        // intermediate string except Formatter does not implement the
+        // Cursor that StyledBufWriter uses.
         write!(f, "{}", format_log_record_to_string(None, self))
     }
 }

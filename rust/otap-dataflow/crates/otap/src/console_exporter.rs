@@ -27,7 +27,7 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::resource::ResourceView;
 use otap_df_telemetry::otel_error;
-use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, StyledBufWriter, LOG_BUFFER_SIZE};
+use otap_df_telemetry::self_tracing::{AnsiCode, ColorMode, LOG_BUFFER_SIZE, StyledBufWriter};
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -179,7 +179,7 @@ impl TreeChars {
 
 /// Hierarchical formatter for OTLP data.
 pub struct HierarchicalFormatter {
-    writer: ConsoleWriter,
+    color: ColorMode,
     tree: TreeChars,
 }
 
@@ -188,10 +188,10 @@ impl HierarchicalFormatter {
     #[must_use]
     pub fn new(use_color: bool, use_unicode: bool) -> Self {
         Self {
-            writer: if use_color {
-                ConsoleWriter::color()
+            color: if use_color {
+                ColorMode::Color
             } else {
-                ConsoleWriter::no_color()
+                ColorMode::NoColor
             },
             tree: if use_unicode {
                 TreeChars::UNICODE
@@ -242,7 +242,7 @@ impl HierarchicalFormatter {
                 |w| {
                     let _ = w.write_all(b"v1.Resource");
                 },
-                |_| {}, // no suffix
+                |_| {}, // No line suffix.
             );
         });
 
@@ -314,7 +314,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
                 },
-                |_| {}, // no suffix
+                |_| {}, // No line suffix.
             );
         });
 
@@ -368,7 +368,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(name.as_bytes());
                     }
                 },
-                |_| {}, // no suffix
+                |_| {}, // No line suffix (scope printed above).
             );
         });
     }
@@ -379,7 +379,7 @@ impl HierarchicalFormatter {
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = StyledBufWriter::new(&mut buf, self.writer.color_mode());
+        let mut w = StyledBufWriter::new(&mut buf, self.color);
         f(&mut w);
         let len = w.position();
         output.extend_from_slice(&buf[..len]);

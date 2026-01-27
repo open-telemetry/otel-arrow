@@ -109,7 +109,6 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let logs_receiver = &self.internal_telemetry.logs_receiver;
         let resource_bytes = self.internal_telemetry.resource_bytes.clone();
 
-        // Create scope cache for encoding entity attributes
         let mut scope_cache = ScopeToBytesMap::new(self.internal_telemetry.registry.clone());
 
         // Start periodic telemetry collection

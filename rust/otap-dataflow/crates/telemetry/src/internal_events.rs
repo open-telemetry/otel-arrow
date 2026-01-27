@@ -113,7 +113,9 @@ macro_rules! raw_error {
         use $crate::self_tracing::ConsoleWriter;
         let now = std::time::SystemTime::now();
         let record = $crate::__log_record_impl!($crate::_private::Level::ERROR, $name $(, $($fields)*)?);
-        ConsoleWriter::no_color().print_log_record(now, &record, |_| {});
+        ConsoleWriter::no_color().print_log_record(now, &record, |_| {
+            // Note: No entity information included in raw logs.
+        });
     }};
 }
 

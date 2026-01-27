@@ -109,7 +109,7 @@ impl ProviderSetup {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => Dispatch::new(Registry::default().with(filter()).with(
-                // TODO: passing an empty context, we have no scope data yet.
+                // TODO: passing an LogContext::new as LogContextFn, will use a configured value.
                 RawLoggingLayer::new(ConsoleWriter::color(), LogContext::new),
             )),
 
@@ -165,6 +165,7 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
+        // TODO: passing an LogContext::new() as LogContext, will use a configured LogContextFn.
         let record = LogRecord::new(event, LogContext::new());
         self.reporter.log(LogEvent { time, record });
     }

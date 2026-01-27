@@ -12,7 +12,14 @@
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otlp::ProtoBuffer;
-use otap_df_telemetry::self_tracing::{ConsoleWriter, DirectLogRecordEncoder, LogRecord};
+use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::{
+    DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
+    format_log_record_to_string,
+};
 use std::time::SystemTime;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Layer;
@@ -25,6 +32,47 @@ use tikv_jemallocator::Jemalloc;
 #[cfg(not(windows))]
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
+
+// Test scope attributes for entity benchmarks
+static BENCH_SCOPE_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+    name: "BenchScope",
+    fields: &[
+        AttributeField {
+            key: "pipeline.name",
+            r#type: AttributeValueType::String,
+            brief: "Pipeline name",
+        },
+        AttributeField {
+            key: "cpu.id",
+            r#type: AttributeValueType::Int,
+            brief: "CPU ID",
+        },
+    ],
+};
+
+/// Mock attribute set for benchmarking scope attributes.
+#[derive(Debug)]
+struct BenchScopeAttributes {
+    values: Vec<AttributeValue>,
+}
+
+impl BenchScopeAttributes {
+    fn new(name: &str, id: i64) -> Self {
+        Self {
+            values: vec![AttributeValue::String(name.into()), AttributeValue::Int(id)],
+        }
+    }
+}
+
+impl AttributeSetHandler for BenchScopeAttributes {
+    fn descriptor(&self) -> &'static AttributesDescriptor {
+        &BENCH_SCOPE_ATTRIBUTES_DESCRIPTOR
+    }
+
+    fn attribute_values(&self) -> &[AttributeValue] {
+        &self.values
+    }
+}
 
 /// The operation to perform on each event within the layer.  The cost
 /// of generating the timestamp is not included in the  measurement.
@@ -42,17 +90,52 @@ enum BenchOp {
     EncodeAndFormat,
     /// Encode to complete protobuf (with timestamp) N times.
     EncodeProto,
+    /// Encode to complete protobuf with scope cache (with entity context) N times.
+    /// Measures overhead of scope attribute encoding/caching.
+    EncodeProtoWithScope,
+    /// Format with entity context N times.
+    /// Measures overhead of formatting entity keys.
+    FormatWithEntity,
 }
 
 /// A layer that performs a configurable operation N times per event.
 struct BenchLayer {
     iterations: usize,
     op: BenchOp,
+    /// Optional entity context for scope benchmarks.
+    entity_context: Option<EntityContext>,
+}
+
+/// Entity context for scope benchmarks (registry, entity key, resource bytes).
+struct EntityContext {
+    registry: TelemetryRegistryHandle,
+    context: LogContext,
+    resource_bytes: bytes::Bytes,
 }
 
 impl BenchLayer {
     fn new(iterations: usize, op: BenchOp) -> Self {
-        Self { iterations, op }
+        Self {
+            iterations,
+            op,
+            entity_context: None,
+        }
+    }
+
+    fn with_entity(iterations: usize, op: BenchOp) -> Self {
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(BenchScopeAttributes::new("bench-pipeline", 42));
+        // Empty resource bytes - we're benchmarking scope encoding, not resource encoding
+        let resource_bytes = bytes::Bytes::new();
+        Self {
+            iterations,
+            op,
+            entity_context: Some(EntityContext {
+                registry,
+                context: LogContext::from_buf([entity_key]),
+                resource_bytes,
+            }),
+        }
     }
 }
 
@@ -65,26 +148,23 @@ where
         match self.op {
             BenchOp::NewRecord => {
                 for _ in 0..self.iterations {
-                    let record = LogRecord::new(event);
+                    let record = LogRecord::new(event, LogContext::new());
                     let _ = std::hint::black_box(record);
                 }
             }
             BenchOp::Format => {
                 // Encode once, format N times
-                let record = LogRecord::new(event);
-                let writer = ConsoleWriter::no_color();
+                let record = LogRecord::new(event, LogContext::new());
 
                 for _ in 0..self.iterations {
-                    let line = writer.format_log_record(Some(now), &record);
+                    let line = format_log_record_to_string(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
             BenchOp::EncodeAndFormat => {
-                let writer = ConsoleWriter::no_color();
-
                 for _ in 0..self.iterations {
-                    let record = LogRecord::new(event);
-                    let line = writer.format_log_record(Some(now), &record);
+                    let record = LogRecord::new(event, LogContext::new());
+                    let line = format_log_record_to_string(Some(now), &record);
                     let _ = std::hint::black_box(line);
                 }
             }
@@ -94,8 +174,41 @@ where
 
                 for _ in 0..self.iterations {
                     encoder.clear();
-                    let size = encoder.encode_log_record(now, &LogRecord::new(event));
+                    let size =
+                        encoder.encode_log_record(now, &LogRecord::new(event, LogContext::new()));
                     let _ = std::hint::black_box(size);
+                }
+            }
+            BenchOp::EncodeProtoWithScope => {
+                let ctx = self
+                    .entity_context
+                    .as_ref()
+                    .expect("entity context required");
+                let mut scope_cache = ScopeToBytesMap::new(ctx.registry.clone());
+                let mut buf = ProtoBuffer::with_capacity(512);
+
+                for _ in 0..self.iterations {
+                    let record = LogRecord::new(event, ctx.context.clone());
+                    let log_event = LogEvent { time: now, record };
+                    encode_export_logs_request(
+                        &mut buf,
+                        &log_event,
+                        &ctx.resource_bytes,
+                        &mut scope_cache,
+                    );
+                    let _ = std::hint::black_box(buf.len());
+                }
+            }
+            BenchOp::FormatWithEntity => {
+                let ctx = self
+                    .entity_context
+                    .as_ref()
+                    .expect("entity context required");
+
+                for _ in 0..self.iterations {
+                    let record = LogRecord::new(event, ctx.context.clone());
+                    let line = format_log_record_to_string(Some(now), &record);
+                    let _ = std::hint::black_box(line);
                 }
             }
         }
@@ -186,6 +299,36 @@ fn bench_encode_proto(c: &mut Criterion) {
     bench_op(c, "encode_proto", BenchOp::EncodeProto);
 }
 
+/// Benchmark entity-aware operations across different iteration counts.
+fn bench_op_with_entity(c: &mut Criterion, group_name: &str, op: BenchOp) {
+    let mut group = c.benchmark_group(group_name);
+
+    for &iterations in &[100, 1000] {
+        for &(attr_count, attr_label) in &[(0, "0_attrs"), (3, "3_attrs"), (10, "10_attrs")] {
+            let id = BenchmarkId::new(attr_label, format!("{}_events", iterations));
+
+            let _ = group.bench_with_input(id, &iterations, |b, &iters| {
+                let layer = BenchLayer::with_entity(iters, op);
+                match attr_count {
+                    0 => run_bench(b, layer, || emit_log!(0)),
+                    3 => run_bench(b, layer, || emit_log!(3)),
+                    _ => run_bench(b, layer, || emit_log!(10)),
+                }
+            });
+        }
+    }
+
+    group.finish();
+}
+
+fn bench_encode_proto_with_scope(c: &mut Criterion) {
+    bench_op_with_entity(c, "encode_proto_with_scope", BenchOp::EncodeProtoWithScope);
+}
+
+fn bench_format_with_entity(c: &mut Criterion) {
+    bench_op_with_entity(c, "format_with_entity", BenchOp::FormatWithEntity);
+}
+
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
@@ -193,7 +336,8 @@ mod bench_entry {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto
+        targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
+                  bench_encode_proto_with_scope, bench_format_with_entity
     );
 }
 

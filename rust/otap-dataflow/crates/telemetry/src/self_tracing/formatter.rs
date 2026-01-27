@@ -31,17 +31,17 @@ pub enum AnsiCode {
     Bold = 1,
     /// Dim text.
     Dim = 2,
-    /// Red foreground.
+    /// Red foreground. Use for ERROR/FATAL.
     Red = 31,
-    /// Green foreground.
+    /// Green foreground. Use for INFO.
     Green = 32,
-    /// Yellow foreground.
+    /// Yellow foreground. Use for WARN.
     Yellow = 33,
-    /// Blue foreground.
+    /// Blue foreground. Use for DEBUG/TRACE.
     Blue = 34,
-    /// Magenta foreground.
+    /// Magenta foreground. Use for SCOPE/ENTITY.
     Magenta = 35,
-    /// Cyan foreground.
+    /// Cyan foreground. Use for RESOURCE.
     Cyan = 36,
 }
 
@@ -114,35 +114,32 @@ pub struct ConsoleWriter {
     color_mode: ColorMode,
 }
 
+/// A log context function typically constructs context from
+/// thread-local state.
+pub type LogContextFn = fn() -> LogContext;
+
 /// A minimal alternative to tracing_subscriber::fmt::layer().
 pub struct RawLoggingLayer {
     writer: ConsoleWriter,
-    context_fn: fn() -> LogContext,
+    context_fn: LogContextFn,
 }
 
 impl RawLoggingLayer {
     /// Return a new formatting layer with associated writer and context function.
     #[must_use]
-    pub fn new(writer: ConsoleWriter, context_fn: fn() -> LogContext) -> Self {
+    pub fn new(writer: ConsoleWriter, context_fn: LogContextFn) -> Self {
         Self { writer, context_fn }
     }
 
     /// Process a tracing Event directly, bypassing the dispatcher.
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
-        // TODO: there are allocations implied in LogRecord::new that we
-        // would prefer to avoid; it will be an extensive change in the
-        // ProtoBuffer impl to stack-allocate this as a temporary.
         let record = LogRecord::new(event, (self.context_fn)());
-        self.writer.print_log_record(time, &record, |_| {
-            // TODO: context w/o registry lookup (unsymbolized)
+        self.writer.print_log_record(time, &record, |w| {
+            w.format_entity_suffix_without_registry(&record.context);
         });
     }
 }
-
-/// Type alias for a cursor over a byte buffer.
-/// Uses \`std::io::Cursor\` for position tracking with \`std::io::Write\`.
-pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
@@ -170,10 +167,7 @@ pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord)
     let len = {
         let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
         w.format_log_record(time, record, |w| {
-            // Append entity context inline (raw format for testing without registry)
-            for key in record.context.iter() {
-                let _ = write!(w, " {:?}", key);
-            }
+            w.format_entity_suffix_without_registry(&record.context);
         });
         w.position()
     };
@@ -210,7 +204,8 @@ impl ConsoleWriter {
 /// Write callsite details as event_name to any `io::Write` target.
 ///
 /// Format: `target::name (file:line)` or `target::name` if no file/line.
-/// This is used by both the text formatter and the OTLP encoder.
+/// This is used by both the text formatter and the OTLP encoder, so does
+/// not belong in StyledBufWriter.
 #[inline]
 pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
     let _ = w.write_all(callsite.target().as_bytes());
@@ -443,10 +438,19 @@ impl StyledBufWriter<'_> {
             Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
             Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
             Some(s) if s >= 9 => AnsiCode::Green,   // INFO
-            Some(s) if s >= 5 => AnsiCode::Blue,    // DEBUG
-            Some(s) if s >= 1 => AnsiCode::Magenta, // TRACE
+            Some(s) if s >= 1 => AnsiCode::Blue,    // DEBUG/TRACE
             _ => AnsiCode::Reset,
         }
+    }
+
+    /// This prints the entity keys without attempting any form of lookup
+    /// leaving context keys unsymbolized e.g. 'entity/pipeline=EntityKey("1v3")'.
+    pub fn format_entity_suffix_without_registry(&mut self, context: &LogContext) {
+        self.write_styled(AnsiCode::Magenta, |w| {
+            for key in context.iter() {
+                let _ = write!(w, " entity={:?}", key);
+            }
+        });
     }
 
     /// Format a log line from a LogRecordView with custom formatters.
