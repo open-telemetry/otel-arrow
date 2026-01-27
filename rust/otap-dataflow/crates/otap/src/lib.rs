@@ -102,12 +102,18 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+/// Internal telemetry receiver
+pub mod internal_telemetry_receiver;
+
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
+
+/// Console exporter similar using built-in OTLP-bytes formatting.
+pub mod console_exporter;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

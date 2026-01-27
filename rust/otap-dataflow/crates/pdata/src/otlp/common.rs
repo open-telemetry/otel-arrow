@@ -326,14 +326,14 @@ impl<'a> TryFrom<&'a RecordBatch> for AnyValueArrays<'a> {
     }
 }
 
-/// mutable buffer for encoding protobuf bytes
+/// Buffer for encoding protobuf bytes.
 #[derive(Debug, Default)]
 pub struct ProtoBuffer {
     buffer: Vec<u8>,
 }
 
-#[allow(missing_docs)]
 impl ProtoBuffer {
+    /// Construct a new, empty protocol buffer.
     #[must_use]
     pub const fn new() -> Self {
         Self { buffer: Vec::new() }
@@ -347,16 +347,19 @@ impl ProtoBuffer {
         }
     }
 
+    /// Returns a Bytes representation.
     #[must_use]
     pub fn into_bytes(self) -> Bytes {
         Bytes::from(self.buffer)
     }
 
+    /// Encodes a varint containing type (3 bits) and tag value.
     pub fn encode_field_tag(&mut self, field_number: u64, wire_type: u64) {
         let key = (field_number << 3) | wire_type;
         self.encode_varint(key);
     }
 
+    /// An unsigned varint encoding.
     #[inline]
     pub fn encode_varint(&mut self, value: u64) {
         // Fast path for single byte (very common)
@@ -387,10 +390,12 @@ impl ProtoBuffer {
         self.encode_varint(((value << 1) ^ (value >> 31)) as u64);
     }
 
+    /// Append pre-encoded protocol bytes.
     pub fn extend_from_slice(&mut self, slice: &[u8]) {
         self.buffer.extend_from_slice(slice);
     }
 
+    /// Length of the current encoding.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.buffer.len()
@@ -402,21 +407,25 @@ impl ProtoBuffer {
         self.buffer.capacity()
     }
 
+    /// Is the buffer empty?
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
+    /// Reset the buffer.
     pub fn clear(&mut self) {
         self.buffer.clear();
     }
 
+    /// Encode a string field by tag number.
     pub fn encode_string(&mut self, field_tag: u64, val: &str) {
         self.encode_field_tag(field_tag, wire_types::LEN);
         self.encode_varint(val.len() as u64);
         self.extend_from_slice(val.as_bytes());
     }
 
+    /// Encode a bytes field by tag number.
     pub fn encode_bytes(&mut self, field_tag: u64, val: &[u8]) {
         self.encode_field_tag(field_tag, wire_types::LEN);
         self.encode_varint(val.len() as u64);
@@ -448,6 +457,19 @@ impl AsRef<[u8]> for ProtoBuffer {
 impl AsMut<[u8]> for ProtoBuffer {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.buffer
+    }
+}
+
+impl std::io::Write for ProtoBuffer {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

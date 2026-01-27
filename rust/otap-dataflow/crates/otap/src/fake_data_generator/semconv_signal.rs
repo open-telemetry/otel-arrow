@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //!
-//! The fake signal module provides methods for generating OTLP signals for testing
+//! The semconv signal module provides methods for generating OTLP signals based on
+//! the OpenTelemetry Semantic Conventions registry.
 //!
 //! ToDo: Add profile signal support -> update the builder lib.rs to work on profile object
 
@@ -25,7 +26,7 @@ use weaver_semconv::group::{GroupType, InstrumentSpec, SpanKindSpec};
 
 /// Generates TracesData with the specified resource/scope count and defined spans in the registry
 #[must_use]
-pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
+pub fn semconv_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> TracesData {
     let scopes: Vec<ScopeSpans> = vec![ScopeSpans::new(
         InstrumentationScope::build()
             .name(get_scope_name())
@@ -48,7 +49,7 @@ pub fn fake_otlp_traces(signal_count: usize, registry: &ResolvedRegistry) -> Tra
 
 /// Generates LogsData with the specified resource/scope count and defined events (structured logs) in the registry
 #[must_use]
-pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
+pub fn semconv_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsData {
     let scopes: Vec<ScopeLogs> = vec![ScopeLogs::new(
         InstrumentationScope::build()
             .name(get_scope_name())
@@ -72,7 +73,7 @@ pub fn fake_otlp_logs(signal_count: usize, registry: &ResolvedRegistry) -> LogsD
 
 /// Generates MetricsData with the specified resource/scope count and defined metrics in the registry
 #[must_use]
-pub fn fake_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
+pub fn semconv_otlp_metrics(signal_count: usize, registry: &ResolvedRegistry) -> MetricsData {
     let scopes: Vec<ScopeMetrics> = vec![ScopeMetrics::new(
         InstrumentationScope::build()
             .name(get_scope_name())
@@ -280,7 +281,7 @@ fn logs(signal_count: usize, registry: &ResolvedRegistry) -> Vec<LogRecord> {
         log_records.push(
             LogRecord::build()
                 .time_unix_nano(timestamp)
-                .severity_number(SeverityNumber::Unspecified)
+                .severity_number(SeverityNumber::Info)
                 .event_name(group.name.clone().unwrap_or("".to_owned()))
                 .attributes(
                     group

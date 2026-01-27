@@ -7,7 +7,10 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
+use prost::bytes::BytesMut;
 
+use otap_df_pdata::OtapPayload;
+use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::common::v1::*;
 use otap_df_pdata::proto::opentelemetry::logs::v1::*;
 use otap_df_pdata::proto::opentelemetry::resource::v1::*;
@@ -92,5 +95,27 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(otlp_bytes, otlp_pdata_to_bytes_logs);
+/// Benchmark cloning OtapPayload containing OtlpProtoBytes (logs).
+/// This confirms that clone is cheap due to bytes::Bytes being reference-counted.
+fn otlp_payload_clone(c: &mut Criterion) {
+    let mut group = c.benchmark_group("OtapPayload Clone");
+
+    let logs = create_logs_data();
+
+    // Encode logs to protobuf bytes (same as fake_data_generator does)
+    let mut bytes = BytesMut::new();
+    logs.encode(&mut bytes).expect("encoding success");
+    let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into();
+
+    _ = group.bench_function("OtapPayload::OtlpBytes(Logs) clone", |b| {
+        b.iter(|| {
+            let cloned = payload.clone();
+            std::hint::black_box(cloned)
+        })
+    });
+
+    group.finish();
+}
+
+criterion_group!(otlp_bytes, otlp_pdata_to_bytes_logs, otlp_payload_clone);
 criterion_main!(otlp_bytes);

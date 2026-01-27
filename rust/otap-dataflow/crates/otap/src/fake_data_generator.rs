@@ -6,10 +6,7 @@
 //!
 
 use crate::OTAP_RECEIVER_FACTORIES;
-use crate::fake_data_generator::config::Config;
-use crate::fake_data_generator::fake_signal::{
-    fake_otlp_logs, fake_otlp_metrics, fake_otlp_traces,
-};
+use crate::fake_data_generator::config::{Config, DataSource, GenerationStrategy};
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -39,10 +36,12 @@ pub mod attributes;
 pub mod config;
 /// provides the fake signal with fake data
 pub mod fake_data;
-/// generates fake signals for the receiver to emit
-pub mod fake_signal;
 /// fake signal metrics implementation
 pub mod metrics;
+/// generates signals based on OTel semantic conventions registry
+pub mod semconv_signal;
+/// Static hardcoded signal generators for lightweight load testing
+pub mod static_signal;
 
 /// The URN for the fake data generator receiver
 pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
@@ -100,6 +99,125 @@ impl FakeGeneratorReceiver {
     }
 }
 
+/// Abstraction over signal generation to support different data sources
+enum SignalGenerator {
+    /// Uses semantic conventions registry via weaver
+    SemanticConventions(ResolvedRegistry),
+    /// Uses static hardcoded signals
+    Static,
+}
+
+impl SignalGenerator {
+    /// Generate OTLP traces
+    fn generate_traces(&self, count: usize) -> OtlpProtoMessage {
+        match self {
+            SignalGenerator::SemanticConventions(registry) => {
+                OtlpProtoMessage::Traces(semconv_signal::semconv_otlp_traces(count, registry))
+            }
+            SignalGenerator::Static => {
+                OtlpProtoMessage::Traces(static_signal::static_otlp_traces(count))
+            }
+        }
+    }
+
+    /// Generate OTLP metrics
+    fn generate_metrics(&self, count: usize) -> OtlpProtoMessage {
+        match self {
+            SignalGenerator::SemanticConventions(registry) => {
+                OtlpProtoMessage::Metrics(semconv_signal::semconv_otlp_metrics(count, registry))
+            }
+            SignalGenerator::Static => {
+                OtlpProtoMessage::Metrics(static_signal::static_otlp_metrics(count))
+            }
+        }
+    }
+
+    /// Generate OTLP logs
+    fn generate_logs(&self, count: usize) -> OtlpProtoMessage {
+        match self {
+            SignalGenerator::SemanticConventions(registry) => {
+                OtlpProtoMessage::Logs(semconv_signal::semconv_otlp_logs(count, registry))
+            }
+            SignalGenerator::Static => {
+                OtlpProtoMessage::Logs(static_signal::static_otlp_logs(count))
+            }
+        }
+    }
+}
+
+/// Pre-generated batch cache for high-throughput load testing.
+/// A single batch is generated once at startup and cloned at runtime.
+/// Clone is O(1) since OtapPdata contains Bytes which is ref-counted.
+struct BatchCache {
+    /// Pre-generated metrics batch
+    metrics: Option<OtapPdata>,
+    /// Pre-generated traces batch
+    traces: Option<OtapPdata>,
+    /// Pre-generated logs batch
+    logs: Option<OtapPdata>,
+    /// Number of records in the metrics batch
+    metrics_batch_size: usize,
+    /// Number of records in the traces batch
+    traces_batch_size: usize,
+    /// Number of records in the logs batch
+    logs_batch_size: usize,
+}
+
+impl BatchCache {
+    /// Create a new batch cache by pre-generating a single batch for each signal type.
+    /// The batch contains up to `batch_size` records, which will be sent multiple times
+    /// per iteration to match the total signal count.
+    fn new(
+        generator: &SignalGenerator,
+        batch_size: usize,
+        metric_count: usize,
+        trace_count: usize,
+        log_count: usize,
+    ) -> Result<Self, Error> {
+        // Pre-generate single metrics batch
+        let metrics_batch_size = metric_count.min(batch_size);
+        let metrics = if metric_count > 0 {
+            Some(generator.generate_metrics(metrics_batch_size).try_into()?)
+        } else {
+            None
+        };
+
+        // Pre-generate single traces batch
+        let traces_batch_size = trace_count.min(batch_size);
+        let traces = if trace_count > 0 {
+            Some(generator.generate_traces(traces_batch_size).try_into()?)
+        } else {
+            None
+        };
+
+        // Pre-generate single logs batch
+        let logs_batch_size = log_count.min(batch_size);
+        let logs = if log_count > 0 {
+            let pdata: OtapPdata = generator.generate_logs(logs_batch_size).try_into()?;
+            let (_, payload) = pdata.clone().into_parts();
+            let size = payload.num_bytes().unwrap_or(0);
+            otel_info!(
+                "batch_cache.logsize",
+                log_record_count = logs_batch_size,
+                batch_size_bytes = size,
+                message = "Pre-generated log batch ready"
+            );
+            Some(pdata)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            metrics,
+            traces,
+            logs,
+            metrics_batch_size,
+            traces_batch_size,
+            logs_batch_size,
+        })
+    }
+}
+
 /// Implement the Receiver trait for the FakeGeneratorReceiver
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
@@ -110,15 +228,26 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     ) -> Result<TerminalState, Error> {
         //start event loop
         let traffic_config = self.config.get_traffic_config();
-        let registry = self
-            .config
-            .get_registry()
-            .map_err(|err| Error::ReceiverError {
-                receiver: effect_handler.receiver_id(),
-                kind: ReceiverErrorKind::Configuration,
-                error: err,
-                source_detail: String::new(),
-            })?;
+        let data_source = self.config.data_source().clone();
+        let generation_strategy = self.config.generation_strategy().clone();
+
+        // Create the appropriate signal generator based on data source
+        let signal_generator = match data_source {
+            DataSource::SemanticConventions => {
+                let registry = self
+                    .config
+                    .get_registry()
+                    .map_err(|err| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: err,
+                        source_detail: String::new(),
+                    })?
+                    .expect("SemanticConventions data source should return Some registry");
+                SignalGenerator::SemanticConventions(registry)
+            }
+            DataSource::Static => SignalGenerator::Static,
+        };
 
         let (metric_count, trace_count, log_count) = traffic_config.calculate_signal_count();
         let max_signal_count = traffic_config.get_max_signal_count();
@@ -135,8 +264,37 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
             metrics_per_iteration = metric_count,
             traces_per_iteration = trace_count,
             logs_per_iteration = log_count,
+            data_source = format!("{:?}", self.config.data_source()),
+            generation_strategy = format!("{:?}", generation_strategy),
             message = "Fake data generator receiver started"
         );
+
+        // Create batch cache if using PreGenerated strategy
+        let batch_cache = match generation_strategy {
+            GenerationStrategy::PreGenerated => {
+                otel_info!(
+                    "receiver.pre_generate",
+                    message = "Pre-generating batch for high-throughput mode"
+                );
+                Some(
+                    BatchCache::new(
+                        &signal_generator,
+                        max_batch_size,
+                        metric_count,
+                        trace_count,
+                        log_count,
+                    )
+                    .map_err(|e| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!("Failed to pre-generate batch: {}", e),
+                        source_detail: String::new(),
+                    })?,
+                )
+            }
+            GenerationStrategy::Fresh | GenerationStrategy::Templates => None,
+        };
+
         let mut signal_count: u64 = 0;
         let one_second_duration = Duration::from_secs(1);
 
@@ -157,6 +315,9 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             _ = metrics_reporter.report(&mut self.metrics);
                         }
                         Ok(NodeControlMsg::Shutdown {deadline, ..}) => {
+                            otel_info!(
+                                "receiver.shutdown"
+                            );
                             return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                         },
                         Err(e) => {
@@ -168,7 +329,17 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                     }
                 }
                 // generate and send signal based on provided configuration
-                signal_status = generate_signal(effect_handler.clone(), max_signal_count, &mut signal_count, max_batch_size, metric_count, trace_count, log_count, &registry), if max_signal_count.is_none_or(|max| max > signal_count) => {
+                signal_status = send_signals(
+                    effect_handler.clone(),
+                    max_signal_count,
+                    &mut signal_count,
+                    max_batch_size,
+                    metric_count,
+                    trace_count,
+                    log_count,
+                    &signal_generator,
+                    &batch_cache,
+                ), if max_signal_count.is_none_or(|max| max > signal_count) => {
                     // if signals per second is set then we should rate limit
                     match signal_status {
                         Ok(_) => {
@@ -212,8 +383,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
     }
 }
 
-/// generate and send signals
-async fn generate_signal(
+/// Send signals using either pre-generated cache or fresh generation
+async fn send_signals(
     effect_handler: local::EffectHandler<OtapPdata>,
     max_signal_count: Option<u64>,
     signal_count: &mut u64,
@@ -221,7 +392,102 @@ async fn generate_signal(
     metric_count: usize,
     trace_count: usize,
     log_count: usize,
-    registry: &ResolvedRegistry,
+    generator: &SignalGenerator,
+    batch_cache: &Option<BatchCache>,
+) -> Result<(), Error> {
+    match batch_cache {
+        Some(cache) => {
+            send_cached_signals(
+                effect_handler,
+                max_signal_count,
+                signal_count,
+                metric_count,
+                trace_count,
+                log_count,
+                cache,
+            )
+            .await
+        }
+        None => {
+            generate_signal_fresh(
+                effect_handler,
+                max_signal_count,
+                signal_count,
+                max_batch_size,
+                metric_count,
+                trace_count,
+                log_count,
+                generator,
+            )
+            .await
+        }
+    }
+}
+
+/// Send signals from pre-generated cache (PreGenerated strategy).
+/// Sends the cached batch multiple times to match the total signal count.
+async fn send_cached_signals(
+    effect_handler: local::EffectHandler<OtapPdata>,
+    max_signal_count: Option<u64>,
+    signal_count: &mut u64,
+    metric_count: usize,
+    trace_count: usize,
+    log_count: usize,
+    cache: &BatchCache,
+) -> Result<(), Error> {
+    let total_per_iteration = (metric_count + trace_count + log_count) as u64;
+
+    // Check if we've reached max signal count
+    if let Some(max_count) = max_signal_count {
+        if *signal_count >= max_count {
+            return Ok(());
+        }
+    }
+
+    // Send cached metrics (multiple times if needed)
+    if metric_count > 0 && cache.metrics_batch_size > 0 {
+        if let Some(batch) = &cache.metrics {
+            let send_count = metric_count / cache.metrics_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
+        }
+    }
+
+    // Send cached traces (multiple times if needed)
+    if trace_count > 0 && cache.traces_batch_size > 0 {
+        if let Some(batch) = &cache.traces {
+            let send_count = trace_count / cache.traces_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
+        }
+    }
+
+    // Send cached logs (multiple times if needed)
+    if log_count > 0 && cache.logs_batch_size > 0 {
+        if let Some(batch) = &cache.logs {
+            let send_count = log_count / cache.logs_batch_size;
+            for _ in 0..send_count {
+                effect_handler.send_message(batch.clone()).await?;
+            }
+        }
+    }
+
+    *signal_count += total_per_iteration;
+    Ok(())
+}
+
+/// generate and send signals (Fresh strategy - original behavior)
+async fn generate_signal_fresh(
+    effect_handler: local::EffectHandler<OtapPdata>,
+    max_signal_count: Option<u64>,
+    signal_count: &mut u64,
+    max_batch_size: usize,
+    metric_count: usize,
+    trace_count: usize,
+    log_count: usize,
+    generator: &SignalGenerator,
 ) -> Result<(), Error> {
     // nothing to send
     if max_batch_size == 0 {
@@ -246,10 +512,7 @@ async fn generate_signal(
         for _ in 0..metric_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Metrics(fake_otlp_metrics(max_batch_size, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_metrics(max_batch_size).try_into()?)
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -264,10 +527,7 @@ async fn generate_signal(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Metrics(fake_otlp_metrics(remaining_count, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_metrics(remaining_count).try_into()?)
                     .await?;
 
                 // no more signals we have reached the max
@@ -279,7 +539,8 @@ async fn generate_signal(
         {
             effect_handler
                 .send_message(
-                    OtlpProtoMessage::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                    generator
+                        .generate_metrics(metric_count_remainder)
                         .try_into()?,
                 )
                 .await?;
@@ -290,10 +551,7 @@ async fn generate_signal(
         for _ in 0..trace_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Traces(fake_otlp_traces(max_batch_size, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_traces(max_batch_size).try_into()?)
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -307,10 +565,7 @@ async fn generate_signal(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Traces(fake_otlp_traces(remaining_count, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_traces(remaining_count).try_into()?)
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -320,7 +575,8 @@ async fn generate_signal(
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
             effect_handler
                 .send_message(
-                    OtlpProtoMessage::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                    generator
+                        .generate_traces(trace_count_remainder)
                         .try_into()?,
                 )
                 .await?;
@@ -331,10 +587,7 @@ async fn generate_signal(
         for _ in 0..log_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Logs(fake_otlp_logs(max_batch_size, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_logs(max_batch_size).try_into()?)
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -348,10 +601,7 @@ async fn generate_signal(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(
-                        OtlpProtoMessage::Logs(fake_otlp_logs(remaining_count, registry))
-                            .try_into()?,
-                    )
+                    .send_message(generator.generate_logs(remaining_count).try_into()?)
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -360,10 +610,7 @@ async fn generate_signal(
         }
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             effect_handler
-                .send_message(
-                    OtlpProtoMessage::Logs(fake_otlp_logs(log_count_remainder, registry))
-                        .try_into()?,
-                )
+                .send_message(generator.generate_logs(log_count_remainder).try_into()?)
                 .await?;
             current_count += log_count_remainder as u64;
         }
@@ -373,16 +620,14 @@ async fn generate_signal(
         // generate and send metric
         for _ in 0..metric_count_split {
             effect_handler
-                .send_message(
-                    OtlpProtoMessage::Metrics(fake_otlp_metrics(max_batch_size, registry))
-                        .try_into()?,
-                )
+                .send_message(generator.generate_metrics(max_batch_size).try_into()?)
                 .await?;
         }
         if metric_count_remainder > 0 {
             effect_handler
                 .send_message(
-                    OtlpProtoMessage::Metrics(fake_otlp_metrics(metric_count_remainder, registry))
+                    generator
+                        .generate_metrics(metric_count_remainder)
                         .try_into()?,
                 )
                 .await?;
@@ -391,16 +636,14 @@ async fn generate_signal(
         // generate and send traces
         for _ in 0..trace_count_split {
             effect_handler
-                .send_message(
-                    OtlpProtoMessage::Traces(fake_otlp_traces(max_batch_size, registry))
-                        .try_into()?,
-                )
+                .send_message(generator.generate_traces(max_batch_size).try_into()?)
                 .await?;
         }
         if trace_count_remainder > 0 {
             effect_handler
                 .send_message(
-                    OtlpProtoMessage::Traces(fake_otlp_traces(trace_count_remainder, registry))
+                    generator
+                        .generate_traces(trace_count_remainder)
                         .try_into()?,
                 )
                 .await?;
@@ -409,17 +652,12 @@ async fn generate_signal(
         // generate and send logs
         for _ in 0..log_count_split {
             effect_handler
-                .send_message(
-                    OtlpProtoMessage::Logs(fake_otlp_logs(max_batch_size, registry)).try_into()?,
-                )
+                .send_message(generator.generate_logs(max_batch_size).try_into()?)
                 .await?;
         }
         if log_count_remainder > 0 {
             effect_handler
-                .send_message(
-                    OtlpProtoMessage::Logs(fake_otlp_logs(log_count_remainder, registry))
-                        .try_into()?,
-                )
+                .send_message(generator.generate_logs(log_count_remainder).try_into()?)
                 .await?;
         }
     }
@@ -700,7 +938,10 @@ mod tests {
 
         let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
         let config = Config::new(traffic_config, registry_path);
-        let registry = config.get_registry().expect("failed to get registry");
+        let registry = config
+            .get_registry()
+            .expect("failed to get registry")
+            .expect("registry should be Some for SemanticConventions data source");
 
         // create our receiver
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
@@ -879,5 +1120,86 @@ mod tests {
             .set_receiver(receiver)
             .run_test(scenario())
             .run_validation(validation_procedure_max_signal());
+    }
+
+    /// Validation closure for PreGenerated strategy test
+    fn validation_procedure_pregenerated()
+    -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let mut received_messages = 0;
+
+                while let Ok(received_signal) = ctx.recv().await {
+                    match received_signal.into() {
+                        OtlpProtoMessage::Metrics(metric) => {
+                            for resource in metric.resource_metrics.iter() {
+                                for scope in resource.scope_metrics.iter() {
+                                    received_messages += scope.metrics.len();
+                                }
+                            }
+                        }
+                        OtlpProtoMessage::Traces(span) => {
+                            for resource in span.resource_spans.iter() {
+                                for scope in resource.scope_spans.iter() {
+                                    received_messages += scope.spans.len();
+                                }
+                            }
+                        }
+                        OtlpProtoMessage::Logs(log) => {
+                            for resource in log.resource_logs.iter() {
+                                for scope in resource.scope_logs.iter() {
+                                    received_messages += scope.log_records.len();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Should have received at least some messages
+                assert!(
+                    received_messages > 0,
+                    "Should receive messages from pre-generated cache"
+                );
+            })
+        }
+    }
+
+    #[test]
+    fn test_fake_signal_receiver_static_pregenerated() {
+        let test_runtime = TestRuntime::new();
+
+        // Use Static data source with PreGenerated strategy
+        let registry_path = VirtualDirectoryPath::GitRepo {
+            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
+            sub_folder: Some("model".to_owned()),
+            refspec: None,
+        };
+
+        let traffic_config = TrafficConfig::new(Some(MESSAGE_PER_SECOND), None, MAX_BATCH, 1, 1, 1);
+        let config = Config::new(traffic_config, registry_path)
+            .with_data_source(DataSource::Static)
+            .with_generation_strategy(GenerationStrategy::PreGenerated);
+
+        // create our receiver
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            OTAP_FAKE_DATA_GENERATOR_URN,
+        ));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+        // create our receiver
+        let receiver = ReceiverWrapper::local(
+            FakeGeneratorReceiver::new(pipeline_ctx, config),
+            test_node("fake_receiver_pregenerated"),
+            node_config,
+            test_runtime.config(),
+        );
+
+        // run the test
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario())
+            .run_validation(validation_procedure_pregenerated());
     }
 }
