@@ -135,6 +135,7 @@ pub struct Frame {
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
+    source_node: Option<NodeName>
 }
 
 /* -------- Signal type -------- */
@@ -148,6 +149,7 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
+            source_node: None,
         }
     }
 
@@ -158,13 +160,14 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
+            source_node: None,
         }
     }
 
     /// Construct new OtapData with context and payload
     #[must_use]
     pub fn new(context: Context, payload: OtapPayload) -> Self {
-        Self { context, payload }
+        Self { context, payload, source_node: None }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -245,6 +248,18 @@ impl OtapPdata {
     #[must_use]
     pub fn current_calldata(&self) -> Option<CallData> {
         self.context.current_calldata()
+    }
+}
+
+
+impl MessageSource for OtapPdata {
+    /// save the source node
+    fn add_source_node(&mut self, node_name: NodeName) {
+        self.source_node = Some(node_name)
+    }
+    /// return the source node
+    fn get_source_node(&self) -> Some(NodeName) {
+        self.source_node
     }
 }
 

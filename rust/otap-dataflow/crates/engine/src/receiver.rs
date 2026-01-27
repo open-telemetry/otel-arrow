@@ -20,6 +20,7 @@ use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
+use crate::pdata_traits::MessageSource;
 use crate::node::{Node, NodeId, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::receiver as shared;
@@ -94,7 +95,10 @@ impl<PData> Controllable<PData> for ReceiverWrapper<PData> {
     }
 }
 
-impl<PData> ReceiverWrapper<PData> {
+impl<PData> ReceiverWrapper<PData>
+where
+    PData: MessageSource
+{
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(
         receiver: R,
