@@ -754,7 +754,11 @@ impl PipelineMetricsMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
-    fn update_rusage_metrics(&mut self) {}
+    fn update_rusage_metrics(&mut self) {
+        // Field exists but rusage metrics are not supported on this platform.
+        // Silence unused field warning by reading here and setting to _.
+        let _ = self.rusage_thread_supported;
+    }
 }
 
 impl Drop for PipelineMetricsMonitor {
