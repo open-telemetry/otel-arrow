@@ -533,6 +533,9 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             sorted_val_columns[key_range_attr_type as usize].as_mut()
         };
 
+        // relative to - original
+        // sorted by - type/key
+        // sliced by - type range
         let type_col_sorted_indices_type_range_by_key_prim =
             type_and_key_indices.slice(type_range.start, type_range.len());
 
@@ -544,8 +547,6 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             .iter()
             .map(|idx| parent_id_column_vals[*idx as usize])
             .collect::<Vec<_>>();
-        // let parent_id_type_range_by_key =
-        //     sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.1 (tmp) for each type
 
         // sort the values columns for values of this type
         if let Some(sorted_val_col) = sorted_val_col {
@@ -622,10 +623,13 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc t.6 (tmp)
             let key_ranges = ranges(next_eq_inverted.values()); // Arc t.7 (tmp)
 
+            // relative to - type range
+            // sorted by - key
             for key_range in key_ranges {
                 let values_key_range =
                     values_arr_for_sorting.slice(key_range.start, key_range.len()); // Arc k.1
 
+                // relative to key range
                 let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
                     &values_key_range,
                     Some(SortOptions {
@@ -637,23 +641,28 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                 .unwrap(); // Arc k.2
 
 
+                // Map the sorted indices back to original source indices
+                let original_indices: Vec<u32> = values_key_range_sorted_indices
+                    .values()
+                    .iter()
+                    .map(|&i| type_col_sorted_indices_type_range_by_key_prim.value(key_range.start + i as usize))
+                    .collect();
+
+                sorted_val_col.append_indices(&original_indices)?;
+
+                // We still need to materialize the sorted values for the equality check
                 let values_key_range =
-                    values_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.2
+                    values_type_range_by_key.slice(key_range.start, key_range.len());
                 let values_key_range_sorted =
-                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap(); // Arc k.3
-                sorted_val_col.append_external_sorted_range(values_key_range_sorted.clone())?;
+                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
 
                 let parent_id_key_range = &parent_id_type_range_by_key[key_range.start..key_range.end];
-                // let parent_id_key_range =
-                //     parent_id_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.4
-                //
+                // TODO - reuse a vec (heal alloc) here
                 let mut parent_id_key_range_sorted = values_key_range_sorted_indices
                     .values()
                     .iter()
                     .map(|idx| parent_id_key_range[*idx as usize])
                     .collect::<Vec<_>>();
-                // let parent_id_key_range_sorted =
-                //     take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap(); // Arc k.5
 
                 // TODO - am not convinced this is correct when there are nulls?
                 let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?; // Arc k.6
@@ -662,7 +671,6 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
 
                 for values_range in values_ranges {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
-                    // P
                     let parent_ids_range = &mut parent_id_key_range_sorted[values_range.start..values_range.end];
                     parent_ids_range.sort_unstable();
                     delta_encode_parent_id_slice(parent_ids_range);
@@ -974,7 +982,7 @@ fn sort_attrs_type_and_keys_to_indices(
 #[derive(Debug)]
 enum SortedValuesArraySegment {
     Nulls(usize),
-    NonNull(Arc<dyn Array>),
+    NonNull(Vec<u32>),  // indices into the original source array
 }
 
 struct SortedValuesArrayBuilder {
@@ -998,9 +1006,9 @@ impl SortedValuesArrayBuilder {
         Ok(take(self.source.as_ref(), indices, None).unwrap())
     }
 
-    fn append_external_sorted_range(&mut self, arr: Arc<dyn Array>) -> Result<()> {
+    fn append_indices(&mut self, indices: &[u32]) -> Result<()> {
         self.sorted_segments
-            .push(SortedValuesArraySegment::NonNull(arr));
+            .push(SortedValuesArraySegment::NonNull(indices.to_vec()));
         Ok(())
     }
 
@@ -1067,59 +1075,111 @@ impl SortedValuesArrayBuilder {
             return Ok(self.gen_source_nulls(0));
         }
 
-        // Calculate total length upfront
+        // Calculate total length
         let total_len: usize = self.sorted_segments.iter().map(|seg| match seg {
             SortedValuesArraySegment::Nulls(count) => *count,
-            SortedValuesArraySegment::NonNull(arr) => arr.len(),
+            SortedValuesArraySegment::NonNull(indices) => indices.len(),
         }).sum();
 
-        // Fast path: if only nulls or single segment, avoid concat
+        // Fast path: if only one segment, handle directly
         if self.sorted_segments.len() == 1 {
             match &self.sorted_segments[0] {
                 SortedValuesArraySegment::Nulls(count) => {
                     return Ok(self.gen_source_nulls(*count));
                 }
-                SortedValuesArraySegment::NonNull(arr) => {
-                    return Ok(arr.clone());
+                SortedValuesArraySegment::NonNull(indices) => {
+                    let indices_array = UInt32Array::from(indices.clone());
+                    return Ok(take(self.source.as_ref(), &indices_array, None).unwrap());
                 }
             }
         }
 
-        // For dictionary arrays with many segments, build directly to avoid concat overhead
+        // Check if we have any nulls
+        let has_nulls = self.sorted_segments.iter().any(|seg| matches!(seg, SortedValuesArraySegment::Nulls(_)));
+
+        // For dictionary arrays, build directly to avoid concat overhead
         if let DataType::Dictionary(key_type, _) = self.source.data_type() {
             return self.finish_dictionary_direct(total_len, &**key_type);
         }
 
-        // For other types, use the concat approach (with preallocated vec)
-        let mut arrays = Vec::with_capacity(self.sorted_segments.len());
-        let mut curr_nulls = 0;
+        // For non-dictionary types with no nulls, fast path
+        if !has_nulls {
+            let mut all_indices = Vec::with_capacity(total_len);
+            for segment in &self.sorted_segments {
+                if let SortedValuesArraySegment::NonNull(indices) = segment {
+                    all_indices.extend_from_slice(indices);
+                }
+            }
+            let indices_array = UInt32Array::from(all_indices);
+            return Ok(take(self.source.as_ref(), &indices_array, None).unwrap());
+        }
+
+        // Fall back to concat approach for non-dictionary types with nulls
+        // First, coalesce consecutive segments to reduce the number of arrays we create
+
+        // Calculate total non-null count for preallocation
+        let total_non_null_count: usize = self.sorted_segments.iter()
+            .filter_map(|seg| match seg {
+                SortedValuesArraySegment::NonNull(indices) => Some(indices.len()),
+                _ => None,
+            })
+            .sum();
+
+        let mut coalesced: Vec<SortedValuesArraySegment> = Vec::new();
+        let mut current_nulls = 0;
+        let mut current_indices = Vec::with_capacity(total_non_null_count);
 
         for segment in &self.sorted_segments {
             match segment {
-                SortedValuesArraySegment::Nulls(count) => curr_nulls += count,
-                SortedValuesArraySegment::NonNull(arr) => {
-                    if curr_nulls > 0 {
-                        arrays.push(self.gen_source_nulls(curr_nulls));
-                        curr_nulls = 0;
+                SortedValuesArraySegment::Nulls(count) => {
+                    // Flush accumulated indices if any
+                    if !current_indices.is_empty() {
+                        coalesced.push(SortedValuesArraySegment::NonNull(std::mem::take(&mut current_indices)));
                     }
-                    arrays.push(arr.clone());
+                    current_nulls += count;
+                }
+                SortedValuesArraySegment::NonNull(indices) => {
+                    // Flush accumulated nulls if any
+                    if current_nulls > 0 {
+                        coalesced.push(SortedValuesArraySegment::Nulls(current_nulls));
+                        current_nulls = 0;
+                    }
+                    current_indices.extend_from_slice(indices);
+                }
+            }
+        }
+        // Flush remaining
+        if current_nulls > 0 {
+            coalesced.push(SortedValuesArraySegment::Nulls(current_nulls));
+        }
+        if !current_indices.is_empty() {
+            coalesced.push(SortedValuesArraySegment::NonNull(current_indices));
+        }
+
+        // Now build arrays from coalesced segments (will be much fewer)
+        let mut arrays = Vec::with_capacity(coalesced.len());
+        for segment in &coalesced {
+            match segment {
+                SortedValuesArraySegment::Nulls(count) => {
+                    arrays.push(self.gen_source_nulls(*count));
+                }
+                SortedValuesArraySegment::NonNull(indices) => {
+                    let segment_indices = UInt32Array::from(indices.clone());
+                    arrays.push(take(self.source.as_ref(), &segment_indices, None).unwrap());
                 }
             }
         }
 
-        if curr_nulls > 0 {
-            arrays.push(self.gen_source_nulls(curr_nulls));
-        }
-
         let sorted_keys_refs = arrays.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
-        let sorted_column = concat(sorted_keys_refs.as_ref()).unwrap();
-        Ok(sorted_column)
+        Ok(concat(sorted_keys_refs.as_ref()).unwrap())
     }
 
     fn finish_dictionary_direct(&self, total_len: usize, key_type: &DataType) -> Result<Arc<dyn Array>> {
         match *key_type {
             DataType::UInt8 => {
                 let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
+                let source_keys = source_dict.keys().values();
+
                 let mut keys_builder = Vec::with_capacity(total_len);
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
 
@@ -1130,22 +1190,23 @@ impl SortedValuesArrayBuilder {
                             keys_builder.resize(keys_builder.len() + count, 0u8);
                             null_buffer_builder.append_n_nulls(*count);
                         }
-                        SortedValuesArraySegment::NonNull(arr) => {
-                            let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
-                            let segment_keys = dict_arr.keys().values();
-                            keys_builder.extend_from_slice(segment_keys);
+                        SortedValuesArraySegment::NonNull(indices) => {
+                            // Take keys from source dictionary using indices
+                            for &idx in indices {
+                                keys_builder.push(source_keys[idx as usize]);
+                            }
 
-                            // Handle nulls in this segment
-                            if let Some(nulls) = dict_arr.nulls() {
-                                for i in 0..dict_arr.len() {
-                                    if nulls.is_valid(i) {
+                            // Check if any of the source positions were null
+                            if let Some(source_nulls) = source_dict.nulls() {
+                                for &idx in indices {
+                                    if source_nulls.is_valid(idx as usize) {
                                         null_buffer_builder.append_non_null();
                                     } else {
                                         null_buffer_builder.append_null();
                                     }
                                 }
                             } else {
-                                for _ in 0..dict_arr.len() {
+                                for _ in 0..indices.len() {
                                     null_buffer_builder.append_non_null();
                                 }
                             }
@@ -1163,6 +1224,8 @@ impl SortedValuesArrayBuilder {
             }
             DataType::UInt16 => {
                 let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
+                let source_keys = source_dict.keys().values();
+
                 let mut keys_builder = Vec::with_capacity(total_len);
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
 
@@ -1172,22 +1235,23 @@ impl SortedValuesArrayBuilder {
                             keys_builder.resize(keys_builder.len() + count, 0u16);
                             null_buffer_builder.append_n_nulls(*count);
                         }
-                        SortedValuesArraySegment::NonNull(arr) => {
-                            let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
-                            let segment_keys = dict_arr.keys().values();
-                            keys_builder.extend_from_slice(segment_keys);
+                        SortedValuesArraySegment::NonNull(indices) => {
+                            // Take keys from source dictionary using indices
+                            for &idx in indices {
+                                keys_builder.push(source_keys[idx as usize]);
+                            }
 
-                            // TODO - this is slow and we should use BitSliceIterator or something
-                            if let Some(nulls) = dict_arr.nulls() {
-                                for i in 0..dict_arr.len() {
-                                    if nulls.is_valid(i) {
+                            // Check if any of the source positions were null
+                            if let Some(source_nulls) = source_dict.nulls() {
+                                for &idx in indices {
+                                    if source_nulls.is_valid(idx as usize) {
                                         null_buffer_builder.append_non_null();
                                     } else {
                                         null_buffer_builder.append_null();
                                     }
                                 }
                             } else {
-                                for _ in 0..dict_arr.len() {
+                                for _ in 0..indices.len() {
                                     null_buffer_builder.append_non_null();
                                 }
                             }
@@ -1204,13 +1268,15 @@ impl SortedValuesArrayBuilder {
                 Ok(Arc::new(result))
             }
             _ => {
-                // Fallback to concat for unsupported key types
+                // Fallback for unsupported key types
                 Err(Error::Format {
                     error: "Unsupported dictionary key type".to_string()
                 })
             }
         }
     }
+
+
 }
 
 struct EncodedColumnResult {
