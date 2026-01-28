@@ -153,7 +153,7 @@ pub struct InternalTelemetrySystem {
     /// Entity key providers for associating events with context.
     context_fn: LogContextFn,
 
-    /// Event reporter for ConsoleAsync mode (Internal Telemetry System).
+    /// Event reporter for asynchronous internal logging modes.
     console_async_reporter: Option<ObservedEventReporter>,
 
     /// Event reporter for ITS mode (Internal Telemetry System).
