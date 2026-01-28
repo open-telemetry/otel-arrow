@@ -405,22 +405,23 @@ impl ScopeToBytesMap {
             return cached.clone();
         }
 
-        let mut buf = ProtoBuffer::with_capacity(128);
         let visited = self.registry.visit_entity(key, |attrs| {
             attrs
                 .iter_attributes()
                 .map(|(a, b)| (a, b.clone()))
                 .collect::<Vec<_>>()
         });
-        if let Some(attrs) = visited {
-            for (attr_key, attr_value) in attrs {
-                encode_scope_attribute(&mut buf, attr_key, &attr_value);
-            }
-        }
-
-        let bytes = buf.into_bytes();
-        let _ = self.cache.insert(key, bytes.clone());
-        bytes
+        visited
+            .map(|attrs| {
+                let mut buf = ProtoBuffer::with_capacity(128);
+                for (attr_key, attr_value) in attrs {
+                    encode_scope_attribute(&mut buf, attr_key, &attr_value);
+                }
+                let bytes = buf.into_bytes();
+                let _ = self.cache.insert(key, bytes.clone());
+                bytes
+            })
+            .unwrap_or_default()
     }
 
     /// Clear the cache. Call this when entities may have been updated.
