@@ -16,7 +16,7 @@ use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
-use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
+use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
