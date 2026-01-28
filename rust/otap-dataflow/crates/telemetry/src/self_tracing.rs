@@ -10,14 +10,25 @@
 pub mod encoder;
 pub mod formatter;
 
+use crate::registry::EntityKey;
 use bytes::Bytes;
 use encoder::DirectFieldVisitor;
 use otap_df_pdata::otlp::ProtoBuffer;
+use serde::Serialize;
+use serde::ser::Serializer;
+use smallvec::SmallVec;
+use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
 pub use encoder::DirectLogRecordEncoder;
-pub use formatter::{AnsiCode, BufWriter, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer};
+pub use encoder::ScopeToBytesMap;
+pub use encoder::encode_export_logs_request;
+pub use encoder::encode_resource_to_bytes;
+pub use formatter::{
+    AnsiCode, ColorMode, ConsoleWriter, LOG_BUFFER_SIZE, RawLoggingLayer, StyledBufWriter,
+    format_log_record_to_string,
+};
 
 /// A log record with structural metadata and pre-encoded body/attributes.
 /// A SystemTime value for the event is presumed to be external.
@@ -31,7 +42,14 @@ pub struct LogRecord {
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
     pub body_attrs_bytes: Bytes,
+
+    /// The context of this log record, typically pipeline and node context keys.
+    pub context: LogContext,
 }
+
+/// Context keys refer to attribute sets in the telemetry registry.
+/// Note: Currently we use at most 1 entity context key per callsite.
+pub type LogContext = SmallVec<[EntityKey; 1]>;
 
 /// Saved callsite information. This is information that can easily be
 /// populated from Metadata, for example in a `register_callsite` hook
@@ -81,13 +99,13 @@ impl SavedCallsite {
 }
 
 impl LogRecord {
-    /// Construct a log record, partially encoding its dynamic content.
+    /// Construct a log record with entity context, partially encoding its dynamic content.
     #[must_use]
-    pub fn new(event: &Event<'_>) -> Self {
+    pub fn new(event: &Event<'_>, context: LogContext) -> Self {
         let metadata = event.metadata();
 
         // Encode body and attributes to bytes.
-        // Note! TODO: we could potentially avoid allocating for the intermediate
+        // TODO(#1746): we could potentially avoid allocating for the intermediate
         // protobuf slice with work to support a fixed-size buffer and cursor
         // instead of a Vec<u8>.
         let mut buf = ProtoBuffer::with_capacity(256);
@@ -97,6 +115,7 @@ impl LogRecord {
         Self {
             callsite_id: metadata.callsite(),
             body_attrs_bytes: buf.into_bytes(),
+            context,
         }
     }
 
@@ -105,10 +124,22 @@ impl LogRecord {
     pub fn callsite(&self) -> SavedCallsite {
         SavedCallsite::new(self.callsite_id.0.metadata())
     }
+}
 
-    /// The format (without timestamp).
-    #[must_use]
-    pub fn format_without_timestamp(&self) -> String {
-        ConsoleWriter::no_color().format_log_record(None, self)
+impl fmt::Display for LogRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Note: it _should_ be possible to format directly without the
+        // intermediate string except Formatter does not implement the
+        // Cursor that StyledBufWriter uses.
+        write!(f, "{}", format_log_record_to_string(None, self))
+    }
+}
+
+impl Serialize for LogRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }

@@ -82,6 +82,13 @@ pub struct ChannelAttributeSet {
     #[compose]
     pub node_attrs: NodeAttributeSet,
 
+    /// Port name for the channel endpoint.
+    ///
+    /// On the sender side, this is the port to which the channel is connected.
+    /// On the receiver side, this defaults to the node's input port.
+    #[attribute(key = "node.port")]
+    pub node_port: Cow<'static, str>,
+
     /// Unique channel identifier (in scope of the pipeline).
     #[attribute(key = "channel.id")]
     pub channel_id: Cow<'static, str>,

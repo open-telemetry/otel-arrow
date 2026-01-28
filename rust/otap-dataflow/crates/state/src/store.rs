@@ -124,7 +124,9 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                self.console.print_log_record(log.time, &log.record);
+                self.console.print_log_record(log.time, &log.record, |_| {
+                    // TODO: print suffix: context with registry lookup (symbolized)
+                });
             }
         }
         Ok(())
