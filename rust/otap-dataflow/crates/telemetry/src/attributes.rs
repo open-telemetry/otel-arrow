@@ -120,15 +120,6 @@ pub trait AttributeSetHandler {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())
     }
 
-    /// Returns the primary (display) name for this attribute set.
-    /// By convention, this is the first attribute value, or "<unnamed>" if empty.
-    fn primary_name(&self) -> String {
-        self.attribute_values()
-            .first()
-            .map(|v| v.to_string_value())
-            .unwrap_or_else(|| "<unnamed>".to_string())
-    }
-
     /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
     fn schema_name(&self) -> &'static str {
         self.descriptor().name
