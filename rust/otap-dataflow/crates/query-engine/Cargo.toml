@@ -34,13 +34,5 @@ otap-df-opl = { path = "../opl" }
 name = "filter"
 harness = false
 
-[profile.bench]
-opt-level = 3
-debug = false
-incremental = false
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-
 [lints]
 workspace = true
