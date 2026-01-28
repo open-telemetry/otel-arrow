@@ -534,9 +534,6 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             sorted_val_columns[key_range_attr_type as usize].as_mut()
         };
 
-        // relative to - original
-        // sorted by - type/key
-        // sliced by - type range
         let type_col_sorted_indices_type_range_by_key_prim =
             type_and_key_indices.slice(type_range.start, type_range.len());
 
@@ -569,20 +566,6 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             let mut values_key_range_sorted_indices =
                 Vec::with_capacity(key_ranges.iter().map(Range::len).max().unwrap_or_default());
             for key_range in key_ranges {
-                // let values_key_range =
-                //     values_arr_for_sorting.slice(key_range.start, key_range.len()); // Arc k.1
-
-                // relative to key range
-                // let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
-                //     &values_key_range,
-                //     Some(SortOptions {
-                //         nulls_first: false,
-                //         ..Default::default()
-                //     }),
-                //     None,
-                // )
-                // .unwrap(); // Arc k.2
-
                 values_key_range_sorted_indices.clear();
                 values_sorter
                     .sort_range_to_indices(&key_range, &mut values_key_range_sorted_indices);
@@ -611,19 +594,16 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                 )
                 .unwrap(); // Arc k.4
 
-                let parent_id_key_range =
-                    &parent_id_type_range_by_key[key_range.start..key_range.end];
-                // TODO - reuse a vec (heal alloc) here
-                let mut parent_id_key_range_sorted = values_key_range_sorted_indices
-                    .iter()
-                    .map(|idx| parent_id_key_range[*idx as usize])
-                    .collect::<Vec<_>>();
-
                 // TODO - am not convinced this is correct when there are nulls?
                 let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?; // Arc k.6
                 let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
                 let values_ranges = ranges(next_eq_inverted.values());
 
+                // TODO - reuse a vec (heal alloc) here
+                let mut parent_id_key_range_sorted = values_key_range_sorted_indices
+                    .iter()
+                    .map(|idx| parent_id_type_range_by_key[key_range.start + *idx as usize])
+                    .collect::<Vec<_>>();
                 for values_range in values_ranges {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     let parent_ids_range =
@@ -1233,13 +1213,10 @@ impl SortedValuesArrayBuilder {
 
                 let mut keys_builder = Vec::with_capacity(total_len);
 
-
                 // TODO need to make this same optimization for u8
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
                 // let mut null_buffer_builder = self.null_count_hint
                 //     .and_then(|null_count| (null_count > 0).then_some());
-
-
 
                 for segment in &self.sorted_segments {
                     match segment {
@@ -1254,42 +1231,43 @@ impl SortedValuesArrayBuilder {
 
                             // Check if any of the source positions were null
                             let null_hint_zero = self.null_count_hint == Some(0);
-                            if let Some(source_nulls) = source_dict.nulls() && !null_hint_zero {
-                                    // Batch consecutive valid/null runs to reduce append overhead
-                                    let mut i = 0;
-                                    while i < indices.len() {
-                                        let idx = indices[i] as usize;
-                                        let is_valid = source_nulls.is_valid(idx);
+                            if let Some(source_nulls) = source_dict.nulls()
+                                && !null_hint_zero
+                            {
+                                // Batch consecutive valid/null runs to reduce append overhead
+                                let mut i = 0;
+                                while i < indices.len() {
+                                    let idx = indices[i] as usize;
+                                    let is_valid = source_nulls.is_valid(idx);
 
-                                        // Count consecutive runs of same validity
-                                        let mut run_len = 1;
-                                        while i + run_len < indices.len() {
-                                            let next_idx = indices[i + run_len] as usize;
-                                            if source_nulls.is_valid(next_idx) == is_valid {
-                                                run_len += 1;
-                                            } else {
-                                                break;
-                                            }
-                                        }
-
-                                        // Append the run
-                                        if is_valid {
-                                            null_buffer_builder.append_n_non_nulls(run_len);
+                                    // Count consecutive runs of same validity
+                                    let mut run_len = 1;
+                                    while i + run_len < indices.len() {
+                                        let next_idx = indices[i + run_len] as usize;
+                                        if source_nulls.is_valid(next_idx) == is_valid {
+                                            run_len += 1;
                                         } else {
-                                            null_buffer_builder.append_n_nulls(run_len);
+                                            break;
                                         }
-
-                                        i += run_len;
                                     }
-                                } else {
-                                    // // TODO not sure this path is needed
-                                    // // Fast path: no nulls in source
-                                    // for _ in 0..indices.len() {
-                                    //     null_buffer_builder.append_non_null();
-                                    // }
-                                    null_buffer_builder.append_n_non_nulls(indices.len());
-                                }
 
+                                    // Append the run
+                                    if is_valid {
+                                        null_buffer_builder.append_n_non_nulls(run_len);
+                                    } else {
+                                        null_buffer_builder.append_n_nulls(run_len);
+                                    }
+
+                                    i += run_len;
+                                }
+                            } else {
+                                // // TODO not sure this path is needed
+                                // // Fast path: no nulls in source
+                                // for _ in 0..indices.len() {
+                                //     null_buffer_builder.append_non_null();
+                                // }
+                                null_buffer_builder.append_n_non_nulls(indices.len());
+                            }
                         }
                     }
                 }
@@ -1378,7 +1356,10 @@ impl AttrValuesSorter {
             _ => AttrsValueSorterInner::Array(values_arr.clone()),
         };
 
-        Self { inner, rank_sort_scratch: Vec::new() }
+        Self {
+            inner,
+            rank_sort_scratch: Vec::new(),
+        }
     }
 
     fn sort_range_to_indices(&mut self, range: &Range<usize>, result: &mut Vec<u32>) {
