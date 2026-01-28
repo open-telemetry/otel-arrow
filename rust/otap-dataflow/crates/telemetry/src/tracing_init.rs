@@ -8,7 +8,7 @@
 //! subscriber determines how log events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
-use crate::self_tracing::{ConsoleWriter, LogRecord, RawLoggingLayer};
+use crate::self_tracing::{ConsoleWriter, LogContext, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
@@ -108,11 +108,10 @@ impl ProviderSetup {
         match self {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
-            ProviderSetup::ConsoleDirect => Dispatch::new(
-                Registry::default()
-                    .with(filter())
-                    .with(RawLoggingLayer::new(ConsoleWriter::color())),
-            ),
+            ProviderSetup::ConsoleDirect => Dispatch::new(Registry::default().with(filter()).with(
+                // TODO: passing an LogContext::new as LogContextFn, will use a configured value.
+                RawLoggingLayer::new(ConsoleWriter::color(), LogContext::new),
+            )),
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = ConsoleAsyncLayer::new(reporter);
@@ -166,7 +165,8 @@ where
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let time = SystemTime::now();
-        let record = LogRecord::new(event);
+        // TODO: passing an LogContext::new() as LogContext, will use a configured LogContextFn.
+        let record = LogRecord::new(event, LogContext::new());
         self.reporter.log(LogEvent { time, record });
     }
 }
