@@ -41,7 +41,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::SystemTime;
 
 use arrow::array::{BinaryArray, RecordBatch};
@@ -181,11 +181,13 @@ fn otlp_binary_schema() -> Arc<Schema> {
     )]))
 }
 
-/// Schema fingerprint for OTLP binary storage (stable across all OTLP slots)
-fn otlp_schema_fingerprint() -> SchemaFingerprint {
-    // Use a fixed fingerprint since all OTLP slots have the same schema
+static OTLP_SCHEMA_FINGERPRINT: LazyLock<SchemaFingerprint> = LazyLock::new(|| {
     let hash = blake3::hash(b"otlp_binary_v1");
     *hash.as_bytes()
+});
+
+fn otlp_schema_fingerprint() -> SchemaFingerprint {
+    *OTLP_SCHEMA_FINGERPRINT
 }
 
 /// Compute schema fingerprint from a RecordBatch using blake3.

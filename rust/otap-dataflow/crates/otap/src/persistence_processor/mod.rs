@@ -82,7 +82,8 @@ use quiver::segment_store::SegmentStore;
 use quiver::subscriber::{BundleHandle, BundleIndex, BundleRef, RegistryCallback, SubscriberId};
 use quiver::{QuiverConfig, QuiverEngine};
 use smallvec::smallvec;
-use tracing::{debug, error, info, warn};
+
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
@@ -339,6 +340,10 @@ pub struct PersistenceProcessor {
     /// Per ARCHITECTURE.md, each core has its own Quiver instance.
     core_id: usize,
 
+    /// Total number of cores running this pipeline.
+    /// Used to divide the retention_size_cap across cores.
+    num_cores: usize,
+
     /// Metrics.
     metrics: MetricSet<PersistenceProcessorMetrics>,
 
@@ -357,6 +362,7 @@ impl PersistenceProcessor {
     ) -> Result<Self, ConfigError> {
         let metrics = pipeline_ctx.register_metrics::<PersistenceProcessorMetrics>();
         let core_id = pipeline_ctx.core_id();
+        let num_cores = pipeline_ctx.num_cores();
 
         Ok(Self {
             engine_state: EngineState::Uninitialized,
@@ -364,6 +370,7 @@ impl PersistenceProcessor {
             retry_scheduled: HashSet::new(),
             config,
             core_id,
+            num_cores,
             metrics,
             timer_started: false,
         })
@@ -418,7 +425,11 @@ impl PersistenceProcessor {
         effect_handler.subscribe_to(Interests::empty(), calldata, &mut retry_ticket);
 
         let retry_at = Instant::now() + delay;
-        if effect_handler.delay_data(retry_at, retry_ticket).await.is_ok() {
+        if effect_handler
+            .delay_data(retry_at, retry_ticket)
+            .await
+            .is_ok()
+        {
             // Track that this bundle is scheduled - poll_next_bundle will skip it
             let _ = self.retry_scheduled.insert(key);
             true
@@ -464,28 +475,37 @@ impl PersistenceProcessor {
     ///
     /// Per ARCHITECTURE.md, each core has its own Quiver instance with a
     /// core-specific subdirectory to avoid cross-core locking.
+    ///
+    /// The configured `retention_size_cap` is divided by `num_cores` so that
+    /// the total disk usage across all cores stays within the configured limit.
     async fn init_engine(&self) -> Result<(Arc<QuiverEngine>, SubscriberId), Error> {
-        let size_cap = self.config.size_cap_bytes();
         let policy = self.config.retention_policy();
+
+        // Divide the total size cap across all cores.
+        // Each core gets an equal share of the configured retention_size_cap.
+        let total_size_cap = self.config.size_cap_bytes();
+        let per_core_size_cap = total_size_cap / self.num_cores.max(1) as u64;
 
         // Create per-core data directory: {base_path}/core_{core_id}
         let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
 
-        info!(
+        otel_info!(
+            "persistence.engine.init",
             path = %core_data_dir.display(),
             core_id = self.core_id,
-            size_cap = size_cap,
+            num_cores = self.num_cores,
+            total_size_cap = total_size_cap,
+            per_core_size_cap = per_core_size_cap,
             policy = ?policy,
-            max_segment_open_duration = ?self.config.max_segment_open_duration,
-            "initializing Quiver engine"
+            max_segment_open_duration = ?self.config.max_segment_open_duration
         );
 
         // Create Quiver configuration with per-core data directory
         let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
         quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
 
-        // Create disk budget
-        let budget = Arc::new(DiskBudget::new(size_cap, policy));
+        // Create disk budget with per-core share of the total cap
+        let budget = Arc::new(DiskBudget::new(per_core_size_cap, policy));
 
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
@@ -513,10 +533,10 @@ impl PersistenceProcessor {
                 message: format!("failed to activate subscriber: {}", e),
             })?;
 
-        info!(
+        otel_info!(
+            "persistence.engine.ready",
             path = %self.config.path.display(),
-            subscriber_id = %subscriber_id.as_str(),
-            "Quiver engine initialized successfully"
+            subscriber_id = %subscriber_id.as_str()
         );
         Ok((engine, subscriber_id))
     }
@@ -558,16 +578,6 @@ impl PersistenceProcessor {
         data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // Ensure engine is initialized - NACK if initialization fails
-        if let Err(e) = self.ensure_engine_initialized().await {
-            self.metrics.ingest_errors.add(1);
-            error!(error = %e, "engine initialization failed");
-            effect_handler
-                .notify_nack(NackMsg::new(format!("engine not available: {}", e), data))
-                .await?;
-            return Ok(());
-        }
-
         let (context, payload) = data.into_parts();
 
         // Capture signal type and item count before consuming the payload
@@ -579,7 +589,7 @@ impl PersistenceProcessor {
             Ok((engine, _)) => engine,
             Err(e) => {
                 self.metrics.ingest_errors.add(1);
-                error!(error = %e, "failed to get engine reference");
+                otel_error!("persistence.engine.unavailable", error = %e);
                 let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -611,7 +621,7 @@ impl PersistenceProcessor {
                             Err(e) => {
                                 // Conversion failed - NACK upstream so they can retry or handle
                                 self.metrics.ingest_errors.add(1);
-                                error!(error = %e, "failed to convert OTLP to Arrow");
+                                otel_error!("persistence.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
                                     OtapPdata::new(context, OtapPayload::empty(signal_type));
@@ -654,7 +664,7 @@ impl PersistenceProcessor {
             }
             Err(e) => {
                 self.metrics.ingest_errors.add(1);
-                error!(error = %e, "failed to ingest bundle to Quiver");
+                otel_error!("persistence.ingest.failed", error = %e);
 
                 let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
                 effect_handler
@@ -682,16 +692,13 @@ impl PersistenceProcessor {
         &mut self,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        // Ensure engine is initialized before polling
-        self.ensure_engine_initialized().await?;
-
         // Flush to finalize any segments that have exceeded their time threshold.
         // Segment finalization only happens during ingest() calls, so if there's
         // a gap between ingests, we need to explicitly flush to make bundles available.
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                warn!(error = %e, "failed to flush engine during timer tick");
+                otel_warn!("persistence.flush.failed", error = %e);
             }
         }
 
@@ -706,21 +713,21 @@ impl PersistenceProcessor {
         loop {
             // Check time budget before each bundle to ensure we yield back for new data
             if Instant::now() >= deadline {
-                debug!(
+                otel_debug!(
+                    "persistence.drain.budget_exhausted",
                     bundles_processed = bundles_processed,
-                    budget_ms = drain_budget.as_millis(),
-                    "drain time budget exhausted, deferring remaining to next tick"
+                    budget_ms = drain_budget.as_millis()
                 );
                 break;
             }
 
             // Check max_in_flight limit to prevent thundering herd
             if !self.can_send_more() {
-                debug!(
+                otel_debug!(
+                    "persistence.drain.at_capacity",
                     bundles_processed = bundles_processed,
                     in_flight = self.pending_bundles.len(),
-                    max_in_flight = self.config.max_in_flight,
-                    "max_in_flight limit reached, deferring remaining to next tick"
+                    max_in_flight = self.config.max_in_flight
                 );
                 break;
             }
@@ -744,9 +751,9 @@ impl PersistenceProcessor {
                         ProcessBundleResult::Backpressure => {
                             // Downstream channel is full, stop processing and let the
                             // processor handle other messages (including incoming data)
-                            debug!(
-                                bundles_processed = bundles_processed,
-                                "downstream backpressure detected, deferring remaining bundles"
+                            otel_debug!(
+                                "persistence.drain.backpressure",
+                                bundles_processed = bundles_processed
                             );
                             break;
                         }
@@ -761,7 +768,7 @@ impl PersistenceProcessor {
                 }
                 Err(e) => {
                     self.metrics.read_errors.add(1);
-                    error!(error = %e, "failed to poll for bundle");
+                    otel_error!("persistence.poll.failed", error = %e);
                     break;
                 }
             }
@@ -775,7 +782,7 @@ impl PersistenceProcessor {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.maintain().await {
-                warn!(error = %e, "maintenance error");
+                otel_warn!("persistence.maintenance.failed", error = %e);
             }
         }
 
@@ -816,10 +823,10 @@ impl PersistenceProcessor {
             // Bundle is in-flight. Dropping the handle will trigger implicit defer,
             // but since we already hold the original handle, this one is a duplicate claim.
             // This shouldn't happen in normal operation since we keep bundles claimed.
-            warn!(
+            otel_warn!(
+                "persistence.bundle.duplicate",
                 segment_seq = bundle_ref.segment_seq.raw(),
-                bundle_index = bundle_ref.bundle_index.raw(),
-                "received duplicate handle for in-flight bundle"
+                bundle_index = bundle_ref.bundle_index.raw()
             );
             drop(handle); // Implicit defer
             return ProcessBundleResult::Skipped;
@@ -864,12 +871,12 @@ impl PersistenceProcessor {
                             SignalType::Traces => self.metrics.produced_items_traces.add(num_items),
                         }
 
-                        debug!(
+                        otel_debug!(
+                            "persistence.bundle.forwarded",
                             core_id = self.core_id,
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
-                            retry_count = retry_count,
-                            "forwarded bundle downstream from finalized segment"
+                            retry_count = retry_count
                         );
 
                         // Store the handle to keep the bundle claimed until ACK/NACK.
@@ -881,7 +888,9 @@ impl PersistenceProcessor {
                                 retry_count,
                             },
                         );
-                        self.metrics.in_flight.set(self.pending_bundles.len() as u64);
+                        self.metrics
+                            .in_flight
+                            .set(self.pending_bundles.len() as u64);
                         ProcessBundleResult::Sent
                     }
                     Err(otap_df_engine::error::TypedError::ChannelSendError(
@@ -917,7 +926,7 @@ impl PersistenceProcessor {
             }
             Err(e) => {
                 self.metrics.read_errors.add(1);
-                error!(error = %e, "failed to convert bundle to pdata");
+                otel_error!("persistence.bundle.conversion_failed", error = %e);
                 // Reject the bundle since we can't process it
                 handle.reject();
                 // Conversion error is not counted as "sent" but also shouldn't stop processing
@@ -944,17 +953,19 @@ impl PersistenceProcessor {
         if let Some(pending) = self.pending_bundles.remove(&key) {
             pending.handle.ack();
             self.metrics.bundles_acked.add(1);
-            self.metrics.in_flight.set(self.pending_bundles.len() as u64);
-            debug!(
+            self.metrics
+                .in_flight
+                .set(self.pending_bundles.len() as u64);
+            otel_debug!(
+                "persistence.bundle.acked",
                 segment_seq = bundle_ref.segment_seq.raw(),
-                bundle_index = bundle_ref.bundle_index.raw(),
-                "bundle acknowledged in Quiver"
+                bundle_index = bundle_ref.bundle_index.raw()
             );
         } else {
-            warn!(
+            otel_warn!(
+                "persistence.ack.unknown_bundle",
                 segment_seq = bundle_ref.segment_seq.raw(),
-                bundle_index = bundle_ref.bundle_index.raw(),
-                "received ACK for unknown bundle"
+                bundle_index = bundle_ref.bundle_index.raw()
             );
         }
 
@@ -984,18 +995,20 @@ impl PersistenceProcessor {
         if let Some(pending) = self.pending_bundles.remove(&key) {
             let retry_count = pending.retry_count + 1;
             self.metrics.bundles_nacked.add(1);
-            self.metrics.in_flight.set(self.pending_bundles.len() as u64);
+            self.metrics
+                .in_flight
+                .set(self.pending_bundles.len() as u64);
 
             // Calculate backoff delay with jitter
             let backoff = self.calculate_backoff(retry_count);
 
-            debug!(
+            otel_debug!(
+                "persistence.bundle.nacked",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 retry_count = retry_count,
                 backoff_ms = backoff.as_millis(),
-                reason = %nack.reason,
-                "bundle nacked, scheduling retry with backoff"
+                reason = %nack.reason
             );
 
             // Drop the handle to trigger implicit defer, releasing the claim.
@@ -1003,20 +1016,23 @@ impl PersistenceProcessor {
             drop(pending.handle);
 
             // Schedule the retry
-            if self.schedule_retry(bundle_ref, retry_count, backoff, effect_handler).await {
+            if self
+                .schedule_retry(bundle_ref, retry_count, backoff, effect_handler)
+                .await
+            {
                 self.metrics.retries_scheduled.add(1);
             } else {
-                warn!(
+                otel_warn!(
+                    "persistence.retry.schedule_failed",
                     segment_seq = bundle_ref.segment_seq.raw(),
-                    bundle_index = bundle_ref.bundle_index.raw(),
-                    "failed to schedule retry, bundle will retry via poll"
+                    bundle_index = bundle_ref.bundle_index.raw()
                 );
             }
         } else {
-            warn!(
+            otel_warn!(
+                "persistence.nack.unknown_bundle",
                 segment_seq = bundle_ref.segment_seq.raw(),
-                bundle_index = bundle_ref.bundle_index.raw(),
-                "received NACK for unknown bundle"
+                bundle_index = bundle_ref.bundle_index.raw()
             );
         }
 
@@ -1033,12 +1049,12 @@ impl PersistenceProcessor {
     ) -> Result<(), Error> {
         // Decode the retry ticket
         let Some(calldata) = retry_ticket.current_calldata() else {
-            warn!("delayed retry ticket missing calldata");
+            otel_warn!("persistence.retry.missing_calldata");
             return Ok(());
         };
 
         let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
-            warn!("delayed retry ticket has invalid calldata");
+            otel_warn!("persistence.retry.invalid_calldata");
             return Ok(());
         };
 
@@ -1046,20 +1062,28 @@ impl PersistenceProcessor {
         if !self.can_send_more() {
             // At capacity - re-schedule with a short delay.
             // Bundle stays in retry_scheduled (wasn't removed yet).
-            debug!(
+            otel_debug!(
+                "persistence.retry.deferred",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 in_flight = self.pending_bundles.len(),
-                max_in_flight = self.config.max_in_flight,
-                "retry deferred due to max_in_flight limit"
+                max_in_flight = self.config.max_in_flight
             );
 
             // Re-schedule - note: bundle is still in retry_scheduled, schedule_retry
             // will just update it (insert is idempotent for HashSet)
-            if !self.schedule_retry(bundle_ref, retry_count, self.config.poll_interval, effect_handler).await {
+            if !self
+                .schedule_retry(
+                    bundle_ref,
+                    retry_count,
+                    self.config.poll_interval,
+                    effect_handler,
+                )
+                .await
+            {
                 // Failed to re-schedule - remove from retry_scheduled so poll can pick it up
                 self.unschedule_retry(bundle_ref);
-                warn!("failed to re-schedule retry, bundle will retry via poll");
+                otel_warn!("persistence.retry.reschedule_failed");
             }
             return Ok(());
         }
@@ -1067,9 +1091,6 @@ impl PersistenceProcessor {
         // Backoff period has elapsed and we have capacity - remove from retry_scheduled.
         // This allows poll_next_bundle to see it again if claim_bundle fails.
         self.unschedule_retry(bundle_ref);
-
-        // Ensure engine is initialized
-        self.ensure_engine_initialized().await?;
 
         // Re-claim the bundle from Quiver
         let claim_result = {
@@ -1086,38 +1107,40 @@ impl PersistenceProcessor {
                     effect_handler,
                 ) {
                     ProcessBundleResult::Sent => {
-                        debug!(
+                        otel_debug!(
+                            "persistence.retry.sent",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
-                            retry_count = retry_count,
-                            "retry sent downstream"
+                            retry_count = retry_count
                         );
                     }
                     ProcessBundleResult::Skipped => {
                         // Shouldn't happen - we just claimed it and removed from retry_scheduled
-                        warn!(
+                        otel_warn!(
+                            "persistence.retry.skipped",
                             segment_seq = bundle_ref.segment_seq.raw(),
-                            bundle_index = bundle_ref.bundle_index.raw(),
-                            "retry skipped unexpectedly"
+                            bundle_index = bundle_ref.bundle_index.raw()
                         );
                     }
                     ProcessBundleResult::Backpressure => {
                         // Channel full - the handle was dropped (deferred).
                         // Re-schedule retry with a short delay.
-                        debug!(
+                        otel_debug!(
+                            "persistence.retry.backpressure",
                             segment_seq = bundle_ref.segment_seq.raw(),
-                            bundle_index = bundle_ref.bundle_index.raw(),
-                            "retry hit backpressure, re-scheduling"
+                            bundle_index = bundle_ref.bundle_index.raw()
                         );
 
                         // Short delay for backpressure (not exponential - this isn't a failure).
                         // If scheduling fails, poll will pick it up.
-                        let _ = self.schedule_retry(
-                            bundle_ref,
-                            retry_count,
-                            self.config.poll_interval,
-                            effect_handler,
-                        ).await;
+                        let _ = self
+                            .schedule_retry(
+                                bundle_ref,
+                                retry_count,
+                                self.config.poll_interval,
+                                effect_handler,
+                            )
+                            .await;
                     }
                     ProcessBundleResult::Error(e) => {
                         return Err(e);
@@ -1126,11 +1149,11 @@ impl PersistenceProcessor {
             }
             Err(e) => {
                 // Claim failed - bundle may have been resolved or segment dropped
-                debug!(
+                otel_debug!(
+                    "persistence.retry.claim_failed",
                     segment_seq = bundle_ref.segment_seq.raw(),
                     bundle_index = bundle_ref.bundle_index.raw(),
-                    error = %e,
-                    "failed to re-claim bundle for retry (may have been resolved or dropped)"
+                    error = %e
                 );
             }
         }
@@ -1157,7 +1180,7 @@ impl PersistenceProcessor {
         deadline: Instant,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        info!(deadline = ?deadline, "shutting down persistence processor");
+        otel_info!("persistence.shutdown.start", deadline = ?deadline);
 
         // Only process if engine was initialized
         if !matches!(self.engine_state, EngineState::Ready { .. }) {
@@ -1166,18 +1189,16 @@ impl PersistenceProcessor {
 
         // Check deadline before flush/drain sequence
         if Instant::now() >= deadline {
-            warn!(
-                "shutdown deadline reached, skipping flush and drain (engine shutdown will still finalize data)"
-            );
+            otel_warn!("persistence.shutdown.deadline_exceeded");
         } else {
             // Flush to finalize any open segment - this makes buffered data visible
             // for the drain loop below. Even if this is skipped, engine.shutdown()
             // will finalize the segment.
-            info!("flushing open segment to finalize pending data");
+            otel_info!("persistence.shutdown.flushing");
             {
                 let (engine, _) = self.engine()?;
                 if let Err(e) = engine.flush().await {
-                    error!(error = %e, "failed to flush Quiver engine");
+                    otel_error!("persistence.shutdown.flush_failed", error = %e);
                 }
             }
 
@@ -1186,9 +1207,9 @@ impl PersistenceProcessor {
             loop {
                 // Check deadline on each iteration
                 if Instant::now() >= deadline {
-                    warn!(
-                        bundles_drained = drained,
-                        "shutdown deadline reached during drain, stopping drain loop"
+                    otel_warn!(
+                        "persistence.shutdown.drain_deadline",
+                        bundles_drained = drained
                     );
                     break;
                 }
@@ -1208,28 +1229,23 @@ impl PersistenceProcessor {
                             ProcessBundleResult::Backpressure => {
                                 // During shutdown, if we hit backpressure just log and continue
                                 // The bundle is deferred and will be picked up on next run
-                                warn!(
-                                    "backpressure during shutdown drain, some bundles may not be forwarded"
-                                );
+                                otel_warn!("persistence.shutdown.backpressure");
                                 break;
                             }
                             ProcessBundleResult::Error(e) => {
-                                warn!(error = %e, "failed to process bundle during shutdown drain");
+                                otel_warn!("persistence.shutdown.bundle_error", error = %e);
                             }
                         }
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        warn!(error = %e, "error polling during shutdown drain");
+                        otel_warn!("persistence.shutdown.poll_error", error = %e);
                         break;
                     }
                 }
             }
             if drained > 0 {
-                info!(
-                    bundles_drained = drained,
-                    "drained remaining bundles during shutdown"
-                );
+                otel_info!("persistence.shutdown.drained", bundles_drained = drained);
             }
         }
 
@@ -1239,9 +1255,9 @@ impl PersistenceProcessor {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.shutdown().await {
-                error!(error = %e, "failed to shutdown Quiver engine");
+                otel_error!("persistence.shutdown.engine_failed", error = %e);
             } else {
-                info!("Quiver engine shutdown complete");
+                otel_info!("persistence.shutdown.complete");
             }
         }
 
@@ -1271,9 +1287,9 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
                 .start_periodic_timer(self.config.poll_interval)
                 .await;
             self.timer_started = true;
-            debug!(
-                poll_interval = ?self.config.poll_interval,
-                "started periodic timer for subscriber polling"
+            otel_debug!(
+                "persistence.timer.started",
+                poll_interval = ?self.config.poll_interval
             );
         }
 
@@ -1317,7 +1333,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
                         })
                 }
                 NodeControlMsg::Config { config } => {
-                    debug!(config = ?config, "received config update (ignored)");
+                    otel_debug!("persistence.config.update", config = ?config);
                     Ok(())
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
@@ -1329,7 +1345,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
                         }
                     }
                     // Not a retry ticket - shouldn't happen, but handle gracefully
-                    warn!("received unexpected DelayedData without retry ticket");
+                    otel_warn!("persistence.delayed_data.unexpected");
                     Ok(())
                 }
             },
@@ -1455,7 +1471,8 @@ mod tests {
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
-        let pipeline_ctx = controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 0);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
 
         let config = PersistenceProcessorConfig {
             path: std::path::PathBuf::from("/tmp/test"),

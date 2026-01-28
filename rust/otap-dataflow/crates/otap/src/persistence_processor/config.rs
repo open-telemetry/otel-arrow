@@ -26,42 +26,42 @@ fn default_retention_size_cap() -> Byte {
 }
 
 /// Default size cap policy.
-fn default_size_cap_policy() -> SizeCapPolicy {
+const fn default_size_cap_policy() -> SizeCapPolicy {
     SizeCapPolicy::Backpressure
 }
 
 /// Default poll interval for checking for available bundles.
-fn default_poll_interval() -> Duration {
+const fn default_poll_interval() -> Duration {
     Duration::from_millis(100)
 }
 
 /// Default OTLP handling mode.
-fn default_otlp_handling() -> OtlpHandling {
+const fn default_otlp_handling() -> OtlpHandling {
     OtlpHandling::PassThrough
 }
 
 /// Default maximum time a segment can stay open (1 seconds).
-fn default_max_segment_open_duration() -> Duration {
+const fn default_max_segment_open_duration() -> Duration {
     Duration::from_secs(1)
 }
 
 /// Default initial retry interval (1 second).
-fn default_initial_retry_interval() -> Duration {
+const fn default_initial_retry_interval() -> Duration {
     Duration::from_secs(1)
 }
 
 /// Default maximum retry interval (30 seconds).
-fn default_max_retry_interval() -> Duration {
+const fn default_max_retry_interval() -> Duration {
     Duration::from_secs(30)
 }
 
 /// Default retry backoff multiplier.
-fn default_retry_multiplier() -> f64 {
+const fn default_retry_multiplier() -> f64 {
     2.0
 }
 
 /// Default maximum bundles in-flight to downstream.
-fn default_max_in_flight() -> usize {
+const fn default_max_in_flight() -> usize {
     1000
 }
 
@@ -105,8 +105,12 @@ pub struct PersistenceProcessorConfig {
     /// Directory path for persistent storage.
     pub path: PathBuf,
 
-    /// Maximum disk space to use (e.g., "500 GiB", "100 MB", or raw bytes).
+    /// Maximum total disk space to use across all cores (e.g., "500 GiB", "100 MB").
     /// Supports both IEC (KiB, MiB, GiB) and SI (KB, MB, GB) units.
+    ///
+    /// This is the **total** disk budget for the pipeline. The processor automatically
+    /// divides this across all cores (each core gets `retention_size_cap / num_cores`).
+    /// For example, with a 10 GiB cap on a 4-core pipeline, each core gets ~2.5 GiB.
     #[serde(default = "default_retention_size_cap")]
     pub retention_size_cap: Byte,
 
@@ -140,14 +144,10 @@ pub struct PersistenceProcessorConfig {
     pub max_segment_open_duration: Duration,
 
     // ─── Retry Configuration ────────────────────────────────────────────────
-
     /// Initial retry delay after first NACK (default: 1s).
     ///
     /// Used as the base for exponential backoff calculation.
-    #[serde(
-        with = "humantime_serde",
-        default = "default_initial_retry_interval"
-    )]
+    #[serde(with = "humantime_serde", default = "default_initial_retry_interval")]
     pub initial_retry_interval: Duration,
 
     /// Maximum retry delay (default: 30s).
@@ -174,7 +174,7 @@ pub struct PersistenceProcessorConfig {
 impl PersistenceProcessorConfig {
     /// Get the retention size cap in bytes.
     #[must_use]
-    pub fn size_cap_bytes(&self) -> u64 {
+    pub const fn size_cap_bytes(&self) -> u64 {
         self.retention_size_cap.as_u64()
     }
 

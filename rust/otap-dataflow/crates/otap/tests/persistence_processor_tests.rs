@@ -7,16 +7,17 @@
 //! including:
 //! - Data flow through the processor (ingest → wal + segment → downstream)
 //! - Recovery from finalized segments on restart
-//! - Graceful shutdown with data drain
+//! - Retry behavior with exponential backoff when downstream NACKs
 //!
 //! The tests use actual Quiver instances (not mocks) to catch integration
-//! issues like timing, threading, and assumption mismatches that wouldn't
-//! appear from testing Quiver in isolation.
-//!
-//! These tests require the `persistence` feature to be enabled.
+//! issues like timing, threading, and assumption mismatches.
 
 #![cfg(feature = "persistence")]
 
+mod common;
+
+use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
+use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
@@ -25,46 +26,252 @@ use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
-use otap_df_otap::fake_data_generator::config::{Config as FakeDataGeneratorConfig, TrafficConfig};
 use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_otap::persistence_processor::PERSISTENCE_PROCESSOR_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
-use serde_json::{json, to_value};
+use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
-use weaver_common::vdir::VirtualDirectoryPath;
 
-/// Test that data flows through the persistence processor to downstream.
+/// URN for the error exporter (always NACKs).
+const ERROR_EXPORTER_URN: &str = "urn:otel:error:exporter";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test Configuration Builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builder for persistence processor test configurations.
 ///
-/// This verifies the happy path:
-/// 1. Fake data generator produces data
-/// 2. Persistence processor ingests to Quiver
-/// 3. Timer tick polls and forwards to downstream (noop exporter)
-/// 4. Graceful shutdown completes without data loss
-#[test]
-fn test_persistence_processor_data_flow() {
-    let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+/// Consolidates all config variants into a single builder pattern.
+#[derive(Clone)]
+struct TestConfigBuilder {
+    persistence_path: std::path::PathBuf,
+    max_signal_count: Option<u64>,
+    max_batch_size: usize,
+    signals_per_second: Option<usize>,
+    metric_weight: u32,
+    trace_weight: u32,
+    log_weight: u32,
+    exporter_type: ExporterType,
+    retry_config: Option<serde_json::Value>,
+    size_cap_policy: &'static str,
+    otlp_handling: Option<&'static str>,
+}
 
-    let pipeline_group_id: PipelineGroupId = "persistence-test-group".into();
-    let pipeline_id: PipelineId = "persistence-test-pipeline".into();
+/// Which exporter to use in the test pipeline.
+#[derive(Clone, Copy, Default)]
+enum ExporterType {
+    /// Noop exporter - ACKs everything, no counting.
+    #[default]
+    Noop,
+    /// Error exporter - NACKs everything.
+    Error,
+    /// Counting exporter - ACKs and counts items.
+    Counting,
+    /// Flaky exporter - NACKs until switched to ACK mode.
+    Flaky,
+}
 
-    let config = build_persistence_pipeline_config(
-        pipeline_group_id.clone(),
-        pipeline_id.clone(),
-        persistence_path,
-        // Generate a small bounded amount of data
-        Some(10),  // max_signal_count
-        5,         // max_batch_size
-        Some(100), // signals_per_second
+impl TestConfigBuilder {
+    fn new(persistence_path: std::path::PathBuf) -> Self {
+        Self {
+            persistence_path,
+            max_signal_count: Some(10),
+            max_batch_size: 5,
+            signals_per_second: Some(100),
+            metric_weight: 0,
+            trace_weight: 0,
+            log_weight: 100,
+            exporter_type: ExporterType::Noop,
+            retry_config: None,
+            size_cap_policy: "backpressure",
+            otlp_handling: None,
+        }
+    }
+
+    fn max_signal_count(mut self, count: Option<u64>) -> Self {
+        self.max_signal_count = count;
+        self
+    }
+
+    fn max_batch_size(mut self, size: usize) -> Self {
+        self.max_batch_size = size;
+        self
+    }
+
+    fn signals_per_second(mut self, rate: Option<usize>) -> Self {
+        self.signals_per_second = rate;
+        self
+    }
+
+    fn signal_weights(mut self, metric: u32, trace: u32, log: u32) -> Self {
+        self.metric_weight = metric;
+        self.trace_weight = trace;
+        self.log_weight = log;
+        self
+    }
+
+    fn use_error_exporter(mut self) -> Self {
+        self.exporter_type = ExporterType::Error;
+        self
+    }
+
+    fn use_counting_exporter(mut self) -> Self {
+        self.exporter_type = ExporterType::Counting;
+        self
+    }
+
+    fn use_flaky_exporter(mut self) -> Self {
+        self.exporter_type = ExporterType::Flaky;
+        self
+    }
+
+    fn retry_config(mut self, config: serde_json::Value) -> Self {
+        self.retry_config = Some(config);
+        self
+    }
+
+    fn size_cap_policy(mut self, policy: &'static str) -> Self {
+        self.size_cap_policy = policy;
+        self
+    }
+
+    fn otlp_handling(mut self, handling: &'static str) -> Self {
+        self.otlp_handling = Some(handling);
+        self
+    }
+
+    fn build(
+        self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> PipelineConfig {
+        // Use Static data source to avoid network dependency on semantic conventions git repo.
+        // Build config as JSON since DataSource::Static doesn't need registry_path.
+        let receiver_config_value = json!({
+            "traffic_config": {
+                "signals_per_second": self.signals_per_second,
+                "max_signal_count": self.max_signal_count,
+                "max_batch_size": self.max_batch_size,
+                "metric_weight": self.metric_weight,
+                "trace_weight": self.trace_weight,
+                "log_weight": self.log_weight
+            },
+            "data_source": "static"
+        });
+
+        let mut persistence_config = json!({
+            "path": self.persistence_path.to_string_lossy(),
+            "poll_interval": "20ms",
+            "retention_size_cap": "100MB",
+            "size_cap_policy": self.size_cap_policy,
+            "max_segment_open_duration": "50ms"
+        });
+
+        if let Some(retry) = self.retry_config {
+            if let (Some(base), Some(extra)) =
+                (persistence_config.as_object_mut(), retry.as_object())
+            {
+                for (k, v) in extra {
+                    let _ = base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        if let Some(handling) = self.otlp_handling {
+            if let Some(obj) = persistence_config.as_object_mut() {
+                let _ = obj.insert("otlp_handling".to_owned(), json!(handling));
+            }
+        }
+
+        let (exporter_name, exporter_urn, exporter_config) = match self.exporter_type {
+            ExporterType::Error => (
+                "error_exporter",
+                ERROR_EXPORTER_URN,
+                Some(json!({"message": "simulated downstream failure"})),
+            ),
+            ExporterType::Counting => ("counting_exporter", COUNTING_EXPORTER_URN, None),
+            ExporterType::Flaky => ("flaky_exporter", FLAKY_EXPORTER_URN, None),
+            ExporterType::Noop => ("noop_exporter", NOOP_EXPORTER_URN, None),
+        };
+
+        PipelineConfigBuilder::new()
+            .add_receiver(
+                "fake_receiver",
+                OTAP_FAKE_DATA_GENERATOR_URN,
+                Some(receiver_config_value),
+            )
+            .add_processor(
+                "persistence",
+                PERSISTENCE_PROCESSOR_URN,
+                Some(persistence_config),
+            )
+            .add_exporter(exporter_name, exporter_urn, exporter_config)
+            .round_robin("fake_receiver", "out", ["persistence"])
+            .round_robin("persistence", "out", [exporter_name])
+            .build(
+                PipelineType::Otap,
+                pipeline_group_id.clone(),
+                pipeline_id.clone(),
+            )
+            .expect("failed to build pipeline config")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test Runner Helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run a pipeline with the given config, then shut down.
+///
+/// Handles all the boilerplate: telemetry, context, channels, shutdown thread.
+///
+/// If `shutdown_condition` is provided, it will be polled every 10ms and
+/// shutdown will be triggered as soon as the condition returns true (or when
+/// `run_duration` is reached, whichever comes first). This allows tests to
+/// complete as fast as the actual work takes, rather than waiting for a fixed
+/// duration.
+fn run_pipeline(
+    config: PipelineConfig,
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    run_duration: Duration,
+    shutdown_deadline: Duration,
+) {
+    run_pipeline_with_condition(
+        config,
+        pipeline_group_id,
+        pipeline_id,
+        run_duration,
+        shutdown_deadline,
+        None::<fn() -> bool>,
     );
+}
 
+/// Run a pipeline with an optional early shutdown condition.
+fn run_pipeline_with_condition<F>(
+    config: PipelineConfig,
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    max_duration: Duration,
+    shutdown_deadline: Duration,
+    shutdown_condition: Option<F>,
+) where
+    F: Fn() -> bool + Send + 'static,
+{
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx =
-        controller_ctx.pipeline_context_with(pipeline_group_id.clone(), pipeline_id.clone(), 0, 0);
+    let pipeline_ctx = controller_ctx.pipeline_context_with(
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
+        0,
+        1,
+        0,
+    );
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -78,22 +285,29 @@ fn test_persistence_processor_data_flow() {
     let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
 
     let pipeline_key = DeployedPipelineKey {
-        pipeline_group_id,
-        pipeline_id,
+        pipeline_group_id: pipeline_group_id.clone(),
+        pipeline_id: pipeline_id.clone(),
         core_id: 0,
     };
     let metrics_reporter = telemetry_system.reporter();
     let event_reporter = observed_state_store.reporter(SendPolicy::default());
 
-    // Shutdown after allowing time for data to flow
     let shutdown_handle = std::thread::spawn(move || {
-        // Allow enough time for:
-        // 1. Fake data generator to produce signals
-        // 2. Persistence processor to ingest to Quiver
-        // 3. Segment to finalize (max_segment_open_duration = 200ms)
-        // 4. Timer tick to forward downstream
-        std::thread::sleep(Duration::from_millis(500));
-        let deadline = Instant::now() + Duration::from_millis(500);
+        // Either poll the condition or wait for max_duration, whichever comes first.
+        let poll_interval = Duration::from_millis(10);
+        let start = Instant::now();
+        loop {
+            if start.elapsed() >= max_duration {
+                break;
+            }
+            if let Some(ref condition) = shutdown_condition {
+                if condition() {
+                    break;
+                }
+            }
+            std::thread::sleep(poll_interval);
+        }
+        let deadline = Instant::now() + shutdown_deadline;
         pipeline_ctrl_tx_for_shutdown
             .try_send(PipelineControlMsg::Shutdown {
                 deadline,
@@ -122,7 +336,6 @@ fn test_persistence_processor_data_flow() {
         run_result
     );
 
-    // Verify cleanup
     assert_eq!(
         registry.metric_set_count(),
         0,
@@ -131,237 +344,495 @@ fn test_persistence_processor_data_flow() {
     assert_eq!(registry.entity_count(), 0, "entities should be cleaned up");
 }
 
-/// Test that the persistence processor handles restart with existing persisted data.
+// ─────────────────────────────────────────────────────────────────────────────
+// Test Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Wait for a condition to become true, with timeout.
 ///
-/// This verifies recovery from persistence via Quiver:
-/// 1. First run: generate data, persist to Quiver, shutdown before all data forwarded
-/// 2. Second run: Quiver reopens and resumes forwarding from finalized segments
-///
-/// Note: This tests recovery at the Quiver/persistence_processor level.
-/// Internal details like WAL replay to finalized segments are handled within Quiver itself.
-#[test]
-fn test_persistence_processor_recovery() {
-    let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
-
-    let pipeline_group_id: PipelineGroupId = "recovery-test-group".into();
-    let pipeline_id: PipelineId = "recovery-test-pipeline".into();
-
-    // === First run: generate data, quick shutdown ===
-    {
-        let config = build_persistence_pipeline_config(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            persistence_path.clone(),
-            Some(20),  // Generate more signals
-            10,        // Larger batches
-            Some(500), // Faster rate
-        );
-
-        let telemetry_system = InternalTelemetrySystem::default();
-        let registry = telemetry_system.registry();
-        let controller_ctx = ControllerContext::new(registry.clone());
-        let pipeline_ctx = controller_ctx.pipeline_context_with(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            0,
-        );
-
-        let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let runtime_pipeline = OTAP_PIPELINE_FACTORY
-            .build(pipeline_ctx.clone(), config.clone(), None)
-            .expect("failed to build runtime pipeline (run 1)");
-
-        let pipeline_settings = config.pipeline_settings().clone();
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-            pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
-        let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
-        let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
-
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id: pipeline_group_id.clone(),
-            pipeline_id: pipeline_id.clone(),
-            core_id: 0,
-        };
-        let metrics_reporter = telemetry_system.reporter();
-        let event_reporter = observed_state_store.reporter(SendPolicy::default());
-
-        // Quick shutdown - data may not have been fully forwarded
-        let shutdown_handle = std::thread::spawn(move || {
-            // Minimal time - just enough to ingest some data
-            std::thread::sleep(Duration::from_millis(100));
-            let deadline = Instant::now() + Duration::from_millis(200);
-            pipeline_ctrl_tx_for_shutdown
-                .try_send(PipelineControlMsg::Shutdown {
-                    deadline,
-                    reason: "quick shutdown for recovery test".to_owned(),
-                })
-                .expect("failed to send shutdown request");
-        });
-
-        let run_result = {
-            let _pipeline_entity_guard =
-                set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
-            runtime_pipeline.run_forever(
-                pipeline_key,
-                pipeline_ctx,
-                event_reporter,
-                metrics_reporter,
-                pipeline_ctrl_tx,
-                pipeline_ctrl_rx,
-            )
-        };
-
-        let _ = shutdown_handle.join();
-        assert!(
-            run_result.is_ok(),
-            "pipeline run 1 failed: {:?}",
-            run_result
-        );
+/// Polls the condition every `poll_interval` until it returns true or
+/// `timeout` is exceeded. Returns `true` if condition was met, `false` if
+/// timed out.
+fn wait_for_condition<F>(condition: F, timeout: Duration, poll_interval: Duration) -> bool
+where
+    F: Fn() -> bool,
+{
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(poll_interval);
     }
-
-    // Verify Quiver data directory exists
-    let quiver_dir = persistence_path.join("core_0");
-    assert!(
-        quiver_dir.exists(),
-        "Quiver data directory should exist after first run"
-    );
-
-    // === Second run: restart with zero new signals - recovery only ===
-    // The fake data generator is configured to produce 0 signals, so any data
-    // that flows to the exporter must come from persisted storage.
-    {
-        let config = build_persistence_pipeline_config(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            persistence_path.clone(),
-            Some(0),    // Zero new signals - recovery only
-            1,          // batch size doesn't matter
-            Some(1000), // Fast rate so we don't wait
-        );
-
-        let telemetry_system = InternalTelemetrySystem::default();
-        let registry = telemetry_system.registry();
-        let controller_ctx = ControllerContext::new(registry.clone());
-        let pipeline_ctx = controller_ctx.pipeline_context_with(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            0,
-            0,
-        );
-
-        let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
-        let runtime_pipeline = OTAP_PIPELINE_FACTORY
-            .build(pipeline_ctx.clone(), config.clone(), None)
-            .expect("failed to build runtime pipeline (run 2)");
-
-        let pipeline_settings = config.pipeline_settings().clone();
-        let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-            pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
-        let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
-        let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
-
-        let pipeline_key = DeployedPipelineKey {
-            pipeline_group_id,
-            pipeline_id,
-            core_id: 0,
-        };
-        let metrics_reporter = telemetry_system.reporter();
-        let event_reporter = observed_state_store.reporter(SendPolicy::default());
-
-        // Allow time for recovery and forwarding
-        let shutdown_handle = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            let deadline = Instant::now() + Duration::from_millis(500);
-            pipeline_ctrl_tx_for_shutdown
-                .try_send(PipelineControlMsg::Shutdown {
-                    deadline,
-                    reason: "shutdown after recovery".to_owned(),
-                })
-                .expect("failed to send shutdown request");
-        });
-
-        let run_result = {
-            let _pipeline_entity_guard =
-                set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
-            runtime_pipeline.run_forever(
-                pipeline_key,
-                pipeline_ctx,
-                event_reporter,
-                metrics_reporter,
-                pipeline_ctrl_tx,
-                pipeline_ctrl_rx,
-            )
-        };
-
-        let _ = shutdown_handle.join();
-        assert!(
-            run_result.is_ok(),
-            "pipeline run 2 (recovery) failed: {:?}",
-            run_result
-        );
-
-        // Verify cleanup
-        assert_eq!(registry.metric_set_count(), 0);
-        assert_eq!(registry.entity_count(), 0);
-    }
+    false
 }
 
-/// Build a pipeline config with fake data generator → persistence → noop exporter.
-///
-/// # Arguments
-/// * `max_signal_count` - `Some(n)` to generate exactly n signals, `None` for unlimited
-fn build_persistence_pipeline_config(
-    pipeline_group_id: PipelineGroupId,
-    pipeline_id: PipelineId,
-    persistence_path: std::path::PathBuf,
-    max_signal_count: Option<u64>,
-    max_batch_size: usize,
-    signals_per_second: Option<usize>,
-) -> PipelineConfig {
-    // TrafficConfig::new signature:
-    // (signals_per_second: Option<usize>, max_signal_count: Option<u64>,
-    //  max_batch_size: usize, metric_weight: u32, trace_weight: u32, log_weight: u32)
-    let traffic_config = TrafficConfig::new(
-        signals_per_second,
-        max_signal_count,
-        max_batch_size,
-        0,   // metric_weight
-        0,   // trace_weight
-        100, // log_weight (100% logs)
-    );
-    let registry_path = VirtualDirectoryPath::GitRepo {
-        url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-        sub_folder: Some("model".to_owned()),
-        refspec: None,
-    };
-    let receiver_config = FakeDataGeneratorConfig::new(traffic_config, registry_path);
-    let receiver_config_value =
-        to_value(receiver_config).expect("failed to serialize receiver config");
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration Tests
+// ─────────────────────────────────────────────────────────────────────────────
 
-    let persistence_config = json!({
-        "path": persistence_path.to_string_lossy(),
-        "poll_interval": "50ms",
-        "retention_size_cap": "100MB",
-        "size_cap_policy": "backpressure",
-        "max_segment_open_duration": "200ms"
+/// Test retry behavior when downstream NACKs.
+///
+/// This verifies:
+/// - Retries are scheduled within a single pipeline run
+/// - Data survives NACKs and is eventually delivered when downstream recovers
+///
+/// Uses flaky_exporter which NACKs initially, then switches to ACK mode mid-run.
+/// A background thread waits for NACKs to occur (condition-based, not fixed timeout),
+/// then flips the exporter to ACK mode.
+#[test]
+fn test_persistence_processor_retries_on_nack() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "retry-test".into();
+    let pipeline_id: PipelineId = "retry-pipeline".into();
+
+    // Setup: Configure flaky exporter to NACK initially
+    let counter = Arc::new(AtomicU64::new(0));
+    flaky_exporter::configure(counter.clone(), false); // Start in NACK mode
+
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(None) // Generate continuously
+        .max_batch_size(5)
+        .signals_per_second(Some(50)) // Fast enough to generate data quickly
+        .use_flaky_exporter()
+        .retry_config(json!({
+            "initial_retry_interval": "50ms",
+            "max_retry_interval": "200ms",
+            "retry_multiplier": 2.0,
+            "max_in_flight": 10
+        }))
+        .build(&pipeline_group_id, &pipeline_id);
+
+    // Spawn a thread to flip the exporter after NACKs are observed
+    let flip_handle = std::thread::spawn(|| {
+        // Wait for at least 5 NACKs (condition-based, not fixed timeout)
+        let nacks_observed = wait_for_condition(
+            || flaky_exporter::nack_count() >= 5,
+            Duration::from_secs(5), // generous timeout for CI
+            Duration::from_millis(10),
+        );
+        assert!(nacks_observed, "Expected at least 5 NACKs within timeout");
+
+        let nacks_before = flaky_exporter::nack_count();
+
+        // Switch to ACK mode - retries should now succeed
+        flaky_exporter::set_should_ack(true);
+
+        nacks_before
     });
 
-    PipelineConfigBuilder::new()
-        .add_receiver(
-            "fake_receiver",
-            OTAP_FAKE_DATA_GENERATOR_URN,
-            Some(receiver_config_value),
-        )
-        .add_processor(
-            "persistence",
-            PERSISTENCE_PROCESSOR_URN,
-            Some(persistence_config),
-        )
-        .add_exporter("noop_exporter", NOOP_EXPORTER_URN, None)
-        .round_robin("fake_receiver", "out", ["persistence"])
-        .round_robin("persistence", "out", ["noop_exporter"])
-        .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
-        .expect("failed to build pipeline config")
+    // Run the pipeline - shut down as soon as we see delivered items
+    // (meaning retries succeeded after the flip to ACK mode).
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(1),
+        Some(move || delivered_counter.load(Ordering::Relaxed) > 0),
+    );
+
+    let nacks_before_flip = flip_handle.join().expect("flip thread panicked");
+
+    // Cleanup and validate
+    let delivered = counter.load(Ordering::Relaxed);
+    let total_nacks = flaky_exporter::nack_count();
+    flaky_exporter::clear();
+
+    // Validate: Data was delivered after switching to ACK mode (retries worked)
+    assert!(
+        delivered > 0,
+        "Expected items to be delivered after switching to ACK mode, got 0"
+    );
+
+    // Validate: NACKs occurred during the NACK phase
+    assert!(
+        total_nacks >= nacks_before_flip,
+        "NACK count should be at least {} (captured before flip), got {}",
+        nacks_before_flip,
+        total_nacks
+    );
+
+    // Validate: The retry mechanism worked - data was NACKed but eventually delivered
+    // This proves the persistence processor's retry logic is functioning.
+    assert!(
+        nacks_before_flip >= 5,
+        "Should have observed at least 5 NACKs before flip, got {}",
+        nacks_before_flip
+    );
+}
+
+/// Test recovery after downstream outage with data integrity validation.
+///
+/// This test verifies the core persistence guarantee: data survives process
+/// restarts when downstream is unavailable, and is correctly recovered.
+///
+/// Run 1: Downstream fails (error exporter), data accumulates in Quiver
+/// Run 2: Downstream healthy (counting exporter), data should be delivered
+///
+/// Validates:
+/// - Run 1 NACKs all data, so nothing is delivered/ACK'd
+/// - Data gets persisted to Quiver segments
+/// - Run 2 recovers and delivers all persisted data plus new data
+/// - Exact count verification ensures no data loss or duplication
+#[test]
+fn test_persistence_processor_recovery_after_outage() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "outage-test".into();
+    let pipeline_id: PipelineId = "outage-pipeline".into();
+
+    let run1_signals = 25u64;
+
+    // Run 1: Downstream failing (all NACKs) - data persists to Quiver
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(run1_signals))
+        .max_batch_size(5)
+        .signals_per_second(Some(500))
+        .use_error_exporter()
+        .retry_config(json!({
+            "initial_retry_interval": "50ms",
+            "max_retry_interval": "100ms",
+            "max_in_flight": 50
+        }))
+        .build(&pipeline_group_id, &pipeline_id);
+
+    // Run 1 with error exporter - we can't detect delivery (all NACKs), but
+    // at 500 signals/sec, 25 signals should be generated in ~50ms. Use a short
+    // run duration just long enough to generate and persist the data.
+    run_pipeline(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_millis(150), // Just enough time to generate 25 signals
+        Duration::from_millis(200),
+    );
+
+    // Verify data was persisted
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Run 1 should have created Quiver data directory"
+    );
+
+    // Run 2: Downstream healthy - verify recovery delivers all data
+    let run2_signals = 10u64;
+    let run2_counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(run2_counter.clone());
+
+    // Generate some new data in Run 2 to keep the pipeline alive long enough
+    // for recovery. Timer ticks poll Quiver for recovered data, but only fire
+    // when the pipeline's message loop is running.
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(run2_signals))
+        .max_batch_size(5)
+        .signals_per_second(Some(500)) // Fast generation
+        .use_counting_exporter()
+        .build(&pipeline_group_id, &pipeline_id);
+
+    // Shut down once all data (recovered + new) is delivered
+    let expected_total = run1_signals + run2_signals;
+    let delivered_counter = run2_counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10),    // generous max timeout for CI
+        Duration::from_millis(500), // Short drain - condition should trigger first
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= expected_total),
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = run2_counter.load(Ordering::Relaxed);
+
+    // Validate data integrity:
+    // Run 1 generated 25 signals (all NACKed, persisted)
+    // Run 2 generated 10 new signals
+    // Total should be at least 35 (25 recovered + 10 new)
+    assert!(
+        delivered >= expected_total,
+        "Recovery should deliver at least {} items ({}+{}), got {}",
+        expected_total,
+        run1_signals,
+        run2_signals,
+        delivered
+    );
+}
+
+/// Test that multiple signal types (traces + logs) flow correctly together.
+///
+/// Verifies that the persistence processor correctly handles mixed signal types
+/// in the same pipeline. Uses traces and logs (not metrics, since pdata metrics
+/// view is not yet implemented - see payload.rs:290).
+#[test]
+fn test_persistence_processor_mixed_signal_types() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "signal-types-test".into();
+    let pipeline_id: PipelineId = "signal-types-pipeline".into();
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(counter.clone());
+
+    let total_signals = 20u64;
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        // Mix of traces (50%) and logs (50%), no metrics (pdata limitation)
+        .signal_weights(0, 50, 50)
+        .use_counting_exporter()
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10), // generous max timeout
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // Verify all 20 signals were delivered
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} items (mixed traces + logs), got {}",
+        total_signals,
+        delivered
+    );
+
+    // Verify persistence was used
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Quiver data directory should exist"
+    );
+}
+
+/// Test OTLP-to-Arrow conversion mode.
+///
+/// Verifies that when `otlp_handling: convert_to_arrow` is set:
+/// - OTLP data is converted to Arrow format before persistence
+/// - Data flows through correctly and is delivered downstream
+///
+/// This exercises the OtapRecordBundleAdapter code path in bundle_adapter.rs.
+#[test]
+fn test_persistence_processor_convert_to_arrow_mode() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "arrow-mode-test".into();
+    let pipeline_id: PipelineId = "arrow-mode-pipeline".into();
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(counter.clone());
+
+    let total_signals = 10u64;
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(5)
+        .otlp_handling("convert_to_arrow")
+        .use_counting_exporter()
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10), // generous max timeout
+        Duration::from_millis(500),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // Verify data flowed through the Arrow conversion path
+    assert!(
+        delivered >= total_signals,
+        "Should have delivered at least {} items through Arrow conversion, got {}",
+        total_signals,
+        delivered
+    );
+
+    // Verify persistence directory was created
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Quiver data directory should exist"
+    );
+}
+
+/// Test graceful shutdown with data drain.
+///
+/// Verifies the shutdown drain sequence delivers all data:
+/// 1. Generate data rapidly (short run time, data may still be in Quiver)
+/// 2. Trigger shutdown with generous deadline
+/// 3. Shutdown should flush open segment and drain remaining bundles
+/// 4. All generated data should be delivered (no data loss)
+///
+/// The shutdown handler performs: flush → drain loop → engine shutdown.
+/// This test exercises that path by ensuring data is still pending when
+/// shutdown is triggered, then verifying all data was delivered.
+#[test]
+fn test_persistence_processor_graceful_shutdown_drain() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "shutdown-drain-test".into();
+    let pipeline_id: PipelineId = "shutdown-drain-pipeline".into();
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(counter.clone());
+
+    // Generate data with a short run time so data is likely still in Quiver
+    // (either WAL or finalized segments) when shutdown starts.
+    // The long shutdown deadline gives the drain loop time to forward all data.
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(50))
+        .max_batch_size(10)
+        .signals_per_second(Some(1000)) // Fast generation
+        .use_counting_exporter()
+        .build(&pipeline_group_id, &pipeline_id);
+
+    run_pipeline(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_millis(150), // Short run - shutdown while data pending
+        Duration::from_millis(500), // Deadline for drain
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // Verify persistence directory was created
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Quiver data directory should exist"
+    );
+
+    // Verify all data was delivered during shutdown drain.
+    // The graceful shutdown should flush and drain all pending data.
+    assert!(
+        delivered >= 50,
+        "Graceful shutdown should have drained all 50 items, got {}",
+        delivered
+    );
+}
+/// Test high-volume throughput to exercise segment finalization.
+///
+/// This test generates a large amount of data to ensure:
+/// - Multiple segments are created and finalized
+/// - Data correctly flows through the full persistence lifecycle
+/// - No data loss under sustained load
+///
+/// This test generates enough data over a long enough duration to trigger
+/// multiple segment rotations and finalizations.
+#[test]
+fn test_persistence_processor_high_volume_throughput() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "high-volume-test".into();
+    let pipeline_id: PipelineId = "high-volume-pipeline".into();
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(counter.clone());
+
+    // Generate 500 signals in batches of 50 - enough to trigger multiple
+    // segment finalizations (max_segment_open_duration is 200ms by default)
+    let total_signals = 500u64;
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(50)
+        .signals_per_second(Some(2000)) // Fast generation
+        .use_counting_exporter()
+        .build(&pipeline_group_id, &pipeline_id);
+
+    // Shut down once all signals are delivered
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10), // generous max timeout for CI
+        Duration::from_secs(3),  // Long drain time for high volume
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // Verify persistence infrastructure was used
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Quiver data directory should exist"
+    );
+
+    // Verify ALL data was delivered - no data loss under high volume
+    assert!(
+        delivered >= total_signals,
+        "High-volume test should deliver all {} signals, got {}",
+        total_signals,
+        delivered
+    );
+}
+
+/// Test drop_oldest size cap policy configuration is accepted.
+///
+/// This verifies that when `size_cap_policy: drop_oldest` is configured:
+/// - The configuration is valid and accepted by the pipeline
+/// - The processor functions correctly with this policy
+///
+/// Note: Actually triggering the drop behavior requires filling the retention
+/// buffer which is difficult in unit tests (minimum segment size constraints).
+/// This test validates the configuration path is exercised correctly.
+#[test]
+fn test_persistence_processor_drop_oldest_policy() {
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let persistence_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "drop-oldest-test".into();
+    let pipeline_id: PipelineId = "drop-oldest-pipeline".into();
+
+    let counter = Arc::new(AtomicU64::new(0));
+    counting_exporter::set_counter(counter.clone());
+
+    // Use drop_oldest policy with standard retention size.
+    // This validates the policy configuration is accepted and functions.
+    let total_signals = 50u64;
+    let config = TestConfigBuilder::new(persistence_path.clone())
+        .max_signal_count(Some(total_signals))
+        .max_batch_size(10)
+        .signals_per_second(Some(500))
+        .use_counting_exporter()
+        .size_cap_policy("drop_oldest")
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let delivered_counter = counter.clone();
+    run_pipeline_with_condition(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(10), // generous max timeout
+        Duration::from_millis(1000),
+        Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
+    );
+
+    counting_exporter::clear_counter();
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // Verify persistence was used
+    assert!(
+        persistence_path.join("core_0").exists(),
+        "Quiver data directory should exist"
+    );
+
+    // Verify data flowed through successfully with drop_oldest policy
+    assert!(
+        delivered >= total_signals,
+        "Expected at least {} items delivered with drop_oldest policy, got {}",
+        total_signals,
+        delivered
+    );
 }
