@@ -68,7 +68,7 @@ impl TelemetryRegistryHandle {
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
         let schema_name = attrs.schema_name();
-        let display = attrs.to_string();
+        let primary_name = attrs.primary_name();
         let all_attrs: String = attrs
             .iter_attributes()
             .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
@@ -78,12 +78,12 @@ impl TelemetryRegistryHandle {
         let (entity_key, created) = self.registry.lock().entities.register(attrs);
 
         if created {
-            // Log the entity definition giving users a way to expand.
+            // Log the entity definition
             otel_info!(
                 "registry.define_entity",
                 schema = schema_name,
-                entity_name = display,
-                definition = all_attrs,
+                entity_name = primary_name.as_str(),
+                definition = all_attrs.as_str()
             );
         }
 
