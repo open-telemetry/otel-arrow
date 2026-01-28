@@ -21,7 +21,7 @@ use arrow::{
         PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
         UInt32Array,
     },
-    buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
+    buffer::{BooleanBuffer, Buffer, MutableBuffer, NullBuffer, ScalarBuffer},
     compute::{
         Partitions, SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition,
         rank, take, take_record_batch,
@@ -561,9 +561,10 @@ where
                 sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.2 (tmp)
 
             // set hint for the number of nulls
-            sorted_val_col.set_null_count_hint(values_type_range_by_key.null_count());
+            let null_count = values_type_range_by_key.null_count();
+            sorted_val_col.set_null_count_hint(null_count);
 
-            let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key);
+            let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key, null_count);
             let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
 
             // partition key ranges (using SIMD)
@@ -1302,6 +1303,7 @@ impl SortedValuesArrayBuilder {
 struct AttrValueDictKeysAndRanks {
     keys: Vec<u16>,
     ranks: Vec<u16>,
+    rank_nulls: Option<NullBuffer>,
 }
 
 enum AttrsValueSorterInner {
@@ -1319,7 +1321,7 @@ struct AttrValuesSorter {
 }
 
 impl AttrValuesSorter {
-    fn new(values_arr: &ArrayRef) -> Self {
+    fn new(values_arr: &ArrayRef, null_count: usize) -> Self {
         let inner = match values_arr.data_type() {
             DataType::Dictionary(k, v) => match **k {
                 // TODO - not sure this branch is needed? I don't think we have u8 dict vals
@@ -1346,8 +1348,16 @@ impl AttrValuesSorter {
                         .iter()
                         .map(|k| value_ranks[*k as usize] as u16)
                         .collect::<Vec<_>>();
+
+                    let rank_nulls = if null_count > 0 {
+                        dict_arr.keys().nulls().cloned()
+                    } else {
+                        None
+                    };
+
                     AttrsValueSorterInner::KeysAndRanks(AttrValueDictKeysAndRanks {
                         ranks: key_ranks,
+                        rank_nulls,
                         keys: dict_arr.keys().values().to_vec(),
                     })
                 }
@@ -1395,7 +1405,19 @@ impl AttrValuesSorter {
                         .copied()
                         .enumerate(),
                 );
-                self.rank_sort_scratch.sort_by(|a, b| a.1.cmp(&b.1));
+                if let Some(nulls) = &ranks.rank_nulls {
+                    // slower path for nulls
+                    self.rank_sort_scratch.sort_by(|a, b| {
+                        match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
+                            (true, true) => std::cmp::Ordering::Equal,
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            (false, false) => a.1.cmp(&b.1),
+                        }
+                    });
+                } else {
+                    self.rank_sort_scratch.sort_by(|a, b| a.1.cmp(&b.1));
+                }
                 result.extend(self.rank_sort_scratch.iter().map(|(idx, _)| *idx as u32));
             }
         }
@@ -3939,7 +3961,7 @@ mod test {
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 4, 1, 5, 2, 3])),
+                Arc::new(UInt16Array::from_iter_values([0, 1, 4, 5, 2, 3])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
