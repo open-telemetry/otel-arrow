@@ -16,8 +16,8 @@ use std::{
 use arrow::{
     array::{
         Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray,
-        DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray, 
-        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array, 
+        DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray,
+        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
         UInt32Array,
     },
     buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
@@ -1050,7 +1050,7 @@ impl SortedValuesArrayBuilder {
         // For other types, use the concat approach (with preallocated vec)
         let mut arrays = Vec::with_capacity(self.sorted_segments.len());
         let mut curr_nulls = 0;
-        
+
         for segment in &self.sorted_segments {
             match segment {
                 SortedValuesArraySegment::Nulls(count) => curr_nulls += count,
@@ -1091,7 +1091,7 @@ impl SortedValuesArrayBuilder {
                             let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
                             let segment_keys = dict_arr.keys().values();
                             keys_builder.extend_from_slice(segment_keys);
-                            
+
                             // Handle nulls in this segment
                             if let Some(nulls) = dict_arr.nulls() {
                                 for i in 0..dict_arr.len() {
@@ -1133,7 +1133,7 @@ impl SortedValuesArrayBuilder {
                             let dict_arr = arr.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
                             let segment_keys = dict_arr.keys().values();
                             keys_builder.extend_from_slice(segment_keys);
-                            
+
                             if let Some(nulls) = dict_arr.nulls() {
                                 for i in 0..dict_arr.len() {
                                     if nulls.is_valid(i) {
