@@ -1198,14 +1198,37 @@ impl SortedValuesArrayBuilder {
 
                             // Check if any of the source positions were null
                             if let Some(source_nulls) = source_dict.nulls() {
-                                for &idx in indices {
-                                    if source_nulls.is_valid(idx as usize) {
-                                        null_buffer_builder.append_non_null();
-                                    } else {
-                                        null_buffer_builder.append_null();
+                                // Batch consecutive valid/null runs to reduce append overhead
+                                let mut i = 0;
+                                while i < indices.len() {
+                                    let idx = indices[i] as usize;
+                                    let is_valid = source_nulls.is_valid(idx);
+
+                                    // Count consecutive runs of same validity
+                                    let mut run_len = 1;
+                                    while i + run_len < indices.len() {
+                                        let next_idx = indices[i + run_len] as usize;
+                                        if source_nulls.is_valid(next_idx) == is_valid {
+                                            run_len += 1;
+                                        } else {
+                                            break;
+                                        }
                                     }
+
+                                    // Append the run
+                                    if is_valid {
+                                        // for _ in 0..run_len {
+                                        //     null_buffer_builder.append_non_null();
+                                        // }
+                                        null_buffer_builder.append_n_non_nulls(run_len);
+                                    } else {
+                                        null_buffer_builder.append_n_nulls(run_len);
+                                    }
+
+                                    i += run_len;
                                 }
                             } else {
+                                // Fast path: no nulls in source
                                 for _ in 0..indices.len() {
                                     null_buffer_builder.append_non_null();
                                 }
@@ -1243,14 +1266,37 @@ impl SortedValuesArrayBuilder {
 
                             // Check if any of the source positions were null
                             if let Some(source_nulls) = source_dict.nulls() {
-                                for &idx in indices {
-                                    if source_nulls.is_valid(idx as usize) {
-                                        null_buffer_builder.append_non_null();
-                                    } else {
-                                        null_buffer_builder.append_null();
+                                // Batch consecutive valid/null runs to reduce append overhead
+                                let mut i = 0;
+                                while i < indices.len() {
+                                    let idx = indices[i] as usize;
+                                    let is_valid = source_nulls.is_valid(idx);
+
+                                    // Count consecutive runs of same validity
+                                    let mut run_len = 1;
+                                    while i + run_len < indices.len() {
+                                        let next_idx = indices[i + run_len] as usize;
+                                        if source_nulls.is_valid(next_idx) == is_valid {
+                                            run_len += 1;
+                                        } else {
+                                            break;
+                                        }
                                     }
+
+                                    // Append the run
+                                    if is_valid {
+                                        // for _ in 0..run_len {
+                                        //     null_buffer_builder.append_non_null();
+                                        // }
+                                        null_buffer_builder.append_n_non_nulls(run_len);
+                                    } else {
+                                        null_buffer_builder.append_n_nulls(run_len);
+                                    }
+
+                                    i += run_len;
                                 }
                             } else {
+                                // Fast path: no nulls in source
                                 for _ in 0..indices.len() {
                                     null_buffer_builder.append_non_null();
                                 }
