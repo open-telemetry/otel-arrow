@@ -147,21 +147,35 @@ impl ObservedStateStore {
 
     /// Format scope attributes by looking up entity keys in the registry.
     /// Appends entity references inline after the log message.
-    /// Format: ` entity/schema=name entity/schema=name ...`
+    /// Format: ` entity/schema: key=val key2=val2 entity/schema2: ...`
+    ///
+    /// TODO(#1907, #1746): This code is too expensive. We would like a lower-cost
+    /// way to output human readable text.
     fn format_scope_from_registry(
         w: &mut StyledBufWriter<'_>,
         context: &LogContext,
         registry: &TelemetryRegistryHandle,
     ) {
-        for entity_key in context.iter() {
-            let _ = registry.visit_entity(*entity_key, |attrs| {
-                let _ = write!(
-                    w,
-                    " entity/{}={}",
+        for key in context.iter() {
+            let visited = registry.visit_entity(*key, |attrs| {
+                (
+                    attrs
+                        .iter_attributes()
+                        .map(|(a, b)| (a, b.clone()))
+                        .collect::<Vec<_>>(),
                     attrs.schema_name(),
-                    attrs.primary_name()
-                );
+                )
             });
+            visited
+                .map(|(attrs, schema_name)| {
+                    let _ = write!(w, " entity/{}:", schema_name);
+
+                    // TODO(#1907): We should be able to use
+                    for (attr_key, attr_value) in attrs {
+                        let _ = write!(w, " {}={}", attr_key, attr_value.to_string_value());
+                    }
+                })
+                .unwrap_or_default()
         }
     }
 

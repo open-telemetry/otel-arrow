@@ -67,23 +67,16 @@ impl TelemetryRegistryHandle {
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
-        let schema_name = attrs.schema_name();
-        let primary_name = attrs.primary_name();
-        let all_attrs: String = attrs
-            .iter_attributes()
-            .map(|(k, v)| format!("{}={}", k, v.to_string_value()))
-            .collect::<Vec<_>>()
-            .join(", ");
-
+        let schema = attrs.schema_name();
+        let definition = attrs.attributes_to_string();
         let outcome = self.registry.lock().entities.register(attrs);
         if let RegisterOutcome::Created(_) = outcome {
-            // Log the entity definition
-            otel_info!(
-                "registry.define_entity",
-                schema = schema_name,
-                entity_name = primary_name,
-                definition = all_attrs,
-            );
+            // Log the entity definition.
+            //
+            // TODO(#1907): This could benefit from logging a human-readable form
+            // of the entity that we refer to later in the logs, instead of logging
+            // every key/value in every line of console_async output.
+            otel_info!("registry.define_entity", schema, definition);
         }
         outcome.key()
     }
