@@ -12,6 +12,7 @@ processor:
     mode: parallel          # or "sequential"
     await_ack: primary      # or "all" or "none"
     timeout_check_interval: 200ms
+    max_inflight: 10000     # maximum in-flight messages (0 = unlimited)
     destinations:
       - port: primary_export
         primary: true
@@ -21,6 +22,11 @@ processor:
         timeout: 10s
       - port: analytics_export
 ```
+
+> **Future improvement**: The `destinations` config could be merged with the node's
+> `outputs` mechanism to reduce redundancy. This would allow fanout-specific fields
+> (primary, timeout, fallback_for) to be specified directly on output ports rather
+> than duplicating port names in both places.
 
 ## Delivery Modes
 
@@ -146,6 +152,8 @@ destinations:
 
 - Cycles are detected and rejected at config validation
 - If the final fallback fails, upstream nacks
+- **Fallbacks are only triggered on failure**: When an origin succeeds, its fallback(s)
+  are marked as skipped and will not be dispatched (even in sequential mode)
 
 ## Timeouts
 
@@ -162,15 +170,99 @@ destinations:
 
 - Timeouts are checked on periodic `TimerTick` (default interval: 200ms)
 - Timeout is treated as a failure (same as nack)
+- **Timeouts are terminal**: Once an endpoint times out, late acks/nacks from that
+  endpoint are ignored. The fallback's outcome determines the result, even if the
+  original destination eventually responds successfully.
+
+## Backpressure
+
+The fanout processor propagates backpressure upstream through multiple mechanisms:
+
+### 1. Ack/Nack Propagation
+
+When `await_ack` is `primary` or `all`, the processor withholds upstream acks until
+downstream destinations respond:
+
+```text
+Upstream ──► FANOUT ──► Downstream
+                │
+         waits for ack/nack
+                │
+         then acks/nacks upstream
+```
+
+- **`await_ack: primary`**: Fanout does not ack upstream until primary
+  destination responds
+- **`await_ack: all`**: Fanout does not ack upstream until all destinations
+  respond
+- **`await_ack: none`**: Upstream acked immediately (fire-and-forget)
+
+Note: Withholding acks does not prevent upstream from sending more messages—upstream
+can continue sending until `max_inflight` or channel capacity limits are reached.
+
+### 2. Max Inflight Limit
+
+For tracked modes (`primary`/`all`), the `max_inflight` setting (default: 10,000)
+provides the explicit bound on concurrent requests:
+
+| `await_ack` | Overflow Mechanism | Behavior |
+|-------------|-------------------|----------|
+| `primary`/`all` | `max_inflight` | Nack when limit reached |
+| `none` | Channel capacity | Block until downstream drains |
+
+> **Note**: `max_inflight` only applies to tracked modes.
+> Fire-and-forget (`await_ack: none`) has no inflight tracking and relies
+> solely on channel backpressure.
+
+When the limit is reached:
+
+```text
+Upstream                    FANOUT                         
+    │                          │                            
+    │── PData ────────────────►│  inflight.len() >= max_inflight?
+    │                          │           │
+    │◄── NACK "limit exceeded"─│◄──────────┘ YES
+    │                          │
+    │  (upstream can retry     │
+    │   or apply its policy)   │
+```
+
+### 3. Bounded Channels
+
+All sends go through bounded async channels. Even in fire-and-forget mode
+(`await_ack: none`), if a downstream channel is full, the send will `await`
+until space is available:
+
+```text
+FANOUT ──► [bounded channel] ──► Downstream
+              │
+         if full, await
+         (blocks processor)
+```
+
+### Summary
+
+| Layer | Mechanism | Effect |
+|-------|-----------|--------|
+| Semantic | Ack/nack propagation | Upstream waits for downstream outcome |
+| State | `max_inflight` limit | Nacks when too many requests pending |
+| Transport | Bounded channels | Blocks when downstream channel full |
+
+Set `max_inflight: 0` for unlimited tracking (not recommended for production).
 
 ## Metrics
 
 | Metric | Description |
 |--------|-------------|
 | `sent` | Requests dispatched (per incoming PData) |
-| `acked` | Requests successfully acked upstream |
-| `nacked` | Requests nacked upstream |
+| `acked` | Requests acked upstream (after await_ack/fallback) |
+| `nacked` | Requests nacked upstream (after await_ack/fallback) |
 | `timed_out` | Destinations that timed out |
+| `rejected_max_inflight` | Requests rejected due to max_inflight limit |
+
+> **Note**: `acked` and `nacked` reflect *request-level* outcomes after
+> applying the `await_ack` policy and fallback logic—not per-destination
+> results. For per-destination metrics, use channel-level metrics.
 
 ## Cloning and Mutability
 
@@ -219,7 +311,10 @@ copied during clone.
 - **Fallback cycles**: Detected and rejected at config validation
 - **Fallback with `await_ack: none`**: Rejected; fire-and-forget ignores fallbacks
 - **Timeout with `await_ack: none`**: Rejected; fire-and-forget doesn't track responses
-- **Shutdown**: Inflight requests are dropped (not proactively nacked)
+- **Max inflight exceeded**: New messages nacked with backpressure
+  (does not apply to `await_ack: none`)
+- **Shutdown**: Inflight state is dropped; no nacks sent to upstream.
+  Upstream will not receive notification for in-progress requests.
 
 ## Performance Optimizations
 
@@ -231,6 +326,10 @@ memory allocations per request:
 | `await_ack: none` | Fire-and-forget | **None** (zero tracking) |
 | `parallel` + `primary` (no fallback/timeout) | Slim primary | Minimal map |
 | All other configs | Full | Complete endpoint tracking |
+
+> **Note**: For tracked modes (`primary`/`all`), internal state is bounded by
+> `max_inflight` (default: 10,000). When the limit is reached, new requests
+> are nacked. See [Backpressure](#backpressure).
 
 ### Fire-and-Forget (`await_ack: none`)
 

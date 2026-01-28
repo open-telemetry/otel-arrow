@@ -38,7 +38,8 @@ use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::{SmallVec, smallvec};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -101,6 +102,12 @@ struct FanoutConfig {
         default = "FanoutConfig::default_timeout_interval"
     )]
     pub timeout_check_interval: Duration,
+    /// Maximum number of in-flight messages tracked by the processor.
+    /// When exceeded, new messages are nacked to apply backpressure.
+    /// Only applies when await_ack is "primary" or "all" (not "none").
+    /// Default: 10000. Set to 0 for unlimited (not recommended for production).
+    #[serde(default = "FanoutConfig::default_max_inflight")]
+    pub max_inflight: usize,
 }
 
 impl FanoutConfig {
@@ -109,10 +116,25 @@ impl FanoutConfig {
         Duration::from_millis(200)
     }
 
+    const fn default_max_inflight() -> usize {
+        // Default limit for in-flight messages to bound internal state.
+        10_000
+    }
+
     fn validate(mut self, node_config: &NodeUserConfig) -> Result<ValidatedConfig, ConfigError> {
         if self.destinations.is_empty() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "fanout: at least one destination is required".into(),
+            });
+        }
+
+        // Limit to 64 destinations because completed_origins uses a u64 bitset.
+        if self.destinations.len() > 64 {
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "fanout: at most 64 destinations supported, got {}",
+                    self.destinations.len()
+                ),
             });
         }
 
@@ -215,6 +237,26 @@ impl FanoutConfig {
             origins_vec[idx] = current;
         }
 
+        // Precompute fallback_for_dest: for each destination, find the immediate fallback (if any).
+        // A fallback for dest[i] is a destination whose fallback_for points to dest[i].port.
+        // Reject ambiguous configs where multiple destinations declare fallback_for the same port.
+        let mut fallback_for_dest = vec![None; self.destinations.len()];
+        for (fb_idx, fb_dest) in self.destinations.iter().enumerate() {
+            if let Some(fb_for_port) = &fb_dest.fallback_for {
+                if let Some(&origin_idx) = port_index.get(fb_for_port) {
+                    if fallback_for_dest[origin_idx].is_some() {
+                        return Err(ConfigError::InvalidUserConfig {
+                            error: format!(
+                                "fanout: multiple fallbacks declared for port `{}`",
+                                fb_for_port
+                            ),
+                        });
+                    }
+                    fallback_for_dest[origin_idx] = Some(fb_idx);
+                }
+            }
+        }
+
         // Compute fast-path eligibility flags.
         let has_any_fallback = self.destinations.iter().any(|d| d.fallback_for.is_some());
         let has_any_timeout = self.destinations.iter().any(|d| d.timeout.is_some());
@@ -246,7 +288,9 @@ impl FanoutConfig {
             destinations: self.destinations,
             primary_index,
             origins: origins_vec,
+            fallback_for_dest,
             timeout_check_interval: self.timeout_check_interval,
+            max_inflight: self.max_inflight,
             use_fire_and_forget,
             use_slim_primary,
         })
@@ -260,59 +304,92 @@ struct ValidatedConfig {
     destinations: Vec<DestinationConfig>,
     primary_index: usize,
     origins: Vec<usize>,
+    /// Precomputed map: dest_index -> immediate fallback index (if any).
+    /// Avoids linear scan in handle_failure when triggering fallbacks.
+    fallback_for_dest: Vec<Option<usize>>,
     timeout_check_interval: Duration,
+    /// Maximum in-flight messages; 0 means unlimited.
+    max_inflight: usize,
     /// Fast-path: await_ack == None, no inflight tracking needed.
     use_fire_and_forget: bool,
     /// Fast-path: parallel + primary + no fallback + no timeout.
-    /// Uses slim inflight (request_id → original_pdata) instead of full EndpointVec.
+    /// Uses slim inflight (request_id → original_pdata) instead of full DestinationVec.
     use_slim_primary: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DestStatus {
+enum DestinationStatus {
     PendingSend,
     InFlight,
     Acked,
     Nacked,
+    /// Endpoint timed out - late acks/nacks should be ignored.
+    TimedOut,
+    /// Fallback skipped because its origin succeeded.
+    Skipped,
 }
 
 #[derive(Debug)]
-struct EndpointState {
+struct DestinationState {
     origin: usize,
-    status: DestStatus,
+    status: DestinationStatus,
     timeout_at: Option<Instant>,
     payload: Option<OtapPdata>,
 }
 
 /// Most fanout configurations have 2-4 destinations; inline storage avoids heap allocation.
-type EndpointVec = SmallVec<[EndpointState; 4]>;
+type DestinationVec = SmallVec<[DestinationState; 4]>;
 
 #[derive(Debug)]
 struct Inflight {
     await_ack: AwaitAck,
     mode: DeliveryMode,
     primary: usize,
-    /// Inline storage for up to 4 endpoints to avoid heap allocation in common cases.
-    endpoints: EndpointVec,
-    completed_origins: HashSet<usize>,
+    /// Inline storage for up to 4 destinations to avoid heap allocation in common cases.
+    destinations: DestinationVec,
+    /// Bitset of origins (destination indices without fallback_for) that have completed (acked).
+    /// Used with `await_ack: all` to track when all required destinations have responded.
+    /// Supports up to 64 destinations; typical configs have 2-4.
+    completed_origins: u64,
+    /// Number of non-fallback destinations that must complete for `await_ack: all`.
+    /// Fallbacks don't count toward this total since they replace their origin's outcome.
     required_origins: usize,
     /// Original pdata (before fanout's subscription was added) for upstream ack/nack.
     /// This ensures upstream routing uses the correct context stack.
     original_pdata: OtapPdata,
+    /// Queue of destination indices to send next (used in sequential mode).
+    /// In parallel mode, all non-fallback destinations are sent immediately.
+    /// In sequential mode, only the head of this queue is dispatched at a time.
     next_send_queue: SmallVec<[usize; 4]>,
 }
 
 #[metric_set(name = "fanout.processor.metrics")]
 #[derive(Debug, Default, Clone)]
 struct FanoutMetrics {
+    /// Requests dispatched. Note: This is a convenience metric that overlaps with
+    /// channel-level send metrics. Consider removing if metric bloat is a concern.
     #[metric(unit = "{item}")]
     pub sent: Counter<u64>,
+    /// Requests acked upstream (after await_ack/fallback aggregation).
     #[metric(unit = "{item}")]
     pub acked: Counter<u64>,
+    /// Requests nacked upstream (after await_ack/fallback aggregation).
     #[metric(unit = "{item}")]
     pub nacked: Counter<u64>,
     #[metric(unit = "{item}")]
     pub timed_out: Counter<u64>,
+    /// Messages rejected due to max_inflight limit (backpressure).
+    #[metric(unit = "{item}")]
+    pub rejected_max_inflight: Counter<u64>,
+}
+
+/// Entry in the deadline min-heap for efficient timeout checking.
+/// Wrapped in Reverse<> when inserted to make BinaryHeap a min-heap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Deadline {
+    at: Instant,
+    request_id: u64,
+    dest_index: usize,
 }
 
 /// Fan-out processor implementation.
@@ -323,6 +400,9 @@ pub struct FanoutProcessor {
     inflight: HashMap<u64, Inflight>,
     /// Slim inflight for primary-only fast path: just request_id -> original_pdata.
     slim_inflight: HashMap<u64, OtapPdata>,
+    /// Min-heap of deadlines for O(log n) timeout checking.
+    /// Uses Reverse<Deadline> to make BinaryHeap behave as a min-heap.
+    deadline_heap: BinaryHeap<Reverse<Deadline>>,
     next_id: u64,
     timer_started: bool,
 }
@@ -355,6 +435,7 @@ impl FanoutProcessor {
             metrics,
             inflight: HashMap::new(),
             slim_inflight: HashMap::new(),
+            deadline_heap: BinaryHeap::new(),
             next_id: 1,
             timer_started: false,
         }
@@ -397,13 +478,18 @@ impl FanoutProcessor {
         let request_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
 
-        let mut endpoints = EndpointVec::new();
+        let mut destinations_state = DestinationVec::new();
         let mut queue = SmallVec::<[usize; 4]>::new();
-        let interests = Interests::ACKS_OR_NACKS | Interests::RETURN_DATA;
+        // We only need ack/nack notifications; the payload is not used since we keep
+        // original_pdata for upstream routing and use calldata for destination lookup.
+        let interests = Interests::ACKS_OR_NACKS;
         // Deadlines are initialized here and reset at actual dispatch time; a future tightening
         // could defer setting timeout_at until send if needed.
         let now = now();
 
+        // TODO(optimization): Currently we clone pdata for ALL destinations upfront. In sequential
+        // mode or with fallbacks, we could defer clone+subscribe until dispatch_ready to avoid
+        // cloning payloads for destinations that are never sent (e.g., fallbacks when primary succeeds).
         for (idx, dest) in self.config.destinations.iter().enumerate() {
             // Create a clone for this destination and subscribe with fanout calldata.
             let mut dest_data = pdata.clone();
@@ -418,13 +504,13 @@ impl FanoutProcessor {
             let status = if is_fallback
                 || (matches!(self.config.mode, DeliveryMode::Sequential) && !queue.is_empty())
             {
-                DestStatus::PendingSend
+                DestinationStatus::PendingSend
             } else {
                 queue.push(idx);
-                DestStatus::InFlight
+                DestinationStatus::InFlight
             };
 
-            endpoints.push(EndpointState {
+            destinations_state.push(DestinationState {
                 origin,
                 status,
                 timeout_at,
@@ -445,8 +531,8 @@ impl FanoutProcessor {
                 await_ack: self.config.await_ack,
                 mode: self.config.mode,
                 primary: self.config.primary_index,
-                endpoints,
-                completed_origins: HashSet::new(), // zero-cost default if not used.
+                destinations: destinations_state,
+                completed_origins: 0,
                 required_origins,
                 original_pdata: pdata,
                 next_send_queue: queue,
@@ -456,16 +542,19 @@ impl FanoutProcessor {
         Ok(request_id)
     }
 
+    /// Dispatch ready destinations and return any new deadlines for the heap.
     async fn dispatch_ready(
+        request_id: u64,
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<(), TypedError<OtapPdata>> {
+    ) -> Result<SmallVec<[Deadline; 4]>, TypedError<OtapPdata>> {
         let mut to_send = SmallVec::<[usize; 4]>::new();
+        let mut new_deadlines = SmallVec::<[Deadline; 4]>::new();
         match inflight.mode {
             DeliveryMode::Parallel => {
-                for (idx, ep) in inflight.endpoints.iter().enumerate() {
-                    if matches!(ep.status, DestStatus::InFlight) {
+                for (idx, ep) in inflight.destinations.iter().enumerate() {
+                    if matches!(ep.status, DestinationStatus::InFlight) {
                         to_send.push(idx);
                     }
                 }
@@ -478,20 +567,28 @@ impl FanoutProcessor {
         }
 
         for idx in to_send {
-            if let Some(payload) = inflight.endpoints[idx].payload.take() {
-                inflight.endpoints[idx].timeout_at = destinations[idx].timeout.map(|d| now() + d);
+            if let Some(payload) = inflight.destinations[idx].payload.take() {
+                let timeout_at = destinations[idx].timeout.map(|d| now() + d);
+                inflight.destinations[idx].timeout_at = timeout_at;
+                if let Some(at) = timeout_at {
+                    new_deadlines.push(Deadline {
+                        at,
+                        request_id,
+                        dest_index: idx,
+                    });
+                }
                 effect_handler
                     .send_message_to(destinations[idx].port.clone(), payload)
                     .await?;
             }
         }
-        Ok(())
+        Ok(new_deadlines)
     }
 
     fn mark_complete(&mut self, request_id: u64, origin: usize) -> Option<OtapPdata> {
         if let Some(inflight) = self.inflight.get_mut(&request_id) {
-            let _ = inflight.completed_origins.insert(origin);
-            if inflight.completed_origins.len() >= inflight.required_origins {
+            inflight.completed_origins |= 1u64 << origin;
+            if inflight.completed_origins.count_ones() as usize >= inflight.required_origins {
                 let entry = self.inflight.remove(&request_id)?;
                 return Some(entry.original_pdata);
             }
@@ -504,25 +601,37 @@ impl FanoutProcessor {
         request_id: u64,
         dest_index: usize,
         reason: String,
+        is_timeout: bool,
     ) -> Option<NackMsg<OtapPdata>> {
         let inflight = self.inflight.get_mut(&request_id)?;
-        let origin = inflight.endpoints[dest_index].origin;
-        inflight.endpoints[dest_index].status = DestStatus::Nacked;
+        // Mark as TimedOut for timeouts, Nacked for explicit nacks.
+        // TimedOut destinations will ignore late acks/nacks.
+        inflight.destinations[dest_index].status = if is_timeout {
+            DestinationStatus::TimedOut
+        } else {
+            DestinationStatus::Nacked
+        };
 
-        // Trigger fallback if configured.
-        if let Some((fb_idx, _)) = inflight.endpoints.iter().enumerate().find(|(idx, ep)| {
-            ep.origin == origin
-                && ep.status == DestStatus::PendingSend
-                && self.config.destinations[*idx].fallback_for.is_some()
-        }) {
-            inflight.endpoints[fb_idx].status = DestStatus::InFlight;
-            inflight.endpoints[fb_idx].timeout_at =
-                self.config.destinations[fb_idx].timeout.map(|d| now() + d);
-            if matches!(inflight.mode, DeliveryMode::Sequential) {
-                inflight.next_send_queue.clear();
-                inflight.next_send_queue.push(fb_idx);
+        // Trigger fallback if configured (O(1) lookup via precomputed map).
+        if let Some(fb_idx) = self.config.fallback_for_dest[dest_index] {
+            if inflight.destinations[fb_idx].status == DestinationStatus::PendingSend {
+                inflight.destinations[fb_idx].status = DestinationStatus::InFlight;
+                let timeout_at = self.config.destinations[fb_idx].timeout.map(|d| now() + d);
+                inflight.destinations[fb_idx].timeout_at = timeout_at;
+                // Push fallback deadline to the heap if timeout is configured.
+                if let Some(at) = timeout_at {
+                    self.deadline_heap.push(Reverse(Deadline {
+                        at,
+                        request_id,
+                        dest_index: fb_idx,
+                    }));
+                }
+                if matches!(inflight.mode, DeliveryMode::Sequential) {
+                    inflight.next_send_queue.clear();
+                    inflight.next_send_queue.push(fb_idx);
+                }
+                return None;
             }
-            return None;
         }
 
         // No fallback, produce a nack using original pdata for correct upstream routing.
@@ -539,51 +648,56 @@ impl FanoutProcessor {
     ) -> Result<Vec<NackMsg<OtapPdata>>, Error> {
         let now = now();
         let mut expired = Vec::new();
-        // Use SmallVec to avoid heap allocations for typical inflight counts.
         let mut dispatch_requests = SmallVec::<[u64; 8]>::new();
-        let requests: SmallVec<[u64; 16]> = self.inflight.keys().cloned().collect();
-        for req in requests {
-            let mut timeouts = SmallVec::<[usize; 4]>::new();
-            if let Some(inflight) = self.inflight.get_mut(&req) {
-                for (idx, ep) in inflight.endpoints.iter().enumerate() {
-                    if let Some(deadline) = ep.timeout_at {
-                        if matches!(ep.status, DestStatus::InFlight) && deadline <= now {
-                            timeouts.push(idx);
-                        }
-                    }
-                }
+
+        // Pop expired deadlines from the min-heap (O(log n) per pop).
+        while let Some(&Reverse(deadline)) = self.deadline_heap.peek() {
+            if deadline.at > now {
+                break; // No more expired deadlines.
             }
-            for idx in timeouts {
-                let (await_ack, primary, origin) = {
-                    let inflight = match self.inflight.get(&req) {
-                        Some(inflight) => inflight,
-                        None => continue,
-                    };
-                    (
-                        inflight.await_ack,
-                        inflight.primary,
-                        inflight.endpoints[idx].origin,
-                    )
+            let _ = self.deadline_heap.pop();
+
+            let req = deadline.request_id;
+            let idx = deadline.dest_index;
+
+            // Validate the deadline is still relevant (request exists, destination still InFlight).
+            let (await_ack, primary, origin, is_valid) = {
+                let Some(inflight) = self.inflight.get(&req) else {
+                    continue; // Request already completed.
                 };
-                self.metrics.timed_out.add(1);
-                match self.handle_failure(
-                    req,
-                    idx,
-                    format!("fanout: timeout on {}", self.config.destinations[idx].port),
-                ) {
-                    Some(nack) => {
-                        // Ignore non-primary timeouts when awaiting primary only.
-                        if matches!(await_ack, AwaitAck::Primary) && origin != primary {
-                            continue;
-                        }
-                        expired.push(nack);
-                        let _ = self.inflight.remove(&req);
+                if idx >= inflight.destinations.len() {
+                    continue;
+                }
+                let ep = &inflight.destinations[idx];
+                // Only process if still InFlight and deadline matches (guards against stale heap entries).
+                let is_valid = matches!(ep.status, DestinationStatus::InFlight)
+                    && ep.timeout_at == Some(deadline.at);
+                (inflight.await_ack, inflight.primary, ep.origin, is_valid)
+            };
+
+            if !is_valid {
+                continue;
+            }
+
+            self.metrics.timed_out.add(1);
+            match self.handle_failure(
+                req,
+                idx,
+                format!("fanout: timeout on {}", self.config.destinations[idx].port),
+                true, // is_timeout
+            ) {
+                Some(nack) => {
+                    // Ignore non-primary timeouts when awaiting primary only.
+                    if matches!(await_ack, AwaitAck::Primary) && origin != primary {
+                        continue;
                     }
-                    None => {
-                        // Avoid duplicates in dispatch list.
-                        if !dispatch_requests.contains(&req) {
-                            dispatch_requests.push(req);
-                        }
+                    expired.push(nack);
+                    let _ = self.inflight.remove(&req);
+                }
+                None => {
+                    // Fallback triggered; dispatch it.
+                    if !dispatch_requests.contains(&req) {
+                        dispatch_requests.push(req);
                     }
                 }
             }
@@ -591,7 +705,12 @@ impl FanoutProcessor {
 
         for req in dispatch_requests {
             if let Some(inflight) = self.inflight.get_mut(&req) {
-                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+                let deadlines =
+                    Self::dispatch_ready(req, inflight, &self.config.destinations, effect_handler)
+                        .await?;
+                for d in deadlines {
+                    self.deadline_heap.push(Reverse(d));
+                }
             }
         }
 
@@ -610,26 +729,48 @@ impl FanoutProcessor {
             let Some(inflight) = self.inflight.get_mut(&request_id) else {
                 return Ok(());
             };
-            if dest_index >= inflight.endpoints.len() {
+            if dest_index >= inflight.destinations.len() {
                 return Ok(());
             }
-            inflight.endpoints[dest_index].status = DestStatus::Acked;
-            let origin = inflight.endpoints[dest_index].origin;
+
+            // Ignore late acks from destinations that already timed out or were nacked.
+            // This prevents a late response from overriding fallback outcomes.
+            let current_status = inflight.destinations[dest_index].status;
+            if matches!(
+                current_status,
+                DestinationStatus::TimedOut | DestinationStatus::Nacked
+            ) {
+                return Ok(());
+            }
+
+            inflight.destinations[dest_index].status = DestinationStatus::Acked;
+            let origin = inflight.destinations[dest_index].origin;
+
+            // When an origin succeeds, mark its fallback(s) as Skipped so they won't be dispatched.
+            for (idx, ep) in inflight.destinations.iter_mut().enumerate() {
+                if ep.origin == origin
+                    && ep.status == DestinationStatus::PendingSend
+                    && self.config.destinations[idx].fallback_for.is_some()
+                {
+                    ep.status = DestinationStatus::Skipped;
+                    ep.payload = None; // Release the payload
+                }
+            }
 
             if matches!(inflight.mode, DeliveryMode::Sequential) {
                 inflight.next_send_queue.retain(|idx| *idx != dest_index);
-                // Advance to the next pending send for this request.
+                // Advance to the next pending send for this request (skip Skipped destinations).
                 if inflight.next_send_queue.is_empty() {
                     if let Some(next_idx) = inflight
-                        .endpoints
+                        .destinations
                         .iter()
                         .enumerate()
-                        .find(|(_, ep)| {
-                            ep.status == DestStatus::PendingSend && ep.payload.is_some()
+                        .find(|(_, dest)| {
+                            dest.status == DestinationStatus::PendingSend && dest.payload.is_some()
                         })
                         .map(|(idx, _)| idx)
                     {
-                        inflight.endpoints[next_idx].status = DestStatus::InFlight;
+                        inflight.destinations[next_idx].status = DestinationStatus::InFlight;
                         inflight.next_send_queue.push(next_idx);
                     }
                 }
@@ -658,7 +799,16 @@ impl FanoutProcessor {
 
         if matches!(mode, DeliveryMode::Sequential) {
             if let Some(inflight) = self.inflight.get_mut(&request_id) {
-                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+                let deadlines = Self::dispatch_ready(
+                    request_id,
+                    inflight,
+                    &self.config.destinations,
+                    effect_handler,
+                )
+                .await?;
+                for d in deadlines {
+                    self.deadline_heap.push(Reverse(d));
+                }
             }
         }
 
@@ -689,11 +839,19 @@ impl FanoutProcessor {
             let Some(inflight) = self.inflight.get_mut(&request_id) else {
                 return Ok(());
             };
-            if dest_index >= inflight.endpoints.len() {
+            if dest_index >= inflight.destinations.len() {
                 return Ok(());
             }
+
+            // Ignore late nacks from destinations that already timed out.
+            // This prevents a late response from overriding fallback outcomes.
+            let current_status = inflight.destinations[dest_index].status;
+            if matches!(current_status, DestinationStatus::TimedOut) {
+                return Ok(());
+            }
+
             (
-                inflight.endpoints[dest_index].origin,
+                inflight.destinations[dest_index].origin,
                 inflight.await_ack,
                 inflight.primary,
             )
@@ -703,7 +861,9 @@ impl FanoutProcessor {
             return Ok(());
         }
 
-        if let Some(nackmsg) = self.handle_failure(request_id, dest_index, nack.reason.clone()) {
+        if let Some(nackmsg) =
+            self.handle_failure(request_id, dest_index, nack.reason.clone(), false)
+        {
             self.metrics.nacked.add(1);
             let _ = self.inflight.remove(&request_id);
             effect_handler.notify_nack(nackmsg).await?;
@@ -712,7 +872,16 @@ impl FanoutProcessor {
 
         // Fallback triggered: try dispatch immediately.
         if let Some(inflight) = self.inflight.get_mut(&request_id) {
-            Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+            let deadlines = Self::dispatch_ready(
+                request_id,
+                inflight,
+                &self.config.destinations,
+                effect_handler,
+            )
+            .await?;
+            for d in deadlines {
+                self.deadline_heap.push(Reverse(d));
+            }
             // Wait for fallback outcome instead of nacking now.
             return Ok(());
         }
@@ -755,12 +924,37 @@ impl FanoutProcessor {
     // FAST PATH: Slim primary-only (parallel + primary + no fallback/timeout)
     // =========================================================================
     // Minimal state: request_id → original_pdata. Ignore non-primary acks/nacks.
+    //
+    // Note: An optimization was considered to eliminate slim_inflight by keeping the original
+    // context on primary (so acks route directly upstream) and using empty context on non-primary
+    // (so their acks are dropped). However, this doesn't work with current engine wiring:
+    // - Fanout must receive primary acks to update metrics, clear slim_inflight, and enforce
+    //   max_inflight. If acks bypass fanout, state accumulates and backpressure breaks.
+    // - The slim path already uses cheap clones (context stack is tiny), so gains would be minimal.
+    // - A correct optimization would require engine changes (e.g., "passthrough observer" pattern
+    //   to observe acks without being in the routing path).
 
     async fn process_slim_primary(
         &mut self,
         pdata: OtapPdata,
         effect_handler: &EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        // Check max_inflight limit before accepting new message.
+        if self.config.max_inflight > 0 && self.slim_inflight.len() >= self.config.max_inflight {
+            self.metrics.rejected_max_inflight.add(1);
+            self.metrics.nacked.add(1);
+            let nack = NackMsg {
+                reason: format!(
+                    "fanout: max_inflight limit ({}) exceeded",
+                    self.config.max_inflight
+                ),
+                calldata: smallvec![],
+                refused: Box::new(pdata),
+            };
+            effect_handler.notify_nack(nack).await?;
+            return Ok(());
+        }
+
         let request_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
 
@@ -895,13 +1089,39 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 }
 
                 // === FULL PATH: Sequential, await_all, fallback, or timeout ===
-                // Full inflight tracking with EndpointVec.
+                // Full inflight tracking with DestinationVec.
+
+                // Check max_inflight limit before accepting new message.
+                if self.config.max_inflight > 0 && self.inflight.len() >= self.config.max_inflight {
+                    self.metrics.rejected_max_inflight.add(1);
+                    self.metrics.nacked.add(1);
+                    let nack = NackMsg {
+                        reason: format!(
+                            "fanout: max_inflight limit ({}) exceeded",
+                            self.config.max_inflight
+                        ),
+                        calldata: smallvec![],
+                        refused: Box::new(pdata),
+                    };
+                    effect_handler.notify_nack(nack).await?;
+                    return Ok(());
+                }
+
                 let request_id = self.register_inflight(pdata, effect_handler).await?;
                 let inflight = self
                     .inflight
                     .get_mut(&request_id)
                     .expect("inflight just inserted");
-                Self::dispatch_ready(inflight, &self.config.destinations, effect_handler).await?;
+                let deadlines = Self::dispatch_ready(
+                    request_id,
+                    inflight,
+                    &self.config.destinations,
+                    effect_handler,
+                )
+                .await?;
+                for d in deadlines {
+                    self.deadline_heap.push(Reverse(d));
+                }
                 self.metrics.sent.add(1);
                 Ok(())
             }
@@ -1101,6 +1321,51 @@ mod tests {
         };
         let node_cfg = make_node_config();
         assert!(cfg.validate(&node_cfg).is_err());
+    }
+
+    #[test]
+    fn config_rejects_more_than_64_destinations() {
+        // The completed_origins bitset is a u64, so we can't support > 64 destinations.
+        let destinations: Vec<DestinationConfig> = (0..65)
+            .map(|i| DestinationConfig {
+                port: format!("p{i}").into(),
+                primary: i == 0,
+                timeout: None,
+                fallback_for: None,
+            })
+            .collect();
+        let out_ports = destinations
+            .iter()
+            .map(|d| {
+                (
+                    d.port.clone(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                )
+            })
+            .collect();
+        let cfg = FanoutConfig {
+            destinations,
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports,
+            default_out_port: None,
+            config: json!({}),
+        };
+        let err = cfg
+            .validate(&node_cfg)
+            .expect_err("should reject >64 destinations");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("64"),
+            "expected 64 destination limit error, got: {msg}"
+        );
     }
 
     #[test]
@@ -1382,6 +1647,73 @@ mod tests {
             .expect_err("should reject fallback cycle");
         let msg = format!("{err}");
         assert!(msg.contains("cycle"), "expected cycle error, got: {msg}");
+    }
+
+    #[test]
+    fn config_rejects_multiple_fallbacks_for_same_port() {
+        // Multiple fallbacks pointing at the same origin port is ambiguous.
+        let cfg = FanoutConfig {
+            destinations: vec![
+                DestinationConfig {
+                    port: "primary".into(),
+                    primary: true,
+                    timeout: None,
+                    fallback_for: None,
+                },
+                DestinationConfig {
+                    port: "fb1".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("primary".into()),
+                },
+                DestinationConfig {
+                    port: "fb2".into(),
+                    primary: false,
+                    timeout: None,
+                    fallback_for: Some("primary".into()), // duplicate!
+                },
+            ],
+            ..Default::default()
+        };
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports: [
+                (
+                    "primary".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("dp").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "fb1".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+                (
+                    "fb2".into(),
+                    HyperEdgeConfig {
+                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                ),
+            ]
+            .into(),
+            default_out_port: None,
+            config: json!({}),
+        };
+        let err = cfg
+            .validate(&node_cfg)
+            .expect_err("should reject duplicate fallback");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("multiple fallbacks"),
+            "expected multiple fallbacks error, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -2264,5 +2596,387 @@ mod tests {
             "Nack should be delivered to upstream receiver (node_id={}), but was delivered to node_id={:?}",
             UPSTREAM_RECEIVER_NODE_ID, wrong_node_id
         );
+    }
+
+    fn build_harness_with_config(
+        destinations: Value,
+        mode: &str,
+        await_ack: &str,
+        extra_config: Value,
+    ) -> FanoutHarness {
+        let metrics_system = InternalTelemetrySystem::default();
+        let controller_ctx = ControllerContext::new(metrics_system.registry());
+        let destinations_cfg = destinations.clone();
+        let mut out_ports = std::collections::HashMap::new();
+        let destinations_for_ports = destinations_cfg.clone();
+        if let Some(arr) = destinations_for_ports.as_array() {
+            for dest in arr {
+                let port = dest
+                    .get("port")
+                    .and_then(|v| v.as_str())
+                    .expect("port string")
+                    .to_string();
+                let port_name: PortName = port.clone().into();
+                let _ = out_ports.insert(
+                    port_name.clone(),
+                    HyperEdgeConfig {
+                        destinations: [test_node(format!("{}_dst", port)).name.clone()]
+                            .into_iter()
+                            .collect(),
+                        dispatch_strategy: DispatchStrategy::Broadcast,
+                    },
+                );
+            }
+        }
+
+        let mut config = json!({
+            "mode": mode,
+            "await_ack": await_ack,
+            "destinations": destinations_cfg,
+        });
+        // Merge extra_config into config
+        if let (Some(base), Some(extra)) = (config.as_object_mut(), extra_config.as_object()) {
+            for (k, v) in extra {
+                let _ = base.insert(k.clone(), v.clone());
+            }
+        }
+
+        let node_cfg = NodeUserConfig {
+            kind: NodeKind::Processor,
+            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            description: None,
+            out_ports,
+            default_out_port: None,
+            config,
+        };
+
+        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let fanout = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
+            .expect("valid config");
+
+        let mut outputs = HashMap::new();
+        let mut senders = HashMap::new();
+        for port in node_cfg.out_ports.keys() {
+            let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
+            let _ = senders.insert(port.clone(), LocalSender::mpsc(tx));
+            let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
+        }
+
+        let mut effect = EffectHandler::new(
+            test_node("fanout"),
+            senders,
+            node_cfg.default_out_port.clone(),
+            metrics_system.reporter(),
+        );
+        let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
+        effect.set_pipeline_ctrl_msg_sender(pipeline_tx);
+
+        FanoutHarness {
+            fanout,
+            effect,
+            outputs,
+            pipeline_rx,
+        }
+    }
+
+    /// Test that max_inflight limits are enforced and messages are nacked when exceeded.
+    #[tokio::test]
+    async fn max_inflight_rejects_when_limit_exceeded() {
+        // Use full path (with timeout) to test inflight map, max_inflight = 2
+        let mut h = build_harness_with_config(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, Some("10s"))]),
+            "parallel",
+            "primary",
+            json!({ "max_inflight": 2 }),
+        );
+
+        // Send 2 messages - should succeed (at limit)
+        for _ in 0..2 {
+            h.fanout
+                .process(Message::PData(make_pdata()), &mut h.effect)
+                .await
+                .expect("process ok");
+        }
+        assert_eq!(h.fanout.inflight.len(), 2, "should have 2 inflight");
+
+        // Send 3rd message - should be nacked due to max_inflight
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Inflight should still be 2
+        assert_eq!(
+            h.fanout.inflight.len(),
+            2,
+            "inflight should not grow beyond limit"
+        );
+
+        // Check that a nack was sent upstream for the rejected message
+        let mut nack_received = false;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
+                assert!(
+                    nack.reason.contains("max_inflight"),
+                    "nack reason should mention max_inflight: {}",
+                    nack.reason
+                );
+                nack_received = true;
+            }
+        }
+        assert!(
+            nack_received,
+            "should have received a nack for rejected message"
+        );
+    }
+
+    /// Test that max_inflight limits work for slim primary path.
+    #[tokio::test]
+    async fn max_inflight_slim_path_rejects_when_limit_exceeded() {
+        // Use slim path (no timeout, no fallback) with max_inflight = 2
+        let mut h = build_harness_with_config(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
+            "parallel",
+            "primary",
+            json!({ "max_inflight": 2 }),
+        );
+
+        // Verify slim path is used
+        assert!(
+            h.fanout.config.use_slim_primary,
+            "should use slim primary path"
+        );
+
+        // Send 2 messages - should succeed
+        for _ in 0..2 {
+            h.fanout
+                .process(Message::PData(make_pdata()), &mut h.effect)
+                .await
+                .expect("process ok");
+        }
+        assert_eq!(
+            h.fanout.slim_inflight.len(),
+            2,
+            "should have 2 slim_inflight"
+        );
+
+        // Send 3rd message - should be nacked
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        assert_eq!(
+            h.fanout.slim_inflight.len(),
+            2,
+            "slim_inflight should not grow beyond limit"
+        );
+
+        // Check nack was sent
+        let mut nack_received = false;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if let PipelineControlMsg::DeliverNack { nack, .. } = msg {
+                assert!(nack.reason.contains("max_inflight"));
+                nack_received = true;
+            }
+        }
+        assert!(nack_received, "should have received a nack");
+    }
+
+    /// Test that max_inflight = 0 means unlimited.
+    #[tokio::test]
+    async fn max_inflight_zero_means_unlimited() {
+        let mut h = build_harness_with_config(
+            json!([make_dest(TEST_OUT_PORT_NAME, true, None, Some("10s"))]),
+            "parallel",
+            "primary",
+            json!({ "max_inflight": 0 }),
+        );
+
+        // Send messages in batches, draining the output channel between batches
+        // to avoid blocking on the bounded channel (capacity 4).
+        let total_messages = 20;
+        for i in 0..total_messages {
+            h.fanout
+                .process(Message::PData(make_pdata()), &mut h.effect)
+                .await
+                .expect("process ok");
+
+            // Drain outputs periodically to prevent channel backpressure
+            if (i + 1) % 3 == 0 {
+                let _ = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+            }
+        }
+        assert_eq!(
+            h.fanout.inflight.len(),
+            total_messages,
+            "all messages should be inflight"
+        );
+    }
+
+    /// Test behavior when late ack arrives from original destination after timeout triggered fallback.
+    ///
+    /// Sequence:
+    /// 1. Primary times out → fallback dispatched, primary marked TimedOut
+    /// 2. Late ack arrives from primary → IGNORED (destination is TimedOut)
+    /// 3. Fallback acks → request completes
+    /// 4. Upstream receives exactly one ack (from fallback outcome)
+    #[tokio::test]
+    async fn late_ack_from_timed_out_primary_is_ignored() {
+        let mut h = build_harness(
+            json!([
+                make_dest("primary", true, None, Some("30ms")),
+                make_dest("backup", false, Some("primary"), None)
+            ]),
+            "parallel",
+            "primary",
+        );
+
+        // Send a message
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Drain primary output and save for late ack
+        let primary_msgs = drain(h.outputs.get_mut("primary").expect("primary"));
+        assert_eq!(primary_msgs.len(), 1);
+        let primary_pdata = primary_msgs.into_iter().next().unwrap();
+
+        // Wait for timeout and trigger timer tick
+        sleep(Duration::from_millis(60)).await;
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::TimerTick {}),
+                &mut h.effect,
+            )
+            .await
+            .expect("timer tick ok");
+
+        // Fallback should now be dispatched
+        let backup_msgs = drain(h.outputs.get_mut("backup").expect("backup"));
+        assert_eq!(
+            backup_msgs.len(),
+            1,
+            "backup should be dispatched after timeout"
+        );
+
+        // Now send a LATE ack from the original primary (after timeout triggered fallback)
+        // This should be IGNORED because the destination is marked TimedOut
+        let mut late_ack = AckMsg::new(primary_pdata);
+        late_ack.calldata = late_ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Ack(late_ack)),
+                &mut h.effect,
+            )
+            .await
+            .expect("late ack handled gracefully");
+
+        // Request should still be inflight (waiting for backup - late ack was ignored)
+        assert_eq!(
+            h.fanout.inflight.len(),
+            1,
+            "request still inflight - late ack was ignored"
+        );
+
+        // Now backup acks - this should complete the request
+        let mut backup_ack = AckMsg::new(backup_msgs.into_iter().next().unwrap());
+        backup_ack.calldata = backup_ack.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(
+                Message::Control(NodeControlMsg::Ack(backup_ack)),
+                &mut h.effect,
+            )
+            .await
+            .expect("backup ack ok");
+
+        // Request should be complete now
+        assert!(
+            h.fanout.inflight.is_empty(),
+            "request complete after backup acks"
+        );
+
+        // Verify exactly one ack was delivered upstream (from backup)
+        let mut ack_count = 0;
+        while let Ok(Ok(msg)) =
+            tokio::time::timeout(Duration::from_millis(50), h.pipeline_rx.recv()).await
+        {
+            if let PipelineControlMsg::DeliverAck { .. } = msg {
+                ack_count += 1;
+            }
+        }
+        assert_eq!(ack_count, 1, "exactly one ack delivered (from backup)");
+    }
+
+    /// Test sequential mode does NOT dispatch fallback when origin succeeds.
+    ///
+    /// Sequence:
+    /// 1. Sequential mode with A (has fallback B) and C
+    /// 2. A acks successfully → B is marked Skipped
+    /// 3. C is dispatched next (B is skipped)
+    #[tokio::test]
+    async fn sequential_mode_skips_fallback_when_origin_succeeds() {
+        let mut h = build_harness(
+            json!([
+                make_dest("a", true, None, None),
+                make_dest("b", false, Some("a"), None), // fallback for a
+                make_dest("c", false, None, None)       // regular destination
+            ]),
+            "sequential",
+            "all", // await all to ensure we process all destinations
+        );
+
+        // Send a message - in sequential mode, only 'a' should be sent first
+        h.fanout
+            .process(Message::PData(make_pdata()), &mut h.effect)
+            .await
+            .expect("process ok");
+
+        // Only 'a' should be dispatched initially
+        let a_msgs = drain(h.outputs.get_mut("a").expect("a"));
+        assert_eq!(a_msgs.len(), 1, "a should be dispatched first");
+        assert!(
+            drain(h.outputs.get_mut("b").expect("b")).is_empty(),
+            "b not dispatched yet"
+        );
+        assert!(
+            drain(h.outputs.get_mut("c").expect("c")).is_empty(),
+            "c not dispatched yet"
+        );
+
+        // Ack 'a' - this should mark 'b' as Skipped and dispatch 'c'
+        let mut ack_a = AckMsg::new(a_msgs.into_iter().next().unwrap());
+        ack_a.calldata = ack_a.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_a)), &mut h.effect)
+            .await
+            .expect("ack a ok");
+
+        // 'b' (fallback) should NOT be dispatched because 'a' succeeded
+        let b_msgs = drain(h.outputs.get_mut("b").expect("b"));
+        assert!(
+            b_msgs.is_empty(),
+            "b (fallback) should NOT be dispatched when a succeeds"
+        );
+
+        // 'c' should now be dispatched
+        let c_msgs = drain(h.outputs.get_mut("c").expect("c"));
+        assert_eq!(c_msgs.len(), 1, "c dispatched after a (skipping b)");
+
+        // Ack 'c' to complete
+        let mut ack_c = AckMsg::new(c_msgs.into_iter().next().unwrap());
+        ack_c.calldata = ack_c.accepted.current_calldata().unwrap();
+        h.fanout
+            .process(Message::Control(NodeControlMsg::Ack(ack_c)), &mut h.effect)
+            .await
+            .expect("ack c ok");
+
+        // Request should be complete
+        assert!(h.fanout.inflight.is_empty(), "request should be complete");
     }
 }
