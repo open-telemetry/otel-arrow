@@ -564,7 +564,7 @@ where
             let null_count = values_type_range_by_key.null_count();
             sorted_val_col.set_null_count_hint(null_count);
 
-            let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key, null_count);
+            let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key);
             let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
 
             // partition key ranges (using SIMD)
@@ -609,12 +609,13 @@ where
                 for values_range in &values_ranges {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     let parent_ids_range =
-                        &mut parent_id_key_range_sorted[values_range.start..values_range.end];
+                        &mut parent_id_key_range_sorted[values_range.range.start..values_range.range.end];
 
                     // Map & Slice type are never considered "equal" for the purposes of delta
                     // encoding so we skip adding quasi-delta encoding for this range, which means
                     // the parent_id segment also does not need to be sorted
-                    if type_range_attr_type != AttributeValueType::Map as u8
+                    if !values_range.is_null
+                        && type_range_attr_type != AttributeValueType::Map as u8
                         && type_range_attr_type != AttributeValueType::Slice as u8
                     {
                         parent_ids_range.sort_unstable();
@@ -1303,7 +1304,7 @@ impl SortedValuesArrayBuilder {
 struct AttrValueDictKeysAndRanks {
     keys: Vec<u16>,
     ranks: Vec<u16>,
-    rank_nulls: Option<NullBuffer>,
+    nulls: Option<NullBuffer>,
 }
 
 enum AttrsValueSorterInner {
@@ -1313,15 +1314,19 @@ enum AttrsValueSorterInner {
 
 struct AttrValuesSorter {
     inner: AttrsValueSorterInner,
-
     rank_sort_scratch: Vec<(usize, u16)>,
     key_partition_scratch: Vec<u16>,
     partition_buffer: Vec<u8>,
     partition_buffer_bitlen: usize,
 }
 
+struct NullableRange {
+    range: Range<usize>,
+    is_null: bool,
+}
+
 impl AttrValuesSorter {
-    fn new(values_arr: &ArrayRef, null_count: usize) -> Self {
+    fn new(values_arr: &ArrayRef) -> Self {
         let inner = match values_arr.data_type() {
             DataType::Dictionary(k, v) => match **k {
                 // TODO - not sure this branch is needed? I don't think we have u8 dict vals
@@ -1349,7 +1354,7 @@ impl AttrValuesSorter {
                         .map(|k| value_ranks[*k as usize] as u16)
                         .collect::<Vec<_>>();
 
-                    let rank_nulls = if null_count > 0 {
+                    let rank_nulls = if dict_arr.keys().null_count() > 0 {
                         dict_arr.keys().nulls().cloned()
                     } else {
                         None
@@ -1357,7 +1362,7 @@ impl AttrValuesSorter {
 
                     AttrsValueSorterInner::KeysAndRanks(AttrValueDictKeysAndRanks {
                         ranks: key_ranks,
-                        rank_nulls,
+                        nulls: rank_nulls,
                         keys: dict_arr.keys().values().to_vec(),
                     })
                 }
@@ -1405,7 +1410,7 @@ impl AttrValuesSorter {
                         .copied()
                         .enumerate(),
                 );
-                if let Some(nulls) = &ranks.rank_nulls {
+                if let Some(nulls) = &ranks.nulls {
                     // slower path for nulls
                     self.rank_sort_scratch.sort_by(|a, b| {
                         match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
@@ -1427,7 +1432,7 @@ impl AttrValuesSorter {
         &mut self,
         range: &Range<usize>,
         indices: &Vec<u32>,
-        result: &mut Vec<Range<usize>>,
+        result: &mut Vec<NullableRange>,
     ) -> Result<()> {
         match &self.inner {
             AttrsValueSorterInner::Array(arr) => {
@@ -1437,8 +1442,17 @@ impl AttrValuesSorter {
 
                 let next_eq_arr_key = create_next_element_equality_array(&values_range_sorted)?; // Arc k.6
                 let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
-                let mut values_ranges = ranges(next_eq_inverted.values());
-                result.append(&mut values_ranges);
+                let values_ranges = ranges(next_eq_inverted.values());
+                result.extend(values_ranges.into_iter().map(|range| NullableRange { range, is_null: false }));
+
+                if arr.null_count() > 0 {
+                    for nullable_range in result.iter_mut() {
+                        if values_range_sorted.is_null(nullable_range.range.start) {
+                            nullable_range.is_null = true
+                        }
+                    }
+                }
+
             }
             AttrsValueSorterInner::KeysAndRanks(keys) => {
                 let keys_range = &keys.keys[range.start..range.end];
@@ -1448,20 +1462,32 @@ impl AttrValuesSorter {
                     .extend(indices.iter().map(|i| keys_range[*i as usize]));
                 self.fill_keys_partition_from_scratch_buffer();
 
-                let boundaries_len = self.partition_buffer_bitlen;
-                let set_indices = BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
-                let mut current = 0;
-                for idx in set_indices {
-                    let t = current;
-                    current = idx + 1;
-                    result.push(t..current)
-                }
-                let last = boundaries_len + 1;
-                if current != last {
-                    result.push(current..last)
+                {
+                    let boundaries_len = self.partition_buffer_bitlen;
+                    let set_indices = BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
+                    let mut current = 0;
+                    for idx in set_indices {
+                        let t = current;
+                        current = idx + 1;
+                        result.push(NullableRange { range: t..current, is_null: false })
+                    }
+                    let last = boundaries_len + 1;
+                    if current != last {
+                        result.push(NullableRange { range: current..last, is_null: false })
+                    }
                 }
             }
         }
+
+        // fill in the null values
+        if let AttrsValueSorterInner::KeysAndRanks(keys) = &self.inner {
+            if let Some(nulls) = &keys.nulls {
+                for nullable_range in result {
+                    nullable_range.is_null = nulls.is_null(indices[nullable_range.range.start] as usize)
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -3881,15 +3907,13 @@ mod test {
 
     // TODO need a test for fully empty (null) column...
 
+
     #[test]
     fn test_sort_and_apply_transport_delta_encoding_for_attr_null_attrs() {
         // create a record batch with some null attrs, both dict encoded and non-dict encoded
         // just to ensure that both are handled correctly.
         // - nulls are sorted last
         // - IDs for null values are not delta-encoded
-        //
-        // TODO in this test - add another null for each to check for point #2
-        //
         let input = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -3907,7 +3931,7 @@ mod test {
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5])),
+                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 4])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -3915,9 +3939,11 @@ mod test {
                     AttributeValueType::Double as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0]),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -3928,6 +3954,8 @@ mod test {
                         None,
                         None, // null str attr (dict encoded)
                         None,
+                        None, // null str attr (dict encoded)
+                        None, // null str attr (dict encoded)
                     ]),
                     Arc::new(StringArray::from_iter_values(["a", "b"])),
                 )),
@@ -3938,6 +3966,8 @@ mod test {
                     None, // null float attr (not dict encoded)
                     None,
                     Some(1.5),
+                    None,
+                    None,
                 ])),
             ],
         )
@@ -3961,8 +3991,10 @@ mod test {
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 4, 5, 2, 3])),
+                Arc::new(UInt16Array::from_iter_values([0, 1, 4, 6, 4, 5, 2, 3])),
                 Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -3971,13 +4003,15 @@ mod test {
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0]),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["ka"])),
                 )),
                 Arc::new(DictionaryArray::new(
                     UInt16Array::from_iter([
                         Some(0),
                         Some(1),
+                        None, // null str attr (dict encoded)
+                        None, // null str attr (dict encoded)
                         None, // null str attr (dict encoded)
                         None,
                         None,
@@ -3986,6 +4020,8 @@ mod test {
                     Arc::new(StringArray::from_iter_values(["a", "b"])),
                 )),
                 Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
                     None,
                     None,
                     None,
