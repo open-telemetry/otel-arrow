@@ -9,8 +9,7 @@
 //! for example, transmitting OTAP data via gRPC.
 
 use std::{
-    ops::{Add, AddAssign, Range, Sub},
-    sync::Arc,
+    ops::{Add, AddAssign, Range, Sub}, ptr::null, sync::Arc
 };
 
 use arrow::{
@@ -553,6 +552,9 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             let values_type_range_by_key =
                 sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.2 (tmp)
 
+            // set hint for the number of nulls
+            sorted_val_col.set_null_count_hint(values_type_range_by_key.null_count());
+
             let values_arr_for_sorting: ArrayRef = match values_type_range_by_key.data_type() {
                 DataType::Dictionary(k, v) => match **k {
                     DataType::UInt8 => {
@@ -989,6 +991,8 @@ struct SortedValuesArrayBuilder {
     // TODO - we might consider refactoring this into something not Arc to reduce heap allocations?
     sorted_segments: Vec<SortedValuesArraySegment>,
 
+    null_count_hint: Option<usize>,
+
     // TODO - we could get into the internals of `take` and figure out if it's faster not to take from
     // an Arc dyn array, then we'd avoid a heap allocation here as well
     source: Arc<dyn Array>,
@@ -999,6 +1003,7 @@ impl SortedValuesArrayBuilder {
         Ok(Self {
             sorted_segments: Vec::new(),
             source: Arc::clone(source),
+            null_count_hint: None,
         })
     }
 
@@ -1010,6 +1015,10 @@ impl SortedValuesArrayBuilder {
         self.sorted_segments
             .push(SortedValuesArraySegment::NonNull(indices.to_vec()));
         Ok(())
+    }
+
+    fn set_null_count_hint(&mut self, null_count: usize) {
+        self.null_count_hint = Some(null_count);
     }
 
     fn gen_source_nulls(&self, count: usize) -> Arc<dyn Array> {
@@ -1245,57 +1254,65 @@ impl SortedValuesArrayBuilder {
                 let source_keys = source_dict.keys().values().iter().as_slice();
 
                 let mut keys_builder = Vec::with_capacity(total_len);
-                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
+                let mut null_buffer_builder = self.null_count_hint
+                    .and_then(|null_count| (null_count > 0).then_some(NullBufferBuilder::new(total_len)));
+
+
 
                 for segment in &self.sorted_segments {
                     match segment {
                         SortedValuesArraySegment::Nulls(count) => {
                             keys_builder.resize(keys_builder.len() + count, 0u16);
-                            null_buffer_builder.append_n_nulls(*count);
+                            if let Some(null_buffer_builder) = null_buffer_builder.as_mut() {
+                                null_buffer_builder.append_n_nulls(*count);
+                            }
                         }
                         SortedValuesArraySegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
                             keys_builder.extend(indices.iter().map(|idx| source_keys[*idx as usize]));
 
                             // Check if any of the source positions were null
-                            if let Some(source_nulls) = source_dict.nulls() {
-                                // Batch consecutive valid/null runs to reduce append overhead
-                                let mut i = 0;
-                                while i < indices.len() {
-                                    let idx = indices[i] as usize;
-                                    let is_valid = source_nulls.is_valid(idx);
+                            if let Some(null_buffer_builder) = null_buffer_builder.as_mut() {
+                                if let Some(source_nulls) = source_dict.nulls() {
+                                    // Batch consecutive valid/null runs to reduce append overhead
+                                    let mut i = 0;
+                                    while i < indices.len() {
+                                        let idx = indices[i] as usize;
+                                        let is_valid = source_nulls.is_valid(idx);
 
-                                    // Count consecutive runs of same validity
-                                    let mut run_len = 1;
-                                    while i + run_len < indices.len() {
-                                        let next_idx = indices[i + run_len] as usize;
-                                        if source_nulls.is_valid(next_idx) == is_valid {
-                                            run_len += 1;
-                                        } else {
-                                            break;
+                                        // Count consecutive runs of same validity
+                                        let mut run_len = 1;
+                                        while i + run_len < indices.len() {
+                                            let next_idx = indices[i + run_len] as usize;
+                                            if source_nulls.is_valid(next_idx) == is_valid {
+                                                run_len += 1;
+                                            } else {
+                                                break;
+                                            }
                                         }
-                                    }
 
-                                    // Append the run
-                                    if is_valid {
-                                        null_buffer_builder.append_n_non_nulls(run_len);
-                                    } else {
-                                        null_buffer_builder.append_n_nulls(run_len);
-                                    }
+                                        // Append the run
+                                        if is_valid {
+                                            null_buffer_builder.append_n_non_nulls(run_len);
+                                        } else {
+                                            null_buffer_builder.append_n_nulls(run_len);
+                                        }
 
-                                    i += run_len;
-                                }
-                            } else {
-                                // Fast path: no nulls in source
-                                for _ in 0..indices.len() {
-                                    null_buffer_builder.append_non_null();
+                                        i += run_len;
+                                    }
+                                } else {
+                                    // TODO not sure this path is needed
+                                    // Fast path: no nulls in source
+                                    for _ in 0..indices.len() {
+                                        null_buffer_builder.append_non_null();
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                let null_buffer = null_buffer_builder.finish();
+                let null_buffer = null_buffer_builder.map(|mut nb| nb.finish()).flatten();
                 let keys_array = UInt16Array::new(ScalarBuffer::from(keys_builder), null_buffer);
                 #[allow(unsafe_code)]
                 let result = unsafe {
