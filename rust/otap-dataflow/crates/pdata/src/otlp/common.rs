@@ -6,7 +6,7 @@ use crate::arrays::{
     StringArrayAccessor, StructColumnAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error::{Error, Result};
-use crate::otlp::attributes::{Attribute16Arrays, encode_key_value};
+use crate::otlp::attributes::{AttributeArrays, encode_key_value};
 use crate::proto::consts::field_num::common::{
     INSTRUMENTATION_DROPPED_ATTRIBUTES_COUNT, INSTRUMENTATION_SCOPE_ATTRIBUTES,
     INSTRUMENTATION_SCOPE_NAME, INSTRUMENTATION_SCOPE_VERSION,
@@ -22,7 +22,7 @@ use arrow::array::{
     Array, ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch,
     StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
-use arrow::datatypes::{DataType, Field, Fields};
+use arrow::datatypes::{ArrowNativeType, DataType, Field, Fields};
 use arrow::row::{Row, RowConverter, SortField};
 use bytes::Bytes;
 use std::cmp::Ordering;
@@ -54,18 +54,24 @@ impl ResourceArrays<'_> {
     }
 }
 
-pub(crate) fn proto_encode_resource(
+pub(crate) fn proto_encode_resource<T: ArrowPrimitiveType>(
     index: usize,
     resource_arrays: &ResourceArrays<'_>,
-    resource_attrs_arrays: Option<&Attribute16Arrays<'_>>,
+    resource_attrs_arrays: Option<&AttributeArrays<'_, T>>,
     resource_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> Result<()>
+where
+    T::Native: Ord,
+{
     // add attributes
     if let Some(attrs_arrays) = resource_attrs_arrays {
         if let Some(res_id) = resource_arrays.id.value_at(index) {
+            // Convert res_id (u16) to T::Native for ChildIndexIter
+            let parent_id = T::Native::from_usize(res_id as usize)
+                .expect("res_id should fit in T::Native");
             for attr_index in
-                ChildIndexIter::new(res_id, &attrs_arrays.parent_id, resource_attrs_cursor)
+                ChildIndexIter::new(parent_id, &attrs_arrays.parent_id, resource_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     RESOURCE_ATTRIBUTES,
@@ -187,13 +193,16 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
     }
 }
 
-pub(crate) fn proto_encode_instrumentation_scope(
+pub(crate) fn proto_encode_instrumentation_scope<T: ArrowPrimitiveType>(
     index: usize,
     scope_arrays: &ScopeArrays<'_>,
-    scope_attrs_arrays: Option<&Attribute16Arrays<'_>>,
+    scope_attrs_arrays: Option<&AttributeArrays<'_, T>>,
     scope_attrs_cursor: &mut SortedBatchCursor,
     result_buf: &mut ProtoBuffer,
-) -> Result<()> {
+) -> Result<()>
+where
+    T::Native: Ord,
+{
     if let Some(col) = &scope_arrays.name {
         if let Some(val) = col.str_at(index) {
             result_buf.encode_string(INSTRUMENTATION_SCOPE_NAME, val);
@@ -206,14 +215,18 @@ pub(crate) fn proto_encode_instrumentation_scope(
         }
     }
 
-    if let Some(attr_arrays) = scope_attrs_arrays {
+    // add attributes
+    if let Some(attrs_arrays) = scope_attrs_arrays {
         if let Some(scope_id) = scope_arrays.id.value_at(index) {
+            // Convert scope_id (u16) to T::Native for ChildIndexIter
+            let parent_id = T::Native::from_usize(scope_id as usize)
+                .expect("scope_id should fit in T::Native");
             for attr_index in
-                ChildIndexIter::new(scope_id, &attr_arrays.parent_id, scope_attrs_cursor)
+                ChildIndexIter::new(parent_id, &attrs_arrays.parent_id, scope_attrs_cursor)
             {
                 proto_encode_len_delimited_unknown_size!(
                     INSTRUMENTATION_SCOPE_ATTRIBUTES,
-                    encode_key_value(attr_arrays, attr_index, result_buf)?,
+                    encode_key_value(attrs_arrays, attr_index, result_buf)?,
                     result_buf
                 );
             }

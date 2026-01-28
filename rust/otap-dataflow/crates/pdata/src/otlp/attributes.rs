@@ -44,6 +44,51 @@ pub enum AttributeValueType {
 pub(crate) type Attribute16Arrays<'a> = AttributeArrays<'a, UInt16Type>;
 pub(crate) type Attribute32Arrays<'a> = AttributeArrays<'a, UInt32Type>;
 
+/// Enum to hold attribute arrays with either UInt16 or UInt32 parent IDs
+pub(crate) enum AttributeArraysVariant<'a> {
+    UInt16(Attribute16Arrays<'a>),
+    UInt32(Attribute32Arrays<'a>),
+}
+
+impl<'a> AttributeArraysVariant<'a> {
+    /// Try to create from a RecordBatch by detecting the parent_id column type
+    pub fn try_from_record_batch(rb: &'a RecordBatch) -> Result<Self> {
+        let parent_id_col = rb.column_by_name(consts::PARENT_ID)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: consts::PARENT_ID.into(),
+            })?;
+        
+        match parent_id_col.data_type() {
+            arrow::datatypes::DataType::UInt16 => {
+                Ok(Self::UInt16(Attribute16Arrays::try_from(rb)?))
+            }
+            arrow::datatypes::DataType::UInt32 => {
+                Ok(Self::UInt32(Attribute32Arrays::try_from(rb)?))
+            }
+            arrow::datatypes::DataType::Dictionary(_, value_type) => {
+                match **value_type {
+                    arrow::datatypes::DataType::UInt16 => {
+                        Ok(Self::UInt16(Attribute16Arrays::try_from(rb)?))
+                    }
+                    arrow::datatypes::DataType::UInt32 => {
+                        Ok(Self::UInt32(Attribute32Arrays::try_from(rb)?))
+                    }
+                    _ => Err(Error::ColumnDataTypeMismatch {
+                        name: consts::PARENT_ID.into(),
+                        expect: arrow::datatypes::DataType::UInt16,
+                        actual: parent_id_col.data_type().clone(),
+                    })
+                }
+            }
+            _ => Err(Error::ColumnDataTypeMismatch {
+                name: consts::PARENT_ID.into(),
+                expect: arrow::datatypes::DataType::UInt16,
+                actual: parent_id_col.data_type().clone(),
+            })
+        }
+    }
+}
+
 pub(crate) struct AttributeArrays<'a, T: ArrowPrimitiveType> {
     pub parent_id: MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
     pub attr_key: MaybeDictArrayAccessor<'a, StringArray>,

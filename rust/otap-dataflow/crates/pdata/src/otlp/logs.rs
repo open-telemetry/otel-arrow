@@ -13,7 +13,7 @@ use crate::arrays::{
 use crate::error::{Error, Result};
 use crate::otap::OtapArrowRecords;
 use crate::otlp::ProtoBytesEncoder;
-use crate::otlp::attributes::{Attribute16Arrays, encode_any_value, encode_key_value};
+use crate::otlp::attributes::{AttributeArraysVariant, encode_any_value, encode_key_value};
 use crate::otlp::common::{
     AnyValueArrays, BatchSorter, ChildIndexIter, ProtoBuffer, ResourceArrays, ScopeArrays,
     SortedBatchCursor, proto_encode_instrumentation_scope, proto_encode_resource,
@@ -153,9 +153,9 @@ pub struct LogsDataArrays<'a> {
     log_arrays: LogsArrays<'a>,
     scope_arrays: ScopeArrays<'a>,
     resource_arrays: ResourceArrays<'a>,
-    log_attrs: Option<Attribute16Arrays<'a>>,
-    resource_attrs: Option<Attribute16Arrays<'a>>,
-    scope_attrs: Option<Attribute16Arrays<'a>>,
+    log_attrs: Option<AttributeArraysVariant<'a>>,
+    resource_attrs: Option<AttributeArraysVariant<'a>>,
+    scope_attrs: Option<AttributeArraysVariant<'a>>,
 }
 
 impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
@@ -172,15 +172,15 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for LogsDataArrays<'a> {
             resource_arrays: ResourceArrays::try_from(logs_rb)?,
             log_attrs: otap_batch
                 .get(ArrowPayloadType::LogAttrs)
-                .map(Attribute16Arrays::try_from)
+                .map(AttributeArraysVariant::try_from_record_batch)
                 .transpose()?,
             scope_attrs: otap_batch
                 .get(ArrowPayloadType::ScopeAttrs)
-                .map(Attribute16Arrays::try_from)
+                .map(AttributeArraysVariant::try_from_record_batch)
                 .transpose()?,
             resource_attrs: otap_batch
                 .get(ArrowPayloadType::ResourceAttrs)
-                .map(Attribute16Arrays::try_from)
+                .map(AttributeArraysVariant::try_from_record_batch)
                 .transpose()?,
         })
     }
@@ -227,20 +227,48 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
 
         // get the lists of child indices for attributes to visit in oder:
         if let Some(res_attrs) = logs_data_arrays.resource_attrs.as_ref() {
-            self.batch_sorter.init_cursor_for_u16_id_column(
-                &res_attrs.parent_id,
-                &mut self.resource_attrs_cursor,
-            );
+            match res_attrs {
+                AttributeArraysVariant::UInt16(attrs) => {
+                    self.batch_sorter.init_cursor_for_u16_id_column(
+                        &attrs.parent_id,
+                        &mut self.resource_attrs_cursor,
+                    );
+                }
+                AttributeArraysVariant::UInt32(attrs) => {
+                    self.batch_sorter.init_cursor_for_u32_id_column(
+                        &attrs.parent_id,
+                        &mut self.resource_attrs_cursor,
+                    );
+                }
+            }
         }
         if let Some(scope_attrs) = logs_data_arrays.scope_attrs.as_ref() {
-            self.batch_sorter.init_cursor_for_u16_id_column(
-                &scope_attrs.parent_id,
-                &mut self.scope_attrs_cursor,
-            );
+            match scope_attrs {
+                AttributeArraysVariant::UInt16(attrs) => {
+                    self.batch_sorter.init_cursor_for_u16_id_column(
+                        &attrs.parent_id,
+                        &mut self.scope_attrs_cursor,
+                    );
+                }
+                AttributeArraysVariant::UInt32(attrs) => {
+                    self.batch_sorter.init_cursor_for_u32_id_column(
+                        &attrs.parent_id,
+                        &mut self.scope_attrs_cursor,
+                    );
+                }
+            }
         }
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
-            self.batch_sorter
-                .init_cursor_for_u16_id_column(&log_attrs.parent_id, &mut self.log_attrs_cursor);
+            match log_attrs {
+                AttributeArraysVariant::UInt16(attrs) => {
+                    self.batch_sorter
+                        .init_cursor_for_u16_id_column(&attrs.parent_id, &mut self.log_attrs_cursor);
+                }
+                AttributeArraysVariant::UInt32(attrs) => {
+                    self.batch_sorter
+                        .init_cursor_for_u32_id_column(&attrs.parent_id, &mut self.log_attrs_cursor);
+                }
+            }
         }
 
         // encode all `ResourceLog`s for this `LogsData`
@@ -293,13 +321,35 @@ impl LogsProtoBytesEncoder {
         // encode the `Resource`
         proto_encode_len_delimited_unknown_size!(
             LOGS_DATA_RESOURCE,
-            proto_encode_resource(
-                index,
-                &logs_data_arrays.resource_arrays,
-                logs_data_arrays.resource_attrs.as_ref(),
-                &mut self.resource_attrs_cursor,
-                result_buf
-            )?,
+            match logs_data_arrays.resource_attrs.as_ref() {
+                Some(AttributeArraysVariant::UInt16(attrs)) => {
+                    proto_encode_resource(
+                        index,
+                        &logs_data_arrays.resource_arrays,
+                        Some(attrs),
+                        &mut self.resource_attrs_cursor,
+                        result_buf
+                    )?
+                }
+                Some(AttributeArraysVariant::UInt32(attrs)) => {
+                    proto_encode_resource(
+                        index,
+                        &logs_data_arrays.resource_arrays,
+                        Some(attrs),
+                        &mut self.resource_attrs_cursor,
+                        result_buf
+                    )?
+                }
+                None => {
+                    proto_encode_resource::<arrow::datatypes::UInt16Type>(
+                        index,
+                        &logs_data_arrays.resource_arrays,
+                        None,
+                        &mut self.resource_attrs_cursor,
+                        result_buf
+                    )?
+                }
+            },
             result_buf
         );
 
@@ -354,13 +404,35 @@ impl LogsProtoBytesEncoder {
         // encode the `InstrumentationScope`
         proto_encode_len_delimited_unknown_size!(
             SCOPE_LOG_SCOPE,
-            proto_encode_instrumentation_scope(
-                index,
-                &logs_data_arrays.scope_arrays,
-                logs_data_arrays.scope_attrs.as_ref(),
-                &mut self.scope_attrs_cursor,
-                result_buf
-            )?,
+            match logs_data_arrays.scope_attrs.as_ref() {
+                Some(AttributeArraysVariant::UInt16(attrs)) => {
+                    proto_encode_instrumentation_scope(
+                        index,
+                        &logs_data_arrays.scope_arrays,
+                        Some(attrs),
+                        &mut self.scope_attrs_cursor,
+                        result_buf
+                    )?
+                }
+                Some(AttributeArraysVariant::UInt32(attrs)) => {
+                    proto_encode_instrumentation_scope(
+                        index,
+                        &logs_data_arrays.scope_arrays,
+                        Some(attrs),
+                        &mut self.scope_attrs_cursor,
+                        result_buf
+                    )?
+                }
+                None => {
+                    proto_encode_instrumentation_scope::<arrow::datatypes::UInt16Type>(
+                        index,
+                        &logs_data_arrays.scope_arrays,
+                        None,
+                        &mut self.scope_attrs_cursor,
+                        result_buf
+                    )?
+                }
+            },
             result_buf
         );
 
@@ -454,14 +526,29 @@ impl LogsProtoBytesEncoder {
         if let Some(log_attrs) = logs_data_arrays.log_attrs.as_ref() {
             if let Some(id_array) = log_arrays.id {
                 if let Some(id) = id_array.value_at(index) {
-                    let attrs_index_iter =
-                        ChildIndexIter::new(id, &log_attrs.parent_id, &mut self.log_attrs_cursor);
-                    for attr_index in attrs_index_iter {
-                        proto_encode_len_delimited_unknown_size!(
-                            LOG_RECORD_ATTRIBUTES,
-                            encode_key_value(log_attrs, attr_index, result_buf)?,
-                            result_buf
-                        );
+                    match log_attrs {
+                        AttributeArraysVariant::UInt16(attrs) => {
+                            let attrs_index_iter =
+                                ChildIndexIter::new(id, &attrs.parent_id, &mut self.log_attrs_cursor);
+                            for attr_index in attrs_index_iter {
+                                proto_encode_len_delimited_unknown_size!(
+                                    LOG_RECORD_ATTRIBUTES,
+                                    encode_key_value(attrs, attr_index, result_buf)?,
+                                    result_buf
+                                );
+                            }
+                        }
+                        AttributeArraysVariant::UInt32(attrs) => {
+                            let attrs_index_iter =
+                                ChildIndexIter::new(id as u32, &attrs.parent_id, &mut self.log_attrs_cursor);
+                            for attr_index in attrs_index_iter {
+                                proto_encode_len_delimited_unknown_size!(
+                                    LOG_RECORD_ATTRIBUTES,
+                                    encode_key_value(attrs, attr_index, result_buf)?,
+                                    result_buf
+                                );
+                            }
+                        }
                     }
                 }
             }
