@@ -151,12 +151,10 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => {
-                sender
+            Some(sender) => sender
                 .send(data)
                 .await
-                .map_err(TypedError::ChannelSendError)
-            }
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutPort {
                 node: self.processor_id(),
             })),
@@ -176,9 +174,7 @@ impl<PData> EffectHandler<PData> {
     #[inline]
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
-            Some(sender) => {
-                sender.try_send(data).map_err(TypedError::ChannelSendError)
-            }
+            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::NoDefaultOutPort {
                 node: self.processor_id(),
             })),
@@ -198,12 +194,10 @@ impl<PData> EffectHandler<PData> {
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => {
-                sender
+            Some(sender) => sender
                 .send(data)
                 .await
-                .map_err(TypedError::ChannelSendError)
-            }
+                .map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutPort {
                 node: self.processor_id(),
                 port: port_name,
@@ -228,9 +222,7 @@ impl<PData> EffectHandler<PData> {
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
-            Some(sender) => {
-                sender.try_send(data).map_err(TypedError::ChannelSendError)
-            }
+            Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutPort {
                 node: self.processor_id(),
                 port: port_name,
@@ -303,7 +295,6 @@ mod tests {
     #![allow(missing_docs)]
     use super::*;
     use crate::local::message::LocalSender;
-    use otap_df_config::NodeId;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
     use otap_df_channel::mpsc;

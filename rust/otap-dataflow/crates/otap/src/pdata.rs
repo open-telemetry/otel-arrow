@@ -14,12 +14,13 @@
 //! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
+pub use otap_df_config::NodeId;
+use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::{Error, TypedError};
-use otap_df_config::PortName;
-pub use otap_df_config::NodeId;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension, MessageSourceEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, MessageSourceEffectHandlerExtension,
+    ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
 use otap_df_pdata::OtapPayload;
@@ -137,7 +138,7 @@ pub struct Frame {
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
-    source_node: Option<NodeId>
+    source_node: Option<NodeId>,
 }
 
 /* -------- Signal type -------- */
@@ -169,7 +170,11 @@ impl OtapPdata {
     /// Construct new OtapData with context and payload
     #[must_use]
     pub fn new(context: Context, payload: OtapPayload) -> Self {
-        Self { context, payload, source_node: None }
+        Self {
+            context,
+            payload,
+            source_node: None,
+        }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -253,7 +258,7 @@ impl OtapPdata {
     }
 
     /// update the source node
-    pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self{
+    pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self {
         self.source_node = node_id;
         self
     }
@@ -541,7 +546,6 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         self.try_send_message_to(port, data)
     }
 }
-
 
 #[cfg(test)]
 mod test {

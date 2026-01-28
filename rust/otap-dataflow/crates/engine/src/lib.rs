@@ -217,11 +217,19 @@ pub trait MessageSourceEffectHandlerExtension<PData> {
     /// Try to send data after tagging with the source node.
     fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Send data to a specific port after tagging with the source node.
-    async fn send_message_with_source_node_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>;
     /// Try to send data to a specific port after tagging with the source node.
-    fn try_send_message_with_source_node_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>;
 }
