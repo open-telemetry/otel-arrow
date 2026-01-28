@@ -94,11 +94,7 @@ impl TelemetryRegistryHandle {
         F: FnOnce(&dyn AttributeSetHandler) -> T,
     {
         let reg = self.registry.lock();
-        if let Some(attrs) = reg.entities.get(key) {
-            Some(f(attrs))
-        } else {
-            None
-        }
+        reg.entities.get(key).map(|attrs| f(attrs))
     }
 
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`
