@@ -1254,8 +1254,12 @@ impl SortedValuesArrayBuilder {
                 let source_keys = source_dict.keys().values().iter().as_slice();
 
                 let mut keys_builder = Vec::with_capacity(total_len);
-                let mut null_buffer_builder = self.null_count_hint
-                    .and_then(|null_count| (null_count > 0).then_some(NullBufferBuilder::new(total_len)));
+
+
+                // TODO need to make this same optimization for u8
+                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
+                // let mut null_buffer_builder = self.null_count_hint
+                //     .and_then(|null_count| (null_count > 0).then_some());
 
 
 
@@ -1263,17 +1267,15 @@ impl SortedValuesArrayBuilder {
                     match segment {
                         SortedValuesArraySegment::Nulls(count) => {
                             keys_builder.resize(keys_builder.len() + count, 0u16);
-                            if let Some(null_buffer_builder) = null_buffer_builder.as_mut() {
-                                null_buffer_builder.append_n_nulls(*count);
-                            }
+                            null_buffer_builder.append_n_nulls(*count);
                         }
                         SortedValuesArraySegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
                             keys_builder.extend(indices.iter().map(|idx| source_keys[*idx as usize]));
 
                             // Check if any of the source positions were null
-                            if let Some(null_buffer_builder) = null_buffer_builder.as_mut() {
-                                if let Some(source_nulls) = source_dict.nulls() {
+                            let null_hint_zero = self.null_count_hint == Some(0);
+                            if let Some(source_nulls) = source_dict.nulls() && !null_hint_zero {
                                     // Batch consecutive valid/null runs to reduce append overhead
                                     let mut i = 0;
                                     while i < indices.len() {
@@ -1301,18 +1303,19 @@ impl SortedValuesArrayBuilder {
                                         i += run_len;
                                     }
                                 } else {
-                                    // TODO not sure this path is needed
-                                    // Fast path: no nulls in source
-                                    for _ in 0..indices.len() {
-                                        null_buffer_builder.append_non_null();
-                                    }
+                                    // // TODO not sure this path is needed
+                                    // // Fast path: no nulls in source
+                                    // for _ in 0..indices.len() {
+                                    //     null_buffer_builder.append_non_null();
+                                    // }
+                                    null_buffer_builder.append_n_non_nulls(indices.len());
                                 }
-                            }
+
                         }
                     }
                 }
 
-                let null_buffer = null_buffer_builder.map(|mut nb| nb.finish()).flatten();
+                let null_buffer = null_buffer_builder.finish();
                 let keys_array = UInt16Array::new(ScalarBuffer::from(keys_builder), null_buffer);
                 #[allow(unsafe_code)]
                 let result = unsafe {
