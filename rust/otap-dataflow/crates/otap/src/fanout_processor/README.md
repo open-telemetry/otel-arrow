@@ -198,7 +198,8 @@ Upstream --> FANOUT --> Downstream
 - **`await_ack: none`**: Upstream acked immediately (fire-and-forget)
 
 Note: Withholding acks does not prevent upstream from sending more messages -
-upstream can continue sending until `max_inflight` or channel capacity limits are reached.
+upstream can continue sending until `max_inflight` or channel capacity limits
+are reached.
 
 ### 2. Max Inflight Limit
 
