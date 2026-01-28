@@ -184,10 +184,10 @@ When `await_ack` is `primary` or `all`, the processor withholds upstream acks un
 downstream destinations respond:
 
 ```text
-Upstream ──► FANOUT ──► Downstream
-                │
+Upstream --> FANOUT --> Downstream
+                |
          waits for ack/nack
-                │
+                |
          then acks/nacks upstream
 ```
 
@@ -197,8 +197,8 @@ Upstream ──► FANOUT ──► Downstream
   respond
 - **`await_ack: none`**: Upstream acked immediately (fire-and-forget)
 
-Note: Withholding acks does not prevent upstream from sending more messages—upstream
-can continue sending until `max_inflight` or channel capacity limits are reached.
+Note: Withholding acks does not prevent upstream from sending more messages -
+upstream can continue sending until `max_inflight` or channel capacity limits are reached.
 
 ### 2. Max Inflight Limit
 
@@ -217,14 +217,14 @@ provides the explicit bound on concurrent requests:
 When the limit is reached:
 
 ```text
-Upstream                    FANOUT                         
-    │                          │                            
-    │── PData ────────────────►│  inflight.len() >= max_inflight?
-    │                          │           │
-    │◄── NACK "limit exceeded"─│◄──────────┘ YES
-    │                          │
-    │  (upstream can retry     │
-    │   or apply its policy)   │
+Upstream                    FANOUT
+    |                          |
+    |-- PData ---------------->|  inflight.len() >= max_inflight?
+    |                          |           |
+    |<-- NACK "limit exceeded"-|<----------+ YES
+    |                          |
+    |  (upstream can retry     |
+    |   or apply its policy)   |
 ```
 
 ### 3. Bounded Channels
@@ -234,8 +234,8 @@ All sends go through bounded async channels. Even in fire-and-forget mode
 until space is available:
 
 ```text
-FANOUT ──► [bounded channel] ──► Downstream
-              │
+FANOUT --> [bounded channel] --> Downstream
+              |
          if full, await
          (blocks processor)
 ```
@@ -261,7 +261,7 @@ Set `max_inflight: 0` for unlimited tracking (not recommended for production).
 | `rejected_max_inflight` | Requests rejected due to max_inflight limit |
 
 > **Note**: `acked` and `nacked` reflect *request-level* outcomes after
-> applying the `await_ack` policy and fallback logic—not per-destination
+> applying the `await_ack` policy and fallback logic - not per-destination
 > results. For per-destination metrics, use channel-level metrics.
 
 ## Cloning and Mutability
