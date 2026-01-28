@@ -286,9 +286,9 @@ debug = "line-tables-only"  # minimum required for profiling
 inherits = "release"
 opt-level = 3
 # debug = false
-incremental = false
-lto = "thin"
-codegen-units = 1
+# incremental = false
+# lto = "thin"
+# codegen-units = 1
 # Potentially override lto for faster builds:
 # lto = "thin"
 # Potentially override debug/strip for easier debugging:

@@ -664,14 +664,9 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     // P
                     let parent_ids_range = &mut parent_id_key_range_sorted[values_range.start..values_range.end];
-                    // let parent_ids_range =
-                    //     parent_id_key_range_sorted.slice(values_range.start, values_range.len()); // Arc v.1
                     parent_ids_range.sort_unstable();
-                    // let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap(); // Arc v.2
                     delta_encode_parent_id_slice(parent_ids_range);
-                    // let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted); // Arc v.3
                     sorted_parent_id_column.extend_from_slice(parent_ids_range);
-                    // sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
                 }
             }
         } else {
