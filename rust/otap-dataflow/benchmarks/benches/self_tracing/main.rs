@@ -101,7 +101,10 @@ enum BenchOp {
 impl BenchOp {
     /// Returns true if this operation requires entity context.
     fn needs_entity(self) -> bool {
-        matches!(self, BenchOp::EncodeProtoWithScope | BenchOp::FormatWithEntity)
+        matches!(
+            self,
+            BenchOp::EncodeProtoWithScope | BenchOp::FormatWithEntity
+        )
     }
 }
 
