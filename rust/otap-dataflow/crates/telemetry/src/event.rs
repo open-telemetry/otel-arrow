@@ -3,10 +3,11 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
-use crate::self_tracing::LogRecord;
+use crate::self_tracing::{LogRecord, format_log_record_to_string};
 use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
 use serde::ser::Serializer;
+use std::fmt;
 use std::time::SystemTime;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
@@ -87,23 +88,25 @@ pub struct LogEvent {
     #[serde(serialize_with = "ts_to_rfc3339")]
     pub time: SystemTime,
     /// Structured log record.
-    #[serde(serialize_with = "log_to_string")]
     pub record: LogRecord,
 }
 
-fn log_to_string<S>(record: &LogRecord, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    s.serialize_str(&record.format_without_timestamp())
+impl fmt::Display for LogEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            format_log_record_to_string(Some(self.time), &self.record)
+        )
+    }
 }
 
-impl Serialize for LogRecord {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.format_without_timestamp())
+impl fmt::Display for ObservedEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ObservedEvent::Engine(event) => write!(f, "Engine({:?})", event.key),
+            ObservedEvent::Log(event) => write!(f, "Log({})", event),
+        }
     }
 }
 
