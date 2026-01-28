@@ -36,7 +36,6 @@ use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
-use crate::pdata_traits::MessageSource;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
@@ -55,10 +54,7 @@ use tokio::net::{TcpListener, UdpSocket};
 /// Receivers are responsible for accepting data from external sources and converting
 /// it into messages that can be processed by the pipeline.
 #[async_trait( ? Send)]
-pub trait Receiver<PData> 
-where 
-    PData: MessageSource
-{
+pub trait Receiver<PData> {
     /// Starts the receiver and begins processing incoming external data and control messages.
     ///
     /// The pipeline engine will call this function to start the receiver in a separate task.
@@ -126,10 +122,7 @@ impl<PData> ControlChannel<PData> {
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData> 
-where 
-    PData: MessageSource
-{
+pub struct EffectHandler<PData> {
     core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
@@ -140,10 +133,7 @@ where
 }
 
 /// Implementation for the `!Send` effect handler.
-impl<PData> EffectHandler<PData>
-where 
-    PData: MessageSource
-{
+impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name and timer request sender.
     #[must_use]
     pub fn new(
@@ -194,10 +184,9 @@ where
     /// Returns an [`TypedError::ChannelSendError`] if the message could not be sent or
     /// [`TypedError::Error::ReceiverError`] if the default port is not configured.
     #[inline]
-    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender
                 .send(data)
                 .await
@@ -220,10 +209,9 @@ where
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
-    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender.try_send(data).map_err(TypedError::ChannelSendError)
             }
             None => Err(TypedError::Error(Error::NoDefaultOutPort {
@@ -239,14 +227,13 @@ where
     /// Returns a [`Error::ChannelSendError`] if the message could not be sent, or
     /// [`Error::ReceiverError`] if the port does not exist.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender
                     .send(data)
                     .await
@@ -270,12 +257,11 @@ where
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
     #[inline]
-    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
+    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
-        data.add_source_node(self.core.node_id.name.clone());
         match self.msg_senders.get(&port_name) {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
             None => Err(TypedError::Error(Error::UnknownOutPort {

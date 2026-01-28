@@ -38,7 +38,6 @@ use crate::error::{Error, TypedError};
 use crate::local::message::LocalSender;
 use crate::message::Message;
 use crate::node::NodeId;
-use crate::pdata_traits::MessageSource;
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -49,10 +48,7 @@ use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
 #[async_trait(?Send)]
-pub trait Processor<PData> 
-where 
-    PData: MessageSource
-{
+pub trait Processor<PData> {
     /// Processes a message and optionally produces effects, such as generating new pdata messages.
     ///
     /// This method is called by the pipeline engine for each message that arrives at the processor.
@@ -93,10 +89,7 @@ where
 
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
-pub struct EffectHandler<PData> 
-where 
-    PData: MessageSource
-{
+pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the processor.
@@ -107,10 +100,7 @@ where
 }
 
 /// Implementation for the `!Send` effect handler.
-impl<PData> EffectHandler<PData>
-where 
-    PData: MessageSource
-{
+impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
     pub fn new(
@@ -159,10 +149,9 @@ where
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent or [`Error::ProcessorError`]
     /// if the default port is not configured.
     #[inline]
-    pub async fn send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+    pub async fn send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender
                 .send(data)
                 .await
@@ -185,10 +174,9 @@ where
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if no default port is configured.
     #[inline]
-    pub fn try_send_message(&self, mut data: PData) -> Result<(), TypedError<PData>> {
+    pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender.try_send(data).map_err(TypedError::ChannelSendError)
             }
             None => Err(TypedError::Error(Error::NoDefaultOutPort {
@@ -204,14 +192,13 @@ where
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent, or
     /// [`Error::ProcessorError`] if the port does not exist.
     #[inline]
-    pub async fn send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
+    pub async fn send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender
                 .send(data)
                 .await
@@ -235,14 +222,13 @@ where
     /// channel is full, or [`SendError::Closed`] if the channel is closed.
     /// Returns a [`TypedError::Error`] if the port does not exist.
     #[inline]
-    pub fn try_send_message_to<P>(&self, port: P, mut data: PData) -> Result<(), TypedError<PData>>
+    pub fn try_send_message_to<P>(&self, port: P, data: PData) -> Result<(), TypedError<PData>>
     where
         P: Into<PortName>,
     {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
             Some(sender) => {
-                data.add_source_node(self.core.node_id.name.clone());
                 sender.try_send(data).map_err(TypedError::ChannelSendError)
             }
             None => Err(TypedError::Error(Error::UnknownOutPort {
@@ -329,33 +315,10 @@ mod tests {
         mpsc::Channel::new(capacity)
     }
 
-    #[derive(Debug)]
-    pub struct U64Msg {
-        pub value: u64,
-        pub node: Option<NodeId>
-    }
-
-    impl U64Msg {
-        fn new(value: u64) -> Self {
-            Self {
-                value,
-                node: None
-            }
-        }
-    }
-    impl MessageSource for U64Msg {
-        fn add_source_node(&mut self, node_name: NodeId) {
-            self.node = Some(node_name);
-        }
-        fn get_source_node(&self) -> Option<NodeId> {
-            self.node.clone()
-        }
-    }
-
     #[tokio::test]
     async fn effect_handler_send_message_to_named_port() {
-        let (a_tx, a_rx) = channel::<U64Msg>(10);
-        let (b_tx, b_rx) = channel::<U64Msg>(10);
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -363,7 +326,7 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
-        eh.send_message_to("b", U64Msg::new(42)).await.unwrap();
+        eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
         assert!(
@@ -371,26 +334,26 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(b_rx.recv().await.unwrap().value, 42);
+        assert_eq!(b_rx.recv().await.unwrap(), 42);
     }
 
     #[tokio::test]
     async fn effect_handler_send_message_single_port_fallback() {
-        let (tx, rx) = channel::<U64Msg>(10);
+        let (tx, rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("only".into(), LocalSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
-        eh.send_message(U64Msg::new(7)).await.unwrap();
-        assert_eq!(rx.recv().await.unwrap().value, 7);
+        eh.send_message(7).await.unwrap();
+        assert_eq!(rx.recv().await.unwrap(), 7);
     }
 
     #[tokio::test]
     async fn effect_handler_send_message_uses_default_port() {
-        let (a_tx, a_rx) = channel::<U64Msg>(10);
-        let (b_tx, b_rx) = channel::<U64Msg>(10);
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -404,9 +367,9 @@ mod tests {
             metrics_reporter,
         );
 
-        eh.send_message(U64Msg::new(11)).await.unwrap();
+        eh.send_message(11).await.unwrap();
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
 
-        assert_eq!(a_rx.recv().await.unwrap().value, 11);
         assert!(
             timeout(Duration::from_millis(50), b_rx.recv())
                 .await
@@ -416,8 +379,8 @@ mod tests {
 
     #[tokio::test]
     async fn effect_handler_send_message_ambiguous_without_default() {
-        let (a_tx, a_rx) = channel::<U64Msg>(10);
-        let (b_tx, b_rx) = channel::<U64Msg>(10);
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -444,8 +407,8 @@ mod tests {
 
     #[tokio::test]
     async fn effect_handler_connected_ports_lists_all() {
-        let (a_tx, _a_rx) = channel::<U64Msg>(1);
-        let (b_tx, _b_rx) = channel::<U64Msg>(1);
+        let (a_tx, _a_rx) = channel::<u64>(1);
+        let (b_tx, _b_rx) = channel::<u64>(1);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -461,7 +424,7 @@ mod tests {
 
     #[test]
     fn effect_handler_try_send_message_success() {
-        let (tx, rx) = channel::<U64Msg>(10);
+        let (tx, rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 
@@ -475,13 +438,14 @@ mod tests {
 
         // Should succeed when channel has capacity
         assert!(eh.try_send_message(42).is_ok());
+
         assert_eq!(rx.try_recv().unwrap(), 42);
     }
 
     #[test]
     fn effect_handler_try_send_message_channel_full() {
         // Create a channel with capacity 1
-        let (tx, _rx) = channel::<U64Msg>(1);
+        let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 
@@ -506,8 +470,8 @@ mod tests {
 
     #[test]
     fn effect_handler_try_send_message_no_default_sender() {
-        let (a_tx, _a_rx) = channel::<U64Msg>(10);
-        let (b_tx, _b_rx) = channel::<U64Msg>(10);
+        let (a_tx, _a_rx) = channel::<u64>(10);
+        let (b_tx, _b_rx) = channel::<u64>(10);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -524,8 +488,8 @@ mod tests {
 
     #[test]
     fn effect_handler_try_send_message_to_success() {
-        let (a_tx, a_rx) = channel::<U64Msg>(10);
-        let (b_tx, b_rx) = channel::<U64Msg>(10);
+        let (a_tx, a_rx) = channel::<u64>(10);
+        let (b_tx, b_rx) = channel::<u64>(10);
 
         let mut senders = HashMap::new();
         let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
@@ -536,6 +500,10 @@ mod tests {
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
+
+        // Port 'a' should not have received anything
+        assert!(a_rx.try_recv().is_err());
+
         assert_eq!(b_rx.try_recv().unwrap(), 42);
         // Port 'a' should not have received anything
         assert!(a_rx.try_recv().is_err());
@@ -543,7 +511,7 @@ mod tests {
 
     #[test]
     fn effect_handler_try_send_message_to_channel_full() {
-        let (tx, _rx) = channel::<U64Msg>(1);
+        let (tx, _rx) = channel::<u64>(1);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 
@@ -562,7 +530,7 @@ mod tests {
 
     #[test]
     fn effect_handler_try_send_message_to_unknown_port() {
-        let (tx, _rx) = channel::<U64Msg>(10);
+        let (tx, _rx) = channel::<u64>(10);
         let mut senders = HashMap::new();
         let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
 

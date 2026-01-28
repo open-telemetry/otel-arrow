@@ -21,7 +21,6 @@ use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
-use crate::pdata_traits::MessageSource;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
 use otap_df_channel::error::SendError;
@@ -88,10 +87,7 @@ pub enum ProcessorWrapper<PData> {
 ///
 /// This allows external control over the message processing loop, useful for testing and custom
 /// processing scenarios.
-pub enum ProcessorWrapperRuntime<PData>
-where 
-    PData: MessageSource
-{
+pub enum ProcessorWrapperRuntime<PData> {
     /// A processor with a `!Send` implementation.
     Local {
         /// The processor instance.
@@ -112,10 +108,7 @@ where
     },
 }
 
-impl<PData> ProcessorWrapper<PData>
-where 
-    PData: MessageSource
-{
+impl<PData> ProcessorWrapper<PData> {
     /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
     pub fn local<P>(
         processor: P,

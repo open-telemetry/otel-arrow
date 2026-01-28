@@ -15,9 +15,11 @@
 
 use async_trait::async_trait;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::error::Error;
+use otap_df_engine::error::{Error, TypedError};
+use otap_df_config::PortName;
+pub use otap_df_config::NodeId;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension, MessageSourceEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
 use otap_df_pdata::OtapPayload;
@@ -135,7 +137,7 @@ pub struct Frame {
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
-    source_node: Option<NodeName>
+    source_node: Option<NodeId>
 }
 
 /* -------- Signal type -------- */
@@ -249,17 +251,16 @@ impl OtapPdata {
     pub fn current_calldata(&self) -> Option<CallData> {
         self.context.current_calldata()
     }
-}
 
-
-impl MessageSource for OtapPdata {
-    /// save the source node
-    fn add_source_node(&mut self, node_name: NodeName) {
-        self.source_node = Some(node_name)
+    /// update the source node
+    pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self{
+        self.source_node = node_id;
+        self
     }
-    /// return the source node
-    fn get_source_node(&self) -> Some(NodeName) {
-        self.source_node
+
+    /// return the source node field
+    pub fn get_source_node(&self) -> Option<NodeId> {
+        self.source_node.clone()
     }
 }
 
@@ -358,6 +359,189 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
         self.route_nack(nack, Context::next_nack).await
     }
 }
+
+/* --------  effect handler extensions (shared, local) -------- */
+
+#[async_trait(?Send)]
+impl MessageSourceEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::processor::EffectHandler<OtapPdata>
+{
+    async fn send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message(data).await
+    }
+
+    fn try_send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message(data)
+    }
+
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message_to(port, data).await
+    }
+
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message_to(port, data)
+    }
+}
+
+#[async_trait(?Send)]
+impl MessageSourceEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
+{
+    async fn send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message(data).await
+    }
+
+    fn try_send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message(data)
+    }
+
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message_to(port, data).await
+    }
+
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message_to(port, data)
+    }
+}
+
+#[async_trait(?Send)]
+impl MessageSourceEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
+{
+    async fn send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message(data).await
+    }
+
+    fn try_send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message(data)
+    }
+
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message_to(port, data).await
+    }
+
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message_to(port, data)
+    }
+}
+
+#[async_trait(?Send)]
+impl MessageSourceEffectHandlerExtension<OtapPdata>
+    for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
+{
+    async fn send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message(data).await
+    }
+
+    fn try_send_message_with_source_node(
+        &self,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>> {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message(data)
+    }
+
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.send_message_to(port, data).await
+    }
+
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: OtapPdata,
+    ) -> Result<(), TypedError<OtapPdata>>
+    where
+        P: Into<PortName>,
+    {
+        let data = data.add_source_node(Some(self.processor_id().name));
+        self.try_send_message_to(port, data)
+    }
+}
+
 
 #[cfg(test)]
 mod test {
