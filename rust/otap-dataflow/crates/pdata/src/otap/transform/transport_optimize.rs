@@ -625,8 +625,7 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                 )
                 .unwrap();
 
-                // let values_key_range_sorted =
-                //     take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
+
                 let values_key_range =
                     values_type_range_by_key.slice(key_range.start, key_range.len());
                 let values_key_range_sorted =
@@ -647,11 +646,6 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     let parent_ids_range =
                         parent_id_key_range_sorted.slice(values_range.start, values_range.len());
-                    // let parent_ids_sorted = if !is_parent_id_column_sorted(&parent_ids_range) {
-                        // arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap()
-                    // } else {
-                        // parent_ids_range.clone()
-                    // };
                     let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
                     let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted);
                     sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
@@ -821,13 +815,25 @@ fn delta_encode_parent_id(array: ArrayRef) -> ArrayRef {
                 todo!()
             }
 
-            let mut values = prim_arr.values().to_vec();
-            let mut acc = values[0];
-            for i in 1..values.len() {
-                let val = values[i];
-                values[i] -= acc;
-                acc = val;
+            let input = prim_arr.values();
+            let len = input.len();
+
+            if len <= 1 {
+                return array;
             }
+
+            // Try to reuse the buffer if we have exclusive ownership
+            let mut values = input.to_vec();
+
+            // Delta encode in place from the end to avoid overwriting values we need
+            // values[i] = original[i] - original[i-1]
+            let mut prev = values[len - 1];
+            for i in (1..len).rev() {
+                let curr = values[i - 1];
+                values[i] = prev.wrapping_sub(curr);
+                prev = curr;
+            }
+            // values[0] stays as-is
 
             Arc::new(UInt16Array::new(values.into(), None))
         }
@@ -1134,6 +1140,7 @@ impl SortedValuesArrayBuilder {
                             let segment_keys = dict_arr.keys().values();
                             keys_builder.extend_from_slice(segment_keys);
 
+                            // TODO - this is slow and we should use BitSliceIterator or something
                             if let Some(nulls) = dict_arr.nulls() {
                                 for i in 0..dict_arr.len() {
                                     if nulls.is_valid(i) {
