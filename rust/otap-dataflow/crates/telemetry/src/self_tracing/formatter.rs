@@ -487,7 +487,7 @@ impl StyledBufWriter<'_> {
 
     /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
     ///
-    /// Unlike \`format_log_line\`, this takes raw attributes instead of a LogRecordView,
+    /// Unlike `format_log_line`, this takes raw attributes instead of a `LogRecordView`,
     /// and doesn't print a body - just the header name and attributes.
     pub fn format_header_line<A, L, E, S>(
         &mut self,
