@@ -5,7 +5,7 @@
 //! [`metrics::MetricSet`].
 
 use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
 /// This iterator avoids heap allocations and can leverage unsafe optimizations when enabled.
@@ -122,7 +122,7 @@ pub trait AttributeSetHandler {
 }
 
 /// Represents a single attribute value that can be of different types.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeValue {
     /// String attribute value
     String(String),
