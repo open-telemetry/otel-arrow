@@ -1178,7 +1178,7 @@ impl SortedValuesArrayBuilder {
         match *key_type {
             DataType::UInt8 => {
                 let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt8Type>>().unwrap();
-                let source_keys = source_dict.keys().values();
+                let source_keys = source_dict.keys().values().iter().as_slice();
 
                 let mut keys_builder = Vec::with_capacity(total_len);
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
@@ -1192,9 +1192,7 @@ impl SortedValuesArrayBuilder {
                         }
                         SortedValuesArraySegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
-                            for &idx in indices {
-                                keys_builder.push(source_keys[idx as usize]);
-                            }
+                            keys_builder.extend(indices.iter().map(|idx| source_keys[*idx as usize]));
 
                             // Check if any of the source positions were null
                             if let Some(source_nulls) = source_dict.nulls() {
@@ -1217,9 +1215,6 @@ impl SortedValuesArrayBuilder {
 
                                     // Append the run
                                     if is_valid {
-                                        // for _ in 0..run_len {
-                                        //     null_buffer_builder.append_non_null();
-                                        // }
                                         null_buffer_builder.append_n_non_nulls(run_len);
                                     } else {
                                         null_buffer_builder.append_n_nulls(run_len);
@@ -1247,7 +1242,7 @@ impl SortedValuesArrayBuilder {
             }
             DataType::UInt16 => {
                 let source_dict = self.source.as_any().downcast_ref::<DictionaryArray<UInt16Type>>().unwrap();
-                let source_keys = source_dict.keys().values();
+                let source_keys = source_dict.keys().values().iter().as_slice();
 
                 let mut keys_builder = Vec::with_capacity(total_len);
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
@@ -1260,9 +1255,7 @@ impl SortedValuesArrayBuilder {
                         }
                         SortedValuesArraySegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
-                            for &idx in indices {
-                                keys_builder.push(source_keys[idx as usize]);
-                            }
+                            keys_builder.extend(indices.iter().map(|idx| source_keys[*idx as usize]));
 
                             // Check if any of the source positions were null
                             if let Some(source_nulls) = source_dict.nulls() {
@@ -1285,9 +1278,6 @@ impl SortedValuesArrayBuilder {
 
                                     // Append the run
                                     if is_valid {
-                                        // for _ in 0..run_len {
-                                        //     null_buffer_builder.append_non_null();
-                                        // }
                                         null_buffer_builder.append_n_non_nulls(run_len);
                                     } else {
                                         null_buffer_builder.append_n_nulls(run_len);
