@@ -16,17 +16,23 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
-        Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch,
-        StringArray, StructArray, UInt8Array, UInt16Array, UInt32Array,
+        Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BinaryArray, BooleanArray,
+        DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray,
+        PrimitiveBuilder, RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
+        UInt32Array,
     },
     buffer::{BooleanBuffer, Buffer, MutableBuffer, ScalarBuffer},
     compute::{
         Partitions, SortColumn, SortOptions, and, cast, concat, lexsort_to_indices, not, partition,
         rank, take, take_record_batch,
     },
-    datatypes::{ArrowNativeType, DataType, FieldRef, Schema, UInt8Type, UInt16Type, UInt32Type},
-    util::bit_iterator::{BitIndexIterator, BitSliceIterator},
+    datatypes::{
+        ArrowNativeType, DataType, FieldRef, Schema, ToByteSlice, UInt8Type, UInt16Type, UInt32Type,
+    },
+    util::{
+        bit_iterator::{BitIndexIterator, BitSliceIterator},
+        bit_util,
+    },
 };
 use arrow_schema::Field;
 use itertools::Itertools;
@@ -565,10 +571,12 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
 
             let mut values_key_range_sorted_indices =
                 Vec::with_capacity(key_ranges.iter().map(Range::len).max().unwrap_or_default());
+            let mut values_ranges = Vec::new();
+
             for key_range in key_ranges {
                 values_key_range_sorted_indices.clear();
                 values_sorter
-                    .sort_range_to_indices(&key_range, &mut values_key_range_sorted_indices);
+                    .sort_range_to_indices(&key_range, &mut values_key_range_sorted_indices); // Arc k.1 (in here for non dicts)
 
                 // Map the sorted indices back to original source indices
                 let original_indices: Vec<u32> = values_key_range_sorted_indices
@@ -581,30 +589,47 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
 
                 sorted_val_col.append_indices(&original_indices)?;
 
-                // TODO remove all this eventually
-                // We still need to materialize the sorted values for the equality check
-                let values_key_range_sorted_indices_tmp =
-                    UInt32Array::from_iter_values(values_key_range_sorted_indices.iter().copied()); // Arc k.2
-                let values_key_range =
-                    values_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.3
-                let values_key_range_sorted = take(
-                    &values_key_range,
-                    &values_key_range_sorted_indices_tmp,
-                    None,
-                )
-                .unwrap(); // Arc k.4
+                values_ranges.clear();
+                values_sorter.take_and_partition_range(
+                    &key_range,
+                    &values_key_range_sorted_indices,
+                    &mut values_ranges,
+                )?;
 
-                // TODO - am not convinced this is correct when there are nulls?
-                let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?; // Arc k.6
-                let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
-                let values_ranges = ranges(next_eq_inverted.values());
+                // println!("values_ranges = {:?}", values_ranges);
+                // println!("values_sorted.partition_buffer = {:?}", values_sorter.partition_buffer);
+
+                // // TODO remove all this eventually
+                // // We still need to materialize the sorted values for the equality check
+                // let values_key_range_sorted_indices_tmp =
+                //     UInt32Array::from_iter_values(values_key_range_sorted_indices.iter().copied()); // Arc k.2
+                // let values_key_range =
+                //     values_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.3
+                // let values_key_range_sorted = take(
+                //     &values_key_range,
+                //     &values_key_range_sorted_indices_tmp,
+                //     None,
+                // )
+                // .unwrap(); // Arc k.4
+
+                // // TODO - am not convinced this is correct when there are nulls?
+                // let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?; // Arc k.6
+                // let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
+                // let values_ranges2 = ranges(next_eq_inverted.values());
+
+                // println!("value ranges for real {:?}", values_ranges2);
+                // if values_ranges != values_ranges2 {
+                //     println!("next_eq_arr_key = {:?}", next_eq_arr_key.values().inner());
+                //     println!("next_eq_inverted = {:?}", next_eq_inverted.values().inner());
+                //     panic!("oops");
+                // }
 
                 // TODO - reuse a vec (heal alloc) here
                 let mut parent_id_key_range_sorted = values_key_range_sorted_indices
                     .iter()
                     .map(|idx| parent_id_type_range_by_key[key_range.start + *idx as usize])
                     .collect::<Vec<_>>();
-                for values_range in values_ranges {
+                for values_range in &values_ranges {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
                     let parent_ids_range =
                         &mut parent_id_key_range_sorted[values_range.start..values_range.end];
@@ -1290,8 +1315,13 @@ impl SortedValuesArrayBuilder {
     }
 }
 
+struct AttrValueDictKeysAndRanks {
+    keys: Vec<u16>,
+    ranks: Vec<u16>,
+}
+
 enum AttrsValueSorterInner {
-    RanksU16(Vec<u16>),
+    KeysAndRanks(AttrValueDictKeysAndRanks),
     Array(ArrayRef),
 }
 
@@ -1299,6 +1329,9 @@ struct AttrValuesSorter {
     inner: AttrsValueSorterInner,
 
     rank_sort_scratch: Vec<(usize, u16)>,
+    key_partition_scratch: Vec<u16>,
+    partition_buffer: Vec<u8>,
+    partition_buffer_bitlen: usize,
 }
 
 impl AttrValuesSorter {
@@ -1307,25 +1340,7 @@ impl AttrValuesSorter {
             DataType::Dictionary(k, v) => match **k {
                 // TODO - not sure this branch is needed? I don't think we have u8 dict vals
                 DataType::UInt8 => {
-                    let dict_arr = values_arr
-                        .as_any()
-                        .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .unwrap();
-                    let value_ranks = rank(
-                        dict_arr.values(),
-                        Some(SortOptions {
-                            nulls_first: false,
-                            ..Default::default()
-                        }),
-                    )
-                    .unwrap();
-                    let key_ranks = dict_arr
-                        .keys()
-                        .values()
-                        .iter()
-                        .map(|k| value_ranks[*k as usize] as u16)
-                        .collect::<Vec<_>>();
-                    AttrsValueSorterInner::RanksU16(key_ranks)
+                    todo!("same as below")
                 }
                 DataType::UInt16 => {
                     let dict_arr = values_arr
@@ -1347,7 +1362,10 @@ impl AttrValuesSorter {
                         .iter()
                         .map(|k| value_ranks[*k as usize] as u16)
                         .collect::<Vec<_>>();
-                    AttrsValueSorterInner::RanksU16(key_ranks)
+                    AttrsValueSorterInner::KeysAndRanks(AttrValueDictKeysAndRanks {
+                        ranks: key_ranks,
+                        keys: dict_arr.keys().values().to_vec(),
+                    })
                 }
                 _ => {
                     todo!("bad dict key")
@@ -1359,6 +1377,9 @@ impl AttrValuesSorter {
         Self {
             inner,
             rank_sort_scratch: Vec::new(),
+            key_partition_scratch: Vec::new(),
+            partition_buffer: Vec::new(),
+            partition_buffer_bitlen: 0,
         }
     }
 
@@ -1378,11 +1399,12 @@ impl AttrValuesSorter {
                 .unwrap();
                 result.extend(sorted_indices.values());
             }
-            AttrsValueSorterInner::RanksU16(ranks) => {
+            AttrsValueSorterInner::KeysAndRanks(ranks) => {
                 self.rank_sort_scratch.clear();
                 self.rank_sort_scratch.reserve(range.len());
                 self.rank_sort_scratch.extend(
                     ranks
+                        .ranks
                         .iter()
                         .skip(range.start)
                         .take(range.len())
@@ -1393,6 +1415,99 @@ impl AttrValuesSorter {
                 result.extend(self.rank_sort_scratch.iter().map(|(idx, _)| *idx as u32));
             }
         }
+    }
+
+    fn take_and_partition_range(
+        &mut self,
+        range: &Range<usize>,
+        indices: &Vec<u32>,
+        result: &mut Vec<Range<usize>>,
+    ) -> Result<()> {
+        match &self.inner {
+            AttrsValueSorterInner::Array(arr) => {
+                let indices = UInt32Array::from_iter_values(indices.iter().copied());
+                let values_range = arr.slice(range.start, range.len());
+                let values_range_sorted = take(&values_range, &indices, None).unwrap();
+
+                let next_eq_arr_key = create_next_element_equality_array(&values_range_sorted)?; // Arc k.6
+                let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
+                let mut values_ranges = ranges(next_eq_inverted.values());
+                result.append(&mut values_ranges);
+            }
+            AttrsValueSorterInner::KeysAndRanks(keys) => {
+                let keys_range = &keys.keys[range.start..range.end];
+                self.key_partition_scratch.clear();
+                self.key_partition_scratch.reserve(keys_range.len());
+                self.key_partition_scratch
+                    .extend(indices.iter().map(|i| keys_range[*i as usize]));
+                self.fill_keys_partition_from_scratch_buffer();
+
+                let boundaries_len = self.partition_buffer_bitlen;
+                let set_indices = BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
+                let mut current = 0;
+                for idx in set_indices {
+                    let t = current;
+                    current = idx + 1;
+                    result.push(t..current)
+                }
+                let last = boundaries_len + 1;
+                if current != last {
+                    result.push(current..last)
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_keys_partition_from_scratch_buffer(&mut self) {
+        let len = self.key_partition_scratch.len() - 1;
+        self.partition_buffer.clear();
+        self.partition_buffer.reserve(bit_util::ceil(len, 64) * 8);
+
+        let left = &self.key_partition_scratch[0..len];
+        let right = &self.key_partition_scratch[1..len + 1];
+
+        // println!("left = {:?}", left);
+        // println!("right = {:?}", right);
+
+        let f = |i: usize| -> bool {
+            #[allow(unsafe_code)]
+            let a = unsafe { *left.get_unchecked(i) };
+            #[allow(unsafe_code)]
+            let b = unsafe { *right.get_unchecked(i) };
+            a.is_eq(b)
+        };
+
+        let chunks = len / 64;
+        let remainder = len % 64;
+        for chunk in 0..chunks {
+            let mut packed = 0;
+            for bit_idx in 0..64 {
+                let i = bit_idx + chunk * 64;
+                packed |= (f(i) as u64) << bit_idx;
+            }
+
+            // // SAFETY: Already allocated sufficient capacity
+            // unsafe { buffer.push_unchecked(packed) }
+            self.partition_buffer
+                .extend_from_slice((!packed).to_byte_slice());
+        }
+
+        if remainder != 0 {
+            let mut packed = 0;
+            for bit_idx in 0..remainder {
+                let i = bit_idx + chunks * 64;
+                packed |= (f(i) as u64) << bit_idx;
+            }
+
+            // // SAFETY: Already allocated sufficient capacity
+            // unsafe { buffer.push_unchecked(packed) }
+            self.partition_buffer
+                .extend_from_slice((!packed).to_byte_slice());
+        }
+
+        self.partition_buffer.truncate(bit_util::ceil(len, 8));
+        self.partition_buffer_bitlen = len;
     }
 }
 

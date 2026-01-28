@@ -684,6 +684,9 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     // use the arrow compute kernel to compare one
     let lhs = arr.slice(0, arr.len() - 1);
     let rhs = arr.slice(1, arr.len() - 1);
+
+    // println!("lhs = {lhs:?}");
+    // println!("rhs = {rhs:?}");
     // safety: `eq` should only be returning an error if the types or lengths don't match
     // which because of what we're passing here, these conditions are satisfied
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
