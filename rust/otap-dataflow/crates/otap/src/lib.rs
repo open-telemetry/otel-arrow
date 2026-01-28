@@ -49,6 +49,9 @@ pub mod filter_processor;
 /// Implementation of a noop exporter that acts as a exporter placeholder
 pub mod noop_exporter;
 
+/// Fan-out processor to clone data to multiple downstream outputs.
+pub mod fanout_processor;
+
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
