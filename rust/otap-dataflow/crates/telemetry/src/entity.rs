@@ -304,8 +304,10 @@ mod tests {
     fn test_register_dedupes() {
         let mut registry = EntityRegistry::default();
 
-        let key1 = registry.register(MockAttributeSet::new("value".to_string()));
-        let key2 = registry.register(MockAttributeSet::new("value".to_string()));
+        let (key1, created) = registry.register(MockAttributeSet::new("value".to_string()));
+        let (key2, dup_created) = registry.register(MockAttributeSet::new("value".to_string()));
+        assert!(created);
+        assert!(!dup_created);
 
         assert_eq!(key1, key2);
         assert_eq!(registry.len(), 1);
