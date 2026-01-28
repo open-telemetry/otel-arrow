@@ -464,16 +464,15 @@ fn sort_record_batch(
 fn sort_and_apply_transport_delta_encoding_for_attrs(
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch> {
-    // TODO I think the algorithm only works here if the batch size > 2?
 
     let type_col = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
     let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY)?;
 
     let type_and_key_indices =
-        sort_attrs_type_and_keys_to_indices(type_col, key_col.clone()).unwrap();
+        sort_attrs_type_and_keys_to_indices(type_col, key_col.clone()).unwrap(); // Arc 1 (tmp)
 
-    let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap();
-    let key_col_sorted = take(key_col, &type_and_key_indices, None).unwrap();
+    let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap(); // Arc 2 (used)
+    let key_col_sorted = take(key_col, &type_and_key_indices, None).unwrap(); // Arc 3 (used)
 
     let mut sorted_val_columns: [Option<SortedValuesArrayBuilder>; 8] = [
         None, // empty
@@ -509,7 +508,13 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
 
     // TODO - proper error handling
     let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
-    let mut sorted_parent_id_column = SortedValuesArrayBuilder::try_new(parent_id_col)?;
+    // let mut sorted_parent_id_column = SortedValuesArrayBuilder::try_new(parent_id_col)?;
+
+    let mut parent_id_column_vals = parent_id_col.as_any().downcast_ref::<UInt16Array>()
+        .unwrap()
+        .values()
+        .to_vec();
+    let mut sorted_parent_id_column = Vec::with_capacity(record_batch.num_rows());
 
     let type_prim_arr = type_col_sorted
         .as_any()
@@ -517,7 +522,7 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
         .unwrap();
     let type_col_sorted_bytes = type_prim_arr.values().inner().as_slice();
 
-    let type_partitions = partition(&[type_col_sorted.clone()]).unwrap();
+    let type_partitions = partition(&[type_col_sorted.clone()]).unwrap(); // Arc 4 (tmp)
     for type_range in type_partitions.ranges() {
         let key_range_attr_type = type_col_sorted_bytes[type_range.start];
         let sorted_val_col = if key_range_attr_type == AttributeValueType::Map as u8
@@ -531,13 +536,21 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
         let type_col_sorted_indices_type_range_by_key_prim =
             type_and_key_indices.slice(type_range.start, type_range.len());
 
-        let parent_id_type_range_by_key =
-            sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
+        // TODO:
+        // - we might actually be able to defer materializing this
+        // - reuse the vec for each type
+        // - pre-allocate this vec
+        let parent_id_type_range_by_key = type_col_sorted_indices_type_range_by_key_prim.values()
+            .iter()
+            .map(|idx| parent_id_column_vals[*idx as usize])
+            .collect::<Vec<_>>();
+        // let parent_id_type_range_by_key =
+        //     sorted_parent_id_column.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.1 (tmp) for each type
 
         // sort the values columns for values of this type
         if let Some(sorted_val_col) = sorted_val_col {
             let values_type_range_by_key =
-                sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?;
+                sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.2 (tmp)
 
             let values_arr_for_sorting: ArrayRef = match values_type_range_by_key.data_type() {
                 DataType::Dictionary(k, v) => match **k {
@@ -563,7 +576,7 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                         Arc::new(UInt8Array::new(
                             ScalarBuffer::from(key_ranks),
                             dict_arr.keys().nulls().cloned(),
-                        ))
+                        )) // Arc t.4 (tmp)
                         // Arc::new(UInt8Array::from_iter(key_ranks))
                     }
                     DataType::UInt16 => {
@@ -589,7 +602,7 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                         Arc::new(UInt16Array::new(
                             ScalarBuffer::from(key_ranks),
                             dict_arr.keys().nulls().cloned(),
-                        ))
+                        )) // Arc t.4 (tmp)
                         // Arc::new(UInt16Array::from_iter(key_ranks))
                     }
                     _ => {
@@ -605,15 +618,13 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
 
             // partition key ranges (using SIMD)
-            let next_eq_arr_key = create_next_element_equality_array(&keys_range_sorted)?;
-            let next_eq_inverted = not(&next_eq_arr_key).unwrap();
-            let key_ranges = ranges(next_eq_inverted.values());
+            let next_eq_arr_key = create_next_element_equality_array(&keys_range_sorted)?; // Arc t.5 (tmp)
+            let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc t.6 (tmp)
+            let key_ranges = ranges(next_eq_inverted.values()); // Arc t.7 (tmp)
 
             for key_range in key_ranges {
-                // let values_key_range =
-                //     values_type_range_by_key.slice(key_range.start, key_range.len());
                 let values_key_range =
-                    values_arr_for_sorting.slice(key_range.start, key_range.len());
+                    values_arr_for_sorting.slice(key_range.start, key_range.len()); // Arc k.1
 
                 let values_key_range_sorted_indices = arrow::compute::sort_to_indices(
                     &values_key_range,
@@ -623,37 +634,52 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
                     }),
                     None,
                 )
-                .unwrap();
+                .unwrap(); // Arc k.2
 
 
                 let values_key_range =
-                    values_type_range_by_key.slice(key_range.start, key_range.len());
+                    values_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.2
                 let values_key_range_sorted =
-                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap();
+                    take(&values_key_range, &values_key_range_sorted_indices, None).unwrap(); // Arc k.3
                 sorted_val_col.append_external_sorted_range(values_key_range_sorted.clone())?;
 
-                let parent_id_key_range =
-                    parent_id_type_range_by_key.slice(key_range.start, key_range.len());
-                let parent_id_key_range_sorted =
-                    take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap();
+                let parent_id_key_range = &parent_id_type_range_by_key[key_range.start..key_range.end];
+                // let parent_id_key_range =
+                //     parent_id_type_range_by_key.slice(key_range.start, key_range.len()); // Arc k.4
+                //
+                let mut parent_id_key_range_sorted = values_key_range_sorted_indices
+                    .values()
+                    .iter()
+                    .map(|idx| parent_id_key_range[*idx as usize])
+                    .collect::<Vec<_>>();
+                // let parent_id_key_range_sorted =
+                //     take(&parent_id_key_range, &values_key_range_sorted_indices, None).unwrap(); // Arc k.5
 
                 // TODO - am not convinced this is correct when there are nulls?
-                let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?;
-                let next_eq_inverted = not(&next_eq_arr_key).unwrap();
+                let next_eq_arr_key = create_next_element_equality_array(&values_key_range_sorted)?; // Arc k.6
+                let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
                 let values_ranges = ranges(next_eq_inverted.values());
 
                 for values_range in values_ranges {
                     // TODO NEED ADD TEST CASE TO COVER THIS BLOCK
-                    let parent_ids_range =
-                        parent_id_key_range_sorted.slice(values_range.start, values_range.len());
-                    let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap();
-                    let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted);
-                    sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
+                    // P
+                    let parent_ids_range = &mut parent_id_key_range_sorted[values_range.start..values_range.end];
+                    // let parent_ids_range =
+                    //     parent_id_key_range_sorted.slice(values_range.start, values_range.len()); // Arc v.1
+                    parent_ids_range.sort_unstable();
+                    // let parent_ids_sorted = arrow::compute::sort(parent_ids_range.as_ref(), None).unwrap(); // Arc v.2
+                    delta_encode_parent_id_slice(parent_ids_range);
+                    // let parent_ids_sorted = delta_encode_parent_id(parent_ids_sorted); // Arc v.3
+                    sorted_parent_id_column.extend_from_slice(parent_ids_range);
+                    // sorted_parent_id_column.append_external_sorted_range(parent_ids_sorted)?;
                 }
             }
         } else {
             // TODO what we're doing here is not right. We need to sort by the parent_id column
-            sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
+            // and we need to delta encode it
+            todo!()
+            // sorted_parent_id_column.extend_from_slice(&parent_id_type_range_by_key);
+            // sorted_parent_id_column.append_external_sorted_range(parent_id_type_range_by_key)?;
         }
 
         // push the unsorted values for columns not of this type to fill in gaps
@@ -683,6 +709,11 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
             }
         }
     }
+
+    let parent_id_col =  Arc::new(UInt16Array::new(
+        ScalarBuffer::from(sorted_parent_id_column),
+        None
+    ));
 
     let mut fields = vec![];
     let mut columns = vec![];
@@ -760,7 +791,8 @@ fn sort_and_apply_transport_delta_encoding_for_attrs(
 
         // TODO - not the right handling
         if field_name == consts::PARENT_ID {
-            columns.push(sorted_parent_id_column.finish()?);
+            columns.push(parent_id_col.clone());
+            // columns.push(sorted_parent_id_column.finish()?);
             continue;
         }
 
@@ -804,6 +836,16 @@ fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
         _ => {
             todo!()
         }
+    }
+}
+
+fn delta_encode_parent_id_slice(vals: &mut [u16]) {
+    let mut prev = vals[0];
+    for i in 1..vals.len() {
+        let curr = vals[i];
+        // TODO should be wrapping_sub?
+        vals[i] = curr - prev;
+        prev = curr;
     }
 }
 
