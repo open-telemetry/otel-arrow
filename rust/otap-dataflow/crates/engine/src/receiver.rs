@@ -511,15 +511,15 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
+            (ReceiverWrapper::Local { .. }, _) => Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
                 error: "Expected a local sender for PData".to_owned(),
                 source_detail: String::new(),
             }),
-            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
+            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
                 error: "Expected a shared sender for PData".to_owned(),
                 source_detail: String::new(),
             }),
