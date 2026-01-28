@@ -89,13 +89,15 @@ impl TelemetryRegistryHandle {
     }
 
     /// Visits a single entity by key.
-    pub fn visit_entity<F>(&self, key: EntityKey, mut f: F)
+    pub fn visit_entity<F, T>(&self, key: EntityKey, mut f: F) -> Option<T>
     where
-        F: FnMut(&dyn AttributeSetHandler),
+        F: FnMut(&dyn AttributeSetHandler) -> T,
     {
         let reg = self.registry.lock();
         if let Some(attrs) = reg.entities.get(key) {
-            f(attrs);
+            Some(f(attrs))
+        } else {
+            None
         }
     }
 

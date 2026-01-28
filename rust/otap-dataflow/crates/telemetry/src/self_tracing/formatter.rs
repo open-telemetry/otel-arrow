@@ -77,6 +77,8 @@ impl<'a> StyledBufWriter<'a> {
     #[inline]
     fn write_ansi(&mut self, code: AnsiCode) {
         if let ColorMode::Color = self.color_mode {
+            // TODO: This could be optimized using precalculated or
+            // hardcoded ANSI [u8;4] values.
             let _ = write!(self.buf, "\x1b[{}m", code as u8);
         }
     }
@@ -397,6 +399,8 @@ impl StyledBufWriter<'_> {
     where
         F: FnOnce(&mut Self),
     {
+        // Note! This may leave the console in a colored state if the buffer fills
+        // mid-write. TODO: This can likely be fixed as part of #1746.
         self.write_ansi(code);
         f(self);
         self.write_ansi(AnsiCode::Reset);
@@ -487,7 +491,7 @@ impl StyledBufWriter<'_> {
 
     /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
     ///
-    /// Unlike \`format_log_line\`, this takes raw attributes instead of a LogRecordView,
+    /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
     /// and doesn't print a body - just the header name and attributes.
     pub fn format_header_line<A, L, E, S>(
         &mut self,

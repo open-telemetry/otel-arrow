@@ -405,13 +405,18 @@ impl ScopeToBytesMap {
             return cached.clone();
         }
 
-        // Encode the entity attributes as KeyValue messages
         let mut buf = ProtoBuffer::with_capacity(128);
-        self.registry.visit_entity(key, |attrs| {
-            for (attr_key, attr_value) in attrs.iter_attributes() {
-                encode_scope_attribute(&mut buf, attr_key, attr_value);
-            }
+        let visited = self.registry.visit_entity(key, |attrs| {
+            attrs
+                .iter_attributes()
+                .map(|(a, b)| (a, b.clone()))
+                .collect::<Vec<_>>()
         });
+        if let Some(attrs) = visited {
+            for (attr_key, attr_value) in attrs {
+                encode_scope_attribute(&mut buf, attr_key, &attr_value);
+            }
+        }
 
         let bytes = buf.into_bytes();
         let _ = self.cache.insert(key, bytes.clone());
