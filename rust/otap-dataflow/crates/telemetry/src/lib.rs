@@ -150,7 +150,7 @@ pub struct InternalTelemetrySystem {
     provider_modes: LoggingProviders,
 
 
-    /// Entity key providers for associating events with context.
+    /// Entity key providers for associating log events with their source entity context.
     context_fn: LogContextFn,
 
     /// Event reporter for asynchronous internal logging modes.
