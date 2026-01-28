@@ -47,7 +47,7 @@ nodes:
       # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
       otlp_handling: pass_through
 
-      # ─── Retry Configuration ───────────────────────────────────────────
+      # --- Retry Configuration ---
       # Controls exponential backoff for failed downstream deliveries.
       # Bundles that receive NACK from downstream are retried with backoff.
 
