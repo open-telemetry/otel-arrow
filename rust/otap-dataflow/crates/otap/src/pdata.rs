@@ -19,8 +19,8 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceEffectHandlerExtension,
-    ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
+    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
     control::{AckMsg, CallData, NackMsg},
 };
 use otap_df_pdata::OtapPayload;
@@ -368,7 +368,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
 /* --------  effect handler extensions (shared, local) -------- */
 
 #[async_trait(?Send)]
-impl MessageSourceEffectHandlerExtension<OtapPdata>
+impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
     async fn send_message_with_source_node(
@@ -393,7 +393,7 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
         let data = data.add_source_node(Some(self.processor_id().name));
         self.send_message_to(port, data).await
@@ -405,7 +405,7 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
         let data = data.add_source_node(Some(self.processor_id().name));
         self.try_send_message_to(port, data)
@@ -413,14 +413,14 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
 }
 
 #[async_trait(?Send)]
-impl MessageSourceEffectHandlerExtension<OtapPdata>
+impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
 {
     async fn send_message_with_source_node(
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.send_message(data).await
     }
 
@@ -428,7 +428,7 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.try_send_message(data)
     }
 
@@ -438,9 +438,9 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.send_message_to(port, data).await
     }
 
@@ -450,15 +450,15 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.try_send_message_to(port, data)
     }
 }
 
-#[async_trait(?Send)]
-impl MessageSourceEffectHandlerExtension<OtapPdata>
+#[async_trait]
+impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
     async fn send_message_with_source_node(
@@ -483,7 +483,7 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
         let data = data.add_source_node(Some(self.processor_id().name));
         self.send_message_to(port, data).await
@@ -495,22 +495,22 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
         let data = data.add_source_node(Some(self.processor_id().name));
         self.try_send_message_to(port, data)
     }
 }
 
-#[async_trait(?Send)]
-impl MessageSourceEffectHandlerExtension<OtapPdata>
+#[async_trait]
+impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
 {
     async fn send_message_with_source_node(
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.send_message(data).await
     }
 
@@ -518,7 +518,7 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.try_send_message(data)
     }
 
@@ -528,9 +528,9 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.send_message_to(port, data).await
     }
 
@@ -540,9 +540,9 @@ impl MessageSourceEffectHandlerExtension<OtapPdata>
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>>
     where
-        P: Into<PortName>,
+        P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(Some(self.receiver_id().name));
         self.try_send_message_to(port, data)
     }
 }

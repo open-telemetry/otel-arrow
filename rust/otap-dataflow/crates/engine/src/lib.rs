@@ -211,7 +211,7 @@ pub trait ConsumerEffectHandlerExtension<PData> {
 
 /// Effect handler extension for adding message source
 #[async_trait(?Send)]
-pub trait MessageSourceEffectHandlerExtension<PData> {
+pub trait MessageSourceLocalEffectHandlerExtension<PData> {
     /// Send data after tagging with the source node.
     async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
     /// Try to send data after tagging with the source node.
@@ -223,7 +223,7 @@ pub trait MessageSourceEffectHandlerExtension<PData> {
         data: PData,
     ) -> Result<(), TypedError<PData>>
     where
-        P: Into<PortName>;
+        P: Into<PortName> + Send + 'static;
     /// Try to send data to a specific port after tagging with the source node.
     fn try_send_message_with_source_node_to<P>(
         &self,
@@ -231,7 +231,32 @@ pub trait MessageSourceEffectHandlerExtension<PData> {
         data: PData,
     ) -> Result<(), TypedError<PData>>
     where
-        P: Into<PortName>;
+        P: Into<PortName> + Send + 'static;
+}
+
+/// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).
+#[async_trait]
+pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
+    /// Send data after tagging with the source node.
+    async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to send data after tagging with the source node.
+    fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Send data to a specific port after tagging with the source node.
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
+    /// Try to send data to a specific port after tagging with the source node.
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
 }
 /// Builds a pipeline factory for initialization.
 ///

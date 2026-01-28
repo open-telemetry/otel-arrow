@@ -359,8 +359,8 @@ mod tests {
         );
 
         eh.send_message(11).await.unwrap();
-        assert_eq!(a_rx.recv().await.unwrap(), 11);
 
+        assert_eq!(a_rx.recv().await.unwrap(), 11);
         assert!(
             timeout(Duration::from_millis(50), b_rx.recv())
                 .await
@@ -429,7 +429,6 @@ mod tests {
 
         // Should succeed when channel has capacity
         assert!(eh.try_send_message(42).is_ok());
-
         assert_eq!(rx.try_recv().unwrap(), 42);
     }
 
@@ -491,10 +490,6 @@ mod tests {
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
-
-        // Port 'a' should not have received anything
-        assert!(a_rx.try_recv().is_err());
-
         assert_eq!(b_rx.try_recv().unwrap(), 42);
         // Port 'a' should not have received anything
         assert!(a_rx.try_recv().is_err());
