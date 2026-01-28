@@ -24,7 +24,7 @@ use http::{Request, Response};
 use otap_df_config::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{Interests, MessageSourceEffectHandlerExtension, ProducerEffectHandlerExtension};
+use otap_df_engine::{Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
