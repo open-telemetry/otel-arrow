@@ -122,6 +122,8 @@ pub trait AttributeSetHandler {
 
     /// Returns the primary (display) name for this attribute set.
     /// By convention, this is the first attribute value, or "<unnamed>" if empty.
+    ///
+    /// TODO(#1907): this is insufficient to distinguish entities in console logs.
     fn primary_name(&self) -> String {
         self.attribute_values()
             .first()

@@ -6,7 +6,7 @@
 
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
-use crate::entity::EntityRegistry;
+use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
     MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
@@ -75,19 +75,17 @@ impl TelemetryRegistryHandle {
             .collect::<Vec<_>>()
             .join(", ");
 
-        let (entity_key, created) = self.registry.lock().entities.register(attrs);
-
-        if created {
+        let outcome = self.registry.lock().entities.register(attrs);
+        if let RegisterOutcome::Created(_) = outcome {
             // Log the entity definition
             otel_info!(
                 "registry.define_entity",
                 schema = schema_name,
-                entity_name = primary_name.as_str(),
-                definition = all_attrs.as_str()
+                entity_name = primary_name,
+                definition = all_attrs,
             );
         }
-
-        entity_key
+        outcome.key()
     }
 
     /// Unregisters an entity by key.
@@ -121,8 +119,8 @@ impl TelemetryRegistryHandle {
         // does for referring to in console logs. Will be needed to print metrics
         // to the console.
         let mut registry = self.registry.lock();
-        let (entity_key, _) = registry.entities.register(attrs);
-        registry.metrics.register(entity_key)
+        let outcome = registry.entities.register(attrs);
+        registry.metrics.register(outcome.key())
     }
 
     /// Registers a metric set type for an existing entity key.
