@@ -4,7 +4,7 @@
 //! An alternative to Tokio fmt::layer().
 
 use super::encoder::level_to_severity_number;
-use super::{LogContext, LogRecord, SavedCallsite};
+use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
@@ -31,17 +31,17 @@ pub enum AnsiCode {
     Bold = 1,
     /// Dim text.
     Dim = 2,
-    /// Red foreground.
+    /// Red foreground. Use for ERROR/FATAL.
     Red = 31,
-    /// Green foreground.
+    /// Green foreground. Use for INFO.
     Green = 32,
-    /// Yellow foreground.
+    /// Yellow foreground. Use for WARN.
     Yellow = 33,
-    /// Blue foreground.
+    /// Blue foreground. Use for DEBUG/TRACE.
     Blue = 34,
-    /// Magenta foreground.
+    /// Magenta foreground. Use for SCOPE/ENTITY.
     Magenta = 35,
-    /// Cyan foreground.
+    /// Cyan foreground. Use for RESOURCE.
     Cyan = 36,
 }
 
@@ -77,19 +77,23 @@ impl<'a> StyledBufWriter<'a> {
     #[inline]
     fn write_ansi(&mut self, code: AnsiCode) {
         if let ColorMode::Color = self.color_mode {
+            // TODO: This could be optimized using precalculated or
+            // hardcoded ANSI [u8;4] values.
             let _ = write!(self.buf, "\x1b[{}m", code as u8);
         }
     }
 
     /// Get current buffer position.
     #[inline]
-    pub fn position(&self) -> usize {
+    #[must_use]
+    pub const fn position(&self) -> usize {
         self.buf.position() as usize
     }
 
     /// Check if the buffer is full (position >= capacity).
     #[inline]
-    pub fn is_full(&self) -> bool {
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
         self.buf.position() as usize >= self.buf.get_ref().len()
     }
 }
@@ -115,36 +119,25 @@ pub struct ConsoleWriter {
 /// A minimal alternative to tracing_subscriber::fmt::layer().
 pub struct RawLoggingLayer {
     writer: ConsoleWriter,
-    context_fn: fn() -> LogContext,
+    context_fn: LogContextFn,
 }
 
 impl RawLoggingLayer {
     /// Return a new formatting layer with associated writer and context function.
     #[must_use]
-    pub fn new(writer: ConsoleWriter, context_fn: fn() -> LogContext) -> Self {
+    pub fn new(writer: ConsoleWriter, context_fn: LogContextFn) -> Self {
         Self { writer, context_fn }
     }
 
     /// Process a tracing Event directly, bypassing the dispatcher.
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
-        // TODO: there are allocations implied in LogRecord::new that we
-        // would prefer to avoid; it will be an extensive change in the
-        // ProtoBuffer impl to stack-allocate this as a temporary.
         let record = LogRecord::new(event, (self.context_fn)());
         self.writer.print_log_record(time, &record, |w| {
-            w.write_styled(AnsiCode::Cyan, |w| {
-                for key in record.context.iter() {
-                    let _ = write!(w, " entity={:?}", key);
-                }
-            });
+            w.format_entity_suffix_without_registry(&record.context);
         });
     }
 }
-
-/// Type alias for a cursor over a byte buffer.
-/// Uses \`std::io::Cursor\` for position tracking with \`std::io::Write\`.
-pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
@@ -172,10 +165,7 @@ pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord)
     let len = {
         let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
         w.format_log_record(time, record, |w| {
-            // Append entity context inline (raw format for testing without registry)
-            for key in record.context.iter() {
-                let _ = write!(w, " {:?}", key);
-            }
+            w.format_entity_suffix_without_registry(&record.context);
         });
         w.position()
     };
@@ -212,7 +202,8 @@ impl ConsoleWriter {
 /// Write callsite details as event_name to any `io::Write` target.
 ///
 /// Format: `target::name (file:line)` or `target::name` if no file/line.
-/// This is used by both the text formatter and the OTLP encoder.
+/// This is used by both the text formatter and the OTLP encoder, so does
+/// not belong in StyledBufWriter.
 #[inline]
 pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
     let _ = w.write_all(callsite.target().as_bytes());
@@ -404,6 +395,8 @@ impl StyledBufWriter<'_> {
     where
         F: FnOnce(&mut Self),
     {
+        // Note! This may leave the console in a colored state if the buffer fills
+        // mid-write. TODO: This can likely be fixed as part of #1746.
         self.write_ansi(code);
         f(self);
         self.write_ansi(AnsiCode::Reset);
@@ -445,10 +438,19 @@ impl StyledBufWriter<'_> {
             Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
             Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
             Some(s) if s >= 9 => AnsiCode::Green,   // INFO
-            Some(s) if s >= 5 => AnsiCode::Blue,    // DEBUG
-            Some(s) if s >= 1 => AnsiCode::Magenta, // TRACE
+            Some(s) if s >= 1 => AnsiCode::Blue,    // DEBUG/TRACE
             _ => AnsiCode::Reset,
         }
+    }
+
+    /// This prints the entity keys without attempting any form of lookup
+    /// leaving context keys unsymbolized e.g. 'entity/pipeline=EntityKey("1v3")'.
+    pub fn format_entity_suffix_without_registry(&mut self, context: &LogContext) {
+        self.write_styled(AnsiCode::Magenta, |w| {
+            for key in context.iter() {
+                let _ = write!(w, " entity={:?}", key);
+            }
+        });
     }
 
     /// Format a log line from a LogRecordView with custom formatters.
@@ -591,7 +593,6 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord as ProtoLogRecord;
     use prost::Message;
-    use smallvec::smallvec;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tracing_subscriber::prelude::*;
@@ -607,7 +608,7 @@ mod tests {
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let time = SystemTime::now();
-            let record = LogRecord::new(event, smallvec![]);
+            let record = LogRecord::new(event, LogContext::new());
 
             // Capture formatted output
             *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
@@ -774,7 +775,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
-            context: smallvec![],
+            context: LogContext::new(),
         };
 
         let output = format_log_record_to_string(Some(time), &record);
@@ -784,14 +785,6 @@ mod tests {
         assert_eq!(
             output,
             "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
-        );
-
-        let output = format_log_record_to_string(Some(time), &record);
-
-        // With ANSI codes: dim timestamp, green INFO (padded to 5 chars), bold event name
-        assert_eq!(
-            output,
-            "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO \x1b[0m \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m\n"
         );
 
         // Verify full OTLP encoding with known callsite
@@ -835,7 +828,7 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
-            context: smallvec![],
+            context: LogContext::new(),
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];

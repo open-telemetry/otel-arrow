@@ -135,7 +135,7 @@ impl ObservedStateStore {
 
                 self.console.print_log_record(log.time, &log.record, |w| {
                     if !context.is_empty() {
-                        w.write_styled(AnsiCode::Cyan, |w| {
+                        w.write_styled(AnsiCode::Magenta, |w| {
                             Self::format_scope_from_registry(w, context, &self.registry);
                         });
                     }
@@ -154,7 +154,7 @@ impl ObservedStateStore {
         registry: &TelemetryRegistryHandle,
     ) {
         for entity_key in context.iter() {
-            registry.visit_entity(*entity_key, |attrs| {
+            let _ = registry.visit_entity(*entity_key, |attrs| {
                 let _ = write!(
                     w,
                     " entity/{}={}",

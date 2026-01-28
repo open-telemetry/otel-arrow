@@ -102,14 +102,13 @@ impl TelemetryRegistryHandle {
         self.registry.lock().entities.len()
     }
 
-    /// Visits a single entity by key, if it exists.
-    pub fn visit_entity<F>(&self, key: EntityKey, mut f: F)
+    /// Visits a single entity by key.
+    pub fn visit_entity<F, T>(&self, key: EntityKey, f: F) -> Option<T>
     where
-        F: FnMut(&dyn AttributeSetHandler),
+        F: FnOnce(&dyn AttributeSetHandler) -> T,
     {
-        if let Some(attrs) = self.registry.lock().entities.get(key) {
-            f(attrs);
-        }
+        let reg = self.registry.lock();
+        reg.entities.get(key).map(|attrs| f(attrs))
     }
 
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`

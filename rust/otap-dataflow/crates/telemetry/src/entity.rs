@@ -136,6 +136,7 @@ impl Debug for EntityRegistry {
 
 impl EntityRegistry {
     /// Registers (or reuses) an entity for the provided attribute set and returns its key.
+    /// The boolean indicates whether a new entry was created.
     #[must_use]
     pub(crate) fn register(&mut self, attrs: impl AttributeSetHandler) -> (EntityKey, bool) {
         let entity = EntityAttributeSet::new(attrs);
@@ -376,18 +377,20 @@ mod tests {
 
         let mut registry = EntityRegistry::default();
 
-        let key1 = registry.register(AttributeSetA {
+        let (key1, created) = registry.register(AttributeSetA {
             values: vec![
                 AttributeValue::String("value".to_string()),
                 AttributeValue::Int(7),
             ],
         });
-        let key2 = registry.register(AttributeSetB {
+        assert!(created);
+        let (key2, dup_created) = registry.register(AttributeSetB {
             values: vec![
                 AttributeValue::Int(7),
                 AttributeValue::String("value".to_string()),
             ],
         });
+        assert!(!dup_created);
 
         assert_eq!(key1, key2);
         assert_eq!(registry.len(), 1);

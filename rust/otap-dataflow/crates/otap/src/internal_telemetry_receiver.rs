@@ -108,7 +108,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let internal = self.internal_telemetry.clone();
         let logs_receiver = internal.logs_receiver;
         let resource_bytes = internal.resource_bytes;
-        let mut scope_info = ScopeToBytesMap::new(internal.registry);
+        let mut scope_cache = ScopeToBytesMap::new(internal.registry);
 
         // Start periodic telemetry collection
         let _ = effect_handler
@@ -126,7 +126,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_info).await?;
+                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
                                 }
                             }
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
@@ -147,7 +147,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 result = logs_receiver.recv_async() => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_info).await?;
+                            Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed

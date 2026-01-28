@@ -179,7 +179,7 @@ impl TreeChars {
 
 /// Hierarchical formatter for OTLP data.
 pub struct HierarchicalFormatter {
-    color_mode: ColorMode,
+    color: ColorMode,
     tree: TreeChars,
 }
 
@@ -188,7 +188,7 @@ impl HierarchicalFormatter {
     #[must_use]
     pub fn new(use_color: bool, use_unicode: bool) -> Self {
         Self {
-            color_mode: if use_color {
+            color: if use_color {
                 ColorMode::Color
             } else {
                 ColorMode::NoColor
@@ -242,9 +242,7 @@ impl HierarchicalFormatter {
                 |w| {
                     let _ = w.write_all(b"v1.Resource");
                 },
-                |_| {
-                    // no suffix
-                },
+                |_| {}, // No line suffix.
             );
         });
 
@@ -316,9 +314,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(b"v1.InstrumentationScope");
                     }
                 },
-                |_| {
-                    // no suffix
-                },
+                |_| {}, // No line suffix.
             );
         });
 
@@ -372,9 +368,7 @@ impl HierarchicalFormatter {
                         let _ = w.write_all(name.as_bytes());
                     }
                 },
-                |_| {
-                    // no suffix
-                },
+                |_| {}, // No line suffix (scope printed above).
             );
         });
     }
@@ -385,7 +379,7 @@ impl HierarchicalFormatter {
         F: FnOnce(&mut StyledBufWriter<'_>),
     {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
+        let mut w = StyledBufWriter::new(&mut buf, self.color);
         f(&mut w);
         let len = w.position();
         output.extend_from_slice(&buf[..len]);

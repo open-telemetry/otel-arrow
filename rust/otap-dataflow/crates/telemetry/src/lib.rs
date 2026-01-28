@@ -28,13 +28,13 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
-use crate::tracing_init::empty_log_context;
 use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{
     LogLevel, LoggingProviders, ProviderMode,
 };
+use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
 
@@ -58,7 +58,7 @@ pub mod semconv;
 pub mod tracing_init;
 
 // Re-export tracing setup types for per-thread subscriber configuration.
-pub use tracing_init::{LogContextFn, TracingSetup};
+pub use tracing_init::TracingSetup;
 
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
@@ -76,6 +76,9 @@ pub use tracing::info_span as otel_info_span;
 pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
 
+/// LogContext is a collection of entity keys.
+pub use self_tracing::LogContext;
+
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
 pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
@@ -90,7 +93,7 @@ pub struct InternalTelemetrySettings {
     pub logs_receiver: flume::Receiver<ObservedEvent>,
     /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
     pub resource_bytes: bytes::Bytes,
-    /// Telemetry registry for resolving entity keys to attributes for scope encoding.
+    /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
 }
 
@@ -372,7 +375,7 @@ impl Default for InternalTelemetrySystem {
             &config,
             TelemetryRegistryHandle::new(),
             Some(dummy_reporter),
-            empty_log_context,
+            LogContext::new,
         )
         .expect("default telemetry config should be valid")
     }
@@ -415,7 +418,7 @@ mod tests {
             &TelemetryConfig::default(),
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
-            empty_log_context,
+            LogContext::new,
         )
         .expect("should create");
         assert!(
@@ -434,7 +437,7 @@ mod tests {
             &config_with_providers(providers),
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
-            empty_log_context,
+            LogContext::new,
         )
         .expect("should create");
         let its_settings = its.internal_telemetry_settings();
@@ -471,7 +474,7 @@ mod tests {
             &config,
             TelemetryRegistryHandle::new(),
             Some(test_reporter()),
-            empty_log_context,
+            LogContext::new,
         )
         .expect("should create");
 

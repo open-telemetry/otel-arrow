@@ -8,7 +8,7 @@
 //! subscriber determines how log events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
-use crate::self_tracing::{ConsoleWriter, LogContext, LogRecord, RawLoggingLayer};
+use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord, RawLoggingLayer};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
@@ -18,14 +18,6 @@ use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
-
-/// Function for retrieving entity keys from the engine's context.
-pub type LogContextFn = fn() -> LogContext;
-
-/// An empty context function.
-pub fn empty_log_context() -> LogContext {
-    smallvec::smallvec![]
-}
 
 /// Creates an `EnvFilter` for the given log level.
 ///
@@ -192,6 +184,7 @@ where
 mod tests {
     use super::*;
     use crate::event::ObservedEvent;
+    use crate::self_tracing::LogContext;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
     use opentelemetry_sdk::logs::SdkLoggerProvider;
     use otap_df_config::observed_state::SendPolicy;
@@ -203,7 +196,7 @@ mod tests {
     }
 
     fn test_setup(p: ProviderSetup, l: LogLevel) -> TracingSetup {
-        TracingSetup::new(p, l, empty_log_context)
+        TracingSetup::new(p, l, LogContext::new)
     }
 
     #[test]
@@ -443,18 +436,18 @@ mod tests {
 
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
-        ProviderSetup::Noop.with_subscriber(LogLevel::Info, empty_log_context, || {
+        ProviderSetup::Noop.with_subscriber(LogLevel::Info, LogContext::new, || {
             otel_info!("noop");
         });
 
-        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, empty_log_context, || {
+        ProviderSetup::ConsoleDirect.with_subscriber(LogLevel::Info, LogContext::new, || {
             otel_info!("console_direct");
         });
 
         let (reporter, _rx) = test_reporter();
         ProviderSetup::InternalAsync { reporter }.with_subscriber(
             LogLevel::Info,
-            empty_log_context,
+            LogContext::new,
             || {
                 otel_info!("console_async");
             },
@@ -463,7 +456,7 @@ mod tests {
         let logger_provider = SdkLoggerProvider::builder().build();
         ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(
             LogLevel::Info,
-            empty_log_context,
+            LogContext::new,
             || {
                 otel_info!("otel");
             },

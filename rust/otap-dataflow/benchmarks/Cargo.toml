@@ -42,6 +42,7 @@ unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
+bytes.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
