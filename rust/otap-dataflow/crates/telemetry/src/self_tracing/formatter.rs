@@ -86,14 +86,14 @@ impl<'a> StyledBufWriter<'a> {
     /// Get current buffer position.
     #[inline]
     #[must_use]
-    pub fn position(&self) -> usize {
+    pub const fn position(&self) -> usize {
         self.buf.position() as usize
     }
 
     /// Check if the buffer is full (position >= capacity).
     #[inline]
     #[must_use]
-    pub fn is_full(&self) -> bool {
+    pub const fn is_full(&self) -> bool {
         self.buf.position() as usize >= self.buf.get_ref().len()
     }
 }
