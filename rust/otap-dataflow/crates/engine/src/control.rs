@@ -94,15 +94,29 @@ pub struct NackMsg<PData> {
 
     /// Refused pdata being returned.
     pub refused: Box<PData>,
+
+    /// Permanent status.
+    pub permanent: bool,
 }
 
 impl<PData> NackMsg<PData> {
-    /// Creates a new NACK.
+    /// Creates a new non-permanent NACK.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self::with_permanent(reason, refused, false)
+    }
+
+    /// Creates a new permanent NACK.
+    pub fn permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self::with_permanent(reason, refused, true)
+    }
+
+    /// Creates a new NACK with a permanent status.
+    pub fn with_permanent<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
             calldata: smallvec![],
             refused: Box::new(refused),
+            permanent,
         }
     }
 }
