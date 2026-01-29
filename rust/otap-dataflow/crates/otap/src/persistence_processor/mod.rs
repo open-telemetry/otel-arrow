@@ -852,7 +852,7 @@ impl PersistenceProcessor {
                 // Subscribe for ACK/NACK with BundleRef in calldata
                 let calldata = encode_bundle_ref(bundle_ref);
                 effect_handler.subscribe_to(
-                    Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
+                    Interests::ACKS | Interests::NACKS,
                     calldata,
                     &mut pdata,
                 );
