@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769616000629,
+  "lastUpdate": 1769652018438,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2008,6 +2008,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7313,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "adfd2e91a374dd818f125c94b5d8881e34185fa1",
+          "message": "Self-instrumentation scope attributes  (#1895)\n\n# Change Summary\n\nPart of #1576. \n\nFixes #1903.\n\nPortions of this PR were merged in #1898. Lines that are crossed out\nbelow have been merged already.\n\n- ~Telemetry crate defines LogContext = SmallVec<[EntityKey; 1]>,\nLogContextFn = fn() -> LogContext~\n- InternalTelemetrySystem: accepts context function; registry now passed\nin\n- Controller passes node_context() first or pipeline_context() second\n- Entity attribute set definition structs are re-ordered; first field\nbecomes identifying for console logs\n- Console exporter: now prints entity definition in scope attributes\n- ~Internal telemetry receiver: now encodes scope information on receipt\nof each record (as singletons, currently)~\n- Observed state store: prints scope information in symbolic form (for\nconsole_async, examples below)\n- Entity registry: logs definition of each entity set for correlation in\nconsole logs\n- Console direct logging: prints unsymbolized information (examples\nbelow)\n- ~Self tracing encoder.rs: now encodes scope attributes from cached\ninformation~\n- ~Self tracing formatter.rs: refactored for clarity, now supports\noptional suffix for use in console_direct, console_async modes~\n\n## How are these changes tested?\n\nInternal logging example configurations revised.\n\n## Are there any user-facing changes?\n\nYes. Example logs, e.g., console exporter:\n\n```\n2026-01-27T01:29:54.567Z  RESOURCE   v1.Resource [service.id=1234, service.name=test]\n2026-01-27T01:29:54.567Z  │ SCOPE    v1.InstrumentationScope [node.id=generator, node.urn=urn:otel:otap:fake_data_generator:receiver, node.type=receiver, pipeline.id=default_pipeline, pipeline.group.id=default_pipeline_group, core.id=0, numa.node.id=0, process.instance.id=AGN72ERHGR5OFI24GZVBC7YCNU, host.id=JoshCorpSurfaceLaptop, container.id=]\n2026-01-27T01:29:54.567Z  │ └─ DEBUG otap-df-otap::rate_limit.sleep (crates/otap/src/fake_data_generator.rs:35\n```\n\nE.g., defining a new pipeline entity:\n\n```\n2026-01-27T01:30:27.395Z  INFO  otap-df-telemetry::registry.define_entity (crates/telemetry/src/registry.rs:82):  [schema=pipeline.attrs, entity_name=default_pipeline, definition=pipeline.id=default_pipeline, pipeline.group.id=default_pipeline_group, core.id=0, numa.node.id=0, process.instance.id=AGN72EWQWJZIFEBDCGPW4NHUCU, host.id=JoshCorpSurfaceLaptop, container.id=]\n```\n\ne.g., referring to that pipeline to define a channel with \"named\" entity\nin suffix:\n\n```\n2026-01-27T01:30:27.400Z  INFO  otap-df-telemetry::registry.define_entity (crates/telemetry/src/registry.rs:82):  [schema=channel.attrs, entity_name=batch:control, definition=channel.id=batch:control, node.port=input, channel.kind=control, channel.mode=local, channel.type=mpsc, channel.impl=internal, node.id=batch, node.urn=urn:otel:batch:processor, node.type=processor, pipeline.id=default_pipeline, pipeline.group.id=default_pipeline_group, core.id=0, numa.node.id=0, process.instance.id=AGN72EWQWJZIFEBDCGPW4NHUCU, host.id=JoshCorpSurfaceLaptop, container.id=] entity/pipeline.attrs=default_pipeline\n```\n\nIn the raw logging mode, these print unsymbolized instead of by name,\nsince that is done synchronously and we use a mutex to lookup entity\nnames from keys.\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-01-29T00:49:00Z",
+          "tree_id": "26dfe87b4e50ad48664a6ef1ddc8e5900aaea24c",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/adfd2e91a374dd818f125c94b5d8881e34185fa1"
+        },
+        "date": 1769652017939,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8974,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.7811,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.757,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5235,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7397,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
