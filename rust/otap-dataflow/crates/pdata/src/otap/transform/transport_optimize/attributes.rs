@@ -200,12 +200,8 @@ where
 
             let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key);
 
-            // partition key ranges (using SIMD)
-            let keys_range_sorted = key_col_sorted.slice(type_range.start, type_range.len());
-            // let next_eq_arr_key = create_next_element_equality_array(&keys_range_sorted)?; // Arc t.5 (tmp)
-            // let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc t.6 (tmp)
-            // let key_ranges = ranges(next_eq_inverted.values()); // Arc t.7 (tmp)
-            let key_ranges = partition_sorted_keys(&keys_range_sorted)?;
+            // partition key ranges
+            let key_ranges = partition_sorted_keys_range(&type_range, &key_col_sorted)?;
 
             for key_range in key_ranges {
                 values_key_range_sorted_indices.clear();
@@ -1179,7 +1175,10 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
     result_buf.truncate(bit_util::ceil(len, 8));
 }
 
-fn partition_sorted_keys(keys_sorted: &ArrayRef) -> Result<Vec<Range<usize>>> {
+fn partition_sorted_keys_range(
+    range: &Range<usize>,
+    keys_sorted: &ArrayRef,
+) -> Result<Vec<Range<usize>>> {
     // TODO - if len = 0 or len = 1, just return one range
     // TODO - lots of code duplicated with other methods in this funciton
     // TODO - see if using get_unchecked really makes a difference in perf
@@ -1192,11 +1191,12 @@ fn partition_sorted_keys(keys_sorted: &ArrayRef) -> Result<Vec<Range<usize>>> {
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
                     .expect("can downcast to DictionaryArray<u8>");
-                let dict_keys_bytes = dict_arr.keys().values().inner().as_slice();
+                let dict_key_range_bytes =
+                    &dict_arr.keys().values().inner().as_slice()[range.start..range.end];
 
-                let len = dict_keys_bytes.len() - 1;
-                let left = &dict_keys_bytes[0..len];
-                let right = &dict_keys_bytes[1..len + 1];
+                let len = dict_key_range_bytes.len() - 1;
+                let left = &dict_key_range_bytes[0..len];
+                let right = &dict_key_range_bytes[1..len + 1];
                 let f = |i: usize| -> bool {
                     #[allow(unsafe_code)]
                     let a = unsafe { *left.get_unchecked(i) };
@@ -1228,11 +1228,11 @@ fn partition_sorted_keys(keys_sorted: &ArrayRef) -> Result<Vec<Range<usize>>> {
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
                     .expect("can downcast to DictionaryArray<u16>");
-                let dict_keys_bytes = dict_arr.keys().values();
+                let dict_key_range_vals = &dict_arr.keys().values()[range.start..range.end];
 
-                let len = dict_keys_bytes.len() - 1;
-                let left = &dict_keys_bytes[0..len];
-                let right = &dict_keys_bytes[1..len + 1];
+                let len = dict_key_range_vals.len() - 1;
+                let left = &dict_key_range_vals[0..len];
+                let right = &dict_key_range_vals[1..len + 1];
                 let f = |i: usize| -> bool {
                     #[allow(unsafe_code)]
                     let a = unsafe { *left.get_unchecked(i) };
@@ -1263,6 +1263,7 @@ fn partition_sorted_keys(keys_sorted: &ArrayRef) -> Result<Vec<Range<usize>>> {
             }
         },
         _ => {
+            let keys_range_sorted = keys_sorted.slice(range.start, range.len());
             let next_eq_arr_key = create_next_element_equality_array(&keys_sorted)?;
             let next_eq_inverted = not(&next_eq_arr_key).unwrap();
             let key_ranges = ranges(next_eq_inverted.values());
