@@ -129,6 +129,7 @@ impl Context {
     }
 
     /// Get the source node for this context.
+    #[must_use]
     pub fn source_node(&self) -> Option<NodeId> {
         self.source_node.clone()
     }
@@ -269,6 +270,7 @@ impl OtapPdata {
     }
 
     /// return the source node field
+    #[must_use]
     pub fn get_source_node(&self) -> Option<NodeId> {
         self.context.source_node()
     }
