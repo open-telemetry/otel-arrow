@@ -82,24 +82,6 @@ Each processor instance (one per CPU core) has its own isolated storage engine:
 +-- ...
 ```
 
-## Dispatch Strategy
-
-**Important**: The dispatch strategy on the incoming edge affects behavior:
-
-| Strategy      | Behavior                               | Recommendation     |
-| ------------- | -------------------------------------- | ------------------ |
-| `RoundRobin`  | Data distributed across cores          | **Recommended**    |
-| `Random`      | Similar to round-robin                 | OK                 |
-| `LeastLoaded` | Similar to round-robin                 | OK                 |
-| `Broadcast`   | Same data persisted Nx (once per core) | **Avoid**          |
-
-Using `Broadcast` on the incoming edge causes:
-
-- Nx storage consumption (data duplicated across all cores)
-- Nx duplicate messages forwarded downstream
-
-For the **outgoing edge** (to exporters), any dispatch strategy is valid.
-
 ## Message Flow
 
 1. **Ingest**: Incoming data is written to the WAL, then ACK sent upstream
