@@ -4,10 +4,11 @@
 //! This module contains code for planning pipeline execution
 
 use data_engine_expressions::{
-    DataExpression, Expression, LogicalExpression, MapSelector, MoveTransformExpression,
-    MutableValueExpression, OutputExpression, PipelineExpression, ReduceMapTransformExpression,
+    BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
+    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    OutputExpression, PipelineExpression, ReduceMapTransformExpression,
     RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
-    StaticScalarExpression, TransformExpression, ValueAccessor,
+    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
