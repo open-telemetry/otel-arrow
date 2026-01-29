@@ -34,6 +34,7 @@ use arrow::{
         GenericBinaryType, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt64Type,
     },
 };
+use arrow_schema::SchemaRef;
 use itertools::Itertools;
 use otap_df_config::SignalType;
 use smallvec::SmallVec;
@@ -1011,9 +1012,14 @@ fn generic_schemaless_concatenate<const N: usize>(
             let num_rows = select(batches, i).map(RecordBatch::num_rows).sum();
             let mut batcher = arrow::compute::BatchCoalescer::new(schema.clone(), num_rows);
             for row in batches.iter_mut() {
-                if let Some(rb) = row[i].take() {
+                if let Some(mut rb) = row[i].take() {
                     // let parts = rb.into_parts();
+                    rb = project_to_schema(schema.clone(), &mut rb)?;
 
+                    // NOTE: You can only push a batch if the fields of the schema
+                    // are supersets of each other which does count field ordering.
+                    // This is different from the way that [Schema::try_merge] works
+                    // where you can have any order and it will pick one.
                     batcher
                         .push_batch(
                             rb.with_schema(schema.clone())
@@ -1034,6 +1040,19 @@ fn generic_schemaless_concatenate<const N: usize>(
 
     assert_all_empty(batches);
     Ok(result)
+}
+
+/// Given a target schema and a record batch, align the columns to the target schema.
+/// Fails if the record batch is not a subset of the target schema.
+fn project_to_schema(schema: SchemaRef, rb: &mut RecordBatch) -> Result<RecordBatch> {
+    let projection: Vec<usize> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| rb.schema().index_of(f.name()).ok())
+        .collect();
+
+    rb.project(&projection)
+        .map_err(|e| Error::Batching { source: e })
 }
 
 /// This is basically a transpose view thats lets us look at a sequence of the `i`-th table given a
