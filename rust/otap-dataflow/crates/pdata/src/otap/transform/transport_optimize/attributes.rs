@@ -42,10 +42,10 @@ where
     // - rows outside a column's type segment are set to null
     //
     // example for ATTRIBUTE_STR (type=1):
-    //   - Rows where type=1: non-null, sorted by (key, value)
-    //   - Rows where type≠1: null
+    //   - Rows where type == 1: non-null, sorted by (key, value)
+    //   - Rows where type != 1: null
     let mut sorted_val_columns: [Option<SortedValuesColumnBuilder>; 8] = [
-        None, // empty
+        None, // empty - no values column for empty attrs
         record_batch
             .column_by_name(consts::ATTRIBUTE_STR)
             .map(|col| SortedValuesColumnBuilder::try_new(col))
@@ -62,6 +62,7 @@ where
             .column_by_name(consts::ATTRIBUTE_BOOL)
             .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
+        // map/slice are special case - see below
         None, // map
         None, // slice
         record_batch
@@ -103,7 +104,7 @@ where
                 .as_any()
                 .downcast_ref::<PrimitiveArray<T>>()
                 // safety: as_prim is created casting to the type we're expecting here
-                .expect("casted to PrimitiveArray<T>")
+                .expect("cast to PrimitiveArray<T> produced correct type")
                 .values()
                 .clone()
         }
@@ -146,7 +147,7 @@ where
 
     // safety: partition can only be expected to fail if multiple arrays are passed that have
     // different lengths, or if an array type is passed for which the values cannot be compared.
-    // neither of these failing criteria are met for a sinlge uint8 column
+    // neither of these failing criteria are met for a single uint8 column
     let type_partitions =
         partition(&[type_col_sorted.clone()]).expect("can partition single UInt8 column");
 
@@ -154,10 +155,10 @@ where
     // it's defined up here because we'll be reusing the allocation for different segments of batch
     let mut parent_id_key_range_sorted = Vec::new();
 
-    // These Vecs are used farther below when handling the values w/in each range of sorted keys.
+    // These `Vec`s are used farther below when handling the values w/in each range of sorted keys.
     // they're allocated ahead of time here so we can reuse the allocation for each range
     let mut values_ranges = Vec::new();
-    let mut values_key_range_sorted_indices = Vec::new();
+    let mut key_range_indices_values_sorted = Vec::new();
 
     // iterates of ranges of of value types in ascending order. For example, we iterate over type
     // ranges Empty, String, Int. and so on..
@@ -186,11 +187,11 @@ where
             // take the values at the indices for this value type. This produces an array, sorted
             // by key, for all the attribute values that have the type we're currently processing.
             //
-            // Even though we eventually  discard this Array materializing it temporarily has a
-            // couple benefits. Firstly,this calls arrow's `take` compute kernel, which will create
-            // a new null buffer and once we have this, counting the number of nulls is cheap.
-            // There  are a few optimizations that happen later on if we know that none of the
-            // values are null. Secondly, the values will be closer together in memory, so we get
+            // Even though we eventually discard this Array, materializing it temporarily is worth
+            // it for a couple reasons. First, this calls arrow's `take` compute kernel, which will
+            // create a new null buffer and once we have this, counting the number of nulls is
+            // cheap. There  are a few optimizations that happen later on if we know that none of
+            // the values are null. Second, the values will be closer together in memory, so we get
             // better cache locality when we sort them.
             let values_type_range_by_key =
                 sorted_val_col.take_source(&type_range_indices_key_sorted)?;
@@ -200,37 +201,39 @@ where
 
             let mut values_sorter = AttrValuesSorter::new(&values_type_range_by_key);
 
-            // partition key ranges
+            // partition the keys column into ranges where all rows have the same key.
+            // the indices in the ranges produced by this call will be relative to the type range.
+            // they can be converted back to the range in the original record batch by indexing
+            // type_range_indices_key_sorted
             let key_ranges = partition_sorted_keys_range(&type_range, &key_col_sorted)?;
 
+            // iterate over contiguous ranges that have the same attribute key
             for key_range in key_ranges {
-                values_key_range_sorted_indices.clear();
-                values_key_range_sorted_indices.reserve(key_range.len());
+                // this vec will contain a list of indices, relative to the key_range, sorted by
+                // the values. Note: because these indices will be relative to the key_range,
+                // adding key_range.start to the index will make it relative to the type_range
+                key_range_indices_values_sorted.clear();
+                key_range_indices_values_sorted.reserve(key_range.len());
                 values_sorter
-                    .sort_range_to_indices(&key_range, &mut values_key_range_sorted_indices); // Arc k.1 (in here for non dicts)
+                    .sort_range_to_indices(&key_range, &mut key_range_indices_values_sorted);
 
                 // Map the sorted indices back to original source indices
-                // TODO if we changed the API for what this is used for from append_indices to
-                // extend_indices, we could avoid the vec allocation here
-                let original_indices: Vec<u32> = values_key_range_sorted_indices
-                    .iter()
-                    .map(|&i| type_range_indices_key_sorted.value(key_range.start + i as usize))
-                    .collect();
+                sorted_val_col.extend_indices(
+                    key_range_indices_values_sorted.iter().map(|&i| {
+                        type_range_indices_key_sorted.value(key_range.start + i as usize)
+                    }),
+                );
 
-                sorted_val_col.append_indices(&original_indices)?;
-
-                // TODO this creates a bunch of Arcs internally - we could make it faster by
-                // optimizing the case where the array isn't dictionary encoded as well
                 values_ranges.clear();
                 values_sorter.take_and_partition_range(
                     &key_range,
-                    &values_key_range_sorted_indices,
+                    &key_range_indices_values_sorted,
                     &mut values_ranges,
                 )?;
 
                 parent_id_key_range_sorted.clear();
-                parent_id_key_range_sorted.reserve(values_key_range_sorted_indices.len());
-                parent_id_key_range_sorted.extend(values_key_range_sorted_indices.iter().map(
+                parent_id_key_range_sorted.reserve(key_range_indices_values_sorted.len());
+                parent_id_key_range_sorted.extend(key_range_indices_values_sorted.iter().map(
                     |idx| {
                         let type_range_idx =
                             type_range_indices_key_sorted.value(key_range.start + *idx as usize);
@@ -577,10 +580,19 @@ impl SortedValuesColumnBuilder {
         Ok(take(self.source.as_ref(), indices, None).unwrap())
     }
 
-    fn append_indices(&mut self, indices: &[u32]) -> Result<()> {
-        self.sorted_segments
-            .push(SortedValuesColumnSegment::NonNull(indices.to_vec()));
-        Ok(())
+    fn extend_indices<I: IntoIterator<Item = u32>>(&mut self, new_indices: I) {
+        // extends to the current segment of non-null indices if one is available, otherwise
+        // just creates a new segment of non-null indices
+        if let Some(SortedValuesColumnSegment::NonNull(non_null_indices)) =
+            self.sorted_segments.last_mut()
+        {
+            non_null_indices.extend(new_indices)
+        } else {
+            self.sorted_segments
+                .push(SortedValuesColumnSegment::NonNull(
+                    new_indices.into_iter().collect(),
+                ));
+        }
     }
 
     fn set_null_count_hint(&mut self, null_count: usize) {

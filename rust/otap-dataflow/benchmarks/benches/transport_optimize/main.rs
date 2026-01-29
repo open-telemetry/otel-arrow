@@ -242,11 +242,12 @@ fn bench_transport_encode_id_for_attributes(c: &mut Criterion) {
                 b.iter_batched(
                     || input.clone(),
                     |input| {
-                        let result = transport_encode_parent_id_for_attributes::<UInt16Type>(&input)
-                            .expect("function should not error here");
+                        let result =
+                            transport_encode_parent_id_for_attributes::<UInt16Type>(&input)
+                                .expect("function should not error here");
                         black_box(result)
                     },
-                    criterion::BatchSize::SmallInput
+                    criterion::BatchSize::SmallInput,
                 );
             },
         );
@@ -278,7 +279,6 @@ fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
             //     batch2.encode_transport_optimized().unwrap();
             //     let mut log_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap().clone();
 
-
             //     let str_col = log_attrs.schema().index_of(consts::ATTRIBUTE_STR).unwrap();
             //     _ = log_attrs.remove_column(str_col);
             //     arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
@@ -291,9 +291,7 @@ fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
                     b.iter_batched(
                         || input.clone(),
                         |mut input| {
-                            input
-                                .encode_transport_optimized()
-                                .expect("can encode IDs");
+                            input.encode_transport_optimized().expect("can encode IDs");
                             black_box(input)
                         },
                         criterion::BatchSize::SmallInput,
