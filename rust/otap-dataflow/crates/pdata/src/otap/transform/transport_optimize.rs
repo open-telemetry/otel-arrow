@@ -518,13 +518,28 @@ where
 
     // TODO - proper error handling
     let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
+    let mut parent_dict_key_type = None;
+    let parent_id_column_vals = match parent_id_col.data_type() {
+        DataType::Dictionary(k, v) => {
+            let as_prim = cast(parent_id_col, &T::DATA_TYPE).unwrap();
+            parent_dict_key_type = Some(*k.clone());
+            as_prim
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .unwrap()
+                .values()
+                .to_vec()
+        }
+        _ => {
+            parent_id_col
+                .as_any()
+                .downcast_ref::<PrimitiveArray<T>>()
+                .unwrap()
+                .values()
+                .to_vec()
+        }
+    };
 
-    let parent_id_column_vals = parent_id_col
-        .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
-        .unwrap()
-        .values()
-        .to_vec();
     let mut sorted_parent_id_column = Vec::with_capacity(record_batch.num_rows());
 
     let type_prim_arr = type_col_sorted
@@ -662,10 +677,18 @@ where
         }
     }
 
-    let parent_id_col = Arc::new(PrimitiveArray::<T>::new(
+    let mut parent_id_col = Arc::new(PrimitiveArray::<T>::new(
         ScalarBuffer::from(sorted_parent_id_column),
         None,
-    ));
+    )) as ArrayRef;
+
+    // TODO comment about why this casting stuff is goofy
+    if let Some(dict_key_type) = parent_dict_key_type {
+        parent_id_col = cast(
+            &parent_id_col,
+            &DataType::Dictionary(Box::new(dict_key_type), Box::new(T::DATA_TYPE))
+        ).unwrap();
+    }
 
     let mut fields = vec![];
     let mut columns = vec![];
