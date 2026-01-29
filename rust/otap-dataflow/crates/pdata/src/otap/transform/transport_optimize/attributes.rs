@@ -151,9 +151,9 @@ where
     let type_partitions =
         partition(&[type_col_sorted.clone()]).expect("can partition single UInt8 column");
 
-    // this is a scratch buffer we'll reuse when sorting segments of the parent ID column.
-    // it's defined up here because we'll be reusing the allocation for different segments of batch
-    let mut parent_id_key_range_sorted = Vec::new();
+    // // this is a scratch buffer we'll reuse when sorting segments of the parent ID column.
+    // // it's defined up here because we'll be reusing the allocation for different segments of batch
+    // let mut parent_id_key_range_sorted = Vec::new();
 
     // These `Vec`s are used farther below when handling the values w/in each range of sorted keys.
     // they're allocated ahead of time here so we can reuse the allocation for each range
@@ -217,13 +217,16 @@ where
                 values_sorter
                     .sort_range_to_indices(&key_range, &mut key_range_indices_values_sorted);
 
-                // Map the sorted indices back to original source indices
+                // map the sorted indices back to original source indices, and add them to the
+                // list of indices to take when materializing the sorted values column
                 sorted_val_col.extend_indices(
                     key_range_indices_values_sorted.iter().map(|&i| {
                         type_range_indices_key_sorted.value(key_range.start + i as usize)
                     }),
                 );
 
+                // partition the sorted values column into ranges that all contain the same
+                // attribute value and store the results in values_ranges.
                 values_ranges.clear();
                 values_sorter.take_and_partition_range(
                     &key_range,
@@ -231,9 +234,15 @@ where
                     &mut values_ranges,
                 )?;
 
-                parent_id_key_range_sorted.clear();
-                parent_id_key_range_sorted.reserve(key_range_indices_values_sorted.len());
-                parent_id_key_range_sorted.extend(key_range_indices_values_sorted.iter().map(
+                // keep the current length of the encoded parent IDs for later, when we need to
+                // iterate over the values ranges to sort and add delta encoding, and this will
+                // make it easier to calculate the ranges containing parent IDs for each value
+                let values_range_offset = encoded_parent_id_column.len();
+
+                // push the values for parent IDs that have this key into the results column.
+                // They'll be inserted in the wrong order, but we're going to sort them afterward
+                // for any non-null ranges for type that support quasi-delta encoding
+                encoded_parent_id_column.extend(key_range_indices_values_sorted.iter().map(
                     |idx| {
                         let type_range_idx =
                             type_range_indices_key_sorted.value(key_range.start + *idx as usize);
@@ -242,8 +251,9 @@ where
                 ));
 
                 for values_range in &values_ranges {
-                    let parent_ids_range = &mut parent_id_key_range_sorted
-                        [values_range.range.start..values_range.range.end];
+                    let parent_ids_range = &mut encoded_parent_id_column[values_range.range.start
+                        + values_range_offset
+                        ..values_range.range.end + values_range_offset];
 
                     // nulls never count as equal for the purposes of delta encoding.
                     // Map & Slice type are never considered "equal" for the purposes of delta
@@ -256,7 +266,6 @@ where
                         parent_ids_range.sort_unstable();
                         delta_encode_parent_id_slice(parent_ids_range);
                     }
-                    encoded_parent_id_column.extend_from_slice(parent_ids_range);
                 }
             }
         } else {
@@ -281,21 +290,23 @@ where
             AttributeValueType::Bytes as u8,
         ] {
             if attr_type == type_range_attr_type {
-                continue; // skip cause we already pushed the sorted section for this type
+                // skip because we already pushed the sorted section for this type
+                continue;
             }
 
-            if let Some(sorted_val_col) = sorted_val_columns[attr_type as usize].as_mut() {
-                sorted_val_col.append_nulls(type_range.len());
+            if let Some(sorted_val_col_builder) = sorted_val_columns[attr_type as usize].as_mut() {
+                sorted_val_col_builder.append_nulls(type_range.len());
             }
         }
 
-        // push unsorted values from slice/map type if not already pushed. This is handled as special
-        // case from the loop above b/c both slice and map attrs types use the same column
+        // push unsorted values from slice/map type if not already pushed. This is handled as
+        // special case from the loop above b/c both slice and map attrs types use the same column,
+        // and we only want to append segment to the column builder once per value column per type
         if type_range_attr_type != AttributeValueType::Map as u8
             && type_range_attr_type != AttributeValueType::Slice as u8
         {
-            if let Some(sorted_val_col) = sorted_ser_column.as_mut() {
-                sorted_val_col.append_nulls(type_range.len());
+            if let Some(sorted_val_col_builder) = sorted_ser_column.as_mut() {
+                sorted_val_col_builder.append_nulls(type_range.len());
             }
         }
     }
@@ -320,6 +331,7 @@ where
         let field_name = field.name();
 
         if field.name() == consts::PARENT_ID {
+            // add encoding the metadata to the parent_id column
             fields.push(
                 field
                     .as_ref()
@@ -337,8 +349,6 @@ where
 
         if field_name == consts::ATTRIBUTE_KEY {
             columns.push(key_col_sorted.clone());
-            // let sorted_keys_refs = sorted_keys.iter().map(|k| k.as_ref()).collect::<Vec<_>>();
-            // columns.push(concat(&sorted_keys_refs).unwrap());
             continue;
         }
 
