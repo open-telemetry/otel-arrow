@@ -102,16 +102,15 @@ pub struct NackMsg<PData> {
 impl<PData> NackMsg<PData> {
     /// Creates a new non-permanent NACK.
     pub fn new<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::with_permanent(reason, refused, false)
+        Self::new_internal(reason, refused, false)
     }
 
     /// Creates a new permanent NACK.
-    pub fn permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
-        Self::with_permanent(reason, refused, true)
+    pub fn new_permanent<T: Into<String>>(reason: T, refused: PData) -> Self {
+        Self::new_internal(reason, refused, true)
     }
 
-    /// Creates a new NACK with a permanent status.
-    pub fn with_permanent<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
+    fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
             calldata: smallvec![],
@@ -486,5 +485,16 @@ where
             .map_err(|e| Error::PipelineControlMsgError {
                 error: format!("Failed to send shutdown message: {}", e),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_permanent_status() {
+        assert!(!NackMsg::new("just bad news", ()).permanent);
+        assert!(NackMsg::new_permanent("very bad news", ()).permanent);
     }
 }

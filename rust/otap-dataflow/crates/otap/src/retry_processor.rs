@@ -890,7 +890,7 @@ mod test {
                 let mut nacks_delivered = 0;
                 while nacks_delivered < number_of_nacks {
                     let nack = if permanent_error {
-                        NackMsg::permanent("simulated permanent failure", current_data.clone())
+                        NackMsg::new_permanent("simulated permanent failure", current_data.clone())
                     } else {
                         NackMsg::new("simulated downstream failure", current_data.clone())
                     };
