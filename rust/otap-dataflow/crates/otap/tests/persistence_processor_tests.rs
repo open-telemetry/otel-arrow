@@ -743,8 +743,8 @@ fn test_persistence_processor_graceful_shutdown_drain() {
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_secs(30),  // Max timeout (generous for slow CI)
-        Duration::from_secs(5),   // Deadline for drain
+        Duration::from_secs(30), // Max timeout (generous for slow CI)
+        Duration::from_secs(5),  // Deadline for drain
         Some(move || delivered_counter.load(Ordering::Relaxed) >= threshold),
     );
 
