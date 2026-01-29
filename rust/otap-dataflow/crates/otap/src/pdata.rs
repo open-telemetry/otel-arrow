@@ -28,6 +28,7 @@ use otap_df_pdata::OtapPayload;
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
+    source_node: Option<NodeId>,
     stack: Vec<Frame>,
 }
 
@@ -37,6 +38,7 @@ impl Context {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
+            source_node: None,
             stack: Vec::with_capacity(capacity),
         }
     }
@@ -120,6 +122,16 @@ impl Context {
     pub fn has_subscribers(&self) -> bool {
         !self.stack.is_empty()
     }
+
+    /// Set the source node for this context.
+    pub fn set_source_node(&mut self, node: Option<NodeId>) {
+        self.source_node = node;
+    }
+
+    /// Get the source node for this context.
+    pub fn source_node(&self) -> Option<NodeId> {
+        self.source_node.clone()
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -138,7 +150,6 @@ pub struct Frame {
 pub struct OtapPdata {
     context: Context,
     payload: OtapPayload,
-    source_node: Option<NodeId>,
 }
 
 /* -------- Signal type -------- */
@@ -152,7 +163,6 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
-            source_node: None,
         }
     }
 
@@ -163,18 +173,13 @@ impl OtapPdata {
         Self {
             context: Context::default(),
             payload,
-            source_node: None,
         }
     }
 
     /// Construct new OtapData with context and payload
     #[must_use]
     pub fn new(context: Context, payload: OtapPayload) -> Self {
-        Self {
-            context,
-            payload,
-            source_node: None,
-        }
+        Self { context, payload }
     }
 
     /// Returns the type of signal represented by this `OtapPdata` instance.
@@ -259,13 +264,13 @@ impl OtapPdata {
 
     /// update the source node
     pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self {
-        self.source_node = node_id;
+        self.context.set_source_node(node_id);
         self
     }
 
     /// return the source node field
     pub fn get_source_node(&self) -> Option<NodeId> {
-        self.source_node.clone()
+        self.context.source_node()
     }
 }
 

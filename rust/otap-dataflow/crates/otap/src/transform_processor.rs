@@ -965,7 +965,7 @@ mod test {
                     999,
                 );
 
-                let (inbound_context, payload) = pdata.into_parts();
+                let (mut inbound_context, payload) = pdata.into_parts();
                 let pdata = OtapPdata::new(inbound_context.clone(), payload);
 
                 // Process the message through the transform processor
@@ -983,6 +983,12 @@ mod test {
 
                 // assert that since the pipeline did no routing, the outbound context should be
                 // same as the inbound
+                assert_eq!(inbound_context.source_node(), None);
+                assert_eq!(
+                    outbound_context.source_node(),
+                    Some("transform-processor".into())
+                );
+                inbound_context.set_source_node(Some("transform-processor".into()));
                 assert_eq!(inbound_context, outbound_context);
                 assert!(outbound_context.has_subscribers());
             })
