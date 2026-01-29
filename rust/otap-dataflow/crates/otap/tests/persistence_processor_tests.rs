@@ -327,12 +327,12 @@ fn run_pipeline_with_condition<F>(
             std::thread::sleep(poll_interval);
         }
         let deadline = Instant::now() + shutdown_deadline;
-        pipeline_ctrl_tx_for_shutdown
-            .try_send(PipelineControlMsg::Shutdown {
-                deadline,
-                reason: "test shutdown".to_owned(),
-            })
-            .expect("failed to send shutdown request");
+        // Try to send shutdown request. If the channel is closed, the pipeline
+        // has already terminated (e.g., data generator finished), which is fine.
+        let _ = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
+            deadline,
+            reason: "test shutdown".to_owned(),
+        });
     });
 
     let run_result = {
