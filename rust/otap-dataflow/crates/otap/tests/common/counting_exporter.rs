@@ -3,8 +3,11 @@
 
 //! A test exporter that counts received items.
 //!
-//! Uses a global atomic counter that can be set before pipeline runs and
-//! read after to verify data flow.
+//! Each exporter instance is identified by a unique ID passed in the node config.
+//! Counters are registered with `register_counter(id, counter)` before pipeline
+//! creation and looked up by the exporter factory using the ID from config.
+//!
+//! This design avoids global state issues when tests run in parallel.
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -22,29 +25,34 @@ use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// URN for the counting exporter (ACKs and counts items).
 pub const COUNTING_EXPORTER_URN: &str = "urn:otel:counting:exporter";
 
-/// Global counter storage. Protected by mutex to allow swapping the counter
-/// between test runs.
-static COUNTER: Mutex<Option<Arc<AtomicU64>>> = Mutex::new(None);
+/// Registry of counters keyed by unique test/pipeline ID.
+static COUNTER_REGISTRY: LazyLock<Mutex<HashMap<String, Arc<AtomicU64>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Set the counter for counting exporter instances.
-pub fn set_counter(counter: Arc<AtomicU64>) {
-    *COUNTER.lock() = Some(counter);
+/// Register a counter for a specific test/pipeline ID.
+///
+/// Call this before building the pipeline. The ID should match the `counter_id`
+/// field in the exporter's node config.
+pub fn register_counter(id: impl Into<String>, counter: Arc<AtomicU64>) {
+    let _ = COUNTER_REGISTRY.lock().insert(id.into(), counter);
 }
 
-/// Clear the counter.
-pub fn clear_counter() {
-    *COUNTER.lock() = None;
+/// Unregister a counter after the test completes.
+pub fn unregister_counter(id: &str) {
+    let _ = COUNTER_REGISTRY.lock().remove(id);
 }
 
-/// Get the current counter (cloned Arc).
-fn get_counter() -> Option<Arc<AtomicU64>> {
-    COUNTER.lock().clone()
+/// Get a counter by ID.
+fn get_counter(id: &str) -> Option<Arc<AtomicU64>> {
+    COUNTER_REGISTRY.lock().get(id).cloned()
 }
 
 struct CountingExporter {
@@ -59,7 +67,12 @@ static COUNTING_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
-        let counter = get_counter();
+        // Look up counter by ID from node config
+        let counter_id = node_config
+            .config
+            .get("counter_id")
+            .and_then(|v| v.as_str());
+        let counter = counter_id.and_then(get_counter);
         Ok(ExporterWrapper::local(
             CountingExporter { counter },
             node,

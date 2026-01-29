@@ -56,6 +56,7 @@ struct TestConfigBuilder {
     trace_weight: u32,
     log_weight: u32,
     exporter_type: ExporterType,
+    exporter_id: Option<String>,
     retry_config: Option<serde_json::Value>,
     size_cap_policy: &'static str,
     otlp_handling: Option<&'static str>,
@@ -86,6 +87,7 @@ impl TestConfigBuilder {
             trace_weight: 0,
             log_weight: 100,
             exporter_type: ExporterType::Noop,
+            exporter_id: None,
             retry_config: None,
             size_cap_policy: "backpressure",
             otlp_handling: None,
@@ -126,6 +128,13 @@ impl TestConfigBuilder {
 
     fn use_flaky_exporter(mut self) -> Self {
         self.exporter_type = ExporterType::Flaky;
+        self
+    }
+
+    /// Set the exporter ID for counting/flaky exporters.
+    /// This ID is used to look up the counter in the registry.
+    fn exporter_id(mut self, id: impl Into<String>) -> Self {
+        self.exporter_id = Some(id.into());
         self
     }
 
@@ -193,8 +202,20 @@ impl TestConfigBuilder {
                 ERROR_EXPORTER_URN,
                 Some(json!({"message": "simulated downstream failure"})),
             ),
-            ExporterType::Counting => ("counting_exporter", COUNTING_EXPORTER_URN, None),
-            ExporterType::Flaky => ("flaky_exporter", FLAKY_EXPORTER_URN, None),
+            ExporterType::Counting => (
+                "counting_exporter",
+                COUNTING_EXPORTER_URN,
+                self.exporter_id
+                    .as_ref()
+                    .map(|id| json!({"counter_id": id})),
+            ),
+            ExporterType::Flaky => (
+                "flaky_exporter",
+                FLAKY_EXPORTER_URN,
+                self.exporter_id
+                    .as_ref()
+                    .map(|id| json!({"flaky_id": id})),
+            ),
             ExporterType::Noop => ("noop_exporter", NOOP_EXPORTER_URN, None),
         };
 
@@ -386,16 +407,18 @@ fn test_persistence_processor_retries_on_nack() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "retry-test".into();
     let pipeline_id: PipelineId = "retry-pipeline".into();
+    let test_id = "retries_on_nack";
 
     // Setup: Configure flaky exporter to NACK initially
     let counter = Arc::new(AtomicU64::new(0));
-    flaky_exporter::configure(counter.clone(), false); // Start in NACK mode
+    flaky_exporter::register_state(test_id, counter.clone(), false); // Start in NACK mode
 
     let config = TestConfigBuilder::new(persistence_path.clone())
         .max_signal_count(None) // Generate continuously
         .max_batch_size(5)
         .signals_per_second(Some(50)) // Fast enough to generate data quickly
         .use_flaky_exporter()
+        .exporter_id(test_id)
         .retry_config(json!({
             "initial_retry_interval": "50ms",
             "max_retry_interval": "200ms",
@@ -405,19 +428,20 @@ fn test_persistence_processor_retries_on_nack() {
         .build(&pipeline_group_id, &pipeline_id);
 
     // Spawn a thread to flip the exporter after NACKs are observed
-    let flip_handle = std::thread::spawn(|| {
+    let flip_test_id = test_id.to_owned();
+    let flip_handle = std::thread::spawn(move || {
         // Wait for at least 5 NACKs (condition-based, not fixed timeout)
         let nacks_observed = wait_for_condition(
-            || flaky_exporter::nack_count() >= 5,
+            || flaky_exporter::nack_count_by_id(&flip_test_id) >= 5,
             Duration::from_secs(5), // generous timeout for CI
             Duration::from_millis(10),
         );
         assert!(nacks_observed, "Expected at least 5 NACKs within timeout");
 
-        let nacks_before = flaky_exporter::nack_count();
+        let nacks_before = flaky_exporter::nack_count_by_id(&flip_test_id);
 
         // Switch to ACK mode - retries should now succeed
-        flaky_exporter::set_should_ack(true);
+        flaky_exporter::set_should_ack_by_id(&flip_test_id, true);
 
         nacks_before
     });
@@ -438,8 +462,8 @@ fn test_persistence_processor_retries_on_nack() {
 
     // Cleanup and validate
     let delivered = counter.load(Ordering::Relaxed);
-    let total_nacks = flaky_exporter::nack_count();
-    flaky_exporter::clear();
+    let total_nacks = flaky_exporter::nack_count_by_id(test_id);
+    flaky_exporter::unregister_state(test_id);
 
     // Validate: Data was delivered after switching to ACK mode (retries worked)
     assert!(
@@ -519,7 +543,8 @@ fn test_persistence_processor_recovery_after_outage() {
     // Run 2: Downstream healthy - verify recovery delivers all data
     let run2_signals = 10u64;
     let run2_counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(run2_counter.clone());
+    let test_id = "recovery_after_outage";
+    counting_exporter::register_counter(test_id, run2_counter.clone());
 
     // Generate some new data in Run 2 to keep the pipeline alive long enough
     // for recovery. Timer ticks poll Quiver for recovered data, but only fire
@@ -529,6 +554,7 @@ fn test_persistence_processor_recovery_after_outage() {
         .max_batch_size(5)
         .signals_per_second(Some(500)) // Fast generation
         .use_counting_exporter()
+        .exporter_id(test_id)
         .build(&pipeline_group_id, &pipeline_id);
 
     // Shut down once all data (recovered + new) is delivered
@@ -543,7 +569,7 @@ fn test_persistence_processor_recovery_after_outage() {
         Some(move || delivered_counter.load(Ordering::Relaxed) >= expected_total),
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = run2_counter.load(Ordering::Relaxed);
 
     // Validate data integrity:
@@ -571,9 +597,10 @@ fn test_persistence_processor_mixed_signal_types() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "signal-types-test".into();
     let pipeline_id: PipelineId = "signal-types-pipeline".into();
+    let test_id = "mixed_signal_types";
 
     let counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(counter.clone());
+    counting_exporter::register_counter(test_id, counter.clone());
 
     let total_signals = 20u64;
     let config = TestConfigBuilder::new(persistence_path.clone())
@@ -582,6 +609,7 @@ fn test_persistence_processor_mixed_signal_types() {
         // Mix of traces (50%) and logs (50%), no metrics (pdata limitation)
         .signal_weights(0, 50, 50)
         .use_counting_exporter()
+        .exporter_id(test_id)
         .build(&pipeline_group_id, &pipeline_id);
 
     let delivered_counter = counter.clone();
@@ -594,7 +622,7 @@ fn test_persistence_processor_mixed_signal_types() {
         Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
     // Verify all 20 signals were delivered
@@ -625,9 +653,10 @@ fn test_persistence_processor_convert_to_arrow_mode() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "arrow-mode-test".into();
     let pipeline_id: PipelineId = "arrow-mode-pipeline".into();
+    let test_id = "convert_to_arrow_mode";
 
     let counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(counter.clone());
+    counting_exporter::register_counter(test_id, counter.clone());
 
     let total_signals = 10u64;
     let config = TestConfigBuilder::new(persistence_path.clone())
@@ -635,6 +664,7 @@ fn test_persistence_processor_convert_to_arrow_mode() {
         .max_batch_size(5)
         .otlp_handling("convert_to_arrow")
         .use_counting_exporter()
+        .exporter_id(test_id)
         .build(&pipeline_group_id, &pipeline_id);
 
     let delivered_counter = counter.clone();
@@ -647,7 +677,7 @@ fn test_persistence_processor_convert_to_arrow_mode() {
         Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
     // Verify data flowed through the Arrow conversion path
@@ -682,9 +712,10 @@ fn test_persistence_processor_graceful_shutdown_drain() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "shutdown-drain-test".into();
     let pipeline_id: PipelineId = "shutdown-drain-pipeline".into();
+    let test_id = "graceful_shutdown_drain";
 
     let counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(counter.clone());
+    counting_exporter::register_counter(test_id, counter.clone());
 
     // Generate data with a short run time so data is likely still in Quiver
     // (either WAL or finalized segments) when shutdown starts.
@@ -694,6 +725,7 @@ fn test_persistence_processor_graceful_shutdown_drain() {
         .max_batch_size(10)
         .signals_per_second(Some(1000)) // Fast generation
         .use_counting_exporter()
+        .exporter_id(test_id)
         .build(&pipeline_group_id, &pipeline_id);
 
     run_pipeline(
@@ -704,7 +736,7 @@ fn test_persistence_processor_graceful_shutdown_drain() {
         Duration::from_millis(500), // Deadline for drain
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
     // Verify persistence directory was created
@@ -736,9 +768,10 @@ fn test_persistence_processor_high_volume_throughput() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "high-volume-test".into();
     let pipeline_id: PipelineId = "high-volume-pipeline".into();
+    let test_id = "high_volume_throughput";
 
     let counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(counter.clone());
+    counting_exporter::register_counter(test_id, counter.clone());
 
     // Generate 500 signals in batches of 50 - enough to trigger multiple
     // segment finalizations (max_segment_open_duration is 200ms by default)
@@ -748,6 +781,7 @@ fn test_persistence_processor_high_volume_throughput() {
         .max_batch_size(50)
         .signals_per_second(Some(2000)) // Fast generation
         .use_counting_exporter()
+        .exporter_id(test_id)
         .build(&pipeline_group_id, &pipeline_id);
 
     // Shut down once all signals are delivered
@@ -761,7 +795,7 @@ fn test_persistence_processor_high_volume_throughput() {
         Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
     // Verify persistence infrastructure was used
@@ -794,9 +828,10 @@ fn test_persistence_processor_drop_oldest_policy() {
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "drop-oldest-test".into();
     let pipeline_id: PipelineId = "drop-oldest-pipeline".into();
+    let test_id = "drop_oldest_policy";
 
     let counter = Arc::new(AtomicU64::new(0));
-    counting_exporter::set_counter(counter.clone());
+    counting_exporter::register_counter(test_id, counter.clone());
 
     // Use drop_oldest policy with standard retention size.
     // This validates the policy configuration is accepted and functions.
@@ -806,6 +841,7 @@ fn test_persistence_processor_drop_oldest_policy() {
         .max_batch_size(10)
         .signals_per_second(Some(500))
         .use_counting_exporter()
+        .exporter_id(test_id)
         .size_cap_policy("drop_oldest")
         .build(&pipeline_group_id, &pipeline_id);
 
@@ -819,7 +855,7 @@ fn test_persistence_processor_drop_oldest_policy() {
         Some(move || delivered_counter.load(Ordering::Relaxed) >= total_signals),
     );
 
-    counting_exporter::clear_counter();
+    counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
     // Verify persistence was used
