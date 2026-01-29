@@ -88,6 +88,7 @@ azure_identity = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
@@ -111,6 +112,7 @@ azure-monitor-exporter = [
     "dep:reqwest",
     "dep:azure_core",
     "dep:ahash",
+    "dep:sysinfo",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 # Experimental processors

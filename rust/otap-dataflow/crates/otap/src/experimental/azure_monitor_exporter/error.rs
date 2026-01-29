@@ -262,22 +262,6 @@ impl Error {
         }
     }
 
-    /// Creates a token refresh error.
-    #[must_use]
-    pub fn token_refresh(source: Error) -> Self {
-        // Unwrap the inner auth error source if possible
-        let inner_source = match source {
-            Error::Auth { source, .. } => source,
-            _ => None,
-        };
-
-        Self::Auth {
-            kind: AuthErrorKind::TokenRefresh,
-            source: inner_source,
-            body: None,
-        }
-    }
-
     /// Creates an unauthorized (401) error.
     #[must_use]
     pub fn unauthorized(body: String) -> Self {
@@ -381,16 +365,6 @@ mod tests {
         let error = Error::forbidden("insufficient permissions".to_string());
         assert_eq!(error.to_string(), "Auth error (forbidden)");
         assert!(error.source().is_none());
-    }
-
-    #[test]
-    fn test_auth_token_refresh_message() {
-        let inner = Error::token_acquisition(azure_core::error::Error::with_message(
-            azure_core::error::ErrorKind::Credential,
-            "refresh failed",
-        ));
-        let error = Error::token_refresh(inner);
-        assert_eq!(error.to_string(), "Auth error (token refresh)");
     }
 
     // ==================== Server Response Error Tests ====================
