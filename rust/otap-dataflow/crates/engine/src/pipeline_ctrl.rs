@@ -18,8 +18,8 @@ use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::TelemetrySettings;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
-use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::{otel_debug, otel_warn};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
@@ -316,7 +316,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             if is_draining {
-                                otel_warn!(
+                                otel_debug!(
                                     "pipeline.draining.ignored_start_timer",
                                     node_id = node_id,
                                     "Ignoring StartTimer during shutdown draining"
@@ -330,7 +330,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                         PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
                             if is_draining {
-                                otel_warn!(
+                                otel_debug!(
                                     "pipeline.draining.ignored_start_telemetry_timer",
                                     node_id = node_id,
                                     "Ignoring StartTelemetryTimer during shutdown draining"
@@ -344,12 +344,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
                             if is_draining {
-                                otel_warn!(
+                                otel_debug!(
                                     "pipeline.draining.ignored_delay_data",
                                     node_id = node_id,
                                     "Ignoring DelayData during shutdown draining"
                                 );
-                                drop(data); // Explicitly drop the data
                             } else {
                                 let delayed = Delayed { node_id, when, data };
                                 self.delayed_data.push(delayed);
