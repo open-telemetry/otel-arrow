@@ -1259,6 +1259,7 @@ where
     Ok(encoded_parent_ids)
 }
 
+// TODO remove calls to this method
 pub fn transport_encode_parent_id_for_attributes<T>(record_batch: &RecordBatch) -> Result<ArrayRef>
 where
     T: ArrowPrimitiveType,

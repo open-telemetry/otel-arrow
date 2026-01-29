@@ -225,6 +225,7 @@ fn bench_materialize_parent_ids(c: &mut Criterion) {
     group.finish()
 }
 
+// TODO remove this method b/c it's not needed
 fn bench_transport_encode_id_for_attributes(c: &mut Criterion) {
     let mut group = c.benchmark_group("transport_encode_parent_id_for_attributes");
 
@@ -256,6 +257,7 @@ fn bench_transport_encode_id_for_attributes(c: &mut Criterion) {
     group.finish()
 }
 
+// TODO - add cases to this for if the IDs are dict encoded
 fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_transport_optimized");
     for size in [127, 1536, 8096] {
@@ -267,22 +269,6 @@ fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
             } else {
                 format!("encode_transport_optimized_ids_no_nulls/{}", size)
             };
-
-            // {
-            //     println!("here");
-            //     let mut batch2 = otap_batch.clone();
-            //     let mut log_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap().clone();
-            //     let str_col = log_attrs.schema().index_of(consts::ATTRIBUTE_STR).unwrap();
-            //     _ = log_attrs.remove_column(str_col);
-            //     arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
-
-            //     batch2.encode_transport_optimized().unwrap();
-            //     let mut log_attrs = batch2.get(ArrowPayloadType::LogAttrs).unwrap().clone();
-
-            //     let str_col = log_attrs.schema().index_of(consts::ATTRIBUTE_STR).unwrap();
-            //     _ = log_attrs.remove_column(str_col);
-            //     arrow::util::pretty::print_batches(&[log_attrs.clone()]).unwrap();
-            // }
 
             let _ = group.bench_with_input(
                 BenchmarkId::from_parameter(bench_name),
