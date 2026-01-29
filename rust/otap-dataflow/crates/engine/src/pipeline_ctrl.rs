@@ -24,6 +24,12 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
 
+/// Maximum time buffer between the end of draining and the shutdown deadline.
+/// The actual buffer is the minimum of this value and 10% of the time until deadline,
+/// ensuring we use at least 90% of available time for draining while capping the
+/// post-draining buffer at 1 second.
+const MAX_DRAINING_BUFFER: Duration = Duration::from_secs(1);
+
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
 struct Delayed<PData> {
@@ -231,8 +237,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// - Cleanup messages (`CancelTimer`, `CancelTelemetryTimer`, `DeliverAck`, `DeliverNack`)
     ///   continue to be processed
     /// - Timer expirations are skipped
-    /// - The loop exits when all senders drop their channel ends, or when the shutdown
+    /// - The loop exits when all senders drop their channel ends, or when the draining
     ///   deadline is reached (whichever comes first)
+    ///
+    /// The draining deadline uses at least 90% of the available time, with the gap between
+    /// draining end and shutdown deadline capped at [`MAX_DRAINING_BUFFER`]. This ensures
+    /// we maximize draining time while reserving a reasonable buffer for post-draining work.
     ///
     /// This allows nodes to send cleanup messages during their shutdown sequence.
     pub async fn run(mut self) -> Result<(), Error> {
@@ -310,9 +320,24 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             // This allows nodes to send cleanup messages (e.g., CancelTimer,
                             // CancelTelemetryTimer) during their shutdown sequence.
                             // The loop will exit when all senders drop their channel ends
-                            // or when the deadline is reached.
+                            // or when the draining deadline is reached.
+                            //
+                            // Calculate draining deadline to use at least 90% of available time,
+                            // with the gap capped at MAX_DRAINING_BUFFER. This maximizes draining
+                            // time while ensuring some buffer for post-draining work.
                             is_draining = true;
-                            draining_deadline = Some(deadline);
+                            let now = Instant::now();
+                            let time_until_deadline = deadline.saturating_duration_since(now);
+                            let buffer = std::cmp::min(
+                                time_until_deadline / 10, // 10% of available time
+                                MAX_DRAINING_BUFFER,       // capped at 1 second
+                            );
+                            draining_deadline = Some(
+                                deadline
+                                    .checked_sub(buffer)
+                                    .unwrap_or(now)
+                                    .max(now)
+                            );
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
                             if is_draining {
