@@ -673,8 +673,12 @@ impl SortedValuesColumnBuilder {
 
     /// append a segment of all null values
     fn append_nulls(&mut self, count: usize) {
-        self.sorted_segments
-            .push(SortedValuesColumnSegment::Nulls(count))
+        if let Some(SortedValuesColumnSegment::Nulls(null_count)) = self.sorted_segments.last_mut() {
+            *null_count += count
+        } else {
+            self.sorted_segments
+                .push(SortedValuesColumnSegment::Nulls(count))
+        }
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
@@ -705,78 +709,66 @@ impl SortedValuesColumnBuilder {
             }
         }
 
-        // Check if we have any nulls
-        let has_nulls = self
-            .sorted_segments
-            .iter()
-            .any(|seg| matches!(seg, SortedValuesColumnSegment::Nulls(_)));
-
         // For dictionary arrays, build directly to avoid concat overhead
         if let DataType::Dictionary(key_type, _) = self.source.data_type() {
-            return self.finish_dictionary_direct(total_len, &**key_type);
+            return self.finish_dictionary_direct(total_len, key_type.as_ref());
         }
 
-        // For non-dictionary types with no nulls, fast path
-        if !has_nulls {
-            let mut all_indices = Vec::with_capacity(total_len);
-            for segment in &self.sorted_segments {
-                if let SortedValuesColumnSegment::NonNull(indices) = segment {
-                    all_indices.extend_from_slice(indices);
-                }
-            }
-            let indices_array = UInt32Array::from(all_indices);
-            return Ok(take(self.source.as_ref(), &indices_array, None).unwrap());
-        }
+        // Fall back to using the `concat` compute kernel for non dict encoded types.
+        // This is less optimal for a couple reasons:
+        // - we allocate new all-null arrays for the all null segments
+        // - arrow's `concat` concatenates the null buffers of the arrays together, and the code
+        //   it uses for this isn't optimal in the case where the are long sequences of all nulls
+        //
+        // TODO: write optimized method to concat the segments of non-dict encoded sources
 
-        // Fall back to concat approach for non-dictionary types with nulls
-        // First, coalesce consecutive segments to reduce the number of arrays we create
+        // // Calculate total non-null count for pre-allocation
+        // let total_non_null_count: usize = self
+        //     .sorted_segments
+        //     .iter()
+        //     .filter_map(|seg| match seg {
+        //         SortedValuesColumnSegment::NonNull(indices) => Some(indices.len()),
+        //         _ => None,
+        //     })
+        //     .sum();
 
-        // Calculate total non-null count for preallocation
-        let total_non_null_count: usize = self
-            .sorted_segments
-            .iter()
-            .filter_map(|seg| match seg {
-                SortedValuesColumnSegment::NonNull(indices) => Some(indices.len()),
-                _ => None,
-            })
-            .sum();
-
-        let mut coalesced: Vec<SortedValuesColumnSegment> = Vec::new();
-        let mut current_nulls = 0;
-        let mut current_indices = Vec::with_capacity(total_non_null_count);
-
-        for segment in &self.sorted_segments {
-            match segment {
-                SortedValuesColumnSegment::Nulls(count) => {
-                    // Flush accumulated indices if any
-                    if !current_indices.is_empty() {
-                        coalesced.push(SortedValuesColumnSegment::NonNull(std::mem::take(
-                            &mut current_indices,
-                        )));
-                    }
-                    current_nulls += count;
-                }
-                SortedValuesColumnSegment::NonNull(indices) => {
-                    // Flush accumulated nulls if any
-                    if current_nulls > 0 {
-                        coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
-                        current_nulls = 0;
-                    }
-                    current_indices.extend_from_slice(indices);
-                }
-            }
-        }
-        // Flush remaining
-        if current_nulls > 0 {
-            coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
-        }
-        if !current_indices.is_empty() {
-            coalesced.push(SortedValuesColumnSegment::NonNull(current_indices));
-        }
+        // // caalesce
+        // let mut coalesced: Vec<SortedValuesColumnSegment> = Vec::new();
+        // let mut current_nulls = 0;
+        // let mut current_indices = Vec::with_capacity(total_non_null_count);
+        // for segment in &self.sorted_segments {
+        //     match segment {
+        //         SortedValuesColumnSegment::Nulls(count) => {
+        //             // Flush accumulated indices if any
+        //             if !current_indices.is_empty() {
+        //                 coalesced.push(SortedValuesColumnSegment::NonNull(std::mem::take(
+        //                     &mut current_indices,
+        //                 )));
+        //             }
+        //             current_nulls += count;
+        //         }
+        //         SortedValuesColumnSegment::NonNull(indices) => {
+        //             // Flush accumulated nulls if any
+        //             if current_nulls > 0 {
+        //                 coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
+        //                 current_nulls = 0;
+        //             }
+        //             current_indices.extend_from_slice(indices);
+        //         }
+        //     }
+        // }
+        // // Flush remaining
+        // if current_nulls > 0 {
+        //     coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
+        // }
+        // if !current_indices.is_empty() {
+        //     coalesced.push(SortedValuesColumnSegment::NonNull(current_indices));
+        // }
 
         // Now build arrays from coalesced segments (will be much fewer)
-        let mut arrays = Vec::with_capacity(coalesced.len());
-        for segment in &coalesced {
+        // let mut arrays = Vec::with_capacity(coalesced.len());
+        let mut arrays = Vec::with_capacity(self.sorted_segments.len());
+        for segment in &self.sorted_segments {
             match segment {
                 SortedValuesColumnSegment::Nulls(count) => {
                     arrays.push(self.gen_source_nulls(*count));
