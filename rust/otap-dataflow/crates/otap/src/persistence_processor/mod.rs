@@ -416,6 +416,9 @@ impl PersistenceProcessor {
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
         // Create a lightweight retry ticket
+        // TODO(#1472): Replace with proper timer support when available.
+        // Currently we abuse delay_data() with an empty payload as a workaround
+        // for the lack of a native "schedule callback" primitive.
         let retry_ticket = OtapPdata::new(
             Default::default(),
             OtapPayload::empty(SignalType::Traces), // Signal type doesn't matter for empty payload
