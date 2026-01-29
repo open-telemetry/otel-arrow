@@ -13,7 +13,9 @@ use data_engine_expressions::{
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform};
+use otap_df_pdata::otap::transform::{
+    AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
+};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
