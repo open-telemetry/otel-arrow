@@ -418,7 +418,8 @@ mod tests {
 
                 // Pipeline + node context
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_success");
 
                 // Router with metrics
@@ -491,7 +492,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_failure");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -555,7 +557,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_success");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -622,7 +625,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_failure");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -689,7 +693,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -744,7 +749,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -797,7 +803,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -852,7 +859,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -906,7 +914,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -963,7 +972,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -1018,7 +1028,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -1075,7 +1086,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,

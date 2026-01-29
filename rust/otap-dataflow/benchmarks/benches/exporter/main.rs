@@ -425,8 +425,13 @@ fn bench_exporter(c: &mut Criterion) {
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx =
-                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+                    let pipeline_ctx = controller_ctx.pipeline_context_with(
+                        "grp".into(),
+                        "pipeline".into(),
+                        0,
+                        1,
+                        0,
+                    );
 
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(pipeline_ctx, config),
@@ -485,8 +490,13 @@ fn bench_exporter(c: &mut Criterion) {
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx =
-                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+                    let pipeline_ctx = controller_ctx.pipeline_context_with(
+                        "grp".into(),
+                        "pipeline".into(),
+                        0,
+                        1,
+                        0,
+                    );
 
                     let mut exporter = ExporterWrapper::local(
                         PerfExporter::new(pipeline_ctx, config),
@@ -551,8 +561,13 @@ fn bench_exporter(c: &mut Criterion) {
                     let metrics_registry_handle = metrics_system.registry();
                     let metrics_reporter = metrics_system.reporter();
                     let controller_ctx = ControllerContext::new(metrics_registry_handle);
-                    let pipeline_ctx =
-                        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+                    let pipeline_ctx = controller_ctx.pipeline_context_with(
+                        "grp".into(),
+                        "pipeline".into(),
+                        0,
+                        1,
+                        0,
+                    );
                     let mut exporter = ExporterWrapper::local(
                         OTAPExporter::from_config(pipeline_ctx, &config)
                             .expect("Failed to create OTAPExporter from config"),
