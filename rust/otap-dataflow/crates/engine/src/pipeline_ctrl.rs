@@ -223,6 +223,18 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     /// - On StartTimer: schedules a timer for the node.
     /// - On CancelTimer: marks the timer as canceled.
     /// - On timer expiration: checks for cancellation and outdatedness before firing.
+    ///
+    /// ## Shutdown Behavior
+    ///
+    /// When a `Shutdown` message is received, the manager enters "draining" mode:
+    /// - New timer starts and delayed data requests are ignored
+    /// - Cleanup messages (`CancelTimer`, `CancelTelemetryTimer`, `DeliverAck`, `DeliverNack`)
+    ///   continue to be processed
+    /// - Timer expirations are skipped
+    /// - The loop exits when all senders drop their channel ends, or when the shutdown
+    ///   deadline is reached (whichever comes first)
+    ///
+    /// This allows nodes to send cleanup messages during their shutdown sequence.
     pub async fn run(mut self) -> Result<(), Error> {
         let internal_telemetry_enabled =
             self.telemetry.pipeline_metrics || self.telemetry.tokio_metrics;
@@ -231,10 +243,22 @@ impl<PData> PipelineCtrlMsgManager<PData> {
 
         // Track whether we're in shutdown/draining mode. After shutdown is initiated,
         // we continue running to allow nodes to send cleanup messages (e.g., CancelTimer)
-        // until all senders drop their end of the channel.
+        // until all senders drop their end of the channel or the deadline is reached.
         let mut is_draining = false;
+        let mut draining_deadline: Option<Instant> = None;
 
         loop {
+            // Check if we've exceeded the draining deadline
+            if let Some(deadline) = draining_deadline {
+                if Instant::now() >= deadline {
+                    otel_warn!(
+                        "pipeline.draining.deadline_exceeded",
+                        "Draining deadline exceeded, forcing shutdown"
+                    );
+                    break;
+                }
+            }
+
             // Get the next expirations, if any (skip during draining).
             let next_expiry = if is_draining {
                 None
@@ -251,7 +275,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             } else {
                 self.delayed_data.peek().map(|d| d.when)
             };
-            let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
+            // During draining, use the deadline as the next expiry to ensure we check it
+            let next_earliest = if is_draining {
+                draining_deadline
+            } else {
+                opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry)
+            };
 
             tokio::select! {
                 biased;
@@ -280,12 +309,19 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             // Enter draining mode instead of breaking immediately.
                             // This allows nodes to send cleanup messages (e.g., CancelTimer,
                             // CancelTelemetryTimer) during their shutdown sequence.
-                            // The loop will exit when all senders drop their channel ends.
+                            // The loop will exit when all senders drop their channel ends
+                            // or when the deadline is reached.
                             is_draining = true;
+                            draining_deadline = Some(deadline);
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
-                            // Ignore new timer starts during draining
-                            if !is_draining {
+                            if is_draining {
+                                otel_warn!(
+                                    "pipeline.draining.ignored_start_timer",
+                                    node_id = node_id,
+                                    "Ignoring StartTimer during shutdown draining"
+                                );
+                            } else {
                                 self.tick_timers.start(node_id, duration);
                             }
                         }
@@ -293,8 +329,13 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             self.tick_timers.cancel(node_id);
                         }
                         PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
-                            // Ignore new timer starts during draining
-                            if !is_draining {
+                            if is_draining {
+                                otel_warn!(
+                                    "pipeline.draining.ignored_start_telemetry_timer",
+                                    node_id = node_id,
+                                    "Ignoring StartTelemetryTimer during shutdown draining"
+                                );
+                            } else {
                                 self.telemetry_timers.start(node_id, duration);
                             }
                         }
@@ -302,8 +343,14 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             self.telemetry_timers.cancel(node_id);
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
-                            // Ignore new delayed data during draining
-                            if !is_draining {
+                            if is_draining {
+                                otel_warn!(
+                                    "pipeline.draining.ignored_delay_data",
+                                    node_id = node_id,
+                                    "Ignoring DelayData during shutdown draining"
+                                );
+                                drop(data); // Explicitly drop the data
+                            } else {
                                 let delayed = Delayed { node_id, when, data };
                                 self.delayed_data.push(delayed);
                             }
@@ -1408,6 +1455,224 @@ mod tests {
                 // Cleanup - drain the control receiver so it doesn't complain
                 let mut receiver = control_receivers.remove(&node.index).unwrap();
                 while receiver.recv().await.is_ok() {}
+            })
+            .await;
+    }
+
+    /// Validates that duplicate shutdown messages are ignored during draining.
+    ///
+    /// Once the manager enters draining mode, subsequent Shutdown messages should
+    /// be silently ignored to prevent re-triggering shutdown logic.
+    #[tokio::test]
+    async fn test_duplicate_shutdown_ignored_during_draining() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send first shutdown
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "first shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Small delay to ensure first shutdown is processed
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Send duplicate shutdown - should be ignored
+                let duplicate_result = pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "duplicate shutdown".to_owned(),
+                    })
+                    .await;
+
+                // Channel should still be open (manager didn't crash)
+                assert!(
+                    duplicate_result.is_ok(),
+                    "Duplicate shutdown should be accepted (and ignored)"
+                );
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Validates that DeliverAck messages are processed during draining.
+    ///
+    /// Ack messages should still be delivered to nodes during shutdown so that
+    /// in-flight acknowledgments can complete.
+    #[tokio::test]
+    async fn test_deliver_ack_during_draining() {
+        use crate::control::AckMsg;
+
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<String>();
+
+                let node = nodes.first().expect("ok");
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send shutdown first
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Small delay to ensure shutdown is processed and we're in draining mode
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Send DeliverAck during draining - should be delivered
+                let ack = AckMsg::new("ack_data".to_owned());
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverAck {
+                        node_id: node.index,
+                        ack,
+                    })
+                    .await
+                    .unwrap();
+
+                // Verify the ack was delivered to the node
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
+
+                assert!(received.is_ok(), "Should receive message within timeout");
+                match received.unwrap() {
+                    Ok(NodeControlMsg::Ack(ack_msg)) => {
+                        assert_eq!(*ack_msg.accepted, "ack_data");
+                    }
+                    other => panic!("Expected Ack message, got {:?}", other),
+                }
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Validates that DeliverNack messages are processed during draining.
+    ///
+    /// Nack messages should still be delivered to nodes during shutdown so that
+    /// in-flight negative acknowledgments can complete.
+    #[tokio::test]
+    async fn test_deliver_nack_during_draining() {
+        use crate::control::NackMsg;
+
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<String>();
+
+                let node = nodes.first().expect("ok");
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send shutdown first
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Small delay to ensure shutdown is processed and we're in draining mode
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Send DeliverNack during draining - should be delivered
+                let nack = NackMsg::new("test failure", "nack_data".to_owned());
+                pipeline_tx
+                    .send(PipelineControlMsg::DeliverNack {
+                        node_id: node.index,
+                        nack,
+                    })
+                    .await
+                    .unwrap();
+
+                // Verify the nack was delivered to the node
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                let received = timeout(Duration::from_millis(100), receiver.recv()).await;
+
+                assert!(received.is_ok(), "Should receive message within timeout");
+                match received.unwrap() {
+                    Ok(NodeControlMsg::Nack(nack_msg)) => {
+                        assert_eq!(*nack_msg.refused, "nack_data");
+                        assert_eq!(nack_msg.reason, "test failure");
+                    }
+                    other => panic!("Expected Nack message, got {:?}", other),
+                }
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Validates that the draining deadline is respected.
+    ///
+    /// If the draining deadline is exceeded, the manager should force shutdown
+    /// even if there are still active senders.
+    #[tokio::test]
+    async fn test_draining_deadline_forces_shutdown() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, _control_receivers, _nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send shutdown with a very short deadline
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_millis(50),
+                        reason: "test shutdown with short deadline".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Don't drop the sender - the manager should still exit due to deadline
+                // Wait for the manager to exit (should happen after ~50ms deadline)
+                let shutdown_result = timeout(Duration::from_millis(200), manager_handle).await;
+
+                assert!(
+                    shutdown_result.is_ok(),
+                    "Manager should shutdown when draining deadline is exceeded, even with active senders"
+                );
             })
             .await;
     }
