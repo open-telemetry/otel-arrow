@@ -61,7 +61,7 @@ struct TemplateVariables {
     loadgen_exporter_type: PlatformType,
     backend_receiver_type: PlatformType,
     #[serde(default)]
-    expect_failure: bool,
+    transformative: bool,
 }
 
 /// struct to simulate a pipeline running, reads a config and starts a pipeline to send and receive data
@@ -155,7 +155,7 @@ impl PipelineValidation {
         let ctx = context! {
             loadgen_exporter_type => &self.variables.loadgen_exporter_type,
             backend_receiver_type => &self.variables.backend_receiver_type,
-            expect_failure => self.variables.expect_failure,
+            transformative => self.variables.transformative,
             pipeline_config => pipeline_config,
         };
         let rendered = tmpl

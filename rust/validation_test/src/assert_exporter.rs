@@ -14,6 +14,7 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
+use otap_df_config::NodeId as NodeName;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
@@ -97,6 +98,17 @@ pub static ASSERT_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory
 };
 
 impl AssertValidExporter {
+
+    fn new() -> Self {
+        Self {
+            config,
+            control_msgs: Vec::new(),
+            suv_msgs: Vec::new(),
+            metrics
+        }
+    }
+    }
+    /// compares control and suv msgs and updates the metrics
     fn assert(&mut self) {
         let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
             assert_equivalent(&self.control_msgs, &self.suv_msgs)
@@ -137,21 +149,22 @@ impl Exporter<OtapPdata> for AssertValidExporter {
                     break;
                 }
                 Message::PData(pdata) => {
-                    let (_ctx, payload) = pdata.into_parts();
-                    let source_node = pdata.get_source_node();
+                    let (context, payload) = pdata.into_parts();
+                    let source_node: Option<NodeName> = None;
                     let msg = OtlpProtoBytes::try_from(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
                     if let Some(msg) = msg && let Some(node_name) = source_node {
                         match node_name {
-                            self.config.suv_node => {
-                                self.suv_msgs.push(msg)
-                                self.assert()
+                            // match node name and update the vec of msgs and compare
+                            name if name == self.config.suv_node => {
+                                self.suv_msgs.push(msg);
+                                self.assert();
                             }
-                            self.config.control_node => {
-                                self.control_msgs.push(msg)
-                                self.assert()
+                            name if name == self.config.control_node => {
+                                self.control_msgs.push(msg);
+                                self.assert();
                             }
                             _ => {
 

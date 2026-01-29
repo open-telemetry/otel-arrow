@@ -15,7 +15,7 @@ settings:
   {% set exporter_plugin_urn = "urn:otel:otap:exporter" -%}
 {% endif -%}
 {% set suv_pipeline = pipeline_config | default("nodes:") -%}
-{% set expect_failure = expect_failure | default(false) -%}
+{% set expect_failure = transformative | default(false) -%}
 
 pipeline_groups:
   validation_test:
