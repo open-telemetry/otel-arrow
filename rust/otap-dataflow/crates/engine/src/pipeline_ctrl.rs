@@ -229,11 +229,28 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         let mut pipeline_metrics_monitor = internal_telemetry_enabled
             .then(|| PipelineMetricsMonitor::new(self.pipeline_context.clone()));
 
+        // Track whether we're in shutdown/draining mode. After shutdown is initiated,
+        // we continue running to allow nodes to send cleanup messages (e.g., CancelTimer)
+        // until all senders drop their end of the channel.
+        let mut is_draining = false;
+
         loop {
-            // Get the next expirations, if any.
-            let next_expiry = self.tick_timers.next_expiry();
-            let next_tel_expiry = self.telemetry_timers.next_expiry();
-            let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
+            // Get the next expirations, if any (skip during draining).
+            let next_expiry = if is_draining {
+                None
+            } else {
+                self.tick_timers.next_expiry()
+            };
+            let next_tel_expiry = if is_draining {
+                None
+            } else {
+                self.telemetry_timers.next_expiry()
+            };
+            let next_delay_expiry = if is_draining {
+                None
+            } else {
+                self.delayed_data.peek().map(|d| d.when)
+            };
             let next_earliest = opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry);
 
             tokio::select! {
@@ -243,9 +260,13 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                     let Some(msg) = msg.ok() else { break; };
                     match msg {
                         PipelineControlMsg::Shutdown { deadline, reason } => {
+                            // Ignore duplicate shutdown requests during draining
+                            if is_draining {
+                                continue;
+                            }
                             match self.control_senders.shutdown_receivers(deadline, reason.clone()).await {
                                 Ok(()) => {
-                                    self.event_reporter.report(EngineEvent::shutdown_requested(self.pipeline_key, Some(reason)))
+                                    self.event_reporter.report(EngineEvent::shutdown_requested(self.pipeline_key.clone(), Some(reason)))
                                 }
                                 Err(_) => {
                                     let err_summary = ErrorSummary::Pipeline {
@@ -253,26 +274,39 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                         message: "Shutdown request failed".to_owned(),
                                         source: None,
                                     };
-                                    self.event_reporter.report(EngineEvent::pipeline_runtime_error(self.pipeline_key, "Shutdown failed", err_summary))
+                                    self.event_reporter.report(EngineEvent::pipeline_runtime_error(self.pipeline_key.clone(), "Shutdown failed", err_summary))
                                 }
                             }
-                            break;
+                            // Enter draining mode instead of breaking immediately.
+                            // This allows nodes to send cleanup messages (e.g., CancelTimer,
+                            // CancelTelemetryTimer) during their shutdown sequence.
+                            // The loop will exit when all senders drop their channel ends.
+                            is_draining = true;
                         },
                         PipelineControlMsg::StartTimer { node_id, duration } => {
-                            self.tick_timers.start(node_id, duration);
+                            // Ignore new timer starts during draining
+                            if !is_draining {
+                                self.tick_timers.start(node_id, duration);
+                            }
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
                             self.tick_timers.cancel(node_id);
                         }
                         PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
-                            self.telemetry_timers.start(node_id, duration);
+                            // Ignore new timer starts during draining
+                            if !is_draining {
+                                self.telemetry_timers.start(node_id, duration);
+                            }
                         }
                         PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
                             self.telemetry_timers.cancel(node_id);
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
-                            let delayed = Delayed { node_id, when, data };
-                            self.delayed_data.push(delayed);
+                            // Ignore new delayed data during draining
+                            if !is_draining {
+                                let delayed = Delayed { node_id, when, data };
+                                self.delayed_data.push(delayed);
+                            }
                         }
                         PipelineControlMsg::DeliverAck { node_id, ack } => {
                             self.send(node_id, NodeControlMsg::Ack(ack)).await;
@@ -562,12 +596,14 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx
+                pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
-                    .await;
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -617,12 +653,14 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx
+                pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
-                    .await;
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -717,10 +755,11 @@ mod tests {
             assert!(node2_received, "Node2 should have received TimerTick");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+            pipeline_tx.send(PipelineControlMsg::Shutdown {
                 deadline: Instant::now() + Duration::from_secs(1),
                 reason: "".to_owned()
-            }).await;
+            }).await.unwrap();
+            drop(pipeline_tx);
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -782,10 +821,11 @@ mod tests {
                 );
 
                 // Clean shutdown
-                let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+                pipeline_tx.send(PipelineControlMsg::Shutdown {
                     deadline: Instant::now() + Duration::from_secs(1),
                     reason: "".to_owned()
-                }).await;
+                }).await.unwrap();
+                drop(pipeline_tx);
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -815,6 +855,11 @@ mod tests {
                     })
                     .await
                     .unwrap();
+
+                // Drop the sender to allow the manager to exit draining mode.
+                // After shutdown, the manager continues running to allow cleanup messages
+                // until all senders are dropped.
+                drop(pipeline_tx);
 
                 // Manager should terminate cleanly within timeout
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
@@ -864,12 +909,14 @@ mod tests {
                 }
 
                 // Clean shutdown
-                let _ = pipeline_tx
+                pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
-                    .await;
+                    .await
+                    .unwrap();
+                drop(pipeline_tx);
                 let _ = timeout(Duration::from_millis(100), manager_handle).await;
             })
             .await;
@@ -946,12 +993,17 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Manager should still be responsive for shutdown
-                let _ = pipeline_tx
+                pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
-                    .await;
+                    .await
+                    .unwrap();
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
                 assert!(
                     shutdown_result.is_ok(),
@@ -1087,10 +1139,11 @@ mod tests {
             assert_eq!(firing_order[2].0, node1.index, "Node1 (120ms) should fire third");
 
             // Clean shutdown
-            let _ = pipeline_tx.send(PipelineControlMsg::Shutdown {
+            pipeline_tx.send(PipelineControlMsg::Shutdown {
                 deadline: Instant::now() + Duration::from_secs(1),
                 reason: "".to_owned()
-            }).await;
+            }).await.unwrap();
+            drop(pipeline_tx);
             let _ = timeout(Duration::from_millis(100), manager_handle).await;
         }).await;
     }
@@ -1273,34 +1326,28 @@ mod tests {
                     Err(e) => panic!("Failed to receive message: {e:?}"),
                 }
 
-                let _ = pipeline_tx
+                pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
                         reason: "".to_owned(),
                     })
-                    .await;
+                    .await
+                    .unwrap();
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
                 let _ = manager_handle.await;
             })
             .await;
     }
 
-    /// Demonstrates a known bug: the manager breaks immediately after sending shutdown
-    /// to receivers, which drops the pipeline control channel before processors/exporters
-    /// have finished draining and cleanup.
+    /// Validates that nodes can send cleanup messages (e.g., CancelTimer) after
+    /// shutdown has been initiated.
     ///
-    /// This causes nodes that try to send control messages (e.g., CancelTelemetryTimer,
-    /// DelayData for retries) during their shutdown sequence to fail with
-    /// `PipelineControlMsgError { error: "Channel is closed..." }`.
-    ///
-    /// The proper fix would be for the manager to continue running until all nodes
-    /// have completed (i.e., until all senders are dropped), not break immediately
-    /// after sending shutdown to receivers.
-    ///
-    /// This test is marked #[ignore] because it intentionally fails to demonstrate
-    /// the bug. Remove #[ignore] and fix the bug to make it pass.
-    ///
-    /// See: https://github.com/open-telemetry/otel-arrow/issues/XXXX
-    #[ignore = "Known bug: manager drops control channel before nodes finish cleanup"]
+    /// After receiving a Shutdown message, the manager enters "draining" mode where
+    /// it continues to process cleanup messages until all senders drop their channel.
+    /// This allows processors and exporters to cancel timers, etc. during cleanup.
     #[tokio::test]
     async fn test_shutdown_allows_nodes_to_send_cleanup_messages() {
         let local = LocalSet::new();
@@ -1325,8 +1372,7 @@ mod tests {
                 // Small delay to ensure timer is registered
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
-                // Send shutdown - this will cause the manager to break immediately
-                // after sending shutdown to receivers (which we don't have in this test)
+                // Send shutdown - the manager enters draining mode but continues running
                 pipeline_tx
                     .send(PipelineControlMsg::Shutdown {
                         deadline: Instant::now() + Duration::from_secs(1),
@@ -1335,28 +1381,29 @@ mod tests {
                     .await
                     .unwrap();
 
-                // Wait for manager to exit
-                let _ = timeout(Duration::from_millis(100), manager_handle).await;
-
                 // After shutdown, nodes should still be able to send cleanup messages
                 // (e.g., CancelTelemetryTimer). In a real pipeline, processors try to
                 // cancel their telemetry timers when their message channel closes.
-                //
-                // BUG: Currently this fails because the manager has already exited
-                // and dropped the receiver end of the pipeline control channel.
+                // The manager is still running in draining mode, so this should succeed.
                 let cancel_result = pipeline_tx
                     .send(PipelineControlMsg::CancelTimer {
                         node_id: node.index,
                     })
                     .await;
 
-                // This assertion will FAIL until the bug is fixed.
                 // The channel should remain open until all nodes have completed.
                 assert!(
                     cancel_result.is_ok(),
                     "Nodes should be able to send control messages during cleanup, \
                      but the channel was closed prematurely"
                 );
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly after cleanup");
 
                 // Cleanup - drain the control receiver so it doesn't complain
                 let mut receiver = control_receivers.remove(&node.index).unwrap();
