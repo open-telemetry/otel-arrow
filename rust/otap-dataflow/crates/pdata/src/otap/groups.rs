@@ -1043,6 +1043,14 @@ fn select<const N: usize>(
     batches.iter().flat_map(move |batches| batches[i].as_ref())
 }
 
+/// Similar to [select], but does not filter out the `None` values.
+fn select_all<const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    i: usize,
+) -> impl Iterator<Item = Option<&RecordBatch>> {
+    batches.iter().map(move |batches| batches[i].as_ref())
+}
+
 // Concatenation requires that we solve two problems: reindexing and unification!
 
 // Reindexing code
@@ -1349,6 +1357,11 @@ impl<T> IDRange<T> {
 /// * `batches` - this is a 2D array where each element in the outer array contains an inner array
 ///   and each element in the inner array contains the record batch for a given payload type
 fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+    let len = batches.len();
+
     let mut schemas = Vec::with_capacity(batches.len());
 
     // FIXME: perhaps this whole function should coalesce operations against the same
@@ -1371,20 +1384,24 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         BTreeMap::new();
 
     let mut all_batch_indices: HashSet<usize> = HashSet::new();
+    (0..len).for_each(|batch_index| {
+        let _ = all_batch_indices.insert(batch_index);
+    });
 
     for payload_type_index in 0..N {
         schemas.clear(); // We're going to reuse this allocation across loop iterations
-        schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
-
-        if batches.is_empty() {
-            return Ok(());
-        }
-        let len = batches.len();
+        schemas.extend(
+            select_all(batches, payload_type_index)
+                .map(|batch| batch.and_then(|b| Some(b.schema()))),
+        );
 
         field_name_to_batch_indices.clear();
-        all_batch_indices.clear();
 
         for (batch_index, schema) in schemas.iter().enumerate() {
+            let Some(schema) = schema else {
+                continue;
+            };
+
             for field in schema.fields.iter() {
                 if matches!(field.data_type(), DataType::Struct(_)) {
                     // skip struct fields, as they get unified in a code path that doesn't use the
@@ -1398,9 +1415,6 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                     .insert(batch_index);
             }
         }
-        (0..len).for_each(|batch_index| {
-            let _ = all_batch_indices.insert(batch_index);
-        });
 
         // In the three following loops it first discovers all struct and dictionary fields, then
         // counts the dictionary values, and finally unifies the columns. There's a couple reasons
@@ -1434,7 +1448,10 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
         // repopulate the list of schemas in case any dictionary datatypes were changed
         schemas.clear();
-        schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
+        schemas.extend(
+            select_all(batches, payload_type_index)
+                .map(|batch| batch.and_then(|b| Some(b.schema()))),
+        );
 
         // Let's find missing optional columns; note that this must happen after we deal with the
         // dict columns since we rely on the assumption that all fields with the same name will have
@@ -1450,9 +1467,12 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                 .iter()
                 .next()
                 .expect("there should be at least one schema")]
+            .as_ref()
+            .expect("schema should exist")
             .field_with_name(missing_field_name)
             .map_err(|e| Error::Batching { source: e })?
             .clone();
+
             // If the field is not nullable, we need to make it nullable since we're adding null
             // values for batches where this column is missing.
             if !field.is_nullable() {
@@ -1477,6 +1497,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             }
         }
     }
+
     Ok(())
 }
 
