@@ -9,7 +9,7 @@
 //! for example, transmitting OTAP data via gRPC.
 
 use std::{
-    ops::{Add, AddAssign,Sub},
+    ops::{Add, AddAssign, Sub},
     sync::Arc,
 };
 
