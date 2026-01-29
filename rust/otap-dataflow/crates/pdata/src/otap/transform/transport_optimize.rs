@@ -150,7 +150,9 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     }
 
     // otherwise just return column by name
-    let column_idx = schema.index_of(path).ok()?;
+    // TODO - look for other places we use the method that was replaed (indexof)
+    // and then just call ok() b/c the error is expensive to calculate ...
+    let (column_idx, _) = schema.fields.find(path)?;
     columns.get(column_idx).cloned()
 }
 
@@ -739,10 +741,8 @@ where
             continue;
         }
 
-        // TODO - not the right handling
         if field_name == consts::PARENT_ID {
             columns.push(parent_id_col.clone());
-            // columns.push(sorted_parent_id_column.finish()?);
             continue;
         }
 
@@ -771,24 +771,6 @@ fn ranges(boundaries: &BooleanBuffer) -> Vec<Range<usize>> {
     out
 }
 
-// TODO - not sure this actually helps
-fn is_parent_id_column_sorted(parent_id_col: &dyn Array) -> bool {
-    match parent_id_col.data_type() {
-        DataType::UInt16 => {
-            let as_prim = parent_id_col
-                .as_any()
-                .downcast_ref::<UInt16Array>()
-                .unwrap();
-            let values_buffer = as_prim.values().iter().as_slice();
-            // println!("checking if val buffer is sortde {:?}", values_buffer);
-            values_buffer.is_sorted()
-        }
-        _ => {
-            todo!()
-        }
-    }
-}
-
 fn delta_encode_parent_id_slice<T: Copy + Sub<Output = T>>(vals: &mut [T]) {
     let mut prev = vals[0];
     for i in 1..vals.len() {
@@ -796,42 +778,6 @@ fn delta_encode_parent_id_slice<T: Copy + Sub<Output = T>>(vals: &mut [T]) {
         // TODO should be wrapping_sub?
         vals[i] = curr - prev;
         prev = curr;
-    }
-}
-
-fn delta_encode_parent_id(array: ArrayRef) -> ArrayRef {
-    match array.data_type() {
-        DataType::UInt16 => {
-            let prim_arr = array.as_any().downcast_ref::<UInt16Array>().unwrap();
-            if prim_arr.nulls().is_some() {
-                todo!()
-            }
-
-            let input = prim_arr.values();
-            let len = input.len();
-
-            if len <= 1 {
-                return array;
-            }
-
-            // Try to reuse the buffer if we have exclusive ownership
-            let mut values = input.to_vec();
-
-            // Delta encode in place from the end to avoid overwriting values we need
-            // values[i] = original[i] - original[i-1]
-            let mut prev = values[len - 1];
-            for i in (1..len).rev() {
-                let curr = values[i - 1];
-                values[i] = prev.wrapping_sub(curr);
-                prev = curr;
-            }
-            // values[0] stays as-is
-
-            Arc::new(UInt16Array::new(values.into(), None))
-        }
-        _ => {
-            todo!()
-        }
     }
 }
 
@@ -869,11 +815,11 @@ fn sort_attrs_type_and_keys_to_indices(
                     to_sort[i] += rank as u16;
                 }
 
-                let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
+                with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
                 Ok(PrimitiveArray::from_iter_values(
-                    with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                    with_indices.into_iter().map(|(rank, _)| rank as u32),
                 ))
             }
             (DataType::UInt16, DataType::Utf8) => {
@@ -883,7 +829,7 @@ fn sort_attrs_type_and_keys_to_indices(
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
                     .expect("can downcast to dict<u16>");
                 let keys = dict_arr.keys();
-                let keys_values = keys.values().inner().as_slice();
+                let keys_values = keys.values();
 
                 // safety: we've checked the datatype for this values array is utf8 and rank will
                 // will only return error for types that don't support rank, which utf8 does
@@ -900,11 +846,11 @@ fn sort_attrs_type_and_keys_to_indices(
                     to_sort[i] += rank;
                 }
 
-                let mut with_ranks = to_sort.into_iter().enumerate().collect::<Vec<_>>();
-                with_ranks.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+                let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
+                with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
 
                 Ok(PrimitiveArray::from_iter_values(
-                    with_ranks.into_iter().map(|(rank, _)| rank as u32),
+                    with_indices.into_iter().map(|(rank, _)| rank as u32),
                 ))
             }
             (other_key, DataType::Utf8) => {
@@ -920,8 +866,39 @@ fn sort_attrs_type_and_keys_to_indices(
                 });
             }
         },
+        DataType::Utf8 => {
+            // sort by native keys. It would be unusual if we ended up in this branch, which is
+            // why it is probably not as well optimized as the rest of the attribute encoding
+            // implementation. Normally, we'd only end up with non-dict encoded keys if a batch
+            // were received that had more than u16::MAX_VALUE unique attribute keys.
+
+            // safety: we've already checked the datatype is Utf8 just above
+            let keys_as_str = key_col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("can downcast to StringArray");
+
+            // safety: we've checked the datatype for this values array is utf8 and rank will
+            // will only return error for types that don't support rank, which utf8 doe
+            let keys_rank = rank(keys_as_str, None).expect("can rank string array");
+
+            let mut to_sort = vec![0u64; len];
+            for i in 0..len {
+                to_sort[i] += (type_bytes[i] as u64) << 32;
+            }
+            for i in 0..len {
+                to_sort[i] += keys_rank[i] as u64;
+            }
+
+            let mut with_indices = to_sort.into_iter().enumerate().collect::<Vec<_>>();
+            with_indices.sort_unstable_by(|a, b| a.1.cmp(&b.1));
+
+            Ok(PrimitiveArray::from_iter_values(
+                with_indices.into_iter().map(|(rank, _)| rank as u32),
+            ))
+        }
         _ => {
-            todo!()
+            todo!("bad data type")
         }
     }
 }
@@ -2797,6 +2774,7 @@ mod test {
         },
         datatypes::{Field, Fields, TimeUnit},
     };
+    use serde::de::Unexpected;
 
     use crate::{encode::record::array::UInt16ArrayBuilder, schema::FieldExt};
 
@@ -3174,8 +3152,6 @@ mod test {
 
         assert_eq!(result, expected);
     }
-
-    // TODO need to change the names of all these tests
 
     #[test]
     fn test_sort_and_apply_transport_delta_encoding_for_attrs() {
@@ -3635,7 +3611,6 @@ mod test {
         }
     }
 
-    // TODO - for this test, we need to ensure it doesn't delta encode parent IDs for the complex attrs
     #[test]
     fn test_sort_and_apply_transport_delta_encoding_for_attrs_with_complex_value_types() {
         let schema = Arc::new(Schema::new(vec![
@@ -3918,6 +3893,93 @@ mod test {
     // TODO need a test for fully empty (null) column...
 
     #[test]
+    fn test_sort_and_apply_transport_delta_encoding_for_sorts_by_keys_all_representations() {
+        // test all combinations of how dictionary keys can be sorted
+        let test_cases = &[
+            (
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 2, 3, 1]),
+                    Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+                )) as ArrayRef,
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values([0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+                )) as ArrayRef,
+            ),
+            (
+                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([0, 2, 3, 1]),
+                    Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+                )) as ArrayRef,
+                Arc::new(DictionaryArray::new(
+                    UInt16Array::from_iter_values([0, 1, 2, 3]),
+                    Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+                )) as ArrayRef,
+            ),
+            (
+                DataType::Utf8,
+                Arc::new(StringArray::from_iter_values(["a", "c", "d", "b"])),
+                Arc::new(StringArray::from_iter_values(["a", "b", "c", "d"])),
+            ),
+        ];
+
+        for (key_data_type, input_key_col, expected_key_col) in test_cases {
+            let input = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, key_data_type.clone(), false),
+                    Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                ])),
+                vec![
+                    Arc::new(UInt16Array::from_iter_values([0, 2, 3, 1])),
+                    Arc::new(UInt8Array::from_iter_values([
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                    ])),
+                    input_key_col.clone(),
+                    Arc::new(BooleanArray::from(vec![true, true, true, true])),
+                ],
+            )
+            .unwrap();
+
+            let expected = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                        .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, key_data_type.clone(), false),
+                    Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                ])),
+                vec![
+                    Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3])),
+                    Arc::new(UInt8Array::from_iter_values([
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                        AttributeValueType::Bool as u8,
+                    ])),
+                    expected_key_col.clone(),
+                    Arc::new(BooleanArray::from(vec![true, true, true, true])),
+                ],
+            )
+            .unwrap();
+
+            let result =
+                sort_and_apply_transport_delta_encoding_for_attrs::<UInt16Type>(&input).unwrap();
+            arrow::util::pretty::print_batches(&[input.clone()]);
+            arrow::util::pretty::print_batches(&[expected.clone()]);
+            arrow::util::pretty::print_batches(&[result.clone()]);
+
+            pretty_assertions::assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
     fn test_sort_and_apply_transport_delta_encoding_for_attr_null_attrs() {
         // create a record batch with some null attrs, both dict encoded and non-dict encoded
         // just to ensure that both are handled correctly.
@@ -4050,89 +4112,6 @@ mod test {
 
         let result =
             sort_and_apply_transport_delta_encoding_for_attrs::<UInt16Type>(&input).unwrap();
-        pretty_assertions::assert_eq!(result, expected);
-    }
-
-    // TODO -- need another test like this that is for u32 IDs
-
-    #[test]
-    fn test_sort_and_apply_transport_delta_encoding_for_attrs_dict_encoded_ids() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                consts::PARENT_ID,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
-                false,
-            ),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(
-                consts::ATTRIBUTE_KEY,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                true,
-            ),
-            Field::new(
-                consts::ATTRIBUTE_STR,
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                true,
-            ),
-            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
-        ]));
-
-        // create a record batch with some null attrs, both dict encoded and non-dict encoded
-        // just to ensure that both are handled correctly:
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 1, 2, 3]),
-                    Arc::new(UInt32Array::from_iter_values([0, 1, 2, 3])),
-                )),
-                Arc::new(UInt8Array::from_iter_values([
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Double as u8,
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Double as u8,
-                ])),
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(["ka"])),
-                )),
-                Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([Some(0), None, Some(1), None]),
-                    Arc::new(StringArray::from_iter_values(["a", "b"])),
-                )),
-                Arc::new(Float64Array::from_iter([None, Some(2.0), None, Some(1.5)])),
-            ],
-        )
-        .unwrap();
-
-        let expected = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 2, 3, 1]),
-                    Arc::new(UInt32Array::from_iter_values([0, 1, 2, 3])),
-                )),
-                Arc::new(UInt8Array::from_iter_values([
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Str as u8,
-                    AttributeValueType::Double as u8,
-                    AttributeValueType::Double as u8,
-                ])),
-                Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(["ka"])),
-                )),
-                Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter([Some(0), Some(1), None, None]),
-                    Arc::new(StringArray::from_iter_values(["a", "b"])),
-                )),
-                Arc::new(Float64Array::from_iter([None, None, Some(1.5), Some(2.0)])),
-            ],
-        )
-        .unwrap();
-
-        let result =
-            sort_and_apply_transport_delta_encoding_for_attrs::<UInt32Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
