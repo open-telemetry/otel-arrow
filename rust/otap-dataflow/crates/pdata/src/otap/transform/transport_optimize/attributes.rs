@@ -237,7 +237,7 @@ where
 
                 // map the sorted indices back to original source indices, and add them to the
                 // list of indices to take when materializing the sorted values column
-                sorted_val_col.extend_indices(
+                sorted_val_col.append_indices_to_take(
                     key_range_indices_values_sorted.iter().map(|&i| {
                         type_range_indices_key_sorted.value(key_range.start + i as usize)
                     }),
@@ -281,8 +281,7 @@ where
                         && type_range_attr_type != AttributeValueType::Map as u8
                         && type_range_attr_type != AttributeValueType::Slice as u8
                     {
-                        parent_ids_range.sort_unstable();
-                        delta_encode_parent_id_slice(parent_ids_range);
+                        sort_and_delta_encode(parent_ids_range);
                     }
                 }
             }
@@ -455,24 +454,33 @@ where
     Ok(batch)
 }
 
-fn delta_encode_parent_id_slice<T: Copy + Sub<Output = T>>(vals: &mut [T]) {
+/// Sort the slice in ascending order, and then apply delta encoding
+fn sort_and_delta_encode<T: Copy + Ord + Sub<Output = T>>(vals: &mut [T]) {
+    vals.sort_unstable();
     let mut prev = vals[0];
     for i in 1..vals.len() {
         let curr = vals[i];
-        // TODO should be wrapping_sub?
         vals[i] = curr - prev;
         prev = curr;
     }
 }
 
+/// sort the type and key and return the indices of the sorted batch.
+///
+/// To improve sort performance, does something similar to what would be done by arrow's
+/// RowConverter, which is to combine the columns into a row based byte array and then sort that.
+///
+/// However, this implementation is more optimal when keys are dictionary encoded, which they
+/// usually will be. Unlike RowConverter, we don't expand the dictionary when creating the sorting
+/// target. Instead, if keys is dictionary encoded, we rank the dictionary values, convert the
+/// dictionary keys to their ranks, and sort that alongside type. The dictionary keys are normally
+/// low cardinality, so ranking is fast.
 fn sort_attrs_type_and_keys_to_indices(
     type_col: &UInt8Array,
     key_col: ArrayRef,
 ) -> Result<UInt32Array> {
     let len = type_col.len();
-
     let type_bytes = type_col.values().inner().as_slice();
-
     match key_col.data_type() {
         DataType::Dictionary(key, val) => match (*key.clone(), *val.clone()) {
             (DataType::UInt8, DataType::Utf8) => {
@@ -489,7 +497,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 let val_ranks = rank(dict_arr.values(), None).expect("can rank string array");
 
                 // concat the type and key rank into a a u16 vec where the higher end byte of each
-                // element is the type, and the lower end is the key
+                // element is the type, and the lower end is the key's rank
                 let mut to_sort = vec![0u16; len];
                 for i in 0..len {
                     to_sort[i] += (type_bytes[i] as u16) << 8u16;
@@ -520,7 +528,7 @@ fn sort_attrs_type_and_keys_to_indices(
                 let val_ranks = rank(dict_arr.values(), None).expect("can rank string array");
 
                 // concat the type and key rank into a u32 vec where the higher end byte of each
-                // element is the type, and the lower bytes are the key rank
+                // element is the type, and the lower bytes are the key's rank
                 let mut to_sort = vec![0u32; len];
                 for i in 0..len {
                     to_sort[i] += (type_bytes[i] as u32) << 16u32;
@@ -552,9 +560,9 @@ fn sort_attrs_type_and_keys_to_indices(
         },
         DataType::Utf8 => {
             // sort by native keys. It would be unusual if we ended up in this branch, which is
-            // why it is probably not as well optimized as the rest of the attribute encoding
-            // implementation. Normally, we'd only end up with non-dict encoded keys if a batch
-            // were received that had more than u16::MAX_VALUE unique attribute keys.
+            // why it is not as well optimized as the cases above. Normally, we'd only end up with
+            // non-dict encoded keys if a batch were received that had more than u16::MAX_VALUE
+            // unique attribute keys.
 
             // safety: we've already checked the datatype is Utf8 just above
             let keys_as_str = key_col
@@ -566,6 +574,8 @@ fn sort_attrs_type_and_keys_to_indices(
             // will only return error for types that don't support rank, which utf8 doe
             let keys_rank = rank(keys_as_str, None).expect("can rank string array");
 
+            // concat the type and key rank into a u64 vec where the higher end byte of each
+            // element is the type, and the lower bytes are the key's rank
             let mut to_sort = vec![0u64; len];
             for i in 0..len {
                 to_sort[i] += (type_bytes[i] as u64) << 32;
@@ -581,27 +591,47 @@ fn sort_attrs_type_and_keys_to_indices(
                 with_indices.into_iter().map(|(rank, _)| rank as u32),
             ))
         }
-        _ => {
-            todo!("bad data type")
+        other_data_type => {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: format!(
+                    "found invalid type for attributes 'key' column {other_data_type:?}"
+                ),
+            });
         }
     }
+}
+
+/// This is a helper struct for building the values column when converting it to transport a
+/// optimized encoding.
+///
+/// During this encoding process, we sort by type, key, and value. In the attribute's arrow
+/// schema, there is one column per type of attribute, but all columns have the same length.
+/// Attribute value's column is identified by the value in the type column, and the other columns
+/// in the batch will be null at this position.
+///
+/// This builder helps to track segments of the resulting values array that should either be null,
+/// or have sorted values taken from the incoming unencoded source column.
+struct SortedValuesColumnBuilder {
+    /// the original source column for the sorted value column
+    source: Arc<dyn Array>,
+
+    /// segments to take from the source column when constructing the sorted values column.
+    /// these segments will either be all null, or identify sorted indices in the values column
+    /// to take when [`Self::finish`] is called
+    sorted_segments: Vec<SortedValuesColumnSegment>,
+
+    /// hint for the count of nulls in the segment of the record batch containing values of the
+    /// type for this column. The column will be nullable, but the segment containing the values
+    /// may have no nulls, in which case we can optimize the final construction by ignoring the
+    /// null buffer on the source array. In MOST cases, there will be no nulls in this segment
+    /// as null attributes should actually in a row with type AttributeValueType::Empty
+    null_count_hint: Option<usize>,
 }
 
 #[derive(Debug)]
 enum SortedValuesColumnSegment {
     Nulls(usize),
     NonNull(Vec<u32>), // indices into the original source array
-}
-
-struct SortedValuesColumnBuilder {
-    // TODO - we might consider refactoring this into something not Arc to reduce heap allocations?
-    sorted_segments: Vec<SortedValuesColumnSegment>,
-
-    null_count_hint: Option<usize>,
-
-    // TODO - we could get into the internals of `take` and figure out if it's faster not to take from
-    // an Arc dyn array, then we'd avoid a heap allocation here as well
-    source: Arc<dyn Array>,
 }
 
 impl SortedValuesColumnBuilder {
@@ -613,11 +643,20 @@ impl SortedValuesColumnBuilder {
         })
     }
 
+    /// access some rows of the original values column by their indices
     fn take_source(&self, indices: &UInt32Array) -> Result<Arc<dyn Array>> {
         Ok(take(self.source.as_ref(), indices, None).unwrap())
     }
 
-    fn extend_indices<I: IntoIterator<Item = u32>>(&mut self, new_indices: I) {
+    /// set the hint for the number of nulls in the segment of the attribute's record batch
+    /// containing values of the type being constructed by this instance.
+    fn set_null_count_hint(&mut self, null_count: usize) {
+        self.null_count_hint = Some(null_count);
+    }
+
+    /// append a list of sorted indices to the list that will eventually be taken to form
+    /// the final sorted values column
+    fn append_indices_to_take<I: IntoIterator<Item = u32>>(&mut self, new_indices: I) {
         // extends to the current segment of non-null indices if one is available, otherwise
         // just creates a new segment of non-null indices
         if let Some(SortedValuesColumnSegment::NonNull(non_null_indices)) =
@@ -632,63 +671,7 @@ impl SortedValuesColumnBuilder {
         }
     }
 
-    fn set_null_count_hint(&mut self, null_count: usize) {
-        self.null_count_hint = Some(null_count);
-    }
-
-    fn gen_source_nulls(&self, count: usize) -> Arc<dyn Array> {
-        match self.source.data_type() {
-            DataType::Dictionary(k, _) => {
-                match **k {
-                    DataType::UInt8 => {
-                        let dict_arr = self
-                            .source
-                            .as_any()
-                            .downcast_ref::<DictionaryArray<UInt8Type>>()
-                            .unwrap();
-                        // TODO - either use new_unchecked here, or add a method to arrow-rs to speed this up if it's all null
-                        // TOOD - safety comments
-                        // TODO - feature unsafe gate?
-                        #[allow(unsafe_code)]
-                        let new_dict = unsafe {
-                            DictionaryArray::new_unchecked(
-                                UInt8Array::new_null(count),
-                                dict_arr.values().clone(),
-                            )
-                        };
-                        Arc::new(new_dict)
-                    }
-                    DataType::UInt16 => {
-                        let dict_arr = self
-                            .source
-                            .as_any()
-                            .downcast_ref::<DictionaryArray<UInt16Type>>()
-                            .unwrap();
-                        #[allow(unsafe_code)]
-                        let new_dict = unsafe {
-                            DictionaryArray::new_unchecked(
-                                UInt16Array::new_null(count),
-                                dict_arr.values().clone(),
-                            )
-                        };
-                        Arc::new(new_dict)
-                    }
-                    _ => {
-                        todo!("invalid dict")
-                    }
-                }
-            }
-            DataType::Binary => Arc::new(BinaryArray::new_null(count)),
-            DataType::Boolean => Arc::new(BooleanArray::new_null(count)),
-            DataType::Int64 => Arc::new(Int64Array::new_null(count)),
-            DataType::Float64 => Arc::new(Float64Array::new_null(count)),
-            DataType::Utf8 => Arc::new(StringArray::new_null(count)),
-            _ => {
-                todo!("invalid attrs array")
-            }
-        }
-    }
-
+    /// append a segment of all null values
     fn append_nulls(&mut self, count: usize) {
         self.sorted_segments
             .push(SortedValuesColumnSegment::Nulls(count))
@@ -814,76 +797,7 @@ impl SortedValuesColumnBuilder {
         total_len: usize,
         key_type: &DataType,
     ) -> Result<Arc<dyn Array>> {
-        match *key_type {
-            DataType::UInt8 => {
-                let source_dict = self
-                    .source
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    .unwrap();
-                let source_keys = source_dict.keys().values().iter().as_slice();
-
-                let mut keys_builder = Vec::with_capacity(total_len);
-                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
-
-                for segment in &self.sorted_segments {
-                    match segment {
-                        SortedValuesColumnSegment::Nulls(count) => {
-                            // Append null keys
-                            keys_builder.resize(keys_builder.len() + count, 0u8);
-                            null_buffer_builder.append_n_nulls(*count);
-                        }
-                        SortedValuesColumnSegment::NonNull(indices) => {
-                            // Take keys from source dictionary using indices
-                            keys_builder
-                                .extend(indices.iter().map(|idx| source_keys[*idx as usize]));
-
-                            // Check if any of the source positions were null
-                            if let Some(source_nulls) = source_dict.nulls() {
-                                // Batch consecutive valid/null runs to reduce append overhead
-                                let mut i = 0;
-                                while i < indices.len() {
-                                    let idx = indices[i] as usize;
-                                    let is_valid = source_nulls.is_valid(idx);
-
-                                    // Count consecutive runs of same validity
-                                    let mut run_len = 1;
-                                    while i + run_len < indices.len() {
-                                        let next_idx = indices[i + run_len] as usize;
-                                        if source_nulls.is_valid(next_idx) == is_valid {
-                                            run_len += 1;
-                                        } else {
-                                            break;
-                                        }
-                                    }
-
-                                    // Append the run
-                                    if is_valid {
-                                        null_buffer_builder.append_n_non_nulls(run_len);
-                                    } else {
-                                        null_buffer_builder.append_n_nulls(run_len);
-                                    }
-
-                                    i += run_len;
-                                }
-                            } else {
-                                // Fast path: no nulls in source
-                                for _ in 0..indices.len() {
-                                    null_buffer_builder.append_non_null();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let null_buffer = null_buffer_builder.finish();
-                let keys_array = UInt8Array::new(ScalarBuffer::from(keys_builder), null_buffer);
-                #[allow(unsafe_code)]
-                let result = unsafe {
-                    DictionaryArray::new_unchecked(keys_array, source_dict.values().clone())
-                };
-                Ok(Arc::new(result))
-            }
+        match key_type {
             DataType::UInt16 => {
                 let source_dict = self
                     .source
@@ -896,8 +810,6 @@ impl SortedValuesColumnBuilder {
 
                 // TODO need to make this same optimization for u8
                 let mut null_buffer_builder = NullBufferBuilder::new(total_len);
-                // let mut null_buffer_builder = self.null_count_hint
-                //     .and_then(|null_count| (null_count > 0).then_some());
 
                 for segment in &self.sorted_segments {
                     match segment {
@@ -942,11 +854,6 @@ impl SortedValuesColumnBuilder {
                                     i += run_len;
                                 }
                             } else {
-                                // // TODO not sure this path is needed
-                                // // Fast path: no nulls in source
-                                // for _ in 0..indices.len() {
-                                //     null_buffer_builder.append_non_null();
-                                // }
                                 null_buffer_builder.append_n_non_nulls(indices.len());
                             }
                         }
@@ -961,11 +868,62 @@ impl SortedValuesColumnBuilder {
                 };
                 Ok(Arc::new(result))
             }
+            key_type => Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::UInt16],
+                actual: key_type.clone(),
+            }),
+        }
+    }
+
+    fn gen_source_nulls(&self, count: usize) -> Arc<dyn Array> {
+        match self.source.data_type() {
+            DataType::Dictionary(k, _) => {
+                match **k {
+                    DataType::UInt8 => {
+                        let dict_arr = self
+                            .source
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt8Type>>()
+                            .unwrap();
+                        // TODO - either use new_unchecked here, or add a method to arrow-rs to speed this up if it's all null
+                        // TOOD - safety comments
+                        // TODO - feature unsafe gate?
+                        #[allow(unsafe_code)]
+                        let new_dict = unsafe {
+                            DictionaryArray::new_unchecked(
+                                UInt8Array::new_null(count),
+                                dict_arr.values().clone(),
+                            )
+                        };
+                        Arc::new(new_dict)
+                    }
+                    DataType::UInt16 => {
+                        let dict_arr = self
+                            .source
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            .unwrap();
+                        #[allow(unsafe_code)]
+                        let new_dict = unsafe {
+                            DictionaryArray::new_unchecked(
+                                UInt16Array::new_null(count),
+                                dict_arr.values().clone(),
+                            )
+                        };
+                        Arc::new(new_dict)
+                    }
+                    _ => {
+                        todo!("invalid dict")
+                    }
+                }
+            }
+            DataType::Binary => Arc::new(BinaryArray::new_null(count)),
+            DataType::Boolean => Arc::new(BooleanArray::new_null(count)),
+            DataType::Int64 => Arc::new(Int64Array::new_null(count)),
+            DataType::Float64 => Arc::new(Float64Array::new_null(count)),
+            DataType::Utf8 => Arc::new(StringArray::new_null(count)),
             _ => {
-                // Fallback for unsupported key types
-                Err(Error::Format {
-                    error: "Unsupported dictionary key type".to_string(),
-                })
+                todo!("invalid attrs array")
             }
         }
     }
