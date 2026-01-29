@@ -75,6 +75,9 @@ pub use tracing::info_span as otel_info_span;
 pub use tracing::trace_span as otel_trace_span;
 pub use tracing::warn_span as otel_warn_span;
 
+/// LogContext is a collection of entity keys.
+pub use self_tracing::LogContext;
+
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
 pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
@@ -89,12 +92,15 @@ pub struct InternalTelemetrySettings {
     pub logs_receiver: flume::Receiver<ObservedEvent>,
     /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
     pub resource_bytes: bytes::Bytes,
+    /// Handle to the telemetry registry for looking up entity attributes.
+    pub registry: TelemetryRegistryHandle,
 }
 
 impl std::fmt::Debug for InternalTelemetrySettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InternalTelemetrySettings")
             .field("resource_bytes", &self.resource_bytes)
+            .field("registry", &self.registry)
             .finish_non_exhaustive()
     }
 }
@@ -207,6 +213,7 @@ impl InternalTelemetrySystem {
                 Some(InternalTelemetrySettings {
                     logs_receiver,
                     resource_bytes,
+                    registry: telemetry_registry.clone(),
                 }),
             )
         } else {
