@@ -1,6 +1,21 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! This code utilities for applying "transport optimized" encoding to Attributes record batches.
+//!
+//! The goal of the transport optimized encoding optimize the compression ratio of the IPC
+//! serialized record batch when general compression is applied.
+//!
+//! In this encoding, the record batch sorted by the columns:
+//! - type
+//! - key
+//! - value*
+//! - parent_id
+//! Then delta encoding is applied to segments of the parent_id column
+//!
+//! Note that the values are contained in multiple columns. For the most part, there is one column
+//! per type of attribute, however Map & Slice type attributes are a special case
+
 use std::{
     ops::{Range, Sub},
     sync::Arc,
@@ -26,6 +41,7 @@ use crate::{
     schema::{FieldExt, consts},
 };
 
+///
 pub(crate) fn transport_optimize_encode_attrs<T: ArrowPrimitiveType>(
     record_batch: &RecordBatch,
 ) -> Result<RecordBatch>
@@ -157,6 +173,7 @@ where
 
     // These `Vec`s are used farther below when handling the values w/in each range of sorted keys.
     // they're allocated ahead of time here so we can reuse the allocation for each range
+    let mut key_ranges = Vec::new();
     let mut values_ranges = Vec::new();
     let mut key_range_indices_values_sorted = Vec::new();
 
@@ -205,17 +222,18 @@ where
             // the indices in the ranges produced by this call will be relative to the type range.
             // they can be converted back to the range in the original record batch by indexing
             // type_range_indices_key_sorted
-            let key_ranges = partition_sorted_keys_range(&type_range, &key_col_sorted)?;
+            key_ranges.clear();
+            collect_partitions_for_range(&type_range, &key_col_sorted, &mut key_ranges)?;
 
             // iterate over contiguous ranges that have the same attribute key
-            for key_range in key_ranges {
+            for key_range in &key_ranges {
                 // this vec will contain a list of indices, relative to the key_range, sorted by
                 // the values. Note: because these indices will be relative to the key_range,
                 // adding key_range.start to the index will make it relative to the type_range
                 key_range_indices_values_sorted.clear();
                 key_range_indices_values_sorted.reserve(key_range.len());
                 values_sorter
-                    .sort_range_to_indices(&key_range, &mut key_range_indices_values_sorted);
+                    .sort_range_to_indices(key_range, &mut key_range_indices_values_sorted);
 
                 // map the sorted indices back to original source indices, and add them to the
                 // list of indices to take when materializing the sorted values column
@@ -229,7 +247,7 @@ where
                 // attribute value and store the results in values_ranges.
                 values_ranges.clear();
                 values_sorter.take_and_partition_range(
-                    &key_range,
+                    key_range,
                     &key_range_indices_values_sorted,
                     &mut values_ranges,
                 )?;
@@ -316,13 +334,22 @@ where
         None,
     )) as ArrayRef;
 
-    // TODO comment about why this casting stuff is goofy
+    // If the original Parent ID type was a dictionary, cast it back to a dictionary of this type.
+    //
+    // TODO investigate if there's a more performant alternative than casting back and forth.
     if let Some(dict_key_type) = parent_dict_key_type {
-        parent_id_col = cast(
-            &parent_id_col,
+        parent_id_col = match cast(
+            &parent_id_col.clone(),
             &DataType::Dictionary(Box::new(dict_key_type), Box::new(T::DATA_TYPE)),
-        )
-        .unwrap();
+        ) {
+            Ok(as_dict) => as_dict,
+
+            // TODO - verify if this could fail? I think conceivably the only reason it could fail
+            // is if the dictionary overflowed because we had too many new values after adding
+            // delta encoding.
+            // TODO - test for this case
+            Err(_) => parent_id_col,
+        }
     }
 
     let mut fields = vec![];
@@ -353,47 +380,61 @@ where
         }
 
         if field_name == consts::ATTRIBUTE_STR {
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Str as usize]
                 .as_ref()
-                .unwrap();
+                .expect("str attr column present");
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_INT {
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Int as usize]
                 .as_ref()
-                .unwrap();
+                .expect("int attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_BOOL {
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Bool as usize]
                 .as_ref()
-                .unwrap();
+                .expect("bool attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_DOUBLE {
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Double as usize]
                 .as_ref()
-                .unwrap();
+                .expect("double attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_BYTES {
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Bytes as usize]
                 .as_ref()
-                .unwrap();
+                .expect("bytes attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
         }
 
         if field_name == consts::ATTRIBUTE_SER {
-            let sorted_col = sorted_ser_column.as_ref().unwrap();
+            // safety: we initialized this element of sorted_val_column only if the column was
+            // present in the original record batch. Since the column is present, this is `Some`
+            let sorted_col = sorted_ser_column
+                .as_ref()
+                .expect("serialized attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
         }
@@ -403,7 +444,9 @@ where
             continue;
         }
 
-        todo!("handle bad col name {field_name}")
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: format!("unexpected column {field_name} found in record batch"),
+        });
     }
 
     let schema = Schema::new(fields);
@@ -412,21 +455,6 @@ where
     Ok(batch)
 }
 
-// TODO better method naming & maybe this should take the Vec?
-fn ranges(boundaries: &BooleanBuffer) -> Vec<Range<usize>> {
-    let mut out = vec![];
-    let mut current = 0;
-    for idx in boundaries.set_indices() {
-        let t = current;
-        current = idx + 1;
-        out.push(t..current)
-    }
-    let last = boundaries.len() + 1;
-    if current != last {
-        out.push(current..last)
-    }
-    out
-}
 
 fn delta_encode_parent_id_slice<T: Copy + Sub<Output = T>>(vals: &mut [T]) {
     let mut prev = vals[0];
@@ -957,6 +985,7 @@ enum AttrsValueSorterInner {
 
 struct AttrValuesSorter {
     inner: AttrsValueSorterInner,
+    array_partitions_scratch: Vec<Range<usize>>,
     rank_sort_scratch: Vec<(usize, u16)>,
     key_partition_scratch: Vec<u16>,
     partition_buffer: Vec<u8>,
@@ -1018,6 +1047,7 @@ impl AttrValuesSorter {
 
         Self {
             inner,
+            array_partitions_scratch: Vec::new(),
             rank_sort_scratch: Vec::new(),
             key_partition_scratch: Vec::new(),
             partition_buffer: Vec::new(),
@@ -1082,14 +1112,17 @@ impl AttrValuesSorter {
                 let indices = UInt32Array::from_iter_values(indices.iter().copied());
                 let values_range = arr.slice(range.start, range.len());
                 let values_range_sorted = take(&values_range, &indices, None).unwrap();
+                self.array_partitions_scratch.clear();
+                collect_partition_from_array(&values_range_sorted, &mut self.array_partitions_scratch)?;
 
-                let next_eq_arr_key = create_next_element_equality_array(&values_range_sorted)?; // Arc k.6
-                let next_eq_inverted = not(&next_eq_arr_key).unwrap(); // Arc k.7
-                let values_ranges = ranges(next_eq_inverted.values());
-                result.extend(values_ranges.into_iter().map(|range| NullableRange {
-                    range,
-                    is_null: false,
-                }));
+                result.extend(
+                    self.array_partitions_scratch
+                        .drain(..)
+                        .map(|range| NullableRange {
+                            range,
+                            is_null: false,
+                        }),
+                );
 
                 if arr.null_count() > 0 {
                     for nullable_range in result.iter_mut() {
@@ -1197,19 +1230,20 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
     result_buf.truncate(bit_util::ceil(len, 8));
 }
 
-fn partition_sorted_keys_range(
+fn collect_partitions_for_range(
     range: &Range<usize>,
-    keys_sorted: &ArrayRef,
-) -> Result<Vec<Range<usize>>> {
+    source: &ArrayRef,
+    result: &mut Vec<Range<usize>>,
+) -> Result<()> {
     // TODO - if len = 0 or len = 1, just return one range
     // TODO - lots of code duplicated with other methods in this funciton
     // TODO - see if using get_unchecked really makes a difference in perf
 
-    match keys_sorted.data_type() {
+    match source.data_type() {
         DataType::Dictionary(k, _) => match **k {
             DataType::UInt8 => {
                 // safety: we've checked that the dict is this type
-                let dict_arr = keys_sorted
+                let dict_arr = source
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
                     .expect("can downcast to DictionaryArray<u8>");
@@ -1229,7 +1263,6 @@ fn partition_sorted_keys_range(
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, f, &mut partitions_buffer);
 
-                let mut result = Vec::new();
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
                 for idx in set_indices {
@@ -1242,11 +1275,11 @@ fn partition_sorted_keys_range(
                     result.push(current..last)
                 }
 
-                Ok(result)
+                Ok(())
             }
             DataType::UInt16 => {
                 // safety: we've checked that the dict is this type
-                let dict_arr = keys_sorted
+                let dict_arr = source
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
                     .expect("can downcast to DictionaryArray<u16>");
@@ -1265,7 +1298,6 @@ fn partition_sorted_keys_range(
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, f, &mut partitions_buffer);
 
-                let mut result = Vec::new();
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
                 for idx in set_indices {
@@ -1278,19 +1310,51 @@ fn partition_sorted_keys_range(
                     result.push(current..last)
                 }
 
-                Ok(result)
+                Ok(())
             }
             _ => {
                 todo!()
             }
         },
         _ => {
-            let keys_range_sorted = keys_sorted.slice(range.start, range.len());
-            let next_eq_arr_key = create_next_element_equality_array(&keys_sorted)?;
-            let next_eq_inverted = not(&next_eq_arr_key).unwrap();
-            let key_ranges = ranges(next_eq_inverted.values());
-            Ok(key_ranges)
+            let source_range = source.slice(range.start, range.len());
+            collect_partition_from_array(&source_range, result)
         }
+    }
+}
+
+fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>>) -> Result<()> {
+    let next_eq_arr_key = create_next_element_equality_array(&source)?;
+    let next_eq_inverted = not(&next_eq_arr_key).unwrap();
+    let mut set_indices = next_eq_inverted.values().set_indices();
+
+    collect_partition_ranges(
+        &mut set_indices,
+        next_eq_inverted.values().len(),
+        result
+    );
+    Ok(())
+}
+
+/// Given a boolean buffer where `true` represents an index which is a boundary between a range
+/// of partitions, fill in the result vec with partition ranges.
+///
+/// This is somewhat similar to what arrow's `partition` kernel does internally, however it
+/// allows for reuse of the vec that contains the ranges
+fn collect_partition_ranges<I: Iterator<Item=usize>>(
+    boundaries: &mut I,
+    len: usize,
+    result: &mut Vec<Range<usize>>
+) {
+    let mut current = 0;
+    for idx in boundaries {
+        let t = current;
+        current = idx + 1;
+        result.push(t..current)
+    }
+    let last = len + 1;
+    if current != last {
+        result.push(current..last)
     }
 }
 
