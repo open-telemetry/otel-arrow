@@ -52,7 +52,7 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
-        pdata_senders: HashMap<PortName, LocalSender<PData>>,
+        pdata_senders: HashMap<PortName, Sender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
@@ -503,7 +503,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
         sender: Sender<PData>,
     ) -> Result<(), Error> {
         match (self, sender) {
-            (ReceiverWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
+            (ReceiverWrapper::Local { pdata_senders, .. }, sender) => {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
@@ -511,12 +511,6 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ReceiverWrapper::Local { .. }, _) => Err(Error::ReceiverError {
-                receiver: node_id,
-                kind: ReceiverErrorKind::Configuration,
-                error: "Expected a local sender for PData".to_owned(),
-                source_detail: String::new(),
-            }),
             (ReceiverWrapper::Shared { .. }, _) => Err(Error::ReceiverError {
                 receiver: node_id,
                 kind: ReceiverErrorKind::Configuration,

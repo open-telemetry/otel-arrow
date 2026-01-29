@@ -53,7 +53,7 @@ pub enum ProcessorWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
-        pdata_senders: HashMap<PortName, LocalSender<PData>>,
+        pdata_senders: HashMap<PortName, Sender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
@@ -597,7 +597,7 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
         sender: Sender<PData>,
     ) -> Result<(), Error> {
         match (self, sender) {
-            (ProcessorWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
+            (ProcessorWrapper::Local { pdata_senders, .. }, sender) => {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
@@ -605,12 +605,6 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ProcessorWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
-                error: "Expected a local sender for PData".to_owned(),
-                source_detail: String::new(),
-            }),
             (ProcessorWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
                 processor: node_id,
                 kind: ProcessorErrorKind::Configuration,
