@@ -1450,7 +1450,10 @@ mod tests {
 
                 // Manager should terminate cleanly
                 let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
-                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly after cleanup");
+                assert!(
+                    shutdown_result.is_ok(),
+                    "Manager should shutdown cleanly after cleanup"
+                );
 
                 // Cleanup - drain the control receiver so it doesn't complain
                 let mut receiver = control_receivers.remove(&node.index).unwrap();
