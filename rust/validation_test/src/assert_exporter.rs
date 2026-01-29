@@ -17,10 +17,9 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::assert_equivalent;
-use otap_df_pdata::testing::round_trip::otap_to_otlp;
-use otap_df_pdata::{OtapPayload, otlp::OtlpProtoBytes};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -31,6 +30,8 @@ pub const ASSERT_VALID_EXPORTER_URN: &str = "urn:otel:assert_valid:exporter";
 
 #[derive(Debug, Deserialize)]
 struct AssertValidExporterConfig {
+    suv_node: NodeName,
+    control_node: NodeName,
     /// When true, a failing equivalence check is considered expected.
     #[serde(default)]
     expect_failure: bool,
@@ -56,14 +57,6 @@ pub struct AssertValidExporter {
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<OtlpProtoMessage>,
     metrics: MetricSet<AssertValidExporterMetrics>,
-}
-
-fn to_otlp(msg: OtapPdata) -> Option<OtlpProtoMessage> {
-    let (_ctx, payload) = msg.into_parts();
-    match payload {
-        OtapPayload::OtlpBytes(bytes) => OtlpProtoMessage::try_from(bytes).ok(),
-        OtapPayload::OtapArrowRecords(records) => Some(otap_to_otlp(&records)),
-    }
 }
 
 pub fn create_assert_exporter(
@@ -94,7 +87,7 @@ pub fn create_assert_exporter(
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static ASSERT_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
-    name: ASSERT_EXPORTER_URN,
+    name: ASSERT_VALID_EXPORTER_URN,
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
@@ -102,6 +95,29 @@ pub static ASSERT_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory
         create_assert_exporter(pipeline_ctx, node, node_config, exporter_config)
     },
 };
+
+impl AssertValidExporter {
+    fn assert(&mut self) {
+        let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            assert_equivalent(&self.control_msgs, &self.suv_msgs)
+        }))
+        .is_ok();
+
+        let passed = if self.config.expect_failure {
+            !equiv
+        } else {
+            equiv
+        };
+
+        if passed {
+            self.metrics.passed_comparisons.add(1);
+            self.metrics.valid.set(1);
+        } else {
+            self.metrics.failed_comparisons.add(1);
+            self.metrics.valid.set(0);
+        }
+    }
+}
 
 #[async_trait(?Send)]
 impl Exporter<OtapPdata> for AssertValidExporter {
@@ -120,37 +136,30 @@ impl Exporter<OtapPdata> for AssertValidExporter {
                 Message::Control(NodeControlMsg::Shutdown { .. }) => {
                     break;
                 }
-                Message::PData{port_id, pdata} => {
-                    if let Some(msg) = to_otlp(pdata) {
-                        // TODO: route by port when multi-port exporters are supported.
-                        // For now, alternate into control/suv buffers to keep comparisons balanced.
-                        if self.control_msgs.len() <= self.suv_msgs.len() {
-                            self.control_msgs.push(msg);
-                        } else {
-                            self.suv_msgs.push(msg);
+                Message::PData(pdata) => {
+                    let (_ctx, payload) = pdata.into_parts();
+                    let source_node = pdata.get_source_node();
+                    let msg = OtlpProtoBytes::try_from(payload)
+                        .ok()
+                        .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
+
+                    if let Some(msg) = msg && let Some(node_name) = source_node {
+                        match node_name {
+                            self.config.suv_node => {
+                                self.suv_msgs.push(msg)
+                                self.assert()
+                            }
+                            self.config.control_node => {
+                                self.control_msgs.push(msg)
+                                self.assert()
+                            }
+                            _ => {
+
+                            }
                         }
-
-                        let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                            assert_equivalent(&self.control_msgs, &self.suv_msgs)
-                        }))
-                        .is_ok();
-
-                        let passed = if self.config.expect_failure {
-                            !equiv
-                        } else {
-                            equiv
-                        };
-
-                        if passed {
-                            self.metrics.metrics.passed_comparisons.add(1);
-                            self.metrics.metrics.valid.set(1);
-                        } else {
-                            self.metrics.metrics.failed_comparisons.add(1);
-                            self.metrics.metrics.valid.set(0);
-                        }
-                        
                     }
                 }
+                _ => {}
             }
         }
 
