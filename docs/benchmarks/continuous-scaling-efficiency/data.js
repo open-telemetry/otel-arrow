@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769720882627,
+  "lastUpdate": 1769722571128,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2170,6 +2170,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7438,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "geukhanuslu@gmail.com",
+            "name": "Gokhan Uslu",
+            "username": "gouslu"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "227ca92e721977e14fde6c92c6f6dd189fc872c4",
+          "message": "feat(azure-monitor-exporter): Add heartbeat support and refactor auth handling (#1854)\n\n# Change Summary\n\nAdds heartbeat functionality to the Azure Monitor Exporter and refactors\nauthentication to use a dedicated `AuthHeader` module for reusability\n\n- **Heartbeat support**: Sends periodic health heartbeats to Azure\nMonitor every 60 seconds via the `HEALTH_ASSESSMENT_BLOB` stream\n- Heartbeat metadata sourced from environment variables (`IMAGE`,\n`POD_NAME`, `EXPORTER_ID`, `ARM_RESOURCE_ID`, `HOSTNAME`) with sensible\nfallbacks\n- Move auth out of clients and update auth header of clients\npro-actively using periodic tasks.\n\n## What issue does this PR close?\n\n* Closes heartbeat item on issue #1396\n\n## How are these changes tested?\n\nLocal manual tests and unit tests\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-01-29T20:54:56Z",
+          "tree_id": "3e8e2da52c8582588443f50706426c08c609a35f",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/227ca92e721977e14fde6c92c6f6dd189fc872c4"
+        },
+        "date": 1769722570586,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8943,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.6275,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.7937,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5356,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7128,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
