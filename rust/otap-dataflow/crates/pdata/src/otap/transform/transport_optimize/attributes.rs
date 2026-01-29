@@ -32,105 +32,158 @@ pub(crate) fn transport_optimize_encode_attrs<T: ArrowPrimitiveType>(
 where
     <T as ArrowPrimitiveType>::Native: Ord + Sub<Output = <T as ArrowPrimitiveType>::Native>,
 {
-    let type_col = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
-    let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY)?;
-
-    let type_and_key_indices =
-        sort_attrs_type_and_keys_to_indices(type_col, key_col.clone()).unwrap(); // Arc 1 (tmp)
-
-    let type_col_sorted = take(type_col, &type_and_key_indices, None).unwrap(); // Arc 2 (used)
-    let key_col_sorted = take(key_col, &type_and_key_indices, None).unwrap(); // Arc 3 (used)
-
-    let mut sorted_val_columns: [Option<SortedValuesArrayBuilder>; 8] = [
+    // builders for each attribute value column, indexed by AttributeValueType.
+    //
+    // the final sorted layout for each column will be:
+    // - rows grouped by attribute type (matching the type column)
+    // - within each type segment, rows sorted by: key, then value
+    // - rows outside a column's type segment are set to null
+    //
+    // example for ATTRIBUTE_STR (type=1):
+    //   - Rows where type=1: non-null, sorted by (key, value)
+    //   - Rows where type≠1: null
+    let mut sorted_val_columns: [Option<SortedValuesColumnBuilder>; 8] = [
         None, // empty
         record_batch
             .column_by_name(consts::ATTRIBUTE_STR)
-            .map(|col| SortedValuesArrayBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_INT)
-            .map(|col| SortedValuesArrayBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_DOUBLE)
-            .map(|col| SortedValuesArrayBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_BOOL)
-            .map(|col| SortedValuesArrayBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
         None, // map
         None, // slice
         record_batch
             .column_by_name(consts::ATTRIBUTE_BYTES)
-            .map(|col| SortedValuesArrayBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilder::try_new(col))
             .transpose()?,
     ];
 
-    // ser column is special case b/c more than one attr type maps to it
+    // ser column is special case because more than one attribute type is stored in this
+    // column (both AttributeValueType::Map and AttributeValueType::Slice)
     let mut sorted_ser_column = record_batch
         .column_by_name(consts::ATTRIBUTE_SER)
-        .map(|col| SortedValuesArrayBuilder::try_new(col))
+        .map(|col| SortedValuesColumnBuilder::try_new(col))
         .transpose()?;
 
-    // TODO - proper error handling
-    let parent_id_col = record_batch.column_by_name(consts::PARENT_ID).unwrap();
+    let parent_id_col = get_required_array(record_batch, consts::PARENT_ID)?;
+
+    // if the parent ID column is a dictionary, we cast it to a primitive array so we can work
+    // directly with the ScalarBuffer containing the values. We then cast it back to dictionary
+    // array when reconstructing the final dataset.
+    //
+    // TODO investigate if there's a more performant alternative to doing this cast
     let mut parent_dict_key_type = None;
     let parent_id_column_vals = match parent_id_col.data_type() {
         DataType::Dictionary(k, v) => {
-            let as_prim = cast(parent_id_col, &T::DATA_TYPE).unwrap();
+            let as_prim = cast(parent_id_col, &T::DATA_TYPE).map_err(|_| {
+                // cast would only fail here if the dictionary values were not something that can
+                // be cast to <T as ArrowPrimitiveType>::DATA_TYPE (e.g. if the parent_id column
+                // was completely the wong type). This would be very unusual and would suggest a
+                // malformed record batch
+                Error::ColumnDataTypeMismatch {
+                    name: consts::PARENT_ID.into(),
+                    actual: *v.clone(),
+                    expect: T::DATA_TYPE.clone(),
+                }
+            })?;
             parent_dict_key_type = Some(*k.clone());
             as_prim
                 .as_any()
                 .downcast_ref::<PrimitiveArray<T>>()
-                .unwrap()
+                // safety: as_prim is created casting to the type we're expecting here
+                .expect("casted to PrimitiveArray<T>")
                 .values()
-                .to_vec()
+                .clone()
         }
-        _ => parent_id_col
+        other_dt => parent_id_col
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
-            .unwrap()
+            .ok_or_else(|| Error::ColumnDataTypeMismatch {
+                name: consts::PARENT_ID.into(),
+                actual: other_dt.clone(),
+                expect: T::DATA_TYPE.clone(),
+            })?
             .values()
-            .to_vec(),
+            .clone(), // internally just an Arc<Bytes>
     };
 
-    let mut sorted_parent_id_column = Vec::with_capacity(record_batch.num_rows());
+    // this is the buffer into which we'll be appending sorted + quasi-delta encoded parent_ids
+    let mut encoded_parent_id_column = Vec::with_capacity(record_batch.num_rows());
 
+    // first sort by type/key to indices. This will allow us to take new columns for type/key
+    // and we'll use these indices later on to take values columns/parent_id column for each
+    // partition of rows with equivalent type/value
+    let type_col = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+    let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY)?;
+    let type_and_key_indices = sort_attrs_type_and_keys_to_indices(type_col, key_col.clone())?;
+
+    // safety: we can call "expect" here because the indices we're taking are computed from the
+    // indices of the array we're taking by the sort_attrs_type_and_keys_to_indices function
+    let type_col_sorted =
+        take(type_col, &type_and_key_indices, None).expect("can take sorted indices in bounds");
+    let key_col_sorted =
+        take(key_col, &type_and_key_indices, None).expect("can take sorted indices in bounds");
+
+    // safety: `type_col_sorted` was computed just above by "taking" the type column, which we have
+    // already checked is a UInt8Array by the call to `get_u8_array`
     let type_prim_arr = type_col_sorted
         .as_any()
         .downcast_ref::<UInt8Array>()
-        .unwrap();
+        .expect("type is UInt8Array");
     let type_col_sorted_bytes = type_prim_arr.values().inner().as_slice();
 
-    let type_partitions = partition(&[type_col_sorted.clone()]).unwrap(); // Arc 4 (tmp)
+    // safety: partition can only be expected to fail if multiple arrays are passed that have
+    // different lengths, or if an array type is passed for which the values cannot be compared.
+    // neither of these failing criteria are met for a sinlge uint8 column
+    let type_partitions =
+        partition(&[type_col_sorted.clone()]).expect("can partition single UInt8 column");
+
+    // iterates of ranges of of value types in ascending order. For example, we iterate over type
+    // ranges Empty, String, Int. and so on..
     for type_range in type_partitions.ranges() {
+        // the byte
         let type_range_attr_type = type_col_sorted_bytes[type_range.start];
-        let sorted_val_col = if type_range_attr_type == AttributeValueType::Map as u8
-            || type_range_attr_type == AttributeValueType::Slice as u8
-        {
+
+        let is_ser_col_type = type_range_attr_type == AttributeValueType::Map as u8
+            || type_range_attr_type == AttributeValueType::Slice as u8;
+
+        let sorted_val_col_builder = if is_ser_col_type {
             sorted_ser_column.as_mut()
         } else {
             sorted_val_columns[type_range_attr_type as usize].as_mut()
         };
 
-        let type_col_sorted_indices_type_range_by_key_prim =
+        // this contains indices of rows from the original record batch that are of the type for
+        // the range we're currently handling sorted by key. For example, if the current range is
+        // for string type, this will contain all indices from the original record batch that are a
+        // string type attribute, sorted attribute key.
+        let type_range_indices_key_sorted =
             type_and_key_indices.slice(type_range.start, type_range.len());
 
         // TODO:
         // - we might actually be able to defer materializing this
         // - reuse the vec for each type
         // - pre-allocate this vec
-        let parent_id_type_range_by_key = type_col_sorted_indices_type_range_by_key_prim
+        let parent_id_type_range_by_key = type_range_indices_key_sorted
             .values()
             .iter()
             .map(|idx| parent_id_column_vals[*idx as usize])
             .collect::<Vec<_>>();
 
         // sort the values columns for values of this type
-        if let Some(sorted_val_col) = sorted_val_col {
+        if let Some(sorted_val_col) = sorted_val_col_builder {
             let values_type_range_by_key =
-                sorted_val_col.take_source(&type_col_sorted_indices_type_range_by_key_prim)?; // Arc t.2 (tmp)
+                sorted_val_col.take_source(&type_range_indices_key_sorted)?; // Arc t.2 (tmp)
 
             // set hint for the number of nulls
             let null_count = values_type_range_by_key.null_count();
@@ -157,7 +210,7 @@ where
                 let original_indices: Vec<u32> = values_key_range_sorted_indices
                     .iter()
                     .map(|&i| {
-                        type_col_sorted_indices_type_range_by_key_prim
+                        type_range_indices_key_sorted
                             .value(key_range.start + i as usize)
                     })
                     .collect();
@@ -193,7 +246,7 @@ where
                         parent_ids_range.sort_unstable();
                         delta_encode_parent_id_slice(parent_ids_range);
                     }
-                    sorted_parent_id_column.extend_from_slice(parent_ids_range);
+                    encoded_parent_id_column.extend_from_slice(parent_ids_range);
                 }
             }
         } else {
@@ -201,7 +254,7 @@ where
             // attribute type is "empty". Either way, we interpret this as "null' attribute, which
             // and nulls are not equal for the purposes of whether we should delta encode the column
             // so we can just append the unsorted parent IDs for the type range
-            sorted_parent_id_column.extend_from_slice(&parent_id_type_range_by_key);
+            encoded_parent_id_column.extend_from_slice(&parent_id_type_range_by_key);
         }
 
         // push the unsorted values for columns not of this type to fill in gaps
@@ -233,7 +286,7 @@ where
     }
 
     let mut parent_id_col = Arc::new(PrimitiveArray::<T>::new(
-        ScalarBuffer::from(sorted_parent_id_column),
+        ScalarBuffer::from(encoded_parent_id_column),
         None,
     )) as ArrayRef;
 
@@ -483,14 +536,14 @@ fn sort_attrs_type_and_keys_to_indices(
 }
 
 #[derive(Debug)]
-enum SortedValuesArraySegment {
+enum SortedValuesColumnSegment {
     Nulls(usize),
     NonNull(Vec<u32>), // indices into the original source array
 }
 
-struct SortedValuesArrayBuilder {
+struct SortedValuesColumnBuilder {
     // TODO - we might consider refactoring this into something not Arc to reduce heap allocations?
-    sorted_segments: Vec<SortedValuesArraySegment>,
+    sorted_segments: Vec<SortedValuesColumnSegment>,
 
     null_count_hint: Option<usize>,
 
@@ -499,7 +552,7 @@ struct SortedValuesArrayBuilder {
     source: Arc<dyn Array>,
 }
 
-impl SortedValuesArrayBuilder {
+impl SortedValuesColumnBuilder {
     fn try_new(source: &Arc<dyn Array>) -> Result<Self> {
         Ok(Self {
             sorted_segments: Vec::new(),
@@ -514,7 +567,7 @@ impl SortedValuesArrayBuilder {
 
     fn append_indices(&mut self, indices: &[u32]) -> Result<()> {
         self.sorted_segments
-            .push(SortedValuesArraySegment::NonNull(indices.to_vec()));
+            .push(SortedValuesColumnSegment::NonNull(indices.to_vec()));
         Ok(())
     }
 
@@ -577,7 +630,7 @@ impl SortedValuesArrayBuilder {
 
     fn append_nulls(&mut self, count: usize) {
         self.sorted_segments
-            .push(SortedValuesArraySegment::Nulls(count))
+            .push(SortedValuesColumnSegment::Nulls(count))
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
@@ -590,18 +643,18 @@ impl SortedValuesArrayBuilder {
             .sorted_segments
             .iter()
             .map(|seg| match seg {
-                SortedValuesArraySegment::Nulls(count) => *count,
-                SortedValuesArraySegment::NonNull(indices) => indices.len(),
+                SortedValuesColumnSegment::Nulls(count) => *count,
+                SortedValuesColumnSegment::NonNull(indices) => indices.len(),
             })
             .sum();
 
         // Fast path: if only one segment, handle directly
         if self.sorted_segments.len() == 1 {
             match &self.sorted_segments[0] {
-                SortedValuesArraySegment::Nulls(count) => {
+                SortedValuesColumnSegment::Nulls(count) => {
                     return Ok(self.gen_source_nulls(*count));
                 }
-                SortedValuesArraySegment::NonNull(indices) => {
+                SortedValuesColumnSegment::NonNull(indices) => {
                     let indices_array = UInt32Array::from(indices.clone());
                     return Ok(take(self.source.as_ref(), &indices_array, None).unwrap());
                 }
@@ -612,7 +665,7 @@ impl SortedValuesArrayBuilder {
         let has_nulls = self
             .sorted_segments
             .iter()
-            .any(|seg| matches!(seg, SortedValuesArraySegment::Nulls(_)));
+            .any(|seg| matches!(seg, SortedValuesColumnSegment::Nulls(_)));
 
         // For dictionary arrays, build directly to avoid concat overhead
         if let DataType::Dictionary(key_type, _) = self.source.data_type() {
@@ -623,7 +676,7 @@ impl SortedValuesArrayBuilder {
         if !has_nulls {
             let mut all_indices = Vec::with_capacity(total_len);
             for segment in &self.sorted_segments {
-                if let SortedValuesArraySegment::NonNull(indices) = segment {
+                if let SortedValuesColumnSegment::NonNull(indices) = segment {
                     all_indices.extend_from_slice(indices);
                 }
             }
@@ -639,30 +692,30 @@ impl SortedValuesArrayBuilder {
             .sorted_segments
             .iter()
             .filter_map(|seg| match seg {
-                SortedValuesArraySegment::NonNull(indices) => Some(indices.len()),
+                SortedValuesColumnSegment::NonNull(indices) => Some(indices.len()),
                 _ => None,
             })
             .sum();
 
-        let mut coalesced: Vec<SortedValuesArraySegment> = Vec::new();
+        let mut coalesced: Vec<SortedValuesColumnSegment> = Vec::new();
         let mut current_nulls = 0;
         let mut current_indices = Vec::with_capacity(total_non_null_count);
 
         for segment in &self.sorted_segments {
             match segment {
-                SortedValuesArraySegment::Nulls(count) => {
+                SortedValuesColumnSegment::Nulls(count) => {
                     // Flush accumulated indices if any
                     if !current_indices.is_empty() {
-                        coalesced.push(SortedValuesArraySegment::NonNull(std::mem::take(
+                        coalesced.push(SortedValuesColumnSegment::NonNull(std::mem::take(
                             &mut current_indices,
                         )));
                     }
                     current_nulls += count;
                 }
-                SortedValuesArraySegment::NonNull(indices) => {
+                SortedValuesColumnSegment::NonNull(indices) => {
                     // Flush accumulated nulls if any
                     if current_nulls > 0 {
-                        coalesced.push(SortedValuesArraySegment::Nulls(current_nulls));
+                        coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
                         current_nulls = 0;
                     }
                     current_indices.extend_from_slice(indices);
@@ -671,20 +724,20 @@ impl SortedValuesArrayBuilder {
         }
         // Flush remaining
         if current_nulls > 0 {
-            coalesced.push(SortedValuesArraySegment::Nulls(current_nulls));
+            coalesced.push(SortedValuesColumnSegment::Nulls(current_nulls));
         }
         if !current_indices.is_empty() {
-            coalesced.push(SortedValuesArraySegment::NonNull(current_indices));
+            coalesced.push(SortedValuesColumnSegment::NonNull(current_indices));
         }
 
         // Now build arrays from coalesced segments (will be much fewer)
         let mut arrays = Vec::with_capacity(coalesced.len());
         for segment in &coalesced {
             match segment {
-                SortedValuesArraySegment::Nulls(count) => {
+                SortedValuesColumnSegment::Nulls(count) => {
                     arrays.push(self.gen_source_nulls(*count));
                 }
-                SortedValuesArraySegment::NonNull(indices) => {
+                SortedValuesColumnSegment::NonNull(indices) => {
                     let segment_indices = UInt32Array::from(indices.clone());
                     arrays.push(take(self.source.as_ref(), &segment_indices, None).unwrap());
                 }
@@ -714,12 +767,12 @@ impl SortedValuesArrayBuilder {
 
                 for segment in &self.sorted_segments {
                     match segment {
-                        SortedValuesArraySegment::Nulls(count) => {
+                        SortedValuesColumnSegment::Nulls(count) => {
                             // Append null keys
                             keys_builder.resize(keys_builder.len() + count, 0u8);
                             null_buffer_builder.append_n_nulls(*count);
                         }
-                        SortedValuesArraySegment::NonNull(indices) => {
+                        SortedValuesColumnSegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
                             keys_builder
                                 .extend(indices.iter().map(|idx| source_keys[*idx as usize]));
@@ -787,11 +840,11 @@ impl SortedValuesArrayBuilder {
 
                 for segment in &self.sorted_segments {
                     match segment {
-                        SortedValuesArraySegment::Nulls(count) => {
+                        SortedValuesColumnSegment::Nulls(count) => {
                             keys_builder.resize(keys_builder.len() + count, 0u16);
                             null_buffer_builder.append_n_nulls(*count);
                         }
-                        SortedValuesArraySegment::NonNull(indices) => {
+                        SortedValuesColumnSegment::NonNull(indices) => {
                             // Take keys from source dictionary using indices
                             keys_builder
                                 .extend(indices.iter().map(|idx| source_keys[*idx as usize]));
@@ -1379,8 +1432,7 @@ mod test {
         )
         .unwrap();
 
-        let result =
-            transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -1461,8 +1513,7 @@ mod test {
         )
         .unwrap();
 
-        let result =
-            transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -1564,8 +1615,7 @@ mod test {
             )
             .unwrap();
 
-            let result =
-                transport_optimize_encode_attrs::<UInt32Type>(&input).unwrap();
+            let result = transport_optimize_encode_attrs::<UInt32Type>(&input).unwrap();
             pretty_assertions::assert_eq!(result, expected);
         }
     }
@@ -1718,8 +1768,7 @@ mod test {
         )
         .unwrap();
 
-        let result =
-            transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -1844,8 +1893,7 @@ mod test {
         )
         .unwrap();
 
-        let result =
-            transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 
@@ -1928,8 +1976,7 @@ mod test {
             )
             .unwrap();
 
-            let result =
-                transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+            let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
             arrow::util::pretty::print_batches(&[input.clone()]);
             arrow::util::pretty::print_batches(&[expected.clone()]);
             arrow::util::pretty::print_batches(&[result.clone()]);
@@ -2069,8 +2116,7 @@ mod test {
         )
         .unwrap();
 
-        let result =
-            transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
     }
 }
