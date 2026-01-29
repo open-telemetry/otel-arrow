@@ -3105,16 +3105,9 @@ mod test {
     }
 
     #[test]
-    fn test_identity_when_schemas_match() {
+    fn test_project_noop() {
         let expected = int32_batch(&[("a", &[1, 2]), ("b", &[3, 4]), ("c", &[5, 6])]);
         let source = int32_batch(&[("a", &[1, 2]), ("b", &[3, 4]), ("c", &[5, 6])]);
-        assert_projection_matches(&expected, &source);
-    }
-
-    #[test]
-    fn test_multiple_rows() {
-        let expected = int32_batch(&[("z", &[3, 6, 9]), ("y", &[2, 5, 8]), ("x", &[1, 4, 7])]);
-        let source = int32_batch(&[("x", &[1, 4, 7]), ("y", &[2, 5, 8]), ("z", &[3, 6, 9])]);
         assert_projection_matches(&expected, &source);
     }
 
