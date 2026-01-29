@@ -3131,6 +3131,12 @@ mod test {
 
         for i in 0..result.num_columns() {
             assert_eq!(
+                result.schema().fields[i].name(),
+                expected.schema().fields[i].name(),
+                "Column {} name mismatch",
+                i
+            );
+            assert_eq!(
                 result.column(i).data_type(),
                 expected.column(i).data_type(),
                 "Column {} type mismatch",
