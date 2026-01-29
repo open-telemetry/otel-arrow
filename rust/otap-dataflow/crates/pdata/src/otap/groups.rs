@@ -1390,10 +1390,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
     for payload_type_index in 0..N {
         schemas.clear(); // We're going to reuse this allocation across loop iterations
-        schemas.extend(
-            select_all(batches, payload_type_index)
-                .map(|batch| batch.and_then(|b| Some(b.schema()))),
-        );
+        schemas
+            .extend(select_all(batches, payload_type_index).map(|batch| batch.map(|b| b.schema())));
 
         field_name_to_batch_indices.clear();
 
@@ -1448,10 +1446,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
         // repopulate the list of schemas in case any dictionary datatypes were changed
         schemas.clear();
-        schemas.extend(
-            select_all(batches, payload_type_index)
-                .map(|batch| batch.and_then(|b| Some(b.schema()))),
-        );
+        schemas
+            .extend(select_all(batches, payload_type_index).map(|batch| batch.map(|b| b.schema())));
 
         // Let's find missing optional columns; note that this must happen after we deal with the
         // dict columns since we rely on the assumption that all fields with the same name will have
