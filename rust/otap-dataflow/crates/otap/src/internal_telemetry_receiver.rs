@@ -43,7 +43,7 @@ pub struct InternalTelemetryReceiver {
     #[allow(dead_code)]
     config: Config,
     /// Internal telemetry settings obtained from the pipeline context during construction.
-    /// Contains the logs receiver channel and pre-encoded resource bytes.
+    /// Contains the logs receiver channel, pre-encoded resource bytes, and registry handle.
     internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
 }
 
@@ -101,15 +101,14 @@ impl InternalTelemetryReceiver {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
     async fn start(
-        self: Box<Self>,
+        mut self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        // Use the internal telemetry settings provided at construction
-        let logs_receiver = &self.internal_telemetry.logs_receiver;
-        let resource_bytes = self.internal_telemetry.resource_bytes.clone();
-
-        let mut scope_cache = ScopeToBytesMap::new(self.internal_telemetry.registry.clone());
+        let internal = self.internal_telemetry.clone();
+        let logs_receiver = internal.logs_receiver;
+        let resource_bytes = internal.resource_bytes;
+        let mut scope_cache = ScopeToBytesMap::new(internal.registry);
 
         // Start periodic telemetry collection
         let _ = effect_handler
@@ -165,7 +164,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 }
 
 impl InternalTelemetryReceiver {
-    /// Send a log event as OTLP logs.
+    /// Send a log event as OTLP logs with scope attributes from entity context.
     async fn send_log_event(
         effect_handler: &local::EffectHandler<OtapPdata>,
         log_event: LogEvent,

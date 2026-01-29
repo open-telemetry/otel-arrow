@@ -6,10 +6,11 @@
 
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
-use crate::entity::EntityRegistry;
+use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
     MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
+use crate::otel_info;
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::new_key_type;
@@ -61,11 +62,23 @@ impl TelemetryRegistryHandle {
     }
 
     /// Registers (or reuses) an entity for the provided attribute set.
+    /// Logs the entity definition when a new entity is created.
     pub fn register_entity(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> EntityKey {
-        self.registry.lock().entities.register(attrs)
+        let schema = attrs.schema_name();
+        let definition = attrs.attributes_to_string();
+        let outcome = self.registry.lock().entities.register(attrs);
+        if let RegisterOutcome::Created(_) = outcome {
+            // Log the entity definition.
+            //
+            // TODO(#1907): This could benefit from logging a human-readable form
+            // of the entity that we refer to later in the logs, instead of logging
+            // every key/value in every line of console_async output.
+            otel_info!("registry.define_entity", schema, definition);
+        }
+        outcome.key()
     }
 
     /// Unregisters an entity by key.
@@ -78,14 +91,6 @@ impl TelemetryRegistryHandle {
     #[must_use]
     pub fn entity_count(&self) -> usize {
         self.registry.lock().entities.len()
-    }
-
-    /// Visits all registered entities.
-    pub fn visit_entities<F>(&self, f: F)
-    where
-        F: FnMut(EntityKey, &dyn AttributeSetHandler),
-    {
-        self.registry.lock().entities.visit_entities(f);
     }
 
     /// Visits a single entity by key.
@@ -103,9 +108,12 @@ impl TelemetryRegistryHandle {
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> MetricSet<T> {
+        // TODO: Note this code path is not logged the way entity registration
+        // does for referring to in console logs. Will be needed to print metrics
+        // to the console.
         let mut registry = self.registry.lock();
-        let entity_key = registry.entities.register(attrs);
-        registry.metrics.register(entity_key)
+        let outcome = registry.entities.register(attrs);
+        registry.metrics.register(outcome.key())
     }
 
     /// Registers a metric set type for an existing entity key.

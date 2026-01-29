@@ -4,7 +4,7 @@
 //! An alternative to Tokio fmt::layer().
 
 use super::encoder::level_to_severity_number;
-use super::{LogContext, LogRecord, SavedCallsite};
+use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
@@ -115,10 +115,6 @@ impl Write for StyledBufWriter<'_> {
 pub struct ConsoleWriter {
     color_mode: ColorMode,
 }
-
-/// A log context function typically constructs context from
-/// thread-local state.
-pub type LogContextFn = fn() -> LogContext;
 
 /// A minimal alternative to tracing_subscriber::fmt::layer().
 pub struct RawLoggingLayer {
@@ -491,7 +487,7 @@ impl StyledBufWriter<'_> {
 
     /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
     ///
-    /// Unlike `format_log_line`, this takes raw attributes instead of a LogRecordView,
+    /// Unlike `format_log_line`, this takes raw attributes instead of a `LogRecordView`,
     /// and doesn't print a body - just the header name and attributes.
     pub fn format_header_line<A, L, E, S>(
         &mut self,

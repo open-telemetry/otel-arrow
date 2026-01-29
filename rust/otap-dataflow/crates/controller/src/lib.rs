@@ -52,15 +52,19 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
+use otap_df_engine::entity_context::{
+    node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
+};
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
-    otel_warn,
+    otel_warn, self_tracing::LogContext,
 };
+use smallvec::smallvec;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::thread;
@@ -79,6 +83,17 @@ pub mod thread_task;
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
+}
+
+/// Returns the set of entity keys relevant to this context.
+fn engine_context() -> LogContext {
+    if let Some(node) = node_entity_key() {
+        smallvec![node]
+    } else if let Some(pipeline) = pipeline_entity_key() {
+        smallvec![pipeline]
+    } else {
+        smallvec![]
+    }
 }
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
@@ -106,8 +121,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .sum::<usize>()
         );
 
+        // Create the shared telemetry registry first - it will be used by both
+        // the observed state store and the internal telemetry system.
+        let telemetry_registry = TelemetryRegistryHandle::new();
+
         // Create the observed state store for the telemetry system.
-        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
+        let obs_state_store =
+            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
@@ -120,8 +140,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
         // providers use the ITS mode.
-        let telemetry_system =
-            InternalTelemetrySystem::new(telemetry_config, console_async_reporter)?;
+        let telemetry_system = InternalTelemetrySystem::new(
+            telemetry_config,
+            telemetry_registry.clone(),
+            console_async_reporter,
+            engine_context,
+        )?;
+
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
@@ -186,8 +211,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
 
-        // Start the metrics aggregation
-        let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
         let metrics_agg_handle = spawn_thread_local_task(
             "metrics-aggregator",
