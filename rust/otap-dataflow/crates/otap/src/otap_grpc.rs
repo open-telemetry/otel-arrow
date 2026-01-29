@@ -11,7 +11,10 @@
 //! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 
 use crate::pdata::{Context, OtapPdata};
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension, shared::receiver as shared};
+use otap_df_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+    shared::receiver as shared,
+};
 use otap_df_pdata::{
     Consumer,
     otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages},
@@ -343,7 +346,10 @@ where
     };
 
     // Send and wait for Ack/Nack
-    match effect_handler.send_message(otap_pdata).await {
+    match effect_handler
+        .send_message_with_source_node(otap_pdata)
+        .await
+    {
         Ok(_) => {}
         Err(e) => {
             otel_error!("Failed to send to pipeline", error = ?e);

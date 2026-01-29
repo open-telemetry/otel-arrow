@@ -7,13 +7,13 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
@@ -230,7 +230,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -291,7 +291,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -306,7 +306,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -334,7 +334,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                         {
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -427,7 +427,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                         {
                                             let mut m = self.metrics.borrow_mut();
                                             match &res {
@@ -466,7 +466,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                 {
                                     let mut m = self.metrics.borrow_mut();
                                     match &res {

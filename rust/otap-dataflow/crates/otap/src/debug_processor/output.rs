@@ -12,6 +12,7 @@ use crate::debug_processor::sampling::Sampler;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use otap_df_config::PortName;
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::error::{Error, ProcessorErrorKind, format_error_sources};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::node::NodeId;
@@ -382,7 +383,7 @@ impl DebugOutputPorts {
     async fn send_outports(&mut self, message: OtapPdata) -> Result<(), Error> {
         for port in self.ports.iter().cloned() {
             self.effect_handler
-                .send_message_to(port, message.clone())
+                .send_message_with_source_node_to(port, message.clone())
                 .await?;
         }
 

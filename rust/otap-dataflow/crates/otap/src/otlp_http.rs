@@ -26,7 +26,9 @@ use hyper_util::rt::TokioIo;
 use otap_df_config::SignalType;
 use otap_df_config::byte_units;
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -641,8 +643,12 @@ impl HttpHandler {
             } else {
                 None
             };
-
-            if self.effect_handler.send_message(pdata).await.is_err() {
+            if self
+                .effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .is_err()
+            {
                 otap_df_telemetry::otel_warn!(
                     "HttpPipelineSendFailed",
                     path = parts.uri.path().to_string(),
