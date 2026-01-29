@@ -3,6 +3,8 @@
 
 //! This module tests batching.rs logic.
 
+use arrow_schema::{DataType, Field, Schema};
+
 use crate::otap::batching::make_item_batches;
 use crate::proto::OtlpProtoMessage;
 use crate::testing::equiv::assert_equivalent;

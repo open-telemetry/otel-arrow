@@ -1012,6 +1012,8 @@ fn generic_schemaless_concatenate<const N: usize>(
             let mut batcher = arrow::compute::BatchCoalescer::new(schema.clone(), num_rows);
             for row in batches.iter_mut() {
                 if let Some(rb) = row[i].take() {
+                    // let parts = rb.into_parts();
+
                     batcher
                         .push_batch(
                             rb.with_schema(schema.clone())

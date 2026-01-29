@@ -14,9 +14,9 @@ nodes:
         dispatch_strategy: round_robin
     config:
       traffic_config:
-        max_signal_count: 100000
-        max_batch_size: 1000
-        signals_per_second: 1000
+        max_signal_count: 10000
+        max_batch_size: 10
+        signals_per_second: 1
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   noop:
@@ -33,9 +33,23 @@ internal:
     out_ports:
       out_port:
         destinations:
-          - console
+          - batch
         dispatch_strategy: round_robin
     config: {}
+  batch:
+    kind: processor
+    plugin_urn: "urn:otel:batch:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - console
+        dispatch_strategy: round_robin
+    config:
+      otap:
+        min_size: 1000
+        sizer: items
+      format: otap
+      flush_timeout: 3s
   console:
     kind: exporter
     plugin_urn: "urn:otel:console:exporter"
