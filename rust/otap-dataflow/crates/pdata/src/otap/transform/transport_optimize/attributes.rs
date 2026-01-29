@@ -455,7 +455,6 @@ where
     Ok(batch)
 }
 
-
 fn delta_encode_parent_id_slice<T: Copy + Sub<Output = T>>(vals: &mut [T]) {
     let mut prev = vals[0];
     for i in 1..vals.len() {
@@ -1113,7 +1112,10 @@ impl AttrValuesSorter {
                 let values_range = arr.slice(range.start, range.len());
                 let values_range_sorted = take(&values_range, &indices, None).unwrap();
                 self.array_partitions_scratch.clear();
-                collect_partition_from_array(&values_range_sorted, &mut self.array_partitions_scratch)?;
+                collect_partition_from_array(
+                    &values_range_sorted,
+                    &mut self.array_partitions_scratch,
+                )?;
 
                 result.extend(
                     self.array_partitions_scratch
@@ -1140,27 +1142,24 @@ impl AttrValuesSorter {
                     .extend(indices.iter().map(|i| keys_range[*i as usize]));
                 self.fill_keys_partition_from_scratch_buffer();
 
-                {
-                    let boundaries_len = self.partition_buffer_bitlen;
-                    let set_indices =
-                        BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
-                    let mut current = 0;
-                    for idx in set_indices {
-                        let t = current;
-                        current = idx + 1;
-                        result.push(NullableRange {
-                            range: t..current,
+                let boundaries_len = self.partition_buffer_bitlen;
+                let mut set_indices =
+                    BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
+                self.array_partitions_scratch.clear();
+                collect_partition_ranges(
+                    &mut set_indices,
+                    boundaries_len,
+                    &mut self.array_partitions_scratch,
+                );
+
+                result.extend(
+                    self.array_partitions_scratch
+                        .drain(..)
+                        .map(|range| NullableRange {
+                            range,
                             is_null: false,
-                        })
-                    }
-                    let last = boundaries_len + 1;
-                    if current != last {
-                        result.push(NullableRange {
-                            range: current..last,
-                            is_null: false,
-                        })
-                    }
-                }
+                        }),
+                );
             }
         }
 
@@ -1230,6 +1229,9 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
     result_buf.truncate(bit_util::ceil(len, 8));
 }
 
+/// Collect partitions of equivalent values in the given range of the source ID into the
+/// passed results Vec. The indices in the ranges will be relative to the passed range, not
+/// to the indices of the passed source.
 fn collect_partitions_for_range(
     range: &Range<usize>,
     source: &ArrayRef,
@@ -1317,34 +1319,35 @@ fn collect_partitions_for_range(
             }
         },
         _ => {
+            // TODO - in the future we should implement custom behaviour for other array types
+            // like what we've done above for dictionary arrays. Currently this creates many
+            // new Arc<dyn Array>s, which can have noticeable overhead for small batches.
             let source_range = source.slice(range.start, range.len());
             collect_partition_from_array(&source_range, result)
         }
     }
 }
 
+/// Collect partitions of equal values from the passed array. This is very similar to arrow's
+/// partition compute kernel, except that it allows reusing the vector of ranges.
 fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>>) -> Result<()> {
     let next_eq_arr_key = create_next_element_equality_array(&source)?;
     let next_eq_inverted = not(&next_eq_arr_key).unwrap();
     let mut set_indices = next_eq_inverted.values().set_indices();
+    collect_partition_ranges(&mut set_indices, next_eq_inverted.values().len(), result);
 
-    collect_partition_ranges(
-        &mut set_indices,
-        next_eq_inverted.values().len(),
-        result
-    );
     Ok(())
 }
 
-/// Given a boolean buffer where `true` represents an index which is a boundary between a range
+/// Given a iterator of positions representing an index which is a boundary between a range
 /// of partitions, fill in the result vec with partition ranges.
 ///
 /// This is somewhat similar to what arrow's `partition` kernel does internally, however it
 /// allows for reuse of the vec that contains the ranges
-fn collect_partition_ranges<I: Iterator<Item=usize>>(
+fn collect_partition_ranges<I: Iterator<Item = usize>>(
     boundaries: &mut I,
     len: usize,
-    result: &mut Vec<Range<usize>>
+    result: &mut Vec<Range<usize>>,
 ) {
     let mut current = 0;
     for idx in boundaries {
