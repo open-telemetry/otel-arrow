@@ -1013,6 +1013,8 @@ impl PersistenceProcessor {
 
             // Drop the handle to trigger implicit defer, releasing the claim.
             // The bundle stays in Quiver but is now available for re-claiming.
+            // Note: No race with TimerTick here - df_engine processes messages
+            // sequentially, so schedule_retry completes before any TimerTick runs.
             drop(pending.handle);
 
             // Schedule the retry
