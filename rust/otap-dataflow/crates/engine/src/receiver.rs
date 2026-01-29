@@ -16,7 +16,7 @@ use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
-use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
+use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -511,15 +511,15 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
+            (ReceiverWrapper::Local { .. }, _) => Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
                 error: "Expected a local sender for PData".to_owned(),
                 source_detail: String::new(),
             }),
-            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
+            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
                 error: "Expected a shared sender for PData".to_owned(),
                 source_detail: String::new(),
             }),
