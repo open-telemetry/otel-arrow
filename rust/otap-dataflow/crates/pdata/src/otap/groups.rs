@@ -1013,13 +1013,10 @@ fn generic_schemaless_concatenate<const N: usize>(
             let mut batcher = arrow::compute::BatchCoalescer::new(schema.clone(), num_rows);
             for row in batches.iter_mut() {
                 if let Some(mut rb) = row[i].take() {
-                    // let parts = rb.into_parts();
-                    rb = project_to_schema(schema.clone(), &mut rb)?;
-
-                    // NOTE: You can only push a batch if the fields of the schema
-                    // are supersets of each other which does count field ordering.
-                    // This is different from the way that [Schema::try_merge] works
-                    // where you can have any order and it will pick one.
+                    // TODO [JD] This should probably happen as a part of the unify
+                    // operation, but currently we can't know for sure if there are
+                    // unaccounted for fields until after we Schema::try_merge
+                    rb = project_to_schema(schema.clone(), &rb)?;
                     batcher
                         .push_batch(
                             rb.with_schema(schema.clone())
@@ -1044,7 +1041,7 @@ fn generic_schemaless_concatenate<const N: usize>(
 
 /// Given a target schema and a record batch, align the columns to the target schema.
 /// Fails if the record batch is not a subset of the target schema.
-fn project_to_schema(schema: SchemaRef, rb: &mut RecordBatch) -> Result<RecordBatch> {
+fn project_to_schema(schema: SchemaRef, rb: &RecordBatch) -> Result<RecordBatch> {
     let projection: Vec<usize> = schema
         .fields()
         .iter()
