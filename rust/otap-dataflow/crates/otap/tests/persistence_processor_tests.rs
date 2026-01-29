@@ -212,9 +212,7 @@ impl TestConfigBuilder {
             ExporterType::Flaky => (
                 "flaky_exporter",
                 FLAKY_EXPORTER_URN,
-                self.exporter_id
-                    .as_ref()
-                    .map(|id| json!({"flaky_id": id})),
+                self.exporter_id.as_ref().map(|id| json!({"flaky_id": id})),
             ),
             ExporterType::Noop => ("noop_exporter", NOOP_EXPORTER_URN, None),
         };

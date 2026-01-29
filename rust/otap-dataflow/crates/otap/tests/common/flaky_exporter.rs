@@ -110,10 +110,7 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
         // Look up state by ID from node config
-        let flaky_id = node_config
-            .config
-            .get("flaky_id")
-            .and_then(|v| v.as_str());
+        let flaky_id = node_config.config.get("flaky_id").and_then(|v| v.as_str());
         let (counter, should_ack, nack_count) = flaky_id
             .and_then(get_state)
             .map(|(c, a, n)| (Some(c), Some(a), Some(n)))
