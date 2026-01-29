@@ -16,7 +16,7 @@ const MIN_RETRY_DELAY_SECS: f64 = 5.0;
 /// Maximum delay between token refresh retry attempts in seconds.
 const MAX_RETRY_DELAY_SECS: f64 = 30.0;
 /// Maximum jitter percentage (±10%) to add to retry delays.
-const MAX_RETRY_JITTER_PERC: f64 = 0.10;
+const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
 
 #[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
@@ -82,7 +82,7 @@ impl Auth {
             let capped_delay_secs = base_delay_secs.min(MAX_RETRY_DELAY_SECS);
 
             // Add jitter: random value between -10% and +10% of the delay
-            let jitter_range = capped_delay_secs * MAX_RETRY_JITTER_PERC;
+            let jitter_range = capped_delay_secs * MAX_RETRY_JITTER_RATIO;
             let jitter = if jitter_range > 0.0 {
                 let random_factor = rand::random::<f64>() * 2.0 - 1.0;
                 random_factor * jitter_range
