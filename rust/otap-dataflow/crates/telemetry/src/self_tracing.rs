@@ -51,6 +51,10 @@ pub struct LogRecord {
 /// Note: Currently we use at most 1 entity context key per callsite.
 pub type LogContext = SmallVec<[EntityKey; 1]>;
 
+/// A log context function typically constructs context from
+/// thread-local state.
+pub type LogContextFn = fn() -> LogContext;
+
 /// Saved callsite information. This is information that can easily be
 /// populated from Metadata, for example in a `register_callsite` hook
 /// for building a map by Identifier.
