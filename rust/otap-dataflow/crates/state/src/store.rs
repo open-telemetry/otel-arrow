@@ -12,10 +12,12 @@ use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
-use otap_df_telemetry::self_tracing::ConsoleWriter;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
 use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -45,6 +47,10 @@ pub struct ObservedStateStore {
     #[serde(skip)]
     console: ConsoleWriter,
 
+    /// Telemetry registry for resolving entity keys to attributes.
+    #[serde(skip)]
+    registry: TelemetryRegistryHandle,
+
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
 
@@ -72,9 +78,9 @@ impl ObservedStateHandle {
 }
 
 impl ObservedStateStore {
-    /// Creates a new `ObservedStateStore` with the given configuration.
+    /// Creates a new `ObservedStateStore` with the given configuration and telemetry registry.
     #[must_use]
-    pub fn new(config: &ObservedStateSettings) -> Self {
+    pub fn new(config: &ObservedStateSettings, registry: TelemetryRegistryHandle) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
@@ -83,6 +89,7 @@ impl ObservedStateStore {
             sender,
             receiver,
             console: ConsoleWriter::color(),
+            registry,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -124,10 +131,52 @@ impl ObservedStateStore {
                 let _ = self.report_engine(engine)?;
             }
             ObservedEvent::Log(log) => {
-                self.console.print_log_record(log.time, &log.record);
+                let context = &log.record.context;
+
+                self.console.print_log_record(log.time, &log.record, |w| {
+                    if !context.is_empty() {
+                        w.write_styled(AnsiCode::Magenta, |w| {
+                            Self::format_scope_from_registry(w, context, &self.registry);
+                        });
+                    }
+                });
             }
         }
         Ok(())
+    }
+
+    /// Format scope attributes by looking up entity keys in the registry.
+    /// Appends entity references inline after the log message.
+    /// Format: ` entity/schema: key=val key2=val2 entity/schema2: ...`
+    ///
+    /// TODO(#1907, #1746): This code is too expensive. We would like a lower-cost
+    /// way to output human readable text.
+    fn format_scope_from_registry(
+        w: &mut StyledBufWriter<'_>,
+        context: &LogContext,
+        registry: &TelemetryRegistryHandle,
+    ) {
+        for key in context.iter() {
+            let visited = registry.visit_entity(*key, |attrs| {
+                (
+                    attrs
+                        .iter_attributes()
+                        .map(|(a, b)| (a, b.clone()))
+                        .collect::<Vec<_>>(),
+                    attrs.schema_name(),
+                )
+            });
+            visited
+                .map(|(attrs, schema_name)| {
+                    let _ = write!(w, " entity/{}:", schema_name);
+
+                    // TODO(#1907): We should be able to use
+                    for (attr_key, attr_value) in attrs {
+                        let _ = write!(w, " {}={}", attr_key, attr_value.to_string_value());
+                    }
+                })
+                .unwrap_or_default()
+        }
     }
 
     /// Reports a new observed event in the store.

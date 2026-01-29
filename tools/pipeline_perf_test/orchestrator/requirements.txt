@@ -7,13 +7,13 @@ pydantic==2.12.5
 
 # Docker management
 docker==7.1.0
-psutil==7.2.1
+psutil==7.2.2
 
 # Kubernetes management
 kubernetes==35.0.0
 
 # Other dependencies
-duckdb==1.4.3
+duckdb==1.4.4
 jinja2==3.1.6
 opentelemetry-exporter-otlp==1.39.1
 opentelemetry-sdk==1.39.1

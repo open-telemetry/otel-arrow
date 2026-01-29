@@ -3,17 +3,19 @@
 
 //! Direct OTLP bytes encoder for tokio-tracing events.
 
-use std::time::SystemTime;
-
+use super::{LogRecord, SavedCallsite};
+use crate::event::LogEvent;
+use crate::registry::EntityKey;
+use crate::registry::TelemetryRegistryHandle;
+use bytes::Bytes;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
 use otap_df_pdata::proto_encode_len_delimited_unknown_size;
+use std::collections::HashMap;
+use std::time::SystemTime;
 use tracing::Level;
-
-use super::{LogRecord, SavedCallsite};
-use crate::event::LogEvent;
 
 /// Direct encoder that writes a single LogRecord from a tracing Event.
 pub struct DirectLogRecordEncoder<'buf> {
@@ -298,7 +300,7 @@ pub fn level_to_severity_number(level: &Level) -> u8 {
 /// Encode an SDK Resource as OTLP Resource bytes (field 1 of ResourceLogs).
 ///
 /// The buffer is NOT cleared; bytes are appended.
-pub fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
+fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
 where
     I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
 {
@@ -322,7 +324,7 @@ where
 
 /// Encode an SDK Resource to bytes for later reuse.
 #[must_use]
-pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> bytes::Bytes {
+pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
     let mut buf = ProtoBuffer::with_capacity(256);
     encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
@@ -372,11 +374,117 @@ fn encode_resource_attribute(buf: &mut ProtoBuffer, key: &str, value: &opentelem
 // Field numbers for ExportLogsServiceRequest and related messages
 const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u64 = 1;
 
+/// Pre-encoded scope attribute bytes keyed by EntityKey.
+///
+/// The Internal Telemetry Receiver uses this to avoid re-encoding scope
+/// attributes for each log event. Entity attributes are looked up once
+/// from the registry and encoded as InstrumentationScope.attributes bytes.
+///
+/// TODO: ScopeToBytesMap grows without any attention to managing memory.
+/// We will require a way to de-register entities that are no longer use
+/// or to flush memory to maintain a fixed size.
+#[derive(Debug)]
+pub struct ScopeToBytesMap {
+    cache: HashMap<EntityKey, Bytes>,
+    registry: TelemetryRegistryHandle,
+}
+
+impl ScopeToBytesMap {
+    /// Create a new empty scope attribute cache.
+    #[must_use]
+    pub fn new(registry: TelemetryRegistryHandle) -> Self {
+        Self {
+            cache: HashMap::new(),
+            registry,
+        }
+    }
+
+    /// Get or compute the encoded scope attribute bytes for an entity key.
+    pub fn get_or_encode(&mut self, key: EntityKey) -> Bytes {
+        if let Some(cached) = self.cache.get(&key) {
+            return cached.clone();
+        }
+
+        let visited = self.registry.visit_entity(key, |attrs| {
+            attrs
+                .iter_attributes()
+                .map(|(a, b)| (a, b.clone()))
+                .collect::<Vec<_>>()
+        });
+        visited
+            .map(|attrs| {
+                let mut buf = ProtoBuffer::with_capacity(128);
+                for (attr_key, attr_value) in attrs {
+                    encode_scope_attribute(&mut buf, attr_key, &attr_value);
+                }
+                let bytes = buf.into_bytes();
+                let _ = self.cache.insert(key, bytes.clone());
+                bytes
+            })
+            .unwrap_or_default()
+    }
+
+    /// Clear the cache. Call this when entities may have been updated.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+}
+
+/// Encode a single scope attribute as a KeyValue message for InstrumentationScope.attributes.
+#[inline]
+fn encode_scope_attribute(
+    buf: &mut ProtoBuffer,
+    key: &str,
+    value: &crate::attributes::AttributeValue,
+) {
+    use crate::attributes::AttributeValue;
+
+    proto_encode_len_delimited_unknown_size!(
+        INSTRUMENTATION_SCOPE_ATTRIBUTES,
+        {
+            buf.encode_string(KEY_VALUE_KEY, key);
+            proto_encode_len_delimited_unknown_size!(
+                KEY_VALUE_VALUE,
+                {
+                    match value {
+                        AttributeValue::String(s) => {
+                            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
+                        }
+                        AttributeValue::Boolean(b) => {
+                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+                            buf.encode_varint(u64::from(*b));
+                        }
+                        AttributeValue::Int(i) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*i as u64);
+                        }
+                        AttributeValue::UInt(u) => {
+                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+                            buf.encode_varint(*u);
+                        }
+                        AttributeValue::Double(f) => {
+                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+                            buf.extend_from_slice(&f.to_le_bytes());
+                        }
+                    }
+                },
+                buf
+            );
+        },
+        buf
+    );
+}
+
 /// Encode a LogEvent as a complete ExportLogsServiceRequest.
+///
+/// This version resolves entity keys from the log record's context to populate
+/// the InstrumentationScope.attributes field. The scope cache is used to avoid
+/// re-encoding entity attributes for each log event.
 pub fn encode_export_logs_request(
     buf: &mut ProtoBuffer,
     event: &LogEvent,
-    resource_bytes: &bytes::Bytes,
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
 ) {
     buf.clear();
 
@@ -392,8 +500,19 @@ pub fn encode_export_logs_request(
             proto_encode_len_delimited_unknown_size!(
                 RESOURCE_LOGS_SCOPE_LOGS,
                 {
-                    // ScopeLogs.scope: TODO: add scope attributes referring to
-                    // component identity or somehow produce instrumentation scope.
+                    // ScopeLogs.scope (field 1, InstrumentationScope message)
+                    // Encode scope with attributes from entity context
+                    proto_encode_len_delimited_unknown_size!(
+                        SCOPE_LOG_SCOPE,
+                        {
+                            // For each entity key in the log context, append its pre-encoded attributes
+                            for entity_key in event.record.context.iter() {
+                                let scope_bytes = scope_cache.get_or_encode(*entity_key);
+                                buf.extend_from_slice(&scope_bytes);
+                            }
+                        },
+                        buf
+                    );
 
                     // ScopeLogs.log_records (field 2, repeated LogRecord)
                     proto_encode_len_delimited_unknown_size!(
@@ -416,20 +535,140 @@ pub fn encode_export_logs_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry::KeyValue;
-    use opentelemetry_sdk::Resource;
+    use crate::__log_record_impl;
+    use crate::LogContext;
+    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+    use crate::event::LogEvent;
+    use crate::self_tracing::formatter::format_log_record_to_string;
+    use opentelemetry::KeyValue as OTelKeyValue;
+    use opentelemetry_sdk::Resource as OTelResource;
+    use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue,
+    };
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::ScopeLogs;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use prost::Message;
+    use std::time::{Duration, SystemTime};
+    use tracing::Level;
+
+    static TEST_SCOPE_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "TestScope",
+        fields: &[
+            AttributeField {
+                key: "pipeline.name",
+                r#type: AttributeValueType::String,
+                brief: "Pipeline name",
+            },
+            AttributeField {
+                key: "cpu.id",
+                r#type: AttributeValueType::Int,
+                brief: "CPU ID",
+            },
+        ],
+    };
+
+    /// Mock attribute set for testing scope attributes.
+    #[derive(Debug)]
+    struct TestScopeAttributes {
+        values: Vec<AttributeValue>,
+    }
+
+    impl TestScopeAttributes {
+        fn new(name: &str, id: i64) -> Self {
+            Self {
+                // Note: order matches the AttributeFields.
+                values: vec![AttributeValue::String(name.into()), AttributeValue::Int(id)],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for TestScopeAttributes {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &TEST_SCOPE_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
 
     #[test]
     fn encode_resource_to_bytes_encodes_attributes() {
         // Empty resource produces output
-        let empty = encode_resource_to_bytes(&Resource::builder_empty().build());
+        let empty = encode_resource_to_bytes(&OTelResource::builder_empty().build());
         assert!(!empty.is_empty());
 
         // Resource with attributes contains encoded values
-        let resource = Resource::builder_empty()
-            .with_attributes([KeyValue::new("service.name", "test-svc")])
+        let resource = OTelResource::builder_empty()
+            .with_attributes([OTelKeyValue::new("service.name", "test-svc")])
             .build();
         let bytes = encode_resource_to_bytes(&resource);
         assert!(bytes.windows(8).any(|w| w == b"test-svc"));
+    }
+
+    #[test]
+    fn encode_export_logs_request_with_scope_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(TestScopeAttributes::new("my-pipeline", 3));
+        let mut scope_cache = ScopeToBytesMap::new(registry.clone());
+
+        // Use the macro to create a LogRecord, then override context with entity
+        let mut record = __log_record_impl!(Level::INFO, "test.scope.encoding");
+        record.context = LogContext::from_buf([entity_key]);
+
+        // Create a LogEvent with known timestamp, empty resource.
+        let timestamp_ns: u64 = 1_705_321_845_000_000_000;
+        let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
+        let log_event = LogEvent { time, record };
+
+        let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
+
+        let mut buf = ProtoBuffer::with_capacity(512);
+        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+
+        let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
+        let event_name = &decoded
+            .resource_logs
+            .first()
+            .unwrap()
+            .scope_logs
+            .first()
+            .unwrap()
+            .log_records
+            .first()
+            .unwrap()
+            .event_name;
+
+        // Test for the event name prefix to avoid a hard-coded line number.
+        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding "));
+
+        let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
+            Resource::build().finish(),
+            [ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes([
+                        KeyValue::new("pipeline.name", AnyValue::new_string("my-pipeline")),
+                        KeyValue::new("cpu.id", AnyValue::new_int(3)),
+                    ])
+                    .finish(),
+                [LogRecord::build()
+                    .event_name(event_name) // from the decoded value
+                    .time_unix_nano(timestamp_ns)
+                    .severity_number(SeverityNumber::Info)
+                    .finish()],
+            )],
+        )]);
+
+        // Inspect the printed format. Entity name is appended.
+        assert_eq!(
+            format_log_record_to_string(None, &log_event.record),
+            format!("INFO  {event_name} entity={:?}\n", entity_key),
+        );
+        assert_eq!(expected, decoded);
     }
 }

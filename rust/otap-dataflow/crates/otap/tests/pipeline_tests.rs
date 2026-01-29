@@ -65,7 +65,8 @@ fn test_telemetry_registries_cleanup() {
             .default_pipeline_ctrl_msg_channel_size,
     );
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
-    let observed_state_store = ObservedStateStore::new(&ObservedStateSettings::default());
+    let observed_state_store =
+        ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
 
     let pipeline_key = DeployedPipelineKey {
         pipeline_group_id,
