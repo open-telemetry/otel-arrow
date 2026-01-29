@@ -1283,4 +1283,85 @@ mod tests {
             })
             .await;
     }
+
+    /// Demonstrates a known bug: the manager breaks immediately after sending shutdown
+    /// to receivers, which drops the pipeline control channel before processors/exporters
+    /// have finished draining and cleanup.
+    ///
+    /// This causes nodes that try to send control messages (e.g., CancelTelemetryTimer,
+    /// DelayData for retries) during their shutdown sequence to fail with
+    /// `PipelineControlMsgError { error: "Channel is closed..." }`.
+    ///
+    /// The proper fix would be for the manager to continue running until all nodes
+    /// have completed (i.e., until all senders are dropped), not break immediately
+    /// after sending shutdown to receivers.
+    ///
+    /// This test is marked #[ignore] because it intentionally fails to demonstrate
+    /// the bug. Remove #[ignore] and fix the bug to make it pass.
+    ///
+    /// See: https://github.com/open-telemetry/otel-arrow/issues/XXXX
+    #[ignore = "Known bug: manager drops control channel before nodes finish cleanup"]
+    #[tokio::test]
+    async fn test_shutdown_allows_nodes_to_send_cleanup_messages() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<()>();
+
+                let node = nodes.first().expect("ok");
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Simulate a node starting a timer (like processors do for telemetry)
+                let start_msg = PipelineControlMsg::StartTimer {
+                    node_id: node.index,
+                    duration: Duration::from_secs(1), // Long duration - won't fire during test
+                };
+                pipeline_tx.send(start_msg).await.unwrap();
+
+                // Small delay to ensure timer is registered
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Send shutdown - this will cause the manager to break immediately
+                // after sending shutdown to receivers (which we don't have in this test)
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Wait for manager to exit
+                let _ = timeout(Duration::from_millis(100), manager_handle).await;
+
+                // After shutdown, nodes should still be able to send cleanup messages
+                // (e.g., CancelTelemetryTimer). In a real pipeline, processors try to
+                // cancel their telemetry timers when their message channel closes.
+                //
+                // BUG: Currently this fails because the manager has already exited
+                // and dropped the receiver end of the pipeline control channel.
+                let cancel_result = pipeline_tx
+                    .send(PipelineControlMsg::CancelTimer {
+                        node_id: node.index,
+                    })
+                    .await;
+
+                // This assertion will FAIL until the bug is fixed.
+                // The channel should remain open until all nodes have completed.
+                assert!(
+                    cancel_result.is_ok(),
+                    "Nodes should be able to send control messages during cleanup, \
+                     but the channel was closed prematurely"
+                );
+
+                // Cleanup - drain the control receiver so it doesn't complain
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                while receiver.recv().await.is_ok() {}
+            })
+            .await;
+    }
 }
