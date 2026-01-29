@@ -3,6 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::convert::TryFrom;
 use std::ops::AddAssign;
 use std::sync::Arc;
 
@@ -797,16 +798,16 @@ impl AttributesTransform {
     /// But [`transform_attributes`] makes no guarantees about how this is handled, so to avoid
     /// any undefined behaviour we consider this invalid.
     pub fn validate(&self) -> Result<()> {
-        let mut all_keys = BTreeSet::new();
+        let mut rename_keys = BTreeSet::new();
 
         if let Some(rename) = &self.rename {
             for (from, to) in rename.map.iter() {
-                if !all_keys.insert(from) {
+                if !rename_keys.insert(from) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in rename: {from}"),
                     });
                 }
-                if !all_keys.insert(to) {
+                if !rename_keys.insert(to) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in rename target: {to}"),
                     });
@@ -814,9 +815,15 @@ impl AttributesTransform {
             }
         }
 
+        let mut delete_keys = BTreeSet::new();
         if let Some(delete) = &self.delete {
             for key in delete.set.iter() {
-                if !all_keys.insert(key) {
+                if rename_keys.contains(key) {
+                    return Err(Error::InvalidAttributeTransform {
+                        reason: format!("Duplicate key in delete (overlaps with rename): {key}"),
+                    });
+                }
+                if !delete_keys.insert(key) {
                     return Err(Error::InvalidAttributeTransform {
                         reason: format!("Duplicate key in delete: {key}"),
                     });
@@ -826,11 +833,13 @@ impl AttributesTransform {
 
         if let Some(insert) = &self.insert {
             for key in insert.entries.keys() {
-                if !all_keys.insert(key) {
+                if rename_keys.contains(key) {
                     return Err(Error::InvalidAttributeTransform {
-                        reason: format!("Duplicate key in insert: {key}"),
+                        reason: format!("Duplicate key in insert (overlaps with rename): {key}"),
                     });
                 }
+                // We intentionally allow overlap with delete_keys to support "upsert" semantics
+                // (delete old value, insert new value).
             }
         }
 
@@ -881,6 +890,8 @@ pub struct TransformStats {
 pub fn transform_attributes_with_stats(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
+    parent_count: Option<usize>,
+    parent_id_type: Option<DataType>,
 ) -> Result<(RecordBatch, TransformStats)> {
     transform.validate()?;
 
@@ -1071,7 +1082,7 @@ pub fn transform_attributes_with_stats(
     // - Original parent IDs from attrs_record_batch to know which parents exist
     // - The transformed batch (rb) to check which (parent_id, key) pairs already exist
     if let Some(insert) = &transform.insert {
-        if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
+        if let Some(_original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
             // Determine which value type columns we need based on what's being inserted
             let needs_int = insert
                 .entries
@@ -1094,18 +1105,32 @@ pub fn transform_attributes_with_stats(
             let (rb_extended, extended_schema) =
                 extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
 
-            let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
+            let parent_id_col_opt = attrs_record_batch.column_by_name(consts::PARENT_ID);
+            
+            let pid_type = if let Some(col) = parent_id_col_opt {
+                col.data_type().clone()
+            } else if let Some(t) = parent_id_type {
+                t
+            } else {
+                 return Err(Error::ColumnNotFound {
+                     name: consts::PARENT_ID.into(),
+                 });
+            };
+
+            let (new_rows, count) = match pid_type {
                 DataType::UInt16 => create_inserted_batch::<u16>(
                     &rb_extended,
-                    original_parent_ids,
+                    parent_id_col_opt,
                     insert,
                     extended_schema.as_ref(),
+                    parent_count,
                 )?,
                 DataType::UInt32 => create_inserted_batch::<u32>(
                     &rb_extended,
-                    original_parent_ids,
+                    parent_id_col_opt,
                     insert,
                     extended_schema.as_ref(),
+                    parent_count,
                 )?,
                 data_type => {
                     return Err(Error::ColumnDataTypeMismatch {
@@ -1154,7 +1179,7 @@ pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<RecordBatch> {
-    let (result, _) = transform_attributes_with_stats(attrs_record_batch, transform)?;
+    let (result, _) = transform_attributes_with_stats(attrs_record_batch, transform, None, None)?;
     Ok(result)
 }
 
@@ -3089,7 +3114,7 @@ mod test {
             )
             .unwrap();
 
-            let result = transform_attributes(
+            let result = transform_attributes_with_stats(
                 &record_batch,
                 &AttributesTransform {
                     insert: None,
@@ -3099,8 +3124,11 @@ mod test {
                     )]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["k3".into()]))),
                 },
+                None,
+                None,
             )
-            .unwrap();
+            .unwrap()
+            .0;
 
             let expected_record_batch = RecordBatch::try_new(
                 schema.clone(),
@@ -4333,19 +4361,24 @@ fn array_options_for_type(data_type: &DataType) -> ArrayOptions {
 /// as well as dictionary-encoded parent IDs.
 fn create_inserted_batch<T>(
     current_batch: &RecordBatch,
-    parent_ids: &ArrayRef,
+    parent_ids: Option<&ArrayRef>,
     insert: &InsertTransform,
     schema: &arrow::datatypes::Schema,
+    parent_count: Option<usize>,
 ) -> Result<(RecordBatch, usize)>
 where
-    T: ParentId,
+    T: ParentId + TryFrom<usize>,
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
         Ord + std::hash::Hash + Copy + Default,
+    <T as TryFrom<usize>>::Error: std::fmt::Debug,
 {
     // Use MaybeDictArrayAccessor to handle both primitive and dictionary-encoded parent IDs
-    let parent_ids_accessor =
-        MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(parent_ids)?;
+    let parent_ids_accessor = if let Some(p) = parent_ids {
+        Some(MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(p)?)
+    } else {
+        None
+    };
 
     // Build a set of (parent_id, key) pairs that already exist using StringArrayAccessor
     let key_accessor = current_batch
@@ -4371,16 +4404,28 @@ where
     }
 
     // Get unique parents
-    let mut unique_parents = BTreeSet::new();
-    for i in 0..parent_ids_accessor.len() {
-        if let Some(parent) = parent_ids_accessor.value_at(i) {
-            let _ = unique_parents.insert(parent);
-        }
-    }
-
-    if unique_parents.is_empty() {
-        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
-    }
+    // If a parent count is provided, we assume parents are 0..parent_count.
+    // Otherwise we derive them from the existing parent_ids
+    let iter: Box<dyn Iterator<Item = <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native>> =
+        if let Some(count) = parent_count {
+             // Safety: IDs are u16 or u32. usize fits.
+             Box::new((0..count).map(|i| {
+                 let val = T::try_from(i).expect("parent id should fit in type");
+                 // T is u16/u32, and T::Native is u16/u32. They are the same.
+                 // We use transmute to bridge the generic gap.
+                 #[allow(unsafe_code)]
+                 unsafe { std::mem::transmute_copy::<T, <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native>(&val) }
+             }))
+        } else {
+            let parent_ids_accessor = parent_ids_accessor.as_ref().expect("must have parent ids if no count");
+            let mut unique_parents = BTreeSet::new();
+            for i in 0..parent_ids_accessor.len() {
+                if let Some(parent) = parent_ids_accessor.value_at(i) {
+                    let _ = unique_parents.insert(parent);
+                }
+            }
+            Box::new(unique_parents.into_iter())
+        };
 
     // Compute which (parent, key, value) tuples to actually insert
     // Only insert if the key doesn't already exist for that parent
@@ -4389,7 +4434,8 @@ where
         &str,
         &LiteralValue,
     )> = Vec::new();
-    for &parent in &unique_parents {
+
+    for parent in iter {
         let parent_existing = existing_keys.get(&parent);
         for (key, val) in insert.entries.iter() {
             let key_exists = parent_existing

@@ -8,7 +8,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes};
+use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes_with_stats};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
@@ -16,6 +16,9 @@ use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
+use arrow::array::{RecordBatch, UInt16Array, UInt32Array, ArrayRef};
+use arrow::datatypes::{DataType, Field, Schema};
+use otap_df_pdata::schema::consts;
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -52,28 +55,110 @@ impl PipelineStage for AttributeTransformPipelineStage {
             AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
+
+        let has_existing_batch = otap_batch.get(attrs_payload_type).is_some();
+
+        let should_process = self.transform.insert.is_some() || has_existing_batch;
+        if !should_process {
+            return Ok(otap_batch);
+        }
+
+        let parent_count = otap_batch.num_items();
+        let parent_id_type = match attrs_payload_type {
+            ArrowPayloadType::LogAttrs
+            | ArrowPayloadType::ResourceAttrs
+            | ArrowPayloadType::ScopeAttrs
+            | ArrowPayloadType::SpanAttrs
+            | ArrowPayloadType::MetricAttrs => DataType::UInt16,
+            _ => DataType::UInt32,
+        };
+
+        // Ensure the root record batch has an ID column.
+        // The OTLP encoder generic logic requires the parent batch to have an 'id' column
+        // to link it to the attribute batch's 'parent_id'.
+        // If the original batch had no attributes, the encoder might have skipped generating IDs.
+        let root_payload_type = otap_batch.root_payload_type();
+        if let Some(root_batch) = otap_batch.get(root_payload_type) {
+            if root_batch.column_by_name(consts::ID).is_none() {
+                let num_rows = root_batch.num_rows();
+                let id_array: ArrayRef = match parent_id_type {
+                    DataType::UInt16 => {
+                        let values: Vec<u16> = (0..num_rows).map(|i| i as u16).collect();
+                        Arc::new(UInt16Array::from(values))
+                    }
+                    DataType::UInt32 => {
+                        let values: Vec<u32> = (0..num_rows).map(|i| i as u32).collect();
+                        Arc::new(UInt32Array::from(values))
+                    }
+                    _ => unreachable!("unsupported parent id type"),
+                };
+
+                let mut fields = root_batch.schema().fields().to_vec();
+                fields.push(Arc::new(Field::new(consts::ID, parent_id_type.clone(), false)));
+                let new_schema = Arc::new(Schema::new_with_metadata(
+                    fields,
+                    root_batch.schema().metadata().clone(),
+                ));
+
+                let mut columns = root_batch.columns().to_vec();
+                columns.push(id_array);
+
+                let new_root_batch = RecordBatch::try_new(new_schema, columns).map_err(|e| {
+                    Error::ExecutionError {
+                        cause: e.to_string(),
+                    }
+                })?;
+
+                otap_batch.set(root_payload_type, new_root_batch);
+            }
+        }
+
+        // If we need to process but have no batch (i.e. insert into empty), create a dummy batch
+        // We need at least the ATTRIBUTE_KEY column for the transform logic to work (it checks for existence)
+        let dummy_batch;
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
             Some(rb) => rb,
             None => {
-                // nothing to do, there are no attributes
-                return Ok(otap_batch);
+                let schema = Schema::new(vec![
+                    Field::new(consts::PARENT_ID, parent_id_type.clone(), false),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                    Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                    Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                    Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                    Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                    Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                ]);
+                dummy_batch = RecordBatch::new_empty(Arc::new(schema));
+                &dummy_batch
             }
         };
 
         // transform attributes
+        // We pass None for parent_count if the batch exists? 
+        // No, we should ALWAYS pass parent_count if we want to ensure we cover all parents, 
+        // especially if the existing batch is sparse.
+        // `create_inserted_batch` with `parent_count` will insert for ALL parents 0..count.
+        // If the existing batch is sparse, we WANT to insert for the missing ones too.
+        // So always passing `parent_count` is correct for "upsert/extend" semantics.
         let attrs_transformed =
-            transform_attributes(attrs_record_batch, &self.transform).map_err(|e| {
+            transform_attributes_with_stats(
+                attrs_record_batch, 
+                &self.transform,
+                Some(parent_count),
+                Some(parent_id_type)
+            ).map_err(|e| {
                 Error::ExecutionError {
                     cause: format!("error transforming attributes {e}"),
                 }
-            })?;
-
+            })?.0;
+            
         if attrs_transformed.num_rows() == 0 {
-            // all attributes deleted. remove as it's now empty
+            // all attributes deleted (or none inserted). remove as it's now empty
             otap_batch.remove(attrs_payload_type);
         } else {
-            // replace attributes batch with transformed attributes
-            otap_batch.set(attrs_payload_type, attrs_transformed);
+             // replace attributes batch with transformed attributes
+             otap_batch.set(attrs_payload_type, attrs_transformed);
         }
 
         Ok(otap_batch)
