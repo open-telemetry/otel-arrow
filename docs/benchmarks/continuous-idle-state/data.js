@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769653575227,
+  "lastUpdate": 1769720884215,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4558,6 +4558,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.001159,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "66b8e1d7c730b96be1b289b0d9bb3fd7c464d3d7",
+          "message": "fix: Field to batch index mapping in otap batch unify (#1911)\n\n# Change Summary\n\nPart of the otap batch `unify` logic tracks which otap batches have\nwhich fields. The implementation extracts the schemas for some payload\ntype from each batch and assumes that the index in the schemas list is\nequivalent to the index in the `batches` slice.\n\nHowever, `select` filters out missing payload types from each batch, so\nif some batches are missing a payload then the index is not the same.\n\nThe fix is to maintain the 1:1 mapping of schema index to batch index by\nnot filtering out missing batches.\n\n## What issue does this PR close?\n\nRelated to #1334, but there are still more issues listed there.\n\n## How are these changes tested?\n\nUncommenting the complex metrics tests. The tests now make it farther\nand some scenarios see more success, but there are still at least two\nmore known issues.\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-01-29T20:31:23Z",
+          "tree_id": "517bf9901f2ea77047ad5654a8604bb53fc85612",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/66b8e1d7c730b96be1b289b0d9bb3fd7c464d3d7"
+        },
+        "date": 1769720883796,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 2.4029233551695324,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 2.5164531029652113,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 618.6847098214286,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 620.0234375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.007928,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.06382867912978912,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.07918280909374026,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 27.257254464285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 27.36328125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.002103,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
