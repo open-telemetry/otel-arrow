@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 /// The actual buffer is the minimum of this value and 10% of the time until deadline,
 /// ensuring we use at least 90% of available time for draining while capping the
 /// post-draining buffer at 1 second.
-const MAX_DRAINING_BUFFER: Duration = Duration::from_secs(1);
+const MAX_DRAINING_BUFFER_DURATION: Duration = Duration::from_secs(1);
 
 /// Represents delayed data with scheduling information.
 #[derive(Debug)]
@@ -319,7 +319,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             let time_until_deadline = deadline.saturating_duration_since(now);
                             let buffer = std::cmp::min(
                                 time_until_deadline / 10, // 10% of available time
-                                MAX_DRAINING_BUFFER,       // capped at 1 second
+                                MAX_DRAINING_BUFFER_DURATION,       // capped at 1 second
                             );
                             draining_deadline = Some(
                                 deadline
