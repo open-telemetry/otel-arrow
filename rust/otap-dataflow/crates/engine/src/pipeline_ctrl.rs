@@ -1698,4 +1698,126 @@ mod tests {
             })
             .await;
     }
+
+    /// Validates that TimerTick messages are NOT fired during draining.
+    ///
+    /// When draining, the manager should not fire any new timer ticks - it should
+    /// only process messages that help complete in-flight work (like Ack/Nack).
+    #[tokio::test]
+    async fn test_timer_tick_does_not_fire_during_draining() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<String>();
+
+                let node = nodes.first().expect("ok");
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Start a timer that would fire very soon
+                pipeline_tx
+                    .send(PipelineControlMsg::StartTimer {
+                        node_id: node.index,
+                        duration: Duration::from_millis(10),
+                    })
+                    .await
+                    .unwrap();
+
+                // Small delay to ensure timer is registered
+                tokio::time::sleep(Duration::from_millis(5)).await;
+
+                // Send shutdown before the timer fires
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_millis(500),
+                        reason: "test shutdown before timer fires".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Wait longer than the timer interval - during draining, timer should NOT fire
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify no TimerTick was received during draining
+                // (Processors don't receive Shutdown messages - only Receivers do)
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
+                assert!(
+                    msg.is_err(),
+                    "Should NOT receive TimerTick during draining - timer ticks are suppressed"
+                );
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
+
+    /// Validates that StartTimer messages are ignored during draining.
+    ///
+    /// When draining, new timer registration requests should be silently ignored
+    /// since we don't want to start new work during shutdown.
+    #[tokio::test]
+    async fn test_start_timer_ignored_during_draining() {
+        let local = LocalSet::new();
+
+        local
+            .run_until(async {
+                let (manager, pipeline_tx, mut control_receivers, nodes, _pipeline_entity_guard) =
+                    setup_test_manager::<String>();
+
+                let node = nodes.first().expect("ok");
+
+                // Start the manager in the background
+                let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
+
+                // Send shutdown first to enter draining mode
+                pipeline_tx
+                    .send(PipelineControlMsg::Shutdown {
+                        deadline: Instant::now() + Duration::from_secs(1),
+                        reason: "test shutdown".to_owned(),
+                    })
+                    .await
+                    .unwrap();
+
+                // Small delay to ensure shutdown is processed
+                tokio::time::sleep(Duration::from_millis(10)).await;
+
+                // Try to start a timer during draining - should be ignored
+                pipeline_tx
+                    .send(PipelineControlMsg::StartTimer {
+                        node_id: node.index,
+                        duration: Duration::from_millis(10),
+                    })
+                    .await
+                    .unwrap();
+
+                // Wait longer than the timer interval
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                // Verify no TimerTick was received - StartTimer should have been ignored during draining
+                // (Processors don't receive Shutdown messages - only Receivers do)
+                let mut receiver = control_receivers.remove(&node.index).unwrap();
+                let msg = timeout(Duration::from_millis(100), receiver.recv()).await;
+                assert!(
+                    msg.is_err(),
+                    "Should NOT receive TimerTick - StartTimer should be ignored during draining"
+                );
+
+                // Drop the sender to let the manager exit draining mode
+                drop(pipeline_tx);
+
+                // Manager should terminate cleanly
+                let shutdown_result = timeout(Duration::from_millis(100), manager_handle).await;
+                assert!(shutdown_result.is_ok(), "Manager should shutdown cleanly");
+            })
+            .await;
+    }
 }
