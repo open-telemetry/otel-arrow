@@ -184,7 +184,7 @@ remove_map_keys_operator_call = {
 }
 
 set_operator_call = {
-    ("set" | "extend") ~ assignment_expression
+    ("set" | "extend") ~ assignment_expression ~ ("," ~ assignment_expression)*
 }
 
 where_operator_call = {

@@ -8,7 +8,7 @@ use datafusion::config::ConfigOptions;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes};
+use otap_df_pdata::otap::transform::{AttributesTransform, transform_attributes_with_stats};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::sync::Arc;
 
@@ -16,6 +16,9 @@ use crate::error::{Error, Result};
 use crate::pipeline::PipelineStage;
 use crate::pipeline::planner::AttributesIdentifier;
 use crate::pipeline::state::ExecutionState;
+use arrow::array::{RecordBatch, UInt16Array, UInt32Array, ArrayRef};
+use arrow::datatypes::{DataType, Field, Schema};
+use otap_df_pdata::schema::consts;
 
 /// This pipeline stage can be used to rename and delete attributes according to the transformation
 /// specified by the [`AttributesTransform`]
@@ -52,28 +55,72 @@ impl PipelineStage for AttributeTransformPipelineStage {
             AttributesIdentifier::NonRoot(payload_type) => payload_type,
         };
 
+
+        let has_existing_batch = otap_batch.get(attrs_payload_type).is_some();
+
+        // Check if we have any attributes to insert.
+        // If the insert list is empty, we shouldn't trigger processing unless we have an existing batch.
+        let has_insert_items = self.transform.insert.as_ref().map_or(false, |i| !i.is_empty());
+
+        let should_process = has_insert_items || has_existing_batch;
+        if !should_process {
+            return Ok(otap_batch);
+        }
+
+        let parent_count = otap_batch.num_items();
+        let parent_id_type = match attrs_payload_type {
+            ArrowPayloadType::LogAttrs
+            | ArrowPayloadType::ResourceAttrs
+            | ArrowPayloadType::ScopeAttrs
+            | ArrowPayloadType::SpanAttrs
+            | ArrowPayloadType::MetricAttrs => DataType::UInt16,
+            _ => DataType::UInt32,
+        };
+
+        // If we need to process but have no batch (i.e. insert into empty), create a dummy batch
+        // We need at least the ATTRIBUTE_KEY column for the transform logic to work (it checks for existence)
+        let dummy_batch;
         let attrs_record_batch = match otap_batch.get(attrs_payload_type) {
             Some(rb) => rb,
             None => {
-                // nothing to do, there are no attributes
-                return Ok(otap_batch);
+                let schema = Schema::new(vec![
+                    Field::new(consts::PARENT_ID, parent_id_type.clone(), false),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                    Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                    Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                    Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                    Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                    Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                ]);
+                dummy_batch = RecordBatch::new_empty(Arc::new(schema));
+                &dummy_batch
             }
         };
 
         // transform attributes
+        // We pass None for parent_count if the batch exists?
+        // No, we should ALWAYS pass parent_count if we want to ensure we cover all parents,
+        // especially if the existing batch is sparse.
+        // `create_inserted_batch` with `parent_count` will insert for ALL parents 0..count.
+        // If the existing batch is sparse, we WANT to insert for the missing ones too.
+        // So always passing `parent_count` is correct for "upsert/extend" semantics.
         let attrs_transformed =
-            transform_attributes(attrs_record_batch, &self.transform).map_err(|e| {
+            transform_attributes_with_stats(
+                attrs_record_batch,
+                &self.transform,
+            ).map_err(|e| {
                 Error::ExecutionError {
                     cause: format!("error transforming attributes {e}"),
                 }
-            })?;
+            })?.0;
 
         if attrs_transformed.num_rows() == 0 {
-            // all attributes deleted. remove as it's now empty
+            // all attributes deleted (or none inserted). remove as it's now empty
             otap_batch.remove(attrs_payload_type);
         } else {
-            // replace attributes batch with transformed attributes
-            otap_batch.set(attrs_payload_type, attrs_transformed);
+             // replace attributes batch with transformed attributes
+             otap_batch.set(attrs_payload_type, attrs_transformed);
         }
 
         Ok(otap_batch)
@@ -456,5 +503,201 @@ mod test {
     #[tokio::test]
     async fn test_delete_all_attributes_opl_parser() {
         test_delete_all_attributes::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"new_attr\"] = \"new_value\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![
+                LogRecord::build()
+                    .attributes(vec![
+                        KeyValue::new("x", AnyValue::new_string("a")),
+                        KeyValue::new("new_attr", AnyValue::new_string("new_value"))
+                    ])
+                    .finish(),
+                LogRecord::build()
+                    .attributes(vec![
+                        KeyValue::new("x2", AnyValue::new_string("b")),
+                        KeyValue::new("new_attr", AnyValue::new_string("new_value"))
+                    ])
+                    .finish(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_kql_parser() {
+        test_insert_attributes::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_opl_parser() {
+        test_insert_attributes::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_types<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    attributes[\"int_attr\"] = 1,
+                    attributes[\"float_attr\"] = 1.0,
+                    attributes[\"bool_attr\"] = true",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        let attrs = &result.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        assert!(attrs.contains(&KeyValue::new("int_attr", AnyValue::new_int(1))));
+        assert!(attrs.contains(&KeyValue::new("float_attr", AnyValue::new_double(1.0))));
+        assert!(attrs.contains(&KeyValue::new("bool_attr", AnyValue::new_bool(true))));
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_types_kql_parser() {
+        test_insert_attributes_types::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_types_opl_parser() {
+        test_insert_attributes_types::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_on_nested_field<P: Parser>() {
+        let result = exec_logs_pipeline::<P>(
+            "logs |
+                extend
+                    resource.attributes[\"res_new\"] = \"test\",
+                    instrumentation_scope.attributes[\"scope_new\"] = \"test\"",
+            generate_logs_test_data(),
+        )
+        .await;
+
+        let res_attrs = &result.resource_logs[0].resource.as_ref().unwrap().attributes;
+        assert!(res_attrs.contains(&KeyValue::new("res_new", AnyValue::new_string("test"))));
+
+        let scope_attrs =
+            &result.resource_logs[0].scope_logs[0].scope.as_ref().unwrap().attributes;
+        assert!(scope_attrs.contains(&KeyValue::new("scope_new", AnyValue::new_string("test"))));
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_on_nested_field_kql_parser() {
+        test_insert_attributes_on_nested_field::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_on_nested_field_opl_parser() {
+        test_insert_attributes_on_nested_field::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_replacement<P: Parser>() {
+        // Test that inserting an attribute that already exists replaces the old value
+        let input = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build()
+                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("old_value"))])
+                    .finish()],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"x\"] = \"new_value\"",
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![LogRecord::build()
+                .attributes(vec![KeyValue::new("x", AnyValue::new_string("new_value"))])
+                .finish()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_replacement_kql_parser() {
+        test_insert_attributes_replacement::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_replacement_opl_parser() {
+        test_insert_attributes_replacement::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_empty_map<P: Parser>() {
+        // Test that insertion works when the attributes map exists but is empty
+        let input = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().attributes(vec![]).finish()],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"new_attr\"] = \"value\"",
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![LogRecord::build()
+                .attributes(vec![KeyValue::new("new_attr", AnyValue::new_string("value"))])
+                .finish()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_empty_map_kql_parser() {
+        test_insert_attributes_empty_map::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_empty_map_opl_parser() {
+        test_insert_attributes_empty_map::<OplParser>().await;
+    }
+
+    async fn test_insert_attributes_null_map<P: Parser>() {
+        // Test that insertion works when no attributes batch exists
+        let input = LogsData::new(vec![ResourceLogs::new(
+            Resource::default(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().event_name("test").finish()],
+            )],
+        )]);
+
+        let result = exec_logs_pipeline::<P>(
+            "logs | extend attributes[\"new_attr\"] = \"value\"",
+            input,
+        )
+        .await;
+
+        assert_eq!(
+            result.resource_logs[0].scope_logs[0].log_records,
+            vec![LogRecord::build()
+                .event_name("test")
+                .attributes(vec![KeyValue::new("new_attr", AnyValue::new_string("value"))])
+                .finish()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_null_map_kql_parser() {
+        test_insert_attributes_null_map::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_insert_attributes_null_map_opl_parser() {
+        test_insert_attributes_null_map::<OplParser>().await;
     }
 }

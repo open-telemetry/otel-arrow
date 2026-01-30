@@ -181,12 +181,12 @@ pub(crate) fn parse_set_operator_call(
     pipeline_builder: &mut dyn PipelineBuilder,
 ) -> Result<(), ParserError> {
     let query_location = to_query_location(&operator_call_rule);
-    if let Some(rule) = operator_call_rule.into_inner().next() {
+    for rule in operator_call_rule.into_inner() {
         match rule.as_rule() {
             Rule::assignment_expression => {
                 let (dest, source) = parse_assignment_expression(rule)?;
                 let transform_expr = TransformExpression::Set(SetTransformExpression::new(
-                    query_location,
+                    query_location.clone(),
                     source,
                     MutableValueExpression::Source(dest),
                 ));
@@ -426,6 +426,58 @@ mod tests {
             )));
 
         assert_eq!(&expressions[0], &expected);
+    }
+
+    #[test]
+    fn test_parse_set_operator_call_multiple() {
+        use data_engine_expressions::IntegerScalarExpression;
+
+        let query = "set a=1, b=2";
+        let mut state = ParserState::new(query);
+        let parse_result = OplPestParser::parse(Rule::operator_call, query).unwrap();
+        assert_eq!(parse_result.len(), 1);
+        let rule = parse_result.into_iter().next().unwrap();
+        parse_operator_call(rule, &mut state).unwrap();
+        let result = state.build().unwrap();
+        let expressions = result.get_expressions();
+        assert_eq!(expressions.len(), 2);
+
+        let expected1 =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 1),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "a",
+                        )),
+                    )]),
+                )),
+            )));
+
+        let expected2 =
+            DataExpression::Transform(TransformExpression::Set(SetTransformExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Static(StaticScalarExpression::Integer(
+                    IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+                )),
+                MutableValueExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "b",
+                        )),
+                    )]),
+                )),
+            )));
+
+        assert_eq!(&expressions[0], &expected1);
+        assert_eq!(&expressions[1], &expected2);
     }
 
     fn equals_logical_expr(field_name: &'static str, value: &'static str) -> LogicalExpression {
