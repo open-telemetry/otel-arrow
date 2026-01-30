@@ -28,7 +28,7 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
-use opentelemetry_sdk::{logs::SdkLoggerProvider, metrics::SdkMeterProvider};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{
@@ -136,9 +136,6 @@ pub struct InternalTelemetrySystem {
     /// OTel SDK meter provider for metrics export.
     sdk_meter_provider: SdkMeterProvider,
 
-    /// OTel SDK logger provider for logs export (optional, only for OpenTelemetry mode).
-    sdk_logger_provider: Option<SdkLoggerProvider>,
-
     /// Tokio runtime for OTLP exporters (kept alive).
     _otel_runtime: Option<tokio::runtime::Runtime>,
 
@@ -202,10 +199,8 @@ impl InternalTelemetrySystem {
 
         // 2. Create OTel SDK providers
         // OTel Logger is only needed for OpenTelemetry mode
-        let otel_client =
-            otel_sdk::OpentelemetryClient::new(config, config.logs.providers.uses_otel_provider())?;
+        let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
         let sdk_meter_provider = otel_client.meter_provider().clone();
-        let sdk_logger_provider = otel_client.logger_provider().cloned();
         let otel_runtime = otel_client.into_runtime();
 
         // 3. Create ITS channel if any provider uses ITS mode
@@ -231,7 +226,6 @@ impl InternalTelemetrySystem {
             metrics_reporter,
             dispatcher,
             sdk_meter_provider,
-            sdk_logger_provider,
             _otel_runtime: otel_runtime,
             log_level: config.logs.level,
             provider_modes: config.logs.providers.clone(),
@@ -276,13 +270,6 @@ impl InternalTelemetrySystem {
             ProviderMode::ITS => ProviderSetup::InternalAsync {
                 reporter: self.its_reporter.as_ref().expect("has provider").clone(),
             },
-
-            ProviderMode::OpenTelemetry => {
-                let logger = self.sdk_logger_provider.as_ref().expect("has provider");
-                ProviderSetup::OpenTelemetry {
-                    logger_provider: logger.clone(),
-                }
-            }
         };
 
         TracingSetup::new(provider, self.log_level, self.context_fn)
@@ -349,15 +336,11 @@ impl InternalTelemetrySystem {
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown_otel(self) -> Result<(), Error> {
         let meter_shutdown_result = self.sdk_meter_provider.shutdown();
-        let logger_shutdown_result = self.sdk_logger_provider.map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
         }
 
-        if let Err(e) = logger_shutdown_result {
-            return Err(Error::ShutdownError(e.to_string()));
-        }
         Ok(())
     }
 }
