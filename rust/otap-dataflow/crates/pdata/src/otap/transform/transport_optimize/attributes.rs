@@ -295,40 +295,13 @@ where
 
             // iterate over contiguous ranges that have the same attribute key
             for key_range in &key_ranges {
-                // TODO this is wasteful b/c we do this sorting twice ...
                 // this vec will contain a list of indices, relative to the key_range, sorted by
                 // the values. Note: because these indices will be relative to the key_range,
                 // adding key_range.start to the index will make it relative to the type_range
                 key_range_indices_values_sorted.clear();
                 key_range_indices_values_sorted.reserve(key_range.len());
-                // values_sorter
-                //     .sort_range_to_indices(key_range, &mut key_range_indices_values_sorted)?;
 
-                // // map the sorted indices back to original source indices, and add them to the
-                // // list of indices to take when materializing the sorted values column
-
-                // // TODO - should now happen in take_and_partition_range?
-                // // // TODO - internally to `append_indices_to_take`, we actually materialize
-                // // // the values array IF the underlying values array is dictionary encoded.
-                // // // This means that when we eventually construct the values array, we don't
-                // // // actually need to `take` indices from the key buffer. We should find a way
-                // // // to reuse this ...
-                // // sorted_val_col.append_indices_to_take(
-                // //     key_range_indices_values_sorted.iter().map(|&i| {
-                // //         type_range_indices_key_sorted.value(key_range.start + i as usize)
-                // //     }),
-                // // );
-
-                // // partition the sorted values column into ranges that all contain the same
-                // // attribute value and store the results in values_ranges.
                 values_ranges.clear();
-                // values_sorter.take_and_partition_range(
-                //     key_range,
-                //     &key_range_indices_values_sorted,
-                //     &mut values_ranges,
-                // )?;
-                //
-
                 values_sorter.sort_and_partition_range(
                     key_range,
                     sorted_val_col,
@@ -536,6 +509,16 @@ where
         return Err(Error::UnexpectedRecordBatchState {
             reason: format!("unexpected column {field_name} found in record batch"),
         });
+    }
+
+
+    for i in 0..fields.len() {
+        let field = &fields[i];
+        println!("field = {field:?}");
+        let column = &columns[i];
+        println!("column = {column:?}");
+        println!("len = {}", column.len());
+        println!("---")
     }
 
     let schema = Schema::new(fields);
@@ -809,6 +792,10 @@ impl SortedValuesColumnBuilderV2 {
         self.nulls.append_n_non_nulls(count);
     }
 
+    fn append_nulls(&mut self, nulls: &NullBuffer) {
+        self.nulls.append_buffer(nulls);
+    }
+
     fn append_data<T: ArrowNativeType>(&mut self, items: &[T]) {
         self.data.extend_from_slice(items);
     }
@@ -868,282 +855,6 @@ impl SortedValuesColumnBuilderV2 {
             ))),
             _ => todo!(),
         }
-    }
-}
-
-/// This is a helper struct for building the values column when converting it to transport a
-/// optimized encoding.
-///
-/// During this encoding process, we sort by type, key, and value. In the attribute's arrow
-/// schema, there is one column per type of attribute, but all columns have the same length.
-/// Attribute value's column is identified by the value in the type column, and the other columns
-/// in the batch will be null at this position.
-///
-/// This builder helps to track segments of the resulting values array that should either be null,
-/// or have sorted values taken from the incoming unencoded source column.
-struct SortedValuesColumnBuilder {
-    /// the original source column for the sorted value column
-    source: Arc<dyn Array>,
-
-    /// segments to take from the source column when constructing the sorted values column.
-    /// these segments will either be all null, or identify sorted indices in the values column
-    /// to take when [`Self::finish`] is called
-    sorted_segments: Vec<SortedValuesColumnSegment>,
-
-    /// hint for the count of nulls in the segment of the record batch containing values of the
-    /// type for this column. The column will be nullable, but the segment containing the values
-    /// may have no nulls, in which case we can optimize the final construction by ignoring the
-    /// null buffer on the source array. In MOST cases, there will be no nulls in this segment
-    /// as null attributes should actually in a row with type AttributeValueType::Empty
-    null_count_hint: Option<usize>,
-}
-
-#[derive(Debug)]
-enum SortedValuesColumnSegment {
-    Nulls(usize),
-    NonNull(Vec<u32>), // indices into the original source array
-}
-
-impl SortedValuesColumnBuilder {
-    fn try_new(source: &Arc<dyn Array>) -> Result<Self> {
-        Ok(Self {
-            sorted_segments: Vec::new(),
-            source: Arc::clone(source),
-            null_count_hint: None,
-        })
-    }
-
-    /// access some rows of the original values column by their indices
-    ///
-    /// this should only be called with indices computed from the original source. Calling this
-    /// with out of bound indices will fail
-    fn take_source(&self, indices: &UInt32Array) -> Result<Arc<dyn Array>> {
-        // safety: take will only panic here if the indices are out of bounds, but this is only
-        // being called with indices taken from the original record batch, so expect is safe
-        Ok(take(self.source.as_ref(), indices, None).expect("indices out of bounds"))
-    }
-
-    /// set the hint for the number of nulls in the segment of the attribute's record batch
-    /// containing values of the type being constructed by this instance.
-    fn set_null_count_hint(&mut self, null_count: usize) {
-        self.null_count_hint = Some(null_count);
-    }
-
-    /// append a list of sorted indices to the list that will eventually be taken to form
-    /// the final sorted values column
-    fn append_indices_to_take<I: IntoIterator<Item = u32>>(&mut self, new_indices: I) {
-        // extends to the current segment of non-null indices if one is available, otherwise
-        // just creates a new segment of non-null indices.
-        //
-        // It would be typical that we are appending multiple non-null segments in a row, because
-        // this will be called from a place where we've sorted by type, and are inserting all the
-        // indices for rows having this type. appending to the end of the exiting vec saves us from
-        // allocating a new vec for each segment.
-        if let Some(SortedValuesColumnSegment::NonNull(non_null_indices)) =
-            self.sorted_segments.last_mut()
-        {
-            non_null_indices.extend(new_indices)
-        } else {
-            self.sorted_segments
-                .push(SortedValuesColumnSegment::NonNull(
-                    new_indices.into_iter().collect(),
-                ));
-        }
-    }
-
-    /// append a segment of all null values
-    fn append_nulls(&mut self, count: usize) {
-        if let Some(SortedValuesColumnSegment::Nulls(null_count)) = self.sorted_segments.last_mut()
-        {
-            *null_count += count
-        } else {
-            self.sorted_segments
-                .push(SortedValuesColumnSegment::Nulls(count))
-        }
-    }
-
-    fn finish(&self) -> Result<Arc<dyn Array>> {
-        // there should always be at least one segment appended, otherwise it would have meant
-        // the batch was empty but we have a check for this at the very start of
-        // transport_optimize_encode_attrs
-        debug_assert!(self.sorted_segments.len() > 0);
-
-        // debug assert that the segments are actually coalesced by type ...
-        // because we're appending to this while iterating over ranges of value rows that all have
-        // the same type, and any null segments should be at the end, and because of the way the
-        // append_* methods work where they coalesce subsequent segments of the same type, we
-        // should have a segment list looks at most like: [Nulls, NonNulls, Nulls] (each item could
-        // be missing under certain conditions). If we didn't have the segments coalesced like this
-        // we'd do extra work when we construct the final batch.
-        debug_assert!(self.sorted_segments.len() <= 3, "segments not coalesced");
-
-        // For dictionary arrays, build directly to avoid concat overhead
-        if let DataType::Dictionary(key_type, _) = self.source.data_type() {
-            return self.finish_dictionary(key_type.as_ref());
-        }
-
-        // Fall back to using the `concat` compute kernel for non dict encoded types.
-        // This is less optimal for a couple reasons:
-        // - we allocate new all-null arrays for the all null segments
-        // - arrow's `concat` concatenates the null buffers of the arrays together, and the code
-        //   it uses for this isn't optimal in the case where the are long sequences of all nulls
-        //
-        // TODO: write optimized method to concat the segments of non-dict encoded sources
-
-        let mut result_segments = Vec::with_capacity(self.sorted_segments.len());
-        for segment in &self.sorted_segments {
-            match segment {
-                SortedValuesColumnSegment::Nulls(count) => {
-                    result_segments.push(self.gen_source_nulls(*count)?);
-                }
-                SortedValuesColumnSegment::NonNull(indices) => {
-                    let segment_indices = UInt32Array::from(indices.clone());
-                    // safety: take will only fail here if we called it with indices out of bounds,
-                    // but all the indices we're using have been computed from the original source
-                    // array, so it is safe to expect here
-                    let sorted_segment = take(self.source.as_ref(), &segment_indices, None)
-                        .expect("indices in bounds");
-                    result_segments.push(sorted_segment);
-                }
-            }
-        }
-
-        if result_segments.len() == 1 {
-            // don't bother invoking concat, which saves a couple allocations
-            // safety: we can call expect here b/c we've checked the vec is non-empty
-            return Ok(result_segments
-                .into_iter()
-                .take(1)
-                .next()
-                .expect("non empty"));
-        }
-
-        let result_segment_refs = result_segments
-            .iter()
-            .map(|k| k.as_ref())
-            .collect::<Vec<_>>();
-
-        // safety: concat will only fail if we are have arrays that are different types, but in
-        // this case all our types will be the same so it's OK to expect here
-        Ok(concat(result_segment_refs.as_ref()).expect("can concat"))
-    }
-
-    // create the final sorted values column for case when the source column is a dictionary.
-    fn finish_dictionary(&self, key_type: &DataType) -> Result<Arc<dyn Array>> {
-        // Calculate total length
-        let total_len: usize = self
-            .sorted_segments
-            .iter()
-            .map(|seg| match seg {
-                SortedValuesColumnSegment::Nulls(count) => *count,
-                SortedValuesColumnSegment::NonNull(indices) => indices.len(),
-            })
-            .sum();
-
-        match key_type {
-            DataType::UInt16 => {
-                // safety: we can call expect here because the caller should have only called this
-                // if the self.source is indeed a dictionary array with this key type
-                let source_dict = self
-                    .source
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    .expect("can downcast to DictionaryArray<u16>");
-                let source_keys = source_dict.keys().values().iter().as_slice();
-
-                // initiate buffers for building new dictionary keys
-                let mut keys_builder = Vec::with_capacity(total_len);
-                let mut null_buffer_builder = NullBufferBuilder::new(total_len);
-
-                for segment in &self.sorted_segments {
-                    match segment {
-                        SortedValuesColumnSegment::Nulls(count) => {
-                            keys_builder.resize(keys_builder.len() + count, 0u16);
-                            null_buffer_builder.append_n_nulls(*count);
-                        }
-                        SortedValuesColumnSegment::NonNull(indices) => {
-                            // take keys from source dictionary using indices
-                            keys_builder
-                                .extend(indices.iter().map(|idx| source_keys[*idx as usize]));
-
-                            // check if any of the source positions were null - if not, we can
-                            // completely skip handling the null buffer for the source. In most
-                            // cases we'd be able to make this skip b/c null attribute values
-                            // should actually have type AttributeValuesType::Empty
-                            let null_hint_zero = self.null_count_hint == Some(0);
-                            if let Some(source_nulls) = source_dict.nulls()
-                                && !null_hint_zero
-                            {
-                                // batch consecutive valid/null runs to reduce append overhead
-                                let mut i = 0;
-                                while i < indices.len() {
-                                    let idx = indices[i] as usize;
-                                    let is_valid = source_nulls.is_valid(idx);
-
-                                    // count consecutive runs of same validity
-                                    let mut run_len = 1;
-                                    while i + run_len < indices.len() {
-                                        let next_idx = indices[i + run_len] as usize;
-                                        if source_nulls.is_valid(next_idx) == is_valid {
-                                            run_len += 1;
-                                        } else {
-                                            break;
-                                        }
-                                    }
-
-                                    // append the run
-                                    if is_valid {
-                                        null_buffer_builder.append_n_non_nulls(run_len);
-                                    } else {
-                                        null_buffer_builder.append_n_nulls(run_len);
-                                    }
-
-                                    i += run_len;
-                                }
-                            } else {
-                                null_buffer_builder.append_n_non_nulls(indices.len());
-                            }
-                        }
-                    }
-                }
-
-                let null_buffer = null_buffer_builder.finish();
-                let keys_array = UInt16Array::new(ScalarBuffer::from(keys_builder), null_buffer);
-
-                // safety: calling new_unchecked here to avoid having the constructor iterate the
-                // keys column to ensure each key has an associated value. We know this to be the
-                // case already because we've taken the keys directly from the source array.
-                #[allow(unsafe_code)]
-                let result = unsafe {
-                    DictionaryArray::new_unchecked(keys_array, source_dict.values().clone())
-                };
-
-                Ok(Arc::new(result))
-            }
-
-            // only u16 dictionary key is supported for attribute values
-            key_type => Err(Error::UnsupportedDictionaryKeyType {
-                expect_oneof: vec![DataType::UInt16],
-                actual: key_type.clone(),
-            }),
-        }
-    }
-
-    fn gen_source_nulls(&self, count: usize) -> Result<Arc<dyn Array>> {
-        Ok(match self.source.data_type() {
-            DataType::Binary => Arc::new(BinaryArray::new_null(count)),
-            DataType::Boolean => Arc::new(BooleanArray::new_null(count)),
-            DataType::Int64 => Arc::new(Int64Array::new_null(count)),
-            DataType::Float64 => Arc::new(Float64Array::new_null(count)),
-            DataType::Utf8 => Arc::new(StringArray::new_null(count)),
-            other_data_type => {
-                return Err(Error::UnexpectedRecordBatchState {
-                    reason: format!(
-                        "found unexpected datatype for attribute column {other_data_type:?}"
-                    ),
-                });
-            }
-        })
     }
 }
 
@@ -1312,7 +1023,12 @@ impl AttrValuesSorter {
                 // append the sorted values to the builder
                 value_col_builder.append_data(&self.key_partition_scratch);
                 if let Some(nulls) = &keys_and_ranks.nulls {
-                    todo!("append nulls")
+                    let null_bits = nulls.inner();
+                    let sorted_range_null_bits =
+                        BooleanBuffer::collect_bool(range.len(), |idx: usize| {
+                            null_bits.value(key_range_sorted_result[idx])
+                        });
+                    value_col_builder.append_nulls(&NullBuffer::new(sorted_range_null_bits));
                 } else {
                     value_col_builder.append_n_non_nulls(range.len());
                 }
@@ -1392,8 +1108,8 @@ impl AttrValuesSorter {
                         value_col_builder.append_data(binary_arr.value_data());
                         value_col_builder
                             .append_offsets(binary_arr.offsets().inner().inner().as_slice());
-                        if binary_arr.nulls().is_some() {
-                            todo!("handle nulls")
+                        if let Some(nulls) = binary_arr.nulls() {
+                            value_col_builder.append_nulls(nulls);
                         } else {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
@@ -1406,8 +1122,8 @@ impl AttrValuesSorter {
                         value_col_builder.append_data(string_arr.value_data());
                         value_col_builder
                             .append_offsets(string_arr.offsets().inner().inner().as_slice());
-                        if string_arr.nulls().is_some() {
-                            todo!("handle nulls")
+                        if let Some(nulls) = string_arr.nulls() {
+                            value_col_builder.append_nulls(nulls);
                         } else {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
@@ -1418,8 +1134,8 @@ impl AttrValuesSorter {
                             .downcast_ref::<Int64Array>()
                             .unwrap();
                         value_col_builder.append_data(int_arr.values().inner().as_slice());
-                        if int_arr.nulls().is_some() {
-                            todo!("handle nulls")
+                        if let Some(nulls) = int_arr.nulls() {
+                            value_col_builder.append_nulls(nulls);
                         } else {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
@@ -1430,8 +1146,8 @@ impl AttrValuesSorter {
                             .downcast_ref::<Float64Array>()
                             .unwrap();
                         value_col_builder.append_data(float_arr.values().inner().as_slice());
-                        if float_arr.nulls().is_some() {
-                            todo!("handle nulls")
+                        if let Some(nulls) = float_arr.nulls() {
+                            value_col_builder.append_nulls(nulls);
                         } else {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
@@ -1442,8 +1158,8 @@ impl AttrValuesSorter {
                             .downcast_ref::<BooleanArray>()
                             .unwrap();
                         value_col_builder.append_bools(bool_arr.values());
-                        if bool_arr.nulls().is_some() {
-                            todo!("handle nulls")
+                        if let Some(nulls) = bool_arr.nulls() {
+                            value_col_builder.append_nulls(nulls);
                         } else {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
