@@ -393,8 +393,6 @@ where
     )) as ArrayRef;
 
     // If the original Parent ID type was a dictionary, cast it back to a dictionary of this type.
-    //
-    // TODO investigate if there's a more performant alternative than casting back and forth.
     if let Some(dict_key_type) = parent_dict_key_type {
         parent_id_col = match cast(
             &parent_id_col.clone(),
@@ -402,10 +400,8 @@ where
         ) {
             Ok(as_dict) => as_dict,
 
-            // TODO - verify if this could fail? I think conceivably the only reason it could fail
-            // is if the dictionary overflowed because we had too many new values after adding
-            // delta encoding.
-            // TODO - test for this case
+            // If this cast failed, it means that the deltas have more unique values than would fit
+            //into the original sized dictionary. Just return the native array as a fallback
             Err(_) => parent_id_col,
         }
     }
@@ -422,7 +418,8 @@ where
                 field
                     .as_ref()
                     .clone()
-                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA)
+                    .with_data_type(parent_id_col.data_type().clone()),
             );
         } else {
             fields.push(field.as_ref().clone());
@@ -2659,5 +2656,167 @@ mod test {
 
         let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
         pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_and_apply_transport_delta_encoding_optionally_non_dict_encoded_types() {
+        // ensure we handle add the encoding correctly for types that are usually dict encoded,
+        // but may be non-dict encoded (for example, if the dict overflowed due to cardinality).
+        // This test includes types that aren't already tested elsewhere ..
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 2, 3, 4, 5, 6])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "a", "a", "a", "a",
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    Some(b"a"),
+                    None,
+                    None,
+                    Some(b"a"),
+                    None,
+                ])),
+                Arc::new(Int64Array::from_iter([
+                    Some(1),
+                    None,
+                    Some(3),
+                    Some(2),
+                    None,
+                    Some(1),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 5, 4, 3, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "a", "a", "a", "a",
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(b"a"),
+                    Some(b"a"),
+                ])),
+                Arc::new(Int64Array::from_iter([
+                    Some(1),
+                    Some(1),
+                    Some(2),
+                    Some(3),
+                    None,
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_delta_encoding_can_cause_dict_overflow_with_deltas() {
+        // craft a sequence of values such that when delta encoding is applied
+        // it will overflow dictionary, forcing us to handle this case
+
+        let mut parent_ids = Vec::new();
+        let mut parent_id_keys = Vec::new();
+        let mut values = Vec::new();
+        let mut current_id = 1u32;
+        let mut gap = 1;
+        for i in 0u8..=255u8 {
+            parent_id_keys.push(i);
+            parent_ids.push(current_id);
+            current_id += gap;
+            gap += 1;
+            values.push("a".to_string());
+        }
+        values.push("b".into());
+        values.push("b".into());
+        values.push("c".into());
+        values.push("c".into());
+        parent_id_keys.push(0);
+        parent_id_keys.push(254);
+        parent_id_keys.push(0);
+        parent_id_keys.push(255);
+
+        println!("{:?}", parent_ids);
+
+        println!("{:?}", parent_ids[255] - parent_ids[0]);
+        println!("{:?}", parent_ids[254] - parent_ids[0]);
+
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::PARENT_ID,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
+                    false,
+                ),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(DictionaryArray::new(
+                    UInt8Array::from_iter_values(parent_id_keys),
+                    Arc::new(UInt32Array::from_iter_values(parent_ids)),
+                )),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    260,
+                ))),
+                Arc::new(StringArray::from_iter_values(std::iter::repeat_n("a", 260))),
+                Arc::new(StringArray::from_iter_values(values)),
+            ],
+        )
+        .unwrap();
+
+        let result = transport_optimize_encode_attrs::<UInt32Type>(&input).unwrap();
+
+        let parent_id_column = result.column_by_name(consts::PARENT_ID).unwrap();
+        // assert that since the original dict would have overflowed, we handle it by returning
+        // a non-dict encoded ID column
+        assert!(
+            parent_id_column
+                .as_any()
+                .downcast_ref::<UInt32Array>()
+                .is_some()
+        )
     }
 }

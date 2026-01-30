@@ -139,8 +139,6 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     }
 
     // otherwise just return column by name
-    // TODO - look for other places we use the method that was replaed (indexof)
-    // and then just call ok() b/c the error is expensive to calculate ...
     let (column_idx, _) = schema.fields.find(path)?;
     columns.get(column_idx).cloned()
 }
@@ -1478,10 +1476,6 @@ mod test {
         assert!(!is_column_encoded(RESOURCE_ID_COL_PATH, &schema).unwrap());
         assert!(is_column_encoded(SCOPE_ID_COL_PATH, &schema).unwrap());
     }
-
-    // TODO -- all these sort tests might need to change if we're invoking
-    // sort_attrs_batch internally to what the test calls, just cuz it might not
-    // be calling the code that's expected
 
     #[test]
     fn test_sort_columns_multi_column() {
