@@ -261,9 +261,10 @@ impl OTLPReceiver {
 
     /// Builds signal services for gRPC and/or HTTP.
     ///
-    /// When `grpc_settings` is `None` (HTTP-only mode), this still returns service servers
-    /// but they won't be used. The `AckRegistry` is built based on which protocols have
-    /// `wait_for_result` enabled.
+    /// When `grpc_settings` is `None` (HTTP-only mode), no gRPC service servers are
+    /// constructed and the three service return values will be `None`. The `AckRegistry`
+    /// is still built based on which protocols (HTTP and/or gRPC) have `wait_for_result`
+    /// enabled.
     fn build_signal_services(
         &self,
         effect_handler: &shared::EffectHandler<OtapPdata>,
