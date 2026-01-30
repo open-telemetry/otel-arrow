@@ -511,16 +511,6 @@ where
         });
     }
 
-
-    // for i in 0..fields.len() {
-    //     let field = &fields[i];
-    //     println!("field = {field:?}");
-    //     let column = &columns[i];
-    //     println!("column = {column:?}");
-    //     println!("len = {}", column.len());
-    //     println!("---")
-    // }
-
     let schema = Schema::new(fields);
     let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
 
@@ -872,12 +862,16 @@ struct AttrValuesSorter {
     // The rest of the fields are temporary buffers used when sorting/partitioning to avoid heap
     // allocations on each method invocation
     array_partitions: Vec<Range<usize>>,
-    rank_sort: Vec<(usize, u16)>,
-    key_partition: Vec<u16>,
     partition_buffer: Vec<u8>,
 
-    primitive_sort: Vec<(usize, f64)>,
-    primitive_partition: Vec<f64>,
+    // reusable scratch buffers for sorting the keys of u16 coded dictionaries, which are used for
+    // str, int, binary and ser columns when the column cardinality allows for it
+    rank_sort: Vec<(usize, u16)>,
+    key_partition: Vec<u16>,
+
+    // scratch buffers for sorting the float value column.
+    float64_sort: Vec<(usize, f64)>,
+    float64_partition: Vec<f64>,
 }
 
 /// References to the values array data kept for sorting & partitioning. In some cases, the
@@ -890,7 +884,14 @@ enum AttrsValueSorterInner {
     /// dictionary keys, while only having sorted the dictionary values one time.
     KeysAndRanks(AttrValueDictKeysAndRanks),
 
+    // inner reference to values for sorting float64 arrays. We keep the scalar buffer so we can
+    // slice it for ranges to sort without creating temporary values.
     Float64((ScalarBuffer<f64>, Option<NullBuffer>)),
+
+    // TODO - in the future we should pull out some internal state of boolean, int64, string and
+    // binary array columns instead of using the ArrayRef to sort. However, these column types
+    // would be less common, especially b/c all these types (except bool) would usually be
+    // dictionary encoded.
 
     /// an arrow Array containing some segment of the values column
     Array(ArrayRef),
@@ -898,7 +899,7 @@ enum AttrsValueSorterInner {
 
 /// Dictionary keys and the sorted rank of those keys for some segment of the values column.
 struct AttrValueDictKeysAndRanks {
-    keys: Vec<u16>,
+    keys: ScalarBuffer<u16>,
     ranks: Vec<u16>,
 
     /// validity bitmap for the keys field
@@ -950,7 +951,7 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                     Ok(Self::KeysAndRanks(AttrValueDictKeysAndRanks {
                         ranks: key_ranks,
                         nulls: rank_nulls,
-                        keys: dict_arr.keys().values().to_vec(),
+                        keys: dict_arr.keys().values().clone(),
                     }))
                 }
                 other_key_type => {
@@ -987,8 +988,8 @@ impl AttrValuesSorter {
             rank_sort: Vec::new(),
             key_partition: Vec::new(),
             partition_buffer: Vec::new(),
-            primitive_partition: Vec::new(),
-            primitive_sort: Vec::new()
+            float64_partition: Vec::new(),
+            float64_sort: Vec::new()
         })
     }
 
@@ -1002,11 +1003,11 @@ impl AttrValuesSorter {
         match &self.inner {
             AttrsValueSorterInner::Float64((floats, nulls)) => {
                 let slice = floats.slice(range.start, range.len());
-                self.primitive_sort.clear();
-                self.primitive_sort.extend(slice.iter().copied().enumerate());
+                self.float64_sort.clear();
+                self.float64_sort.extend(slice.iter().copied().enumerate());
 
                 if let Some(nulls) = nulls {
-                    self.primitive_sort.sort_unstable_by(|a, b| {
+                    self.float64_sort.sort_unstable_by(|a, b| {
                         match (nulls.is_null(a.0), nulls.is_null(b.0)) {
                             (true, true) => std::cmp::Ordering::Equal,
                             (true, false) => std::cmp::Ordering::Greater,
@@ -1017,19 +1018,19 @@ impl AttrValuesSorter {
                         }
                     });
                 } else {
-                    self.primitive_sort.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    self.float64_sort.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                 }
 
                 // take the sorted values segment
                 // let keys_range = &keys_and_ranks.keys[range.start..range.end];
-                self.primitive_partition.clear();
-                self.primitive_partition.reserve(range.len());
-                self.primitive_partition
-                    .extend(self.primitive_sort.iter().map(|(i, _)| slice[*i]));
-                key_range_sorted_result.extend(self.primitive_sort.iter().map(|(idx, _)| *idx));
+                self.float64_partition.clear();
+                self.float64_partition.reserve(range.len());
+                self.float64_partition
+                    .extend(self.float64_sort.iter().map(|(i, _)| slice[*i]));
+                key_range_sorted_result.extend(self.float64_sort.iter().map(|(idx, _)| *idx));
 
                 // append the sorted values to the builder
-                value_col_builder.append_data(&self.primitive_partition);
+                value_col_builder.append_data(&self.float64_partition);
                 if let Some(nulls) = &nulls {
                     let null_bits = nulls.inner();
                     let sorted_range_null_bits =
@@ -1043,9 +1044,9 @@ impl AttrValuesSorter {
 
                 // populate bitmap where a 1/true bit represents a partition boundary
                 // (e.g. an index where one value is not equal to its neighbour)
-                let boundaries_len = self.primitive_partition.len() - 1;
-                let left = &self.primitive_partition[0..boundaries_len];
-                let right = &self.primitive_partition[1..boundaries_len + 1];
+                let boundaries_len = self.float64_partition.len() - 1;
+                let left = &self.float64_partition[0..boundaries_len];
+                let right = &self.float64_partition[1..boundaries_len + 1];
                 collect_bool_inverted(
                     boundaries_len,
                     |i| left[i].is_eq(right[i]),
@@ -1079,7 +1080,7 @@ impl AttrValuesSorter {
                 // in the ranges result
                 if let Some(nulls) = &nulls {
                     for nullable_range in result {
-                        let (start_idx, _) = self.primitive_sort[nullable_range.range.start];
+                        let (start_idx, _) = self.float64_sort[nullable_range.range.start];
                         nullable_range.is_null = nulls.is_null(start_idx)
                     }
                 }
