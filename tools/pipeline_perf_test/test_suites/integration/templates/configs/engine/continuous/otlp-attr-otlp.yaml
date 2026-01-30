@@ -13,8 +13,10 @@ nodes:
           - attr
         dispatch_strategy: round_robin
     config:
-      listening_addr: "0.0.0.0:4317"
-      request_compression: gzip
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+          request_compression: gzip
 
   attr:
     kind: processor

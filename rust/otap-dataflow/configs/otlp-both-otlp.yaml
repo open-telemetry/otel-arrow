@@ -1,8 +1,8 @@
-# OTLP/HTTP receiver -> OTLP exporter pipeline (HTTP-only mode)
+# OTLP receiver (both gRPC and HTTP) -> OTLP exporter pipeline
 #
-# This configuration demonstrates HTTP-only mode for the OTLP receiver.
+# This configuration demonstrates both protocols enabled with shared concurrency.
 # For gRPC-only, see otlp-otlp.yaml
-# For both protocols enabled, see otlp-both-otlp.yaml
+# For HTTP-only, see otlp-http-otlp.yaml
 
 settings:
   default_pipeline_ctrl_msg_channel_size: 100
@@ -20,7 +20,20 @@ nodes:
         dispatch_strategy: round_robin
     config:
       protocols:
-        # OTLP/HTTP receiver only (default port: 4318)
+        # OTLP/gRPC receiver (default port: 4317)
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+          # timeout: "30s"  # Optional: timeout for gRPC requests
+          # TLS configuration for gRPC
+          # tls:
+          #   cert_file: "/path/to/server.crt"
+          #   key_file: "/path/to/server.key"
+          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+          #   include_system_ca_certs_pool: false
+          #   handshake_timeout: "10s"
+          #   reload_interval: "5m"
+
+        # OTLP/HTTP receiver (default port: 4318)
         http:
           listening_addr: "127.0.0.1:4318"
           # wait_for_result: false
@@ -37,5 +50,6 @@ nodes:
     plugin_urn: "urn:otel:otlp:exporter"
     config:
       # Downstream OTLP/gRPC collector endpoint.
+      # Uses a different port than this receiver to avoid accidental loops.
       grpc_endpoint: "http://127.0.0.1:4319"
       # timeout: "15s"

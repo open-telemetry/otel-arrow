@@ -13,10 +13,12 @@
             - exporter
           dispatch_strategy: round_robin
       config:
-        listening_addr: "127.0.0.1:4317"
-        tls:
-          cert_file: "./test-certs/server.crt"
-          key_file: "./test-certs/server.key"
+        protocols:
+          grpc:
+            listening_addr: "127.0.0.1:4317"
+            tls:
+              cert_file: "./test-certs/server.crt"
+              key_file: "./test-certs/server.key"
 
     exporter:
       kind: exporter

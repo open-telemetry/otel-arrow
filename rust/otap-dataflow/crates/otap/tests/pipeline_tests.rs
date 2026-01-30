@@ -244,7 +244,11 @@ fn fake_receiver_config_value() -> serde_json::Value {
 
 fn otlp_receiver_config_value() -> serde_json::Value {
     json!({
-        "listening_addr": "127.0.0.1:0",
+        "protocols": {
+            "grpc": {
+                "listening_addr": "127.0.0.1:0"
+            }
+        }
     })
 }
 
