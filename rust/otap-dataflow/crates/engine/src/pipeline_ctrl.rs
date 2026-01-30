@@ -269,23 +269,16 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 }
             }
 
-            // Get the next expirations, if any (skip during draining).
-            let next_expiry = (!is_draining)
-                .then(|| self.tick_timers.next_expiry())
-                .flatten();
-            let next_tel_expiry = (!is_draining)
-                .then(|| self.telemetry_timers.next_expiry())
-                .flatten();
-            let next_delay_expiry = (!is_draining)
-                .then(|| self.delayed_data.peek().map(|d| d.when))
-                .flatten();
             // During draining, use the deadline as the next expiry to ensure we check it.
-            // Otherwise, find the earliest of all timer expirations using opt_min (which
-            // returns the minimum of two Option<T> values, treating None as "no value").
-            let next_earliest = is_draining
-                .then_some(draining_deadline)
-                .flatten()
-                .or_else(|| opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry));
+            // Otherwise, find the earliest of all timer expirations.
+            let next_earliest = if is_draining {
+                draining_deadline
+            } else {
+                let next_expiry = self.tick_timers.next_expiry();
+                let next_tel_expiry = self.telemetry_timers.next_expiry();
+                let next_delay_expiry = self.delayed_data.peek().map(|d| d.when);
+                opt_min(opt_min(next_expiry, next_tel_expiry), next_delay_expiry)
+            };
 
             tokio::select! {
                 biased;
