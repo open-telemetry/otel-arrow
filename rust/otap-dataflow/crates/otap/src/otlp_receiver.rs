@@ -67,24 +67,88 @@ pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
 /// Interval for periodic telemetry collection.
 const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Configuration for OTLP Receiver
+/// Configuration for OTLP Receiver.
+///
+/// The receiver supports three deployment modes matching the Go collector's `otlpreceiver`:
+/// - **gRPC only**: Configure only `protocols.grpc`
+/// - **HTTP only**: Configure only `protocols.http`
+/// - **Both**: Configure both protocols with shared concurrency limiting
+///
+/// # Example configurations
+///
+/// ## gRPC only (default port 4317)
+/// ```yaml
+/// config:
+///   protocols:
+///     grpc:
+///       listening_addr: "0.0.0.0:4317"
+/// ```
+///
+/// ## HTTP only (default port 4318)
+/// ```yaml
+/// config:
+///   protocols:
+///     http:
+///       listening_addr: "0.0.0.0:4318"
+/// ```
+///
+/// ## Both protocols
+/// ```yaml
+/// config:
+///   protocols:
+///     grpc:
+///       listening_addr: "0.0.0.0:4317"
+///     http:
+///       listening_addr: "0.0.0.0:4318"
+/// ```
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Shared gRPC server settings reused across gRPC-based receivers.
-    #[serde(flatten)]
-    pub grpc: GrpcServerSettings,
-
-    /// Optional OTLP/HTTP server settings.
+    /// Protocol configurations.
     ///
-    /// When configured, the receiver will start an additional HTTP server implementing
-    /// `POST /v1/logs`, `POST /v1/metrics`, and `POST /v1/traces`.
-    #[serde(default)]
-    pub http: Option<HttpServerSettings>,
+    /// At least one protocol (gRPC or HTTP) must be configured.
+    pub protocols: Protocols,
 
-    /// TLS configuration
+    /// TLS configuration for gRPC (HTTP has its own TLS config within `protocols.http`).
     #[cfg(feature = "experimental-tls")]
     pub tls: Option<TlsServerConfig>,
+}
+
+/// Protocol configurations for the OTLP receiver.
+///
+/// This struct allows flexible deployment: gRPC-only, HTTP-only, or both.
+/// At least one protocol must be configured; the receiver validates this at startup.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Protocols {
+    /// Optional gRPC server settings.
+    ///
+    /// When configured, the receiver listens for OTLP/gRPC on the specified address.
+    #[serde(default)]
+    pub grpc: Option<GrpcServerSettings>,
+
+    /// Optional HTTP server settings.
+    ///
+    /// When configured, the receiver listens for OTLP/HTTP on the specified address,
+    /// implementing `POST /v1/logs`, `POST /v1/metrics`, and `POST /v1/traces`.
+    #[serde(default)]
+    pub http: Option<HttpServerSettings>,
+}
+
+impl Protocols {
+    /// Returns `true` if at least one protocol is configured.
+    #[inline]
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.grpc.is_some() || self.http.is_some()
+    }
+
+    /// Returns `true` if both protocols are configured.
+    #[inline]
+    #[must_use]
+    pub fn has_both(&self) -> bool {
+        self.grpc.is_some() && self.http.is_some()
+    }
 }
 
 /// gRPC receiver that ingests OTLP signals and forwards them into the OTAP pipeline.
@@ -131,7 +195,11 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 };
 
 impl OTLPReceiver {
-    /// Creates a new OTLPReceiver from a configuration object
+    /// Creates a new OTLPReceiver from a configuration object.
+    ///
+    /// Returns an error if:
+    /// - The configuration cannot be deserialized
+    /// - No protocols are configured (at least one of gRPC or HTTP is required)
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &Value,
@@ -141,6 +209,14 @@ impl OTLPReceiver {
                 error: e.to_string(),
             }
         })?;
+
+        // Validate that at least one protocol is configured.
+        if !config.protocols.is_valid() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "At least one protocol (grpc or http) must be configured under 'protocols'"
+                    .to_string(),
+            });
+        }
 
         // Register OTLP receiver metrics for this node.
         let metrics = Arc::new(Mutex::new(
@@ -152,38 +228,45 @@ impl OTLPReceiver {
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
         // Set both protocols to downstream_capacity.
-        // When HTTP is enabled, they'll share a single semaphore pool,
+        // When both are enabled, they share a single semaphore pool,
         // so the true ceiling is downstream_capacity (not 2x).
-        // When HTTP is disabled, only gRPC uses the capacity.
-        common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
-        if let Some(http) = self.config.http.as_mut() {
+        if let Some(grpc) = self.config.protocols.grpc.as_mut() {
+            common::tune_max_concurrent_requests(grpc, downstream_capacity);
+        }
+        if let Some(http) = self.config.protocols.http.as_mut() {
             crate::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
         }
     }
 
+    /// Builds signal services for gRPC and/or HTTP.
+    ///
+    /// When `grpc_settings` is `None` (HTTP-only mode), this still returns service servers
+    /// but they won't be used. The `AckRegistry` is built based on which protocols have
+    /// `wait_for_result` enabled.
     fn build_signal_services(
         &self,
         effect_handler: &shared::EffectHandler<OtapPdata>,
-        settings: &OtlpServerSettings,
+        grpc_settings: Option<&OtlpServerSettings>,
+        max_concurrent_requests: usize,
     ) -> (
-        LogsServiceServer,
-        MetricsServiceServer,
-        TraceServiceServer,
+        Option<LogsServiceServer>,
+        Option<MetricsServiceServer>,
+        Option<TraceServiceServer>,
         AckRegistry,
     ) {
         let http_wait = self
             .config
+            .protocols
             .http
             .as_ref()
             .is_some_and(|http| http.wait_for_result);
-        let grpc_wait = settings.wait_for_result;
+        let grpc_wait = grpc_settings.is_some_and(|s| s.wait_for_result);
         let wait_for_result_any = grpc_wait || http_wait;
 
-        // When HTTP is enabled it always shares the same semaphore pool as gRPC.
-        // That means the maximum number of concurrent wait-for-result subscriptions that can be
-        // active across BOTH protocols is bounded by the shared semaphore capacity.
+        // The shared semaphore capacity bounds concurrent wait-for-result subscriptions
+        // across all enabled protocols.
         let shared_ack_slot_capacity = if wait_for_result_any {
-            settings.max_concurrent_requests.max(1)
+            max_concurrent_requests.max(1)
         } else {
             0
         };
@@ -195,24 +278,31 @@ impl OTLPReceiver {
         let traces_slot = wait_for_result_any
             .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
 
-        let logs_server = LogsServiceServer::new(
-            effect_handler.clone(),
-            settings,
-            self.metrics.clone(),
-            grpc_wait.then(|| logs_slot.clone()).flatten(),
-        );
-        let metrics_server = MetricsServiceServer::new(
-            effect_handler.clone(),
-            settings,
-            self.metrics.clone(),
-            grpc_wait.then(|| metrics_slot.clone()).flatten(),
-        );
-        let traces_server = TraceServiceServer::new(
-            effect_handler.clone(),
-            settings,
-            self.metrics.clone(),
-            grpc_wait.then(|| traces_slot.clone()).flatten(),
-        );
+        // Build gRPC service servers only if gRPC is enabled.
+        let (logs_server, metrics_server, traces_server) = if let Some(settings) = grpc_settings {
+            (
+                Some(LogsServiceServer::new(
+                    effect_handler.clone(),
+                    settings,
+                    self.metrics.clone(),
+                    grpc_wait.then(|| logs_slot.clone()).flatten(),
+                )),
+                Some(MetricsServiceServer::new(
+                    effect_handler.clone(),
+                    settings,
+                    self.metrics.clone(),
+                    grpc_wait.then(|| metrics_slot.clone()).flatten(),
+                )),
+                Some(TraceServiceServer::new(
+                    effect_handler.clone(),
+                    settings,
+                    self.metrics.clone(),
+                    grpc_wait.then(|| traces_slot.clone()).flatten(),
+                )),
+            )
+        } else {
+            (None, None, None)
+        };
 
         let ack_registry = AckRegistry::new(logs_slot, metrics_slot, traces_slot);
 
@@ -337,6 +427,12 @@ pub struct OtlpReceiverMetrics {
     pub request_bytes: Counter<u64>,
 }
 
+/// Type alias for the gRPC server future.
+type GrpcServerTask = Pin<Box<dyn Future<Output = Result<(), tonic::transport::Error>> + Send>>;
+
+/// Type alias for the HTTP server future.
+type HttpServerTask = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
+
 #[async_trait]
 impl shared::Receiver<OtapPdata> for OTLPReceiver {
     async fn start(
@@ -344,59 +440,149 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         mut ctrl_msg_recv: shared::ControlChannel<OtapPdata>,
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otap_df_telemetry::otel_info!("receiver.start", message = "Starting OTLP Receiver");
+        let grpc_enabled = self.config.protocols.grpc.is_some();
+        let http_enabled = self.config.protocols.http.is_some();
 
-        // Make the receiver mutable so we can update metrics on telemetry collection.
-        let config = &self.config.grpc;
-        let listener = effect_handler.tcp_listener(config.listening_addr)?;
-        // Wrap the raw listener to enforce keepalive/nodelay socket tuning on accepted streams.
-        let incoming = config.build_tcp_incoming(listener);
-        let settings = config.build_settings();
+        otap_df_telemetry::otel_info!(
+            "receiver.start",
+            message = "Starting OTLP Receiver",
+            grpc_enabled = grpc_enabled,
+            http_enabled = http_enabled
+        );
 
-        let (logs_server, metrics_server, traces_server, ack_registry) =
-            self.build_signal_services(&effect_handler, &settings);
-        let max_concurrent_requests = config.max_concurrent_requests.max(1);
+        // Determine max concurrent requests from whichever protocol is configured.
+        // When both are enabled, they share a semaphore so we use the gRPC value (which is tuned).
+        let max_concurrent_requests = self
+            .config
+            .protocols
+            .grpc
+            .as_ref()
+            .map(|g| g.max_concurrent_requests)
+            .or_else(|| {
+                self.config
+                    .protocols
+                    .http
+                    .as_ref()
+                    .map(|h| h.max_concurrent_requests)
+            })
+            .unwrap_or(1)
+            .max(1);
 
-        // Build gRPC server concurrency strategy based on HTTP being enabled:
-        // - If HTTP is enabled, use a shared semaphore so both protocols draw from the same pool.
-        // - If HTTP is disabled, preserve prior gRPC-only behavior (GlobalConcurrencyLimitLayer).
-        let (limit_layer, shared_semaphore) = if self.config.http.is_some() {
-            let shared = Arc::new(Semaphore::new(max_concurrent_requests));
-            (
-                Either::Left(SharedConcurrencyLayer::new(shared.clone())),
-                Some(shared),
-            )
-        } else {
-            (
-                Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
-                None,
-            )
-        };
+        // Build gRPC settings if gRPC is enabled.
+        let grpc_settings = self
+            .config
+            .protocols
+            .grpc
+            .as_ref()
+            .map(|config| config.build_settings());
 
-        let mut server = common::apply_server_tuning(Server::builder(), config).layer(limit_layer);
+        // Build signal services (gRPC servers are only built if gRPC is enabled).
+        let (logs_server, metrics_server, traces_server, ack_registry) = self
+            .build_signal_services(
+                &effect_handler,
+                grpc_settings.as_ref(),
+                max_concurrent_requests,
+            );
 
-        if let Some(timeout) = config.timeout {
-            server = server.timeout(timeout);
-        }
+        // Create shared semaphore for concurrency limiting.
+        // When both protocols are enabled, they share the same pool.
+        // When only one protocol is enabled, it still uses the semaphore for consistency.
+        let shared_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
 
-        let server = server
-            .add_service(logs_server)
-            .add_service(metrics_server)
-            .add_service(traces_server);
+        // Build gRPC server task if gRPC is enabled.
+        let grpc_task: Option<GrpcServerTask> =
+            if let Some(grpc_config) = &self.config.protocols.grpc {
+                let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
+                let incoming = grpc_config.build_tcp_incoming(listener);
 
-        #[cfg(feature = "experimental-tls")]
-        let maybe_tls_acceptor =
-            build_tls_acceptor(self.config.tls.as_ref())
-                .await
-                .map_err(|e| Error::ReceiverError {
-                    receiver: effect_handler.receiver_id(),
-                    kind: ReceiverErrorKind::Configuration,
-                    error: format!("Failed to configure TLS: {}", e),
-                    source_detail: format_error_sources(&e),
-                })?;
+                // Use shared semaphore when both protocols are enabled, otherwise use
+                // GlobalConcurrencyLimitLayer for gRPC-only (preserves prior behavior).
+                let (limit_layer, _) = if http_enabled {
+                    (
+                        Either::Left(SharedConcurrencyLayer::new(shared_semaphore.clone())),
+                        Some(shared_semaphore.clone()),
+                    )
+                } else {
+                    (
+                        Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
+                        None,
+                    )
+                };
 
-        #[cfg(feature = "experimental-tls")]
-        let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+                let mut server =
+                    common::apply_server_tuning(Server::builder(), grpc_config).layer(limit_layer);
+
+                if let Some(timeout) = grpc_config.timeout {
+                    server = server.timeout(timeout);
+                }
+
+                // Add the gRPC services.
+                let server = server
+                    .add_service(logs_server.expect("gRPC enabled but logs_server is None"))
+                    .add_service(metrics_server.expect("gRPC enabled but metrics_server is None"))
+                    .add_service(traces_server.expect("gRPC enabled but traces_server is None"));
+
+                #[cfg(feature = "experimental-tls")]
+                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                    .await
+                    .map_err(|e| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!("Failed to configure TLS: {}", e),
+                        source_detail: format_error_sources(&e),
+                    })?;
+
+                #[cfg(feature = "experimental-tls")]
+                let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+
+                let task: GrpcServerTask = {
+                    #[cfg(feature = "experimental-tls")]
+                    {
+                        match maybe_tls_acceptor {
+                            Some(tls_acceptor) => {
+                                let tls_stream =
+                                    create_tls_stream(incoming, tls_acceptor, handshake_timeout);
+                                Box::pin(server.serve_with_incoming(tls_stream))
+                            }
+                            None => Box::pin(server.serve_with_incoming(incoming)),
+                        }
+                    }
+                    #[cfg(not(feature = "experimental-tls"))]
+                    {
+                        Box::pin(server.serve_with_incoming(incoming))
+                    }
+                };
+
+                Some(task)
+            } else {
+                None
+            };
+
+        // Build HTTP server task if HTTP is enabled.
+        let http_shutdown = CancellationToken::new();
+        let http_task: Option<HttpServerTask> =
+            if let Some(http_config) = self.config.protocols.http.clone() {
+                // When HTTP-only, create a dedicated semaphore.
+                // When both protocols are enabled, share the semaphore.
+                let semaphore_for_http = if grpc_enabled {
+                    Some(shared_semaphore.clone())
+                } else {
+                    // HTTP-only mode: the HTTP server will create its own semaphore
+                    // based on its max_concurrent_requests setting.
+                    None
+                };
+
+                Some(Box::pin(crate::otlp_http::serve(
+                    effect_handler.clone(),
+                    http_config,
+                    ack_registry.clone(),
+                    self.metrics.clone(),
+                    semaphore_for_http,
+                    http_shutdown.clone(),
+                )))
+            } else {
+                None
+            };
 
         let mut telemetry_cancel_handle = Some(
             effect_handler
@@ -404,56 +590,66 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 .await?,
         );
 
-        let mut server_task: Pin<
-            Box<dyn Future<Output = Result<(), tonic::transport::Error>> + Send>,
-        > = {
-            #[cfg(feature = "experimental-tls")]
-            {
-                match maybe_tls_acceptor {
-                    Some(tls_acceptor) => {
-                        let tls_stream =
-                            create_tls_stream(incoming, tls_acceptor, handshake_timeout);
-                        Box::pin(server.serve_with_incoming(tls_stream))
-                    }
-                    None => Box::pin(server.serve_with_incoming(incoming)),
-                }
-            }
-            #[cfg(not(feature = "experimental-tls"))]
-            {
-                Box::pin(server.serve_with_incoming(incoming))
-            }
-        };
+        // Run the event loop based on which protocols are enabled.
+        let terminal_state = self
+            .run_event_loop(
+                &mut ctrl_msg_recv,
+                &effect_handler,
+                &ack_registry,
+                &mut telemetry_cancel_handle,
+                grpc_task,
+                http_task,
+                http_shutdown,
+            )
+            .await?;
 
-        let http_enabled = self.config.http.is_some();
-        let http_shutdown = CancellationToken::new();
-        let mut http_task: Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> =
-            if let Some(http) = self.config.http.clone() {
-                // Pass the shared semaphore to HTTP server so both protocols
-                // draw from the same concurrency pool
-                Box::pin(crate::otlp_http::serve(
-                    effect_handler.clone(),
-                    http,
-                    ack_registry.clone(),
-                    self.metrics.clone(),
-                    shared_semaphore,
-                    http_shutdown.clone(),
-                ))
-            } else {
-                Box::pin(std::future::pending())
-            };
+        Ok(terminal_state)
+    }
+}
 
+impl OTLPReceiver {
+    /// Runs the main event loop, handling control messages and server tasks.
+    ///
+    /// This method handles three deployment modes:
+    /// - gRPC only: only polls the gRPC server task
+    /// - HTTP only: only polls the HTTP server task
+    /// - Both: polls both server tasks concurrently
+    #[allow(clippy::too_many_arguments)]
+    async fn run_event_loop(
+        &mut self,
+        ctrl_msg_recv: &mut shared::ControlChannel<OtapPdata>,
+        effect_handler: &shared::EffectHandler<OtapPdata>,
+        ack_registry: &AckRegistry,
+        telemetry_cancel_handle: &mut Option<
+            otap_df_engine::effect_handler::TelemetryTimerCancelHandle<OtapPdata>,
+        >,
+        grpc_task: Option<GrpcServerTask>,
+        http_task: Option<HttpServerTask>,
+        http_shutdown: CancellationToken,
+    ) -> Result<TerminalState, Error> {
+        // Convert Options to futures that either run or pend forever.
+        let mut grpc_fut: GrpcServerTask = grpc_task
+            .map(|t| t as GrpcServerTask)
+            .unwrap_or_else(|| Box::pin(std::future::pending()));
+        let mut http_fut: HttpServerTask = http_task
+            .map(|t| t as HttpServerTask)
+            .unwrap_or_else(|| Box::pin(std::future::pending()));
+
+        let grpc_enabled = self.config.protocols.grpc.is_some();
+        let http_enabled = self.config.protocols.http.is_some();
         let mut http_task_done = false;
         let terminal_state: TerminalState;
 
         loop {
             tokio::select! {
                 biased;
-                // Control-plane messages take priority over serving to react quickly to shutdown/telemetry.
+
+                // Control-plane messages take priority to react quickly to shutdown/telemetry.
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(msg) => {
                             if let Some(terminal) = self
-                                .handle_control_message(msg, &ack_registry, &mut telemetry_cancel_handle)
+                                .handle_control_message(msg, ack_registry, telemetry_cancel_handle)
                                 .await?
                             {
                                 http_shutdown.cancel();
@@ -471,13 +667,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 },
 
                 // gRPC serving loop; exits on transport error or graceful stop.
-                result = &mut server_task => {
+                result = &mut grpc_fut, if grpc_enabled => {
                     if let Some(handle) = telemetry_cancel_handle.take() {
                         _ = handle.cancel().await;
                     }
                     if let Err(error) = result {
                         self.metrics.lock().transport_errors.inc();
-                        return Err(self.map_transport_error(&effect_handler, error));
+                        return Err(self.map_transport_error(effect_handler, error));
                     }
                     terminal_state = TerminalState::new(
                         Instant::now().add(Duration::from_secs(1)),
@@ -488,13 +684,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 }
 
                 // HTTP serving loop; exits on IO error.
-                result = &mut http_task => {
+                result = &mut http_fut, if http_enabled => {
                     if let Some(handle) = telemetry_cancel_handle.take() {
                         _ = handle.cancel().await;
                     }
                     if let Err(error) = result {
                         self.metrics.lock().transport_errors.inc();
-                        return Err(self.map_transport_error(&effect_handler, error));
+                        return Err(self.map_transport_error(effect_handler, error));
                     }
                     http_task_done = true;
                     terminal_state = TerminalState::new(
@@ -506,12 +702,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             }
         }
 
+        // Ensure HTTP shutdown is triggered and wait for it to complete.
         http_shutdown.cancel();
 
         if http_enabled && !http_task_done {
-            if let Err(error) = http_task.await {
+            if let Err(error) = http_fut.await {
                 self.metrics.lock().transport_errors.inc();
-                return Err(self.map_transport_error(&effect_handler, error));
+                return Err(self.map_transport_error(effect_handler, error));
             }
         }
 
@@ -575,8 +772,27 @@ mod tests {
             ..Default::default()
         };
         Config {
-            grpc,
-            http: None,
+            protocols: Protocols {
+                grpc: Some(grpc),
+                http: None,
+            },
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
+        }
+    }
+
+    fn test_config_http_only(addr: SocketAddr) -> Config {
+        let http = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1000,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        Config {
+            protocols: Protocols {
+                grpc: None,
+                http: Some(http),
+            },
             #[cfg(feature = "experimental-tls")]
             tls: None,
         }
@@ -722,172 +938,216 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
+        // Test gRPC only configuration with max_concurrent_requests
         let config_with_max_concurrent_requests = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "max_concurrent_requests": 5000
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "max_concurrent_requests": 5000
+                }
+            }
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_max_concurrent_requests)
                 .unwrap();
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 5000);
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.max_concurrent_requests, 5000);
 
+        // Test gRPC only with defaults
         let config_default = json!({
-            "listening_addr": "127.0.0.1:4317"
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317"
+                }
+            }
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 0);
-        assert!(receiver.config.grpc.request_compression.is_none());
-        assert!(receiver.config.grpc.response_compression.is_none());
-        assert!(
-            receiver
-                .config
-                .grpc
-                .preferred_response_compression()
-                .is_none()
-        );
-        assert!(receiver.config.grpc.tcp_nodelay);
-        assert_eq!(
-            receiver.config.grpc.tcp_keepalive,
-            Some(Duration::from_secs(45))
-        );
-        assert_eq!(
-            receiver.config.grpc.tcp_keepalive_interval,
-            Some(Duration::from_secs(15))
-        );
-        assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(5));
-        assert_eq!(receiver.config.grpc.transport_concurrency_limit, None);
-        assert!(receiver.config.grpc.load_shed);
-        assert_eq!(
-            receiver.config.grpc.initial_stream_window_size,
-            Some(8 * 1024 * 1024)
-        );
-        assert_eq!(
-            receiver.config.grpc.initial_connection_window_size,
-            Some(24 * 1024 * 1024)
-        );
-        assert!(!receiver.config.grpc.http2_adaptive_window);
-        assert_eq!(receiver.config.grpc.max_frame_size, Some(16 * 1024));
-        assert_eq!(
-            receiver.config.grpc.max_decoding_message_size,
-            Some(4 * 1024 * 1024)
-        );
-        assert_eq!(
-            receiver.config.grpc.http2_keepalive_interval,
-            Some(Duration::from_secs(30))
-        );
-        assert_eq!(
-            receiver.config.grpc.http2_keepalive_timeout,
-            Some(Duration::from_secs(10))
-        );
-        assert_eq!(receiver.config.grpc.max_concurrent_streams, None);
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.max_concurrent_requests, 0);
+        assert!(grpc.request_compression.is_none());
+        assert!(grpc.response_compression.is_none());
+        assert!(grpc.preferred_response_compression().is_none());
+        assert!(grpc.tcp_nodelay);
+        assert_eq!(grpc.tcp_keepalive, Some(Duration::from_secs(45)));
+        assert_eq!(grpc.tcp_keepalive_interval, Some(Duration::from_secs(15)));
+        assert_eq!(grpc.tcp_keepalive_retries, Some(5));
+        assert_eq!(grpc.transport_concurrency_limit, None);
+        assert!(grpc.load_shed);
+        assert_eq!(grpc.initial_stream_window_size, Some(8 * 1024 * 1024));
+        assert_eq!(grpc.initial_connection_window_size, Some(24 * 1024 * 1024));
+        assert!(!grpc.http2_adaptive_window);
+        assert_eq!(grpc.max_frame_size, Some(16 * 1024));
+        assert_eq!(grpc.max_decoding_message_size, Some(4 * 1024 * 1024));
+        assert_eq!(grpc.http2_keepalive_interval, Some(Duration::from_secs(30)));
+        assert_eq!(grpc.http2_keepalive_timeout, Some(Duration::from_secs(10)));
+        assert_eq!(grpc.max_concurrent_streams, None);
 
+        // Test gRPC with compression
         let config_full = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "request_compression": "gzip",
-            "max_concurrent_requests": 2500
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "request_compression": "gzip",
+                    "max_concurrent_requests": 2500
+                }
+            }
         });
         let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_full).unwrap();
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 2500);
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.max_concurrent_requests, 2500);
         assert_eq!(
-            receiver.config.grpc.request_compression,
+            grpc.request_compression,
             Some(vec![CompressionMethod::Gzip])
         );
-        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(grpc.response_compression.is_none());
 
+        // Test gRPC with all server overrides
         let config_with_server_overrides = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "max_concurrent_requests": 512,
-            "tcp_nodelay": false,
-            "tcp_keepalive": "60s",
-            "tcp_keepalive_interval": "20s",
-            "tcp_keepalive_retries": 3,
-            "transport_concurrency_limit": 256,
-            "load_shed": false,
-            "initial_stream_window_size": "4MiB",
-            "initial_connection_window_size": "16MiB",
-            "max_frame_size": "8MiB",
-            "max_decoding_message_size": "6MiB",
-            "http2_keepalive_interval": "45s",
-            "http2_keepalive_timeout": "20s",
-            "max_concurrent_streams": 1024,
-            "http2_adaptive_window": true
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "max_concurrent_requests": 512,
+                    "tcp_nodelay": false,
+                    "tcp_keepalive": "60s",
+                    "tcp_keepalive_interval": "20s",
+                    "tcp_keepalive_retries": 3,
+                    "transport_concurrency_limit": 256,
+                    "load_shed": false,
+                    "initial_stream_window_size": "4MiB",
+                    "initial_connection_window_size": "16MiB",
+                    "max_frame_size": "8MiB",
+                    "max_decoding_message_size": "6MiB",
+                    "http2_keepalive_interval": "45s",
+                    "http2_keepalive_timeout": "20s",
+                    "max_concurrent_streams": 1024,
+                    "http2_adaptive_window": true
+                }
+            }
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_server_overrides).unwrap();
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 512);
-        assert!(!receiver.config.grpc.tcp_nodelay);
-        assert_eq!(
-            receiver.config.grpc.tcp_keepalive,
-            Some(Duration::from_secs(60))
-        );
-        assert_eq!(
-            receiver.config.grpc.tcp_keepalive_interval,
-            Some(Duration::from_secs(20))
-        );
-        assert_eq!(receiver.config.grpc.tcp_keepalive_retries, Some(3));
-        assert_eq!(receiver.config.grpc.transport_concurrency_limit, Some(256));
-        assert!(!receiver.config.grpc.load_shed);
-        assert_eq!(
-            receiver.config.grpc.initial_stream_window_size,
-            Some(4 * 1024 * 1024)
-        );
-        assert_eq!(
-            receiver.config.grpc.initial_connection_window_size,
-            Some(16 * 1024 * 1024)
-        );
-        assert_eq!(receiver.config.grpc.max_frame_size, Some(8 * 1024 * 1024));
-        assert_eq!(
-            receiver.config.grpc.max_decoding_message_size,
-            Some(6 * 1024 * 1024)
-        );
-        assert_eq!(
-            receiver.config.grpc.http2_keepalive_interval,
-            Some(Duration::from_secs(45))
-        );
-        assert_eq!(
-            receiver.config.grpc.http2_keepalive_timeout,
-            Some(Duration::from_secs(20))
-        );
-        assert_eq!(receiver.config.grpc.max_concurrent_streams, Some(1024));
-        assert!(receiver.config.grpc.http2_adaptive_window);
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.max_concurrent_requests, 512);
+        assert!(!grpc.tcp_nodelay);
+        assert_eq!(grpc.tcp_keepalive, Some(Duration::from_secs(60)));
+        assert_eq!(grpc.tcp_keepalive_interval, Some(Duration::from_secs(20)));
+        assert_eq!(grpc.tcp_keepalive_retries, Some(3));
+        assert_eq!(grpc.transport_concurrency_limit, Some(256));
+        assert!(!grpc.load_shed);
+        assert_eq!(grpc.initial_stream_window_size, Some(4 * 1024 * 1024));
+        assert_eq!(grpc.initial_connection_window_size, Some(16 * 1024 * 1024));
+        assert_eq!(grpc.max_frame_size, Some(8 * 1024 * 1024));
+        assert_eq!(grpc.max_decoding_message_size, Some(6 * 1024 * 1024));
+        assert_eq!(grpc.http2_keepalive_interval, Some(Duration::from_secs(45)));
+        assert_eq!(grpc.http2_keepalive_timeout, Some(Duration::from_secs(20)));
+        assert_eq!(grpc.max_concurrent_streams, Some(1024));
+        assert!(grpc.http2_adaptive_window);
 
+        // Test compression list
         let config_with_compression_list = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "request_compression": ["gzip", "zstd", "gzip"]
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "request_compression": ["gzip", "zstd", "gzip"]
+                }
+            }
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_list).unwrap();
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
         assert_eq!(
-            receiver.config.grpc.request_compression,
+            grpc.request_compression,
             Some(vec![CompressionMethod::Gzip, CompressionMethod::Zstd])
         );
-        assert!(receiver.config.grpc.response_compression.is_none());
+        assert!(grpc.response_compression.is_none());
 
+        // Test compression none
         let config_with_compression_none = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "request_compression": "none"
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "request_compression": "none"
+                }
+            }
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_compression_none).unwrap();
-        assert_eq!(receiver.config.grpc.request_compression, Some(vec![]));
-        assert!(receiver.config.grpc.response_compression.is_none());
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.request_compression, Some(vec![]));
+        assert!(grpc.response_compression.is_none());
 
+        // Test timeout
         let config_with_timeout = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "timeout": "30s"
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "timeout": "30s"
+                }
+            }
         });
         let receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout).unwrap();
-        assert_eq!(receiver.config.grpc.timeout, Some(Duration::from_secs(30)));
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.timeout, Some(Duration::from_secs(30)));
 
+        // Test timeout in milliseconds
         let config_with_timeout_ms = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "timeout": "500ms"
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "timeout": "500ms"
+                }
+            }
         });
-        let receiver = OTLPReceiver::from_config(pipeline_ctx, &config_with_timeout_ms).unwrap();
+        let receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_with_timeout_ms).unwrap();
+        let grpc = receiver.config.protocols.grpc.as_ref().unwrap();
+        assert_eq!(grpc.timeout, Some(Duration::from_millis(500)));
+
+        // Test HTTP only configuration
+        let config_http_only = json!({
+            "protocols": {
+                "http": {
+                    "listening_addr": "127.0.0.1:4318",
+                    "max_concurrent_requests": 1000
+                }
+            }
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_http_only).unwrap();
+        assert!(receiver.config.protocols.grpc.is_none());
+        let http = receiver.config.protocols.http.as_ref().unwrap();
+        assert_eq!(http.max_concurrent_requests, 1000);
         assert_eq!(
-            receiver.config.grpc.timeout,
-            Some(Duration::from_millis(500))
+            http.listening_addr,
+            "127.0.0.1:4318".parse::<SocketAddr>().unwrap()
+        );
+
+        // Test both protocols
+        let config_both = json!({
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317"
+                },
+                "http": {
+                    "listening_addr": "127.0.0.1:4318"
+                }
+            }
+        });
+        let receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_both).unwrap();
+        assert!(receiver.config.protocols.grpc.is_some());
+        assert!(receiver.config.protocols.http.is_some());
+
+        // Test that empty protocols fails validation
+        let config_no_protocols = json!({
+            "protocols": {}
+        });
+        let result = OTLPReceiver::from_config(pipeline_ctx, &config_no_protocols);
+        assert!(result.is_err());
+        let err = result.err().expect("Expected error");
+        assert!(
+            err.to_string().contains("At least one protocol"),
+            "Expected error about protocol configuration, got: {}",
+            err
         );
     }
 
@@ -900,32 +1160,127 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
-        // Defaults clamp to downstream capacity.
+        // gRPC only: Defaults clamp to downstream capacity.
         let config_default = json!({
-            "listening_addr": "127.0.0.1:4317"
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317"
+                }
+            }
         });
         let mut receiver =
             OTLPReceiver::from_config(pipeline_ctx.clone(), &config_default).unwrap();
         receiver.tune_max_concurrent_requests(128);
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 128);
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .grpc
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            128
+        );
 
-        // User provided smaller value is preserved.
+        // gRPC only: User provided smaller value is preserved.
         let config_small = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "max_concurrent_requests": 32
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "max_concurrent_requests": 32
+                }
+            }
         });
         let mut receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_small).unwrap();
         receiver.tune_max_concurrent_requests(128);
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 32);
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .grpc
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            32
+        );
 
-        // Config value of zero adopts downstream capacity.
+        // gRPC only: Config value of zero adopts downstream capacity.
         let config_zero = json!({
-            "listening_addr": "127.0.0.1:4317",
-            "max_concurrent_requests": 0
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317",
+                    "max_concurrent_requests": 0
+                }
+            }
         });
-        let mut receiver = OTLPReceiver::from_config(pipeline_ctx, &config_zero).unwrap();
+        let mut receiver = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_zero).unwrap();
         receiver.tune_max_concurrent_requests(256);
-        assert_eq!(receiver.config.grpc.max_concurrent_requests, 256);
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .grpc
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            256
+        );
+
+        // HTTP only: Defaults clamp to downstream capacity.
+        let config_http_only = json!({
+            "protocols": {
+                "http": {
+                    "listening_addr": "127.0.0.1:4318"
+                }
+            }
+        });
+        let mut receiver =
+            OTLPReceiver::from_config(pipeline_ctx.clone(), &config_http_only).unwrap();
+        receiver.tune_max_concurrent_requests(64);
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .http
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            64
+        );
+
+        // Both protocols: Both get tuned.
+        let config_both = json!({
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317"
+                },
+                "http": {
+                    "listening_addr": "127.0.0.1:4318"
+                }
+            }
+        });
+        let mut receiver = OTLPReceiver::from_config(pipeline_ctx, &config_both).unwrap();
+        receiver.tune_max_concurrent_requests(100);
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .grpc
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            100
+        );
+        assert_eq!(
+            receiver
+                .config
+                .protocols
+                .http
+                .as_ref()
+                .unwrap()
+                .max_concurrent_requests,
+            100
+        );
     }
 
     fn scenario(
@@ -1140,12 +1495,103 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1000,
             wait_for_result: true,
             ..Default::default()
         });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::OK);
+
+                let mut expected = Vec::new();
+                ExportLogsServiceResponse::default()
+                    .encode(&mut expected)
+                    .unwrap();
+                assert_eq!(body.as_ref(), expected.as_slice());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                let logs_proto: OtlpProtoBytes = logs_pdata
+                    .clone()
+                    .payload()
+                    .try_into()
+                    .expect("can convert to OtlpProtoBytes");
+                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
+
+                let expected = create_logs_service_request();
+                let mut expected_bytes = Vec::new();
+                expected.encode(&mut expected_bytes).unwrap();
+                assert_eq!(&expected_bytes, logs_proto.as_bytes());
+
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    /// Test HTTP-only mode: receiver configured with only HTTP protocol (no gRPC).
+    /// This matches the new flexibility matching Go collector's behavior.
+    #[test]
+    fn test_otlp_http_only_mode() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+
+        // HTTP-only configuration - no gRPC!
+        let config = test_config_http_only(http_listen);
 
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
@@ -1237,7 +1683,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1295,7 +1741,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1363,7 +1809,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: true,
@@ -1452,7 +1898,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1513,7 +1959,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1574,7 +2020,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1,
             wait_for_result: true,
@@ -1681,7 +2127,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: true,
@@ -1764,7 +2210,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1825,7 +2271,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -1972,7 +2418,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: true, // Enable wait_for_result to test NACK path
@@ -2073,7 +2519,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1000,
             wait_for_result: true,
@@ -2152,7 +2598,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1000,
             wait_for_result: true,
@@ -2241,7 +2687,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -2294,7 +2740,7 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.http = Some(HttpServerSettings {
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 16,
             wait_for_result: false,
@@ -2351,8 +2797,8 @@ mod tests {
 
         let mut config = test_config(grpc_listen);
         // Enable wait_for_result for both
-        config.grpc.wait_for_result = true;
-        config.http = Some(HttpServerSettings {
+        config.protocols.grpc.as_mut().unwrap().wait_for_result = true;
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1000,
             wait_for_result: true,
@@ -2457,9 +2903,14 @@ mod tests {
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
 
         let mut config = test_config(grpc_listen);
-        config.grpc.max_concurrent_requests = 1;
-        config.grpc.wait_for_result = true;
-        config.http = Some(HttpServerSettings {
+        config
+            .protocols
+            .grpc
+            .as_mut()
+            .unwrap()
+            .max_concurrent_requests = 1;
+        config.protocols.grpc.as_mut().unwrap().wait_for_result = true;
+        config.protocols.http = Some(HttpServerSettings {
             listening_addr: http_listen,
             max_concurrent_requests: 1,
             wait_for_result: false,
