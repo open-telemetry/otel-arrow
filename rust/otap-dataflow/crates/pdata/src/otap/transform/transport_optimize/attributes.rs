@@ -280,10 +280,7 @@ where
             let values_type_range_by_key =
                 sorted_val_col.take_source(&type_range_indices_key_sorted)?;
 
-            // TODO - might no longer be necessary
-            // // hint for the number of nulls to the builder
-            // sorted_val_col.set_null_count_hint(values_type_range_by_key.null_count());
-
+            // init struct that will help us sort the values for w/in each range of equivalent keys
             let mut values_sorter = AttrValuesSorter::try_new(&values_type_range_by_key)?;
 
             // partition the keys column into ranges where all rows have the same key.
@@ -664,15 +661,39 @@ fn sort_attrs_type_and_keys_to_indices(
     }
 }
 
+/// A builder for constructing sorted attribute values columns.
+///
+/// This builder is designed to efficiently construct Arrow arrays by appending values
+/// in a sorted order. It supports multiple Arrow data types including dictionaries,
+/// primitives (Int64, Float64), variable-length types (Binary, Utf8), and Boolean.
+///
+/// The builder maintains separate buffers for different data type components:
+/// - `data`: holds the actual values for most types
+/// - `bool_data`: specialized buffer for boolean values
+/// - `offsets`: tracks variable-length data boundaries for Binary and Utf8 types
+/// - `nulls`: tracks null values across all types
 struct SortedValuesColumnBuilder {
+    /// Reference to the original source array, used to determine data type and
+    /// for taking values by index.
     source: ArrayRef,
 
+    /// Buffer for storing the actual data values. Size and usage depends on data type:
+    /// - Dictionary: stores u16 keys (2 bytes per element)
+    /// - Int64/Float64: stores 8-byte values
+    /// - Binary/Utf8: stores the actual byte content
+    /// - Boolean: unused (uses `bool_data` instead)
     data: MutableBuffer,
 
+    /// Specialized buffer builder for boolean values. Only used when the source
+    /// array is of type Boolean, otherwise None.
     bool_data: Option<BooleanBufferBuilder>,
 
+    /// Buffer for storing offsets into the `data` buffer. Only used for variable-length
+    /// types (Binary and Utf8), where each offset marks the start position of a value.
+    /// Contains (len + 1) offsets to define len value ranges.
     offsets: Option<MutableBuffer>,
 
+    /// Builder for tracking null/non-null status of each element in the array.
     nulls: NullBufferBuilder,
 }
 
@@ -681,14 +702,21 @@ impl SortedValuesColumnBuilder {
         let len = arr.len();
         let nulls = NullBufferBuilder::new(len);
         match arr.data_type() {
-            // TODO validate key is u16?
-            DataType::Dictionary(_, _) => Ok(Self {
-                source: arr.clone(),
-                data: MutableBuffer::new(2 * len),
-                bool_data: None,
-                offsets: None,
-                nulls,
-            }),
+            DataType::Dictionary(k, _) => match k.as_ref() {
+                DataType::UInt16 => Ok(Self {
+                    source: arr.clone(),
+                    data: MutableBuffer::new(2 * len),
+                    bool_data: None,
+                    offsets: None,
+                    nulls,
+                }),
+                other => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt16],
+                        actual: other.clone(),
+                    });
+                }
+            },
             DataType::Int64 | DataType::Float64 => Ok(Self {
                 source: arr.clone(),
                 data: MutableBuffer::new(8 * len),
@@ -700,7 +728,8 @@ impl SortedValuesColumnBuilder {
                 let data_len = arr
                     .as_any()
                     .downcast_ref::<BinaryArray>()
-                    .unwrap()
+                    // safety: we've checked the datatype is Binary
+                    .expect("can downcast to Binary")
                     .values()
                     .len();
                 Ok(Self {
@@ -715,7 +744,8 @@ impl SortedValuesColumnBuilder {
                 let data_len = arr
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .unwrap()
+                    // safety: we've checked the datatype is Binary
+                    .expect("can downcast to Utf8")
                     .values()
                     .len();
 
@@ -735,8 +765,12 @@ impl SortedValuesColumnBuilder {
                 offsets: None,
                 nulls,
             }),
-            _ => {
-                todo!("invalid values type")
+            other_data_type => {
+                return Err(Error::UnexpectedRecordBatchState {
+                    reason: format!(
+                        "found unexpected attribute value data type {other_data_type:?}"
+                    ),
+                });
             }
         }
     }
@@ -761,16 +795,18 @@ impl SortedValuesColumnBuilder {
             }
             DataType::Binary | DataType::Utf8 => {
                 let curr_len = self.data.len();
-                let offsets = self.offsets.as_mut().unwrap();
+                // safety: if the datatype is one of these types, we will have initialized
+                // a builder for offsets in the constructor
+                let offsets = self.offsets.as_mut().expect("offsets not None");
                 offsets.extend(std::iter::repeat_n(curr_len as u32, count));
             }
             DataType::Boolean => {
-                let bool = self.bool_data.as_mut().unwrap();
+                // safety: if the datatype is one of these types, we will have initialized
+                // a builder for bool_data in the constructor
+                let bool = self.bool_data.as_mut().expect("bool_data not None");
                 bool.append_n(count, false);
             }
-            _ => {
-                todo!("invalid values type")
-            }
+            _ => {}
         }
     }
 
@@ -791,33 +827,44 @@ impl SortedValuesColumnBuilder {
     }
 
     fn append_offsets<T: ArrowNativeType>(&mut self, items: &[T]) {
-        // TODO - error handling or unwrap?
-        let offsets = self.offsets.as_mut().unwrap();
-        offsets.extend_from_slice(items);
+        if let Some(offsets) = self.offsets.as_mut() {
+            offsets.extend_from_slice(items);
+        }
     }
 
     fn append_bools(&mut self, items: &BooleanBuffer) {
-        // TODO - error handling or unwrap
-        let bool_data = self.bool_data.as_mut().unwrap();
-        bool_data.append_buffer(items);
+        if let Some(bool_data) = self.bool_data.as_mut() {
+            bool_data.append_buffer(items);
+        }
     }
 
     fn finish(mut self) -> Result<ArrayRef> {
         let len = self.source.len();
         let nulls = self.nulls.finish();
         match self.source.data_type() {
-            DataType::Dictionary(_, _) => {
-                let dict_source = self
-                    .source
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    .unwrap();
-                let keys_values = ScalarBuffer::new(self.data.into(), 0, len);
-                let keys = UInt16Array::new(keys_values, nulls);
-                Ok(Arc::new(DictionaryArray::new(
-                    keys,
-                    dict_source.values().clone(),
-                )))
+            DataType::Dictionary(k, _) => {
+                match k.as_ref() {
+                    DataType::UInt16 => {
+                        let dict_source = self
+                            .source
+                            .as_any()
+                            .downcast_ref::<DictionaryArray<UInt16Type>>()
+                            // safety: we've checked the type is Dictionary
+                            .expect("can downcast to DictionaryArray<u16>");
+                        let keys_values = ScalarBuffer::new(self.data.into(), 0, len);
+                        let keys = UInt16Array::new(keys_values, nulls);
+                        Ok(Arc::new(DictionaryArray::new(
+                            keys,
+                            dict_source.values().clone(),
+                        )))
+                    }
+                    other => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt16],
+                            actual: other.clone(),
+                        });
+                    }
+                }
             }
 
             DataType::Int64 => Ok(Arc::new(Int64Array::new(
@@ -829,13 +876,15 @@ impl SortedValuesColumnBuilder {
                 nulls,
             ))),
             DataType::Binary => {
-                let offsets_buffer = self.offsets.unwrap();
+                // safety: if this is the datatype, we'll have initialized offsets in constructor
+                let offsets_buffer = self.offsets.expect("offsets not None");
                 let offsets_buffer = offsets_buffer.into();
                 let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
                 Ok(Arc::new(BinaryArray::new(offsets, self.data.into(), nulls)))
             }
             DataType::Utf8 => {
-                let offsets_buffer = self.offsets.unwrap();
+                // safety: if this is the datatype, we'll have initialized offsets in constructor
+                let offsets_buffer = self.offsets.expect("offsets not None");
                 let offsets_buffer = offsets_buffer.into();
                 let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
                 let data = self.data.into();
@@ -843,10 +892,15 @@ impl SortedValuesColumnBuilder {
             }
 
             DataType::Boolean => Ok(Arc::new(BooleanArray::new(
-                self.bool_data.unwrap().finish(),
+                // safety: if this is the datatype, we'll have initialized bool_data in constructor
+                self.bool_data.expect("bool_data not None").finish(),
                 nulls,
             ))),
-            _ => todo!(),
+            _ => {
+                // safety: the constructor would not allow this type to be created with
+                // a DataType that is not one of the ones that were matched above.
+                unreachable!("unknown values data type")
+            }
         }
     }
 }
@@ -888,12 +942,11 @@ enum AttrsValueSorterInner {
     // slice it for ranges to sort without creating temporary values.
     Float64((ScalarBuffer<f64>, Option<NullBuffer>)),
 
+    /// an arrow Array containing some segment of the values column
     // TODO - in the future we should pull out some internal state of boolean, int64, string and
     // binary array columns instead of using the ArrayRef to sort. However, these column types
     // would be less common, especially b/c all these types (except bool) would usually be
     // dictionary encoded.
-
-    /// an arrow Array containing some segment of the values column
     Array(ArrayRef),
 }
 
@@ -965,7 +1018,7 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                 let float_arr = values_arr.as_any().downcast_ref::<Float64Array>().unwrap();
                 Ok(Self::Float64((
                     float_arr.values().clone(),
-                    float_arr.nulls().cloned()
+                    float_arr.nulls().cloned(),
                 )))
             }
             _ => Ok(Self::Array(values_arr.clone())),
@@ -989,7 +1042,7 @@ impl AttrValuesSorter {
             key_partition: Vec::new(),
             partition_buffer: Vec::new(),
             float64_partition: Vec::new(),
-            float64_sort: Vec::new()
+            float64_sort: Vec::new(),
         })
     }
 
@@ -1012,13 +1065,12 @@ impl AttrValuesSorter {
                             (true, true) => std::cmp::Ordering::Equal,
                             (true, false) => std::cmp::Ordering::Greater,
                             (false, true) => std::cmp::Ordering::Less,
-                            (false, false) => {
-                                a.1.total_cmp(&b.1)
-                            },
+                            (false, false) => a.1.total_cmp(&b.1),
                         }
                     });
                 } else {
-                    self.float64_sort.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+                    self.float64_sort
+                        .sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
                 }
 
                 // take the sorted values segment
@@ -1062,19 +1114,10 @@ impl AttrValuesSorter {
                     boundaries_len,
                     &mut self.array_partitions,
                 );
-                result.extend(
-                    self.array_partitions
-                        .drain(..)
-                        .map(|range| NullableRange {
-                            range,
-                            is_null: false,
-                        }),
-                );
-
-                // TODO -- Should we be coalescing null ranges here?
-                // thinking if indices groups nulls into a single partition, but we're partitioning
-                // on values, null rows are together but may have different values which means
-                // different partitions which is just extra stuff to handle.
+                result.extend(self.array_partitions.drain(..).map(|range| NullableRange {
+                    range,
+                    is_null: false,
+                }));
 
                 // if there were any nulls in the original values column, fill in any null segments
                 // in the ranges result
@@ -1084,7 +1127,6 @@ impl AttrValuesSorter {
                         nullable_range.is_null = nulls.is_null(start_idx)
                     }
                 }
-
             }
             AttrsValueSorterInner::KeysAndRanks(keys_and_ranks) => {
                 self.rank_sort.clear();
@@ -1104,11 +1146,10 @@ impl AttrValuesSorter {
                     // comparison may be slightly slower for nulls, but this OK as having null
                     // in the values column would not be a common way in OTAP
                     self.rank_sort.sort_unstable_by(|a, b| {
-                        // TODO - this seems wrong but not sure why it doesn't fail tests ...
-                        match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
+                        match (nulls.is_null(a.0), nulls.is_null(b.0)) {
                             (true, true) => std::cmp::Ordering::Equal,
-                            (true, false) => std::cmp::Ordering::Less,
-                            (false, true) => std::cmp::Ordering::Greater,
+                            (true, false) => std::cmp::Ordering::Greater,
+                            (false, true) => std::cmp::Ordering::Less,
                             (false, false) => a.1.cmp(&b.1),
                         }
                     });
@@ -1157,19 +1198,10 @@ impl AttrValuesSorter {
                     boundaries_len,
                     &mut self.array_partitions,
                 );
-                result.extend(
-                    self.array_partitions
-                        .drain(..)
-                        .map(|range| NullableRange {
-                            range,
-                            is_null: false,
-                        }),
-                );
-
-                // TODO -- Should we be coalescing null ranges here?
-                // thinking if indices groups nulls into a single partition, but we're partitioning
-                // on values, null rows are together but may have different values which means
-                // different partitions which is just extra stuff to handle.
+                result.extend(self.array_partitions.drain(..).map(|range| NullableRange {
+                    range,
+                    is_null: false,
+                }));
 
                 // if there were any nulls in the original values column, fill in any null segments
                 // in the ranges result
@@ -1181,8 +1213,12 @@ impl AttrValuesSorter {
                 }
             }
 
-            // TODO optimize this because there's a bunch of allocations
+            // This is the fallback branch of types for which we haven't yet implemented a more
+            // optimal way to sort and partition the range. The reason this is less optimal is
+            // because each call to slice, sort, etc. allocate new Arc<dyn Array> which can be
+            // expensive if it is happening a lot
             AttrsValueSorterInner::Array(arr) => {
+                // slice the array and sort it to indices
                 let slice = arr.slice(range.start, range.len());
                 let sorted_indices = arrow::compute::sort_to_indices(
                     &slice,
@@ -1198,11 +1234,11 @@ impl AttrValuesSorter {
                     ),
                 })?;
 
+                // populate the list of sorted indices for the key range
                 key_range_sorted_result.extend(sorted_indices.values().iter().map(|i| *i as usize));
 
-                let values_range = arr.slice(range.start, range.len());
-                let values_range_sorted = take(&values_range, &sorted_indices, None).unwrap();
-
+                // sort the range, and append the sorted values to the column builder:
+                let values_range_sorted = take(&slice, &sorted_indices, None).unwrap();
                 match values_range_sorted.data_type() {
                     DataType::Binary => {
                         let binary_arr = values_range_sorted
@@ -1268,25 +1304,23 @@ impl AttrValuesSorter {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
                     }
-                    _ => {
-                        todo!("other DT")
+                    other_dt => {
+                        return Err(Error::UnexpectedRecordBatchState {
+                            reason: format!(
+                                "encountered unexpected DataType for values column {other_dt:?}"
+                            ),
+                        });
                     }
                 }
 
+                // partition the sorted values and fill in the partition ranges:
                 self.array_partitions.clear();
-                collect_partition_from_array(
-                    &values_range_sorted,
-                    &mut self.array_partitions,
-                )?;
+                collect_partition_from_array(&values_range_sorted, &mut self.array_partitions)?;
 
-                result.extend(
-                    self.array_partitions
-                        .drain(..)
-                        .map(|range| NullableRange {
-                            range,
-                            is_null: false,
-                        }),
-                );
+                result.extend(self.array_partitions.drain(..).map(|range| NullableRange {
+                    range,
+                    is_null: false,
+                }));
 
                 if arr.null_count() > 0 {
                     for nullable_range in result.iter_mut() {
@@ -1353,12 +1387,13 @@ fn collect_partitions_for_range(
     source: &ArrayRef,
     result: &mut Vec<Range<usize>>,
 ) -> Result<()> {
-    // TODO - if len = 0 or len = 1, just return one range
-    // TODO - lots of code duplicated with other methods in this funciton
-    // TODO - see if using get_unchecked really makes a difference in perf
+    if range.len() <= 1 {
+        result.push(0..range.len());
+        return Ok(());
+    }
 
     match source.data_type() {
-        DataType::Dictionary(k, _) => match **k {
+        DataType::Dictionary(k, _) => match k.as_ref() {
             DataType::UInt8 => {
                 // safety: we've checked that the dict is this type
                 let dict_arr = source
@@ -1374,19 +1409,8 @@ fn collect_partitions_for_range(
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
 
-                // TODO use collect_partition_boundaries_to_ranges
-
-                let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
-                let mut current = 0;
-                for idx in set_indices {
-                    let t = current;
-                    current = idx + 1;
-                    result.push(t..current)
-                }
-                let last = len + 1;
-                if current != last {
-                    result.push(current..last)
-                }
+                let mut set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
+                collect_partition_boundaries_to_ranges(&mut set_indices, len, result);
 
                 Ok(())
             }
@@ -1404,25 +1428,15 @@ fn collect_partitions_for_range(
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
 
-                // TODO use collect_partition_boundaries_to_ranges
-
-                let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
-                let mut current = 0;
-                for idx in set_indices {
-                    let t = current;
-                    current = idx + 1;
-                    result.push(t..current)
-                }
-                let last = len + 1;
-                if current != last {
-                    result.push(current..last)
-                }
+                let mut set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
+                collect_partition_boundaries_to_ranges(&mut set_indices, len, result);
 
                 Ok(())
             }
-            _ => {
-                todo!()
-            }
+            other_data_type => Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                actual: other_data_type.clone(),
+            }),
         },
         _ => {
             // TODO - in the future we should implement custom behaviour for other array types
