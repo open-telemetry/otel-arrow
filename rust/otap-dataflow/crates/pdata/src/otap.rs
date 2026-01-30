@@ -2639,7 +2639,7 @@ mod test {
             consts::metadata::encodings::QUASI_DELTA,
         );
         let result_span_events_attrs_rb = batch.get(ArrowPayloadType::SpanEventAttrs).unwrap();
-        assert_eq!(result_span_events_attrs_rb, &expected_span_events_attrs_rb);
+        pretty_assertions::assert_eq!(result_span_events_attrs_rb, &expected_span_events_attrs_rb);
 
         // we've constructed span links and span link attributes in a very similar way to span
         // events and span event attrs, so this check should also pass:

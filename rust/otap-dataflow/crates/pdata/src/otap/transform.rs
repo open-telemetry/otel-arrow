@@ -435,12 +435,6 @@ where
                         batch_idx += 1;
                     }
                 }
-
-                // handle any remaining non-delta values after last delta range ...
-                // just read the last value if there are any remaining
-                if batch_idx <= eq_range_end {
-                    curr_parent_id = materialized_parent_ids[eq_range_end];
-                }
             }
         }
 
@@ -684,6 +678,7 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     // use the arrow compute kernel to compare one
     let lhs = arr.slice(0, arr.len() - 1);
     let rhs = arr.slice(1, arr.len() - 1);
+
     // safety: `eq` should only be returning an error if the types or lengths don't match
     // which because of what we're passing here, these conditions are satisfied
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
@@ -2035,6 +2030,7 @@ pub(crate) fn sort_to_indices(sort_columns: &[SortColumn]) -> arrow::error::Resu
         sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
 
         let indices = UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32));
+
         Ok(indices)
     }
 }
