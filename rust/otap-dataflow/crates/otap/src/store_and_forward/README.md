@@ -1,6 +1,6 @@
-# Persistence Processor
+# Store and Forward
 
-The Persistence Processor provides crash-resilient durable buffering using a
+The Store and Forward provides crash-resilient durable buffering using a
 write-ahead log (WAL) and segment storage. Data is persisted before forwarding
 downstream, enabling recovery after crashes or network outages.
 
@@ -10,9 +10,9 @@ Enable with `--features persistence`.
 
 ```yaml
 nodes:
-  persistence:
+  store_and_forward:
     kind: processor
-    plugin_urn: "urn:otap:processor:persistence"
+    plugin_urn: "urn:otel:store_and_forward:processor"
     out_ports:
       out_port:
         destinations:

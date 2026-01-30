@@ -127,7 +127,7 @@ recordset-kql-processor = [
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset"
 ]
-# Persistence processor using Quiver
+# Store and forward processor using Quiver
 persistence = ["dep:quiver", "dep:blake3", "dep:byte-unit"]
 
 [dev-dependencies]

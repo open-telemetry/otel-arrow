@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration tests for the persistence processor.
+//! Integration tests for the store and forward.
 //!
-//! These tests verify the end-to-end behavior of the persistence processor,
+//! These tests verify the end-to-end behavior of the store and forward,
 //! including:
 //! - Data flow through the processor (ingest → wal + segment → downstream)
 //! - Recovery from finalized segments on restart
@@ -27,7 +27,7 @@ use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
-use otap_df_otap::persistence_processor::PERSISTENCE_PROCESSOR_URN;
+use otap_df_otap::store_and_forward::STORE_AND_FORWARD_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
@@ -43,7 +43,7 @@ const ERROR_EXPORTER_URN: &str = "urn:otel:error:exporter";
 // Test Configuration Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Builder for persistence processor test configurations.
+/// Builder for store and forward test configurations.
 ///
 /// Consolidates all config variants into a single builder pattern.
 #[derive(Clone)]
@@ -225,7 +225,7 @@ impl TestConfigBuilder {
             )
             .add_processor(
                 "persistence",
-                PERSISTENCE_PROCESSOR_URN,
+                STORE_AND_FORWARD_URN,
                 Some(persistence_config),
             )
             .add_exporter(exporter_name, exporter_urn, exporter_config)
@@ -401,7 +401,7 @@ where
 /// A background thread waits for NACKs to occur (condition-based, not fixed timeout),
 /// then flips the exporter to ACK mode.
 #[test]
-fn test_persistence_processor_retries_on_nack() {
+fn test_store_and_forward_retries_on_nack() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "retry-test".into();
@@ -479,7 +479,7 @@ fn test_persistence_processor_retries_on_nack() {
     );
 
     // Validate: The retry mechanism worked - data was NACKed but eventually delivered
-    // This proves the persistence processor's retry logic is functioning.
+    // This proves the store and forward's retry logic is functioning.
     assert!(
         nacks_before_flip >= 5,
         "Should have observed at least 5 NACKs before flip, got {}",
@@ -501,7 +501,7 @@ fn test_persistence_processor_retries_on_nack() {
 /// - Run 2 recovers and delivers all persisted data plus new data
 /// - Exact count verification ensures no data loss or duplication
 #[test]
-fn test_persistence_processor_recovery_after_outage() {
+fn test_store_and_forward_recovery_after_outage() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "outage-test".into();
@@ -587,11 +587,11 @@ fn test_persistence_processor_recovery_after_outage() {
 
 /// Test that multiple signal types (traces + logs) flow correctly together.
 ///
-/// Verifies that the persistence processor correctly handles mixed signal types
+/// Verifies that the store and forward correctly handles mixed signal types
 /// in the same pipeline. Uses traces and logs (not metrics, since pdata metrics
 /// view is not yet implemented - see payload.rs:290).
 #[test]
-fn test_persistence_processor_mixed_signal_types() {
+fn test_store_and_forward_mixed_signal_types() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "signal-types-test".into();
@@ -647,7 +647,7 @@ fn test_persistence_processor_mixed_signal_types() {
 ///
 /// This exercises the OtapRecordBundleAdapter code path in bundle_adapter.rs.
 #[test]
-fn test_persistence_processor_convert_to_arrow_mode() {
+fn test_store_and_forward_convert_to_arrow_mode() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "arrow-mode-test".into();
@@ -707,7 +707,7 @@ fn test_persistence_processor_convert_to_arrow_mode() {
 /// processing when shutdown is triggered, then verifying clean termination
 /// and that at least the threshold amount of data was delivered.
 #[test]
-fn test_persistence_processor_graceful_shutdown_drain() {
+fn test_store_and_forward_graceful_shutdown_drain() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "shutdown-drain-test".into();
@@ -778,7 +778,7 @@ fn test_persistence_processor_graceful_shutdown_drain() {
 /// This test generates enough data over a long enough duration to trigger
 /// multiple segment rotations and finalizations.
 #[test]
-fn test_persistence_processor_high_volume_throughput() {
+fn test_store_and_forward_high_volume_throughput() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "high-volume-test".into();
@@ -838,7 +838,7 @@ fn test_persistence_processor_high_volume_throughput() {
 /// buffer which is difficult in unit tests (minimum segment size constraints).
 /// This test validates the configuration path is exercised correctly.
 #[test]
-fn test_persistence_processor_drop_oldest_policy() {
+fn test_store_and_forward_drop_oldest_policy() {
     let temp_dir = tempdir().expect("failed to create temp dir");
     let persistence_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "drop-oldest-test".into();

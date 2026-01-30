@@ -115,9 +115,9 @@ pub mod tls_utils;
 /// Console exporter similar using built-in OTLP-bytes formatting.
 pub mod console_exporter;
 
-/// Persistence processor for durable buffering via Quiver
+/// Store and forward for durable buffering via Quiver
 #[cfg(feature = "persistence")]
-pub mod persistence_processor;
+pub mod store_and_forward;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

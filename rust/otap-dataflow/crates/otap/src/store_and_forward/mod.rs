@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Persistence processor for durable buffering of OTAP data.
+//! Store and forward for durable buffering of OTAP data.
 //!
 //! This processor provides crash-resilient persistence by writing incoming
 //! telemetry data to a write-ahead log and segment storage before forwarding
@@ -11,7 +11,7 @@
 //! # Architecture
 //!
 //! ```text
-//! Upstream → PersistenceProcessor → Downstream
+//! Upstream → StoreAndForward → Downstream
 //!                    ↓
 //!              StorageEngine
 //!                    ↓
@@ -89,7 +89,7 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 
 use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
-pub use config::{OtlpHandling, PersistenceProcessorConfig, SizeCapPolicy};
+pub use config::{OtlpHandling, StoreAndForwardConfig, SizeCapPolicy};
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -111,25 +111,25 @@ use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
-/// URN for the persistence processor.
-pub const PERSISTENCE_PROCESSOR_URN: &str = "urn:otap:processor:persistence";
+/// URN for the store and forward.
+pub const STORE_AND_FORWARD_URN: &str = "urn:otel:store_and_forward:processor";
 
 /// Subscriber ID used by this processor.
-const SUBSCRIBER_ID: &str = "persistence-processor";
+const SUBSCRIBER_ID: &str = "store-and-forward";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Metrics
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Metrics for the persistence processor.
+/// Metrics for the store and forward.
 ///
 /// Follows RFC-aligned telemetry conventions:
 /// - Metric set name follows `otelcol.<entity>` pattern
 /// - Tracks both bundles and individual items (spans, data points, log records)
 /// - Per-signal breakdown for consumed and produced items
-#[metric_set(name = "otelcol.node.persistence")]
+#[metric_set(name = "otelcol.node.store_and_forward")]
 #[derive(Debug, Default, Clone)]
-pub struct PersistenceProcessorMetrics {
+pub struct StoreAndForwardMetrics {
     // ─── Bundle-level metrics ───────────────────────────────────────────────
     /// Number of bundles ingested to storage.
     #[metric(unit = "{bundle}")]
@@ -300,7 +300,7 @@ enum ProcessBundleResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PersistenceProcessor
+// StoreAndForward
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Type alias for the bundle handle with our callback type.
@@ -319,8 +319,8 @@ enum EngineState {
     Failed(String),
 }
 
-/// Persistence processor that provides durable buffering via Quiver.
-pub struct PersistenceProcessor {
+/// Store and forward that provides durable buffering via Quiver.
+pub struct StoreAndForward {
     /// The Quiver engine state (lazy initialized on first message).
     engine_state: EngineState,
 
@@ -334,7 +334,7 @@ pub struct PersistenceProcessor {
     retry_scheduled: HashSet<(u64, u32)>,
 
     /// Configuration.
-    config: PersistenceProcessorConfig,
+    config: StoreAndForwardConfig,
 
     /// Core ID for per-core data directory.
     /// Per ARCHITECTURE.md, each core has its own Quiver instance.
@@ -345,22 +345,22 @@ pub struct PersistenceProcessor {
     num_cores: usize,
 
     /// Metrics.
-    metrics: MetricSet<PersistenceProcessorMetrics>,
+    metrics: MetricSet<StoreAndForwardMetrics>,
 
     /// Whether timer has been started.
     timer_started: bool,
 }
 
-impl PersistenceProcessor {
-    /// Creates a new persistence processor with the given configuration.
+impl StoreAndForward {
+    /// Creates a new store and forward with the given configuration.
     ///
     /// Note: The Quiver engine is lazily initialized on the first message
     /// to ensure we're running within an async context.
     pub fn new(
-        config: PersistenceProcessorConfig,
+        config: StoreAndForwardConfig,
         pipeline_ctx: &PipelineContext,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<PersistenceProcessorMetrics>();
+        let metrics = pipeline_ctx.register_metrics::<StoreAndForwardMetrics>();
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
 
@@ -1275,7 +1275,7 @@ impl PersistenceProcessor {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[async_trait(?Send)]
-impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProcessor {
+impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -1362,14 +1362,14 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for PersistenceProce
 // Factory Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Factory function to create a PersistenceProcessor.
-pub fn create_persistence_processor(
+/// Factory function to create a StoreAndForward.
+pub fn create_store_and_forward(
     pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let config: PersistenceProcessorConfig = serde_json::from_value(node_config.config.clone())
+    let config: StoreAndForwardConfig = serde_json::from_value(node_config.config.clone())
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("failed to parse persistence configuration: {}", e),
         })?;
@@ -1377,7 +1377,7 @@ pub fn create_persistence_processor(
     // Create processor with lazy engine initialization
     // The Quiver engine will be initialized on the first message when we're
     // guaranteed to be in an async context
-    let processor = PersistenceProcessor::new(config, &pipeline_ctx)?;
+    let processor = StoreAndForward::new(config, &pipeline_ctx)?;
 
     Ok(ProcessorWrapper::local(
         processor,
@@ -1387,12 +1387,12 @@ pub fn create_persistence_processor(
     ))
 }
 
-/// Register PersistenceProcessor as an OTAP processor factory.
+/// Register StoreAndForward as an OTAP processor factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static PERSISTENCE_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    name: PERSISTENCE_PROCESSOR_URN,
-    create: create_persistence_processor,
+pub static STORE_AND_FORWARD_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    name: STORE_AND_FORWARD_URN,
+    create: create_store_and_forward,
 };
 
 #[cfg(test)]
@@ -1479,7 +1479,7 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
 
-        let config = PersistenceProcessorConfig {
+        let config = StoreAndForwardConfig {
             path: std::path::PathBuf::from("/tmp/test"),
             retention_size_cap: byte_unit::Byte::from_u64(1024),
             max_age: None,
@@ -1493,7 +1493,7 @@ mod tests {
             max_in_flight: 1000,
         };
 
-        let processor = PersistenceProcessor::new(config, &pipeline_ctx).unwrap();
+        let processor = StoreAndForward::new(config, &pipeline_ctx).unwrap();
 
         // retry 0: 1s * 2^0 = 1s (with jitter 0.5-1.0x)
         let backoff0 = processor.calculate_backoff(0);
