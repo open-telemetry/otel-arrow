@@ -134,23 +134,44 @@ impl Debug for EntityRegistry {
     }
 }
 
+/// Register returns an entity key and information about whether the key was
+/// created or already existing.
+pub enum RegisterOutcome {
+    /// The entity was first registered.
+    Created(EntityKey),
+    /// The entity was previously registered.
+    Existing(EntityKey),
+}
+
+impl RegisterOutcome {
+    /// Returns the entity key, consumes the outcome.
+    #[must_use]
+    pub fn key(self) -> EntityKey {
+        match self {
+            Self::Created(k) => k,
+            Self::Existing(k) => k,
+        }
+    }
+}
+
 impl EntityRegistry {
     /// Registers (or reuses) an entity for the provided attribute set and returns its key.
+    /// The boolean indicates whether a new entry was created.
     #[must_use]
-    pub fn register(&mut self, attrs: impl AttributeSetHandler) -> EntityKey {
+    pub(crate) fn register(&mut self, attrs: impl AttributeSetHandler) -> RegisterOutcome {
         let entity = EntityAttributeSet::new(attrs);
         if let Some(existing) = self.entities_by_signature.get(&entity) {
             if let Some(entry) = self.entities.get_mut(*existing) {
                 entry.refs = entry.refs.saturating_add(1);
             }
-            return *existing;
+            return RegisterOutcome::Existing(*existing);
         }
 
         let attrs = Arc::new(entity.clone());
 
         let entity_key = self.entities.insert(EntityEntry { attrs, refs: 1 });
         let _ = self.entities_by_signature.insert(entity, entity_key);
-        entity_key
+        RegisterOutcome::Created(entity_key)
     }
 
     /// Increments the reference count for an existing entity key.
@@ -303,10 +324,12 @@ mod tests {
     fn test_register_dedupes() {
         let mut registry = EntityRegistry::default();
 
-        let key1 = registry.register(MockAttributeSet::new("value".to_string()));
-        let key2 = registry.register(MockAttributeSet::new("value".to_string()));
+        let outcome1 = registry.register(MockAttributeSet::new("value".to_string()));
+        let outcome2 = registry.register(MockAttributeSet::new("value".to_string()));
+        assert!(matches!(outcome1, RegisterOutcome::Created(_)));
+        assert!(matches!(outcome2, RegisterOutcome::Existing(_)));
 
-        assert_eq!(key1, key2);
+        assert_eq!(outcome1.key(), outcome2.key());
         assert_eq!(registry.len(), 1);
     }
 
@@ -376,20 +399,22 @@ mod tests {
 
         let mut registry = EntityRegistry::default();
 
-        let key1 = registry.register(AttributeSetA {
+        let outcome1 = registry.register(AttributeSetA {
             values: vec![
                 AttributeValue::String("value".to_string()),
                 AttributeValue::Int(7),
             ],
         });
-        let key2 = registry.register(AttributeSetB {
+        assert!(matches!(outcome1, RegisterOutcome::Created(_)));
+        let outcome2 = registry.register(AttributeSetB {
             values: vec![
                 AttributeValue::Int(7),
                 AttributeValue::String("value".to_string()),
             ],
         });
+        assert!(matches!(outcome2, RegisterOutcome::Existing(_)));
 
-        assert_eq!(key1, key2);
+        assert_eq!(outcome1.key(), outcome2.key());
         assert_eq!(registry.len(), 1);
     }
 
@@ -397,7 +422,9 @@ mod tests {
     fn test_get_attributes() {
         let mut registry = EntityRegistry::default();
 
-        let key = registry.register(MockAttributeSet::new("value".to_string()));
+        let key = registry
+            .register(MockAttributeSet::new("value".to_string()))
+            .key();
         let attrs = registry.get_shared(key).expect("missing attributes");
 
         let collected: Vec<_> = attrs.iter_attributes().collect();
@@ -410,8 +437,12 @@ mod tests {
     fn test_unregister() {
         let mut registry = EntityRegistry::default();
 
-        let key = registry.register(MockAttributeSet::new("value".to_string()));
-        let _dup = registry.register(MockAttributeSet::new("value".to_string()));
+        let key = registry
+            .register(MockAttributeSet::new("value".to_string()))
+            .key();
+        let _dup = registry
+            .register(MockAttributeSet::new("value".to_string()))
+            .key();
 
         assert!(registry.unregister(key));
         assert_eq!(registry.len(), 1);

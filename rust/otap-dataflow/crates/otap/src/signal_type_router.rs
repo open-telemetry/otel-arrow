@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -22,6 +21,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ProcessorFactory};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -191,7 +191,10 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     .any(|p| p.as_ref() == desired_port);
 
                 if has_port {
-                    match effect_handler.send_message_to(desired_port, data).await {
+                    match effect_handler
+                        .send_message_with_source_node_to(desired_port, data)
+                        .await
+                    {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_named(st);
@@ -206,7 +209,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                         }
                     }
                 } else {
-                    match effect_handler.send_message(data).await {
+                    match effect_handler.send_message_with_source_node(data).await {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_default(st);

@@ -26,6 +26,7 @@ otap-df-engine = { path = "../crates/engine"}
 otap-df-telemetry = { path="../crates/telemetry"}
 otap-df-pdata = { path="../crates/pdata", features = ["bench"]}
 
+smallvec.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
 
@@ -41,6 +42,7 @@ unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
+bytes.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true

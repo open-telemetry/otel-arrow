@@ -34,6 +34,7 @@ use arrow::{
         GenericBinaryType, Int64Type, Schema, SchemaBuilder, UInt8Type, UInt16Type, UInt64Type,
     },
 };
+use arrow_schema::SchemaRef;
 use itertools::Itertools;
 use otap_df_config::SignalType;
 use smallvec::SmallVec;
@@ -1004,6 +1005,13 @@ fn generic_schemaless_concatenate<const N: usize>(
         // ignore all the rows where every item is None
         if select(batches, i).next().is_some() {
             let schema = Arc::new(
+                // Note: The schemas of all the record batches should only differ
+                // by order at this point. Schema::try_merge is just going to pick
+                // a canonical order for the fields, which we will project
+                // every record batch to.
+                //
+                // If there is any other difference, the BatchCoalescer will fail
+                // to coalesce the batches right after this.
                 Schema::try_merge(select(batches, i).map(|rb| Arc::unwrap_or_clone(rb.schema())))
                     .map_err(|e| Error::Batching { source: e })?,
             );
@@ -1013,10 +1021,7 @@ fn generic_schemaless_concatenate<const N: usize>(
             for row in batches.iter_mut() {
                 if let Some(rb) = row[i].take() {
                     batcher
-                        .push_batch(
-                            rb.with_schema(schema.clone())
-                                .map_err(|e| Error::Batching { source: e })?,
-                        )
+                        .push_batch(project_to_schema(schema.clone(), &rb)?)
                         .map_err(|e| Error::Batching { source: e })?;
                 }
             }
@@ -1034,6 +1039,19 @@ fn generic_schemaless_concatenate<const N: usize>(
     Ok(result)
 }
 
+/// Given a target schema and a record batch, align the columns to the target schema.
+/// Fails if the record batch is not a subset of the target schema.
+fn project_to_schema(schema: SchemaRef, rb: &RecordBatch) -> Result<RecordBatch> {
+    let projection: Vec<usize> = schema
+        .fields()
+        .iter()
+        .filter_map(|f| rb.schema().index_of(f.name()).ok())
+        .collect();
+
+    rb.project(&projection)
+        .map_err(|e| Error::Batching { source: e })
+}
+
 /// This is basically a transpose view thats lets us look at a sequence of the `i`-th table given a
 /// sequence of `RecordBatch` arrays.
 fn select<const N: usize>(
@@ -1041,6 +1059,14 @@ fn select<const N: usize>(
     i: usize,
 ) -> impl Iterator<Item = &RecordBatch> {
     batches.iter().flat_map(move |batches| batches[i].as_ref())
+}
+
+/// Similar to [select], but does not filter out the `None` values.
+fn select_all<const N: usize>(
+    batches: &[[Option<RecordBatch>; N]],
+    i: usize,
+) -> impl Iterator<Item = Option<&RecordBatch>> {
+    batches.iter().map(move |batches| batches[i].as_ref())
 }
 
 // Concatenation requires that we solve two problems: reindexing and unification!
@@ -1349,6 +1375,11 @@ impl<T> IDRange<T> {
 /// * `batches` - this is a 2D array where each element in the outer array contains an inner array
 ///   and each element in the inner array contains the record batch for a given payload type
 fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+    let len = batches.len();
+
     let mut schemas = Vec::with_capacity(batches.len());
 
     // FIXME: perhaps this whole function should coalesce operations against the same
@@ -1371,20 +1402,22 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
         BTreeMap::new();
 
     let mut all_batch_indices: HashSet<usize> = HashSet::new();
+    (0..len).for_each(|batch_index| {
+        let _ = all_batch_indices.insert(batch_index);
+    });
 
     for payload_type_index in 0..N {
         schemas.clear(); // We're going to reuse this allocation across loop iterations
-        schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
-
-        if batches.is_empty() {
-            return Ok(());
-        }
-        let len = batches.len();
+        schemas
+            .extend(select_all(batches, payload_type_index).map(|batch| batch.map(|b| b.schema())));
 
         field_name_to_batch_indices.clear();
-        all_batch_indices.clear();
 
         for (batch_index, schema) in schemas.iter().enumerate() {
+            let Some(schema) = schema else {
+                continue;
+            };
+
             for field in schema.fields.iter() {
                 if matches!(field.data_type(), DataType::Struct(_)) {
                     // skip struct fields, as they get unified in a code path that doesn't use the
@@ -1398,9 +1431,6 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                     .insert(batch_index);
             }
         }
-        (0..len).for_each(|batch_index| {
-            let _ = all_batch_indices.insert(batch_index);
-        });
 
         // In the three following loops it first discovers all struct and dictionary fields, then
         // counts the dictionary values, and finally unifies the columns. There's a couple reasons
@@ -1434,7 +1464,8 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
 
         // repopulate the list of schemas in case any dictionary datatypes were changed
         schemas.clear();
-        schemas.extend(select(batches, payload_type_index).map(|batch| batch.schema()));
+        schemas
+            .extend(select_all(batches, payload_type_index).map(|batch| batch.map(|b| b.schema())));
 
         // Let's find missing optional columns; note that this must happen after we deal with the
         // dict columns since we rely on the assumption that all fields with the same name will have
@@ -1450,9 +1481,12 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
                 .iter()
                 .next()
                 .expect("there should be at least one schema")]
+            .as_ref()
+            .expect("schema should exist")
             .field_with_name(missing_field_name)
             .map_err(|e| Error::Batching { source: e })?
             .clone();
+
             // If the field is not nullable, we need to make it nullable since we're adding null
             // values for batches where this column is missing.
             if !field.is_nullable() {
@@ -1477,6 +1511,7 @@ fn unify<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()>
             }
         }
     }
+
     Ok(())
 }
 
@@ -3046,5 +3081,73 @@ mod test {
             batches[2][0].as_ref().unwrap(),
             &gen_expected(vec!["g", "h", "i"])
         );
+    }
+
+    #[test]
+    fn test_project_reorder() {
+        let expected = int32_batch(&[("c", &[100]), ("a", &[1]), ("b", &[10])]);
+        let source = int32_batch(&[("a", &[1]), ("b", &[10]), ("c", &[100])]);
+        assert_projection_matches(&expected, &source);
+    }
+
+    #[test]
+    fn test_project_reorder_2() {
+        let expected = int32_batch(&[("d", &[4]), ("c", &[3]), ("b", &[2]), ("a", &[1])]);
+        let source = int32_batch(&[("a", &[1]), ("b", &[2]), ("c", &[3]), ("d", &[4])]);
+        assert_projection_matches(&expected, &source);
+    }
+
+    #[test]
+    fn test_project_reorder_single_col() {
+        let expected = int32_batch(&[("c", &[100])]);
+        let source = int32_batch(&[("c", &[100])]);
+        assert_projection_matches(&expected, &source);
+    }
+
+    #[test]
+    fn test_project_noop() {
+        let expected = int32_batch(&[("a", &[1, 2]), ("b", &[3, 4]), ("c", &[5, 6])]);
+        let source = int32_batch(&[("a", &[1, 2]), ("b", &[3, 4]), ("c", &[5, 6])]);
+        assert_projection_matches(&expected, &source);
+    }
+
+    fn int32_batch(columns: &[(&str, &[i32])]) -> RecordBatch {
+        let fields: Vec<Field> = columns
+            .iter()
+            .map(|(name, _)| Field::new(*name, DataType::Int32, false))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        let arrays: Vec<Arc<dyn Array>> = columns
+            .iter()
+            .map(|(_, values)| Arc::new(Int32Array::from(values.to_vec())) as Arc<dyn Array>)
+            .collect();
+        RecordBatch::try_new(schema, arrays).unwrap()
+    }
+
+    fn assert_projection_matches(expected: &RecordBatch, source: &RecordBatch) {
+        let result = project_to_schema(expected.schema(), source).unwrap();
+        assert_eq!(result.num_columns(), expected.num_columns());
+        assert_eq!(result.num_rows(), expected.num_rows());
+
+        for i in 0..result.num_columns() {
+            assert_eq!(
+                result.schema().fields[i].name(),
+                expected.schema().fields[i].name(),
+                "Column {} name mismatch",
+                i
+            );
+            assert_eq!(
+                result.column(i).data_type(),
+                expected.column(i).data_type(),
+                "Column {} type mismatch",
+                i
+            );
+            assert_eq!(
+                result.column(i).as_ref(),
+                expected.column(i).as_ref(),
+                "Column {} data mismatch",
+                i
+            );
+        }
     }
 }

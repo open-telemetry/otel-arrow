@@ -119,6 +119,23 @@ pub trait AttributeSetHandler {
     fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
         AttributeIterator::new(self.descriptor().fields, self.attribute_values())
     }
+
+    /// Returns the schema name for this attribute set (e.g., "pipeline.attrs").
+    fn schema_name(&self) -> &'static str {
+        self.descriptor().name
+    }
+
+    /// Format the attribute set as a string.
+    ///
+    /// TODO(#1907) this is an inefficient method impacting
+    /// console_async logging performance currently. It's OK for this to be
+    /// inefficient except it's called inside the logging path where we should not!
+    fn attributes_to_string(&self) -> String {
+        self.iter_attributes()
+            .map(|(k, v)| format!(" {}={}", k, v.to_string_value()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 /// Represents a single attribute value that can be of different types.

@@ -3,7 +3,7 @@
 
 //! Definition of all signals/conditions that drive state transitions and log events.
 
-use crate::self_tracing::{ConsoleWriter, LogRecord};
+use crate::self_tracing::{LogRecord, format_log_record_to_string};
 use otap_df_config::{DeployedPipelineKey, NodeId, node::NodeKind, observed_state::SendPolicy};
 use serde::Serialize;
 use serde::ser::Serializer;
@@ -96,7 +96,7 @@ impl fmt::Display for LogEvent {
         write!(
             f,
             "{}",
-            ConsoleWriter::no_color().format_log_record(Some(self.time), &self.record)
+            format_log_record_to_string(Some(self.time), &self.record)
         )
     }
 }
