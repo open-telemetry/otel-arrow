@@ -204,6 +204,8 @@ fn compute_schema_fingerprint(batch: &RecordBatch) -> SchemaFingerprint {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Adapter that wraps OtapArrowRecords and implements Quiver's RecordBundle trait.
+///
+/// The original records can be recovered via `into_inner()` for use in NACK scenarios.
 pub struct OtapRecordBundleAdapter {
     /// The underlying OTAP arrow records
     records: OtapArrowRecords,
@@ -231,6 +233,15 @@ impl OtapRecordBundleAdapter {
             descriptor,
             ingestion_time: SystemTime::now(),
         }
+    }
+
+    /// Consume the adapter and return the original OtapArrowRecords.
+    ///
+    /// This is useful for NACK scenarios where the original payload must be
+    /// returned to the upstream after an ingest failure.
+    #[must_use]
+    pub fn into_inner(self) -> OtapArrowRecords {
+        self.records
     }
 
     /// Build the bundle descriptor from the OTAP payload.
@@ -288,7 +299,10 @@ impl RecordBundle for OtapRecordBundleAdapter {
 /// Adapter that wraps OtlpProtoBytes and implements Quiver's RecordBundle trait.
 ///
 /// This stores OTLP data as opaque binary for efficient pass-through pipelines.
+/// The original bytes can be recovered via `into_inner()` for use in NACK scenarios.
 pub struct OtlpBytesAdapter {
+    /// The original OTLP bytes (preserved for recovery on NACK)
+    bytes: OtlpProtoBytes,
     /// The signal type (Logs, Traces, or Metrics)
     signal_type: SignalType,
     /// The record batch containing the binary data
@@ -321,11 +335,21 @@ impl OtlpBytesAdapter {
         )]);
 
         Self {
+            bytes,
             signal_type,
             batch,
             descriptor,
             ingestion_time: SystemTime::now(),
         }
+    }
+
+    /// Consume the adapter and return the original OtlpProtoBytes.
+    ///
+    /// This is useful for NACK scenarios where the original payload must be
+    /// returned to the upstream after an ingest failure.
+    #[must_use]
+    pub fn into_inner(self) -> OtlpProtoBytes {
+        self.bytes
     }
 }
 

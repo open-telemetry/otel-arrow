@@ -587,13 +587,13 @@ impl StoreAndForward {
         let signal_type = payload.signal_type();
         let num_items = payload.num_items() as u64;
 
-        // Get the engine reference - NACK if unavailable
+        // Get the engine reference - NACK with original payload if unavailable
         let engine = match self.engine() {
             Ok((engine, _)) => engine,
             Err(e) => {
                 self.metrics.ingest_errors.add(1);
                 otel_error!("persistence.engine.unavailable", error = %e);
-                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+                let nack_pdata = OtapPdata::new(context, payload);
                 effect_handler
                     .notify_nack(NackMsg::new(
                         format!("engine not available: {}", e),
@@ -604,30 +604,43 @@ impl StoreAndForward {
             }
         };
 
-        // Ingest based on payload type and configuration
+        // Ingest based on payload type and configuration.
+        // Adapters preserve the original payload via into_inner() for NACK on failure.
         let ingest_result = match payload {
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
-                        // Store as opaque binary for efficient pass-through
+                        // Store as opaque binary for efficient pass-through.
                         let adapter = OtlpBytesAdapter::new(otlp_bytes);
-                        engine.ingest(&adapter).await
+                        match engine.ingest(&adapter).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err((e, OtapPayload::OtlpBytes(adapter.into_inner()))),
+                        }
                     }
                     OtlpHandling::ConvertToArrow => {
-                        // Convert to Arrow for queryability
+                        // Convert to Arrow for queryability.
+                        // Clone bytes for NACK on conversion failure (conversion consumes the input).
+                        let bytes_for_nack = otlp_bytes.clone();
                         match OtapPayload::OtlpBytes(otlp_bytes).try_into() {
                             Ok(records) => {
                                 let adapter = OtapRecordBundleAdapter::new(records);
-                                engine.ingest(&adapter).await
+                                match engine.ingest(&adapter).await {
+                                    Ok(()) => Ok(()),
+                                    // Ingest failed: NACK with the Arrow records we tried to store
+                                    Err(e) => Err((
+                                        e,
+                                        OtapPayload::OtapArrowRecords(adapter.into_inner()),
+                                    )),
+                                }
                             }
                             Err(e) => {
-                                // Conversion failed - NACK upstream so they can retry or handle
+                                // Conversion failed - NACK with original bytes so upstream can retry
                                 self.metrics.ingest_errors.add(1);
                                 otel_error!("persistence.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
-                                    OtapPdata::new(context, OtapPayload::empty(signal_type));
+                                    OtapPdata::new(context, OtapPayload::OtlpBytes(bytes_for_nack));
                                 effect_handler
                                     .notify_nack(NackMsg::new(
                                         format!("OTLP to Arrow conversion failed: {}", e),
@@ -641,9 +654,12 @@ impl StoreAndForward {
                 }
             }
             OtapPayload::OtapArrowRecords(records) => {
-                // Native Arrow data: store directly
+                // Native Arrow data: store directly.
                 let adapter = OtapRecordBundleAdapter::new(records);
-                engine.ingest(&adapter).await
+                match engine.ingest(&adapter).await {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
+                }
             }
         };
 
@@ -665,11 +681,12 @@ impl StoreAndForward {
                 effect_handler.notify_ack(AckMsg::new(ack_pdata)).await?;
                 Ok(())
             }
-            Err(e) => {
+            Err((e, original_payload)) => {
                 self.metrics.ingest_errors.add(1);
                 otel_error!("persistence.ingest.failed", error = %e);
 
-                let nack_pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+                // Preserve original payload so upstream can retry
+                let nack_pdata = OtapPdata::new(context, original_payload);
                 effect_handler
                     .notify_nack(NackMsg::new(
                         format!("persistence failed: {}", e),
