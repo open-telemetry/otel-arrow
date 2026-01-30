@@ -11,6 +11,7 @@
 //! - key
 //! - value*
 //! - parent_id
+//!
 //! Then delta encoding is applied to segments of the parent_id column
 //!
 //! Note that the values are contained in multiple columns. For the most part, there is one column
@@ -71,11 +72,10 @@ use arrow::{
         PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
     },
     buffer::{BooleanBuffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
-    compute::{SortOptions, cast, concat, not, partition, rank, take},
+    compute::{SortOptions, cast, not, rank, take},
     datatypes::{ArrowNativeType, DataType, Schema, ToByteSlice, UInt8Type, UInt16Type},
     util::{bit_iterator::BitIndexIterator, bit_util},
 };
-use tonic::IntoRequest;
 
 use crate::{
     arrays::{get_required_array, get_u8_array},
@@ -136,26 +136,26 @@ where
         None, // empty - no values column for empty attrs
         record_batch
             .column_by_name(consts::ATTRIBUTE_STR)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(SortedValuesColumnBuilder::try_new)
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_INT)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(SortedValuesColumnBuilder::try_new)
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_DOUBLE)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(SortedValuesColumnBuilder::try_new)
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_BOOL)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(SortedValuesColumnBuilder::try_new)
             .transpose()?,
         // map/slice are special case - see below
         None, // map
         None, // slice
         record_batch
             .column_by_name(consts::ATTRIBUTE_BYTES)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(SortedValuesColumnBuilder::try_new)
             .transpose()?,
     ];
 
@@ -163,7 +163,7 @@ where
     // column (both AttributeValueType::Map and AttributeValueType::Slice)
     let mut sorted_ser_column = record_batch
         .column_by_name(consts::ATTRIBUTE_SER)
-        .map(|col| SortedValuesColumnBuilder::try_new(col))
+        .map(SortedValuesColumnBuilder::try_new)
         .transpose()?;
 
     let parent_id_col = get_required_array(record_batch, consts::PARENT_ID)?;
@@ -508,8 +508,10 @@ where
         });
     }
 
-    let schema = Schema::new(fields);
-    let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+    // safety: this should only fail if the columns don't match the schema or the arrays
+    // have the wrong lengths, neither of which should be the case here
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .expect("can recreate record batch");
 
     Ok(batch)
 }
@@ -518,9 +520,9 @@ where
 fn sort_and_delta_encode<T: Copy + Ord + Sub<Output = T>>(vals: &mut [T]) {
     vals.sort_unstable();
     let mut prev = vals[0];
-    for i in 1..vals.len() {
-        let curr = vals[i];
-        vals[i] = curr - prev;
+    for val in vals.iter_mut().skip(1) {
+        let curr = *val;
+        *val = curr - prev;
         prev = curr;
     }
 }
@@ -605,18 +607,14 @@ fn sort_attrs_type_and_keys_to_indices(
                     with_indices.into_iter().map(|(rank, _)| rank as u32),
                 ))
             }
-            (other_key, DataType::Utf8) => {
-                return Err(Error::UnsupportedDictionaryKeyType {
-                    expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                    actual: other_key,
-                });
-            }
-            (_, other_value) => {
-                return Err(Error::UnsupportedDictionaryKeyType {
-                    expect_oneof: vec![DataType::Utf8],
-                    actual: other_value,
-                });
-            }
+            (other_key, DataType::Utf8) => Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                actual: other_key,
+            }),
+            (_, other_value) => Err(Error::UnsupportedDictionaryKeyType {
+                expect_oneof: vec![DataType::Utf8],
+                actual: other_value,
+            }),
         },
         DataType::Utf8 => {
             // sort by native keys. It would be unusual if we ended up in this branch, which is
@@ -651,13 +649,9 @@ fn sort_attrs_type_and_keys_to_indices(
                 with_indices.into_iter().map(|(rank, _)| rank as u32),
             ))
         }
-        other_data_type => {
-            return Err(Error::UnexpectedRecordBatchState {
-                reason: format!(
-                    "found invalid type for attributes 'key' column {other_data_type:?}"
-                ),
-            });
-        }
+        other_data_type => Err(Error::UnexpectedRecordBatchState {
+            reason: format!("found invalid type for attributes 'key' column {other_data_type:?}"),
+        }),
     }
 }
 
@@ -710,12 +704,10 @@ impl SortedValuesColumnBuilder {
                     offsets: None,
                     nulls,
                 }),
-                other => {
-                    return Err(Error::UnsupportedDictionaryKeyType {
-                        expect_oneof: vec![DataType::UInt16],
-                        actual: other.clone(),
-                    });
-                }
+                other => Err(Error::UnsupportedDictionaryKeyType {
+                    expect_oneof: vec![DataType::UInt16],
+                    actual: other.clone(),
+                }),
             },
             DataType::Int64 | DataType::Float64 => Ok(Self {
                 source: arr.clone(),
@@ -765,13 +757,9 @@ impl SortedValuesColumnBuilder {
                 offsets: None,
                 nulls,
             }),
-            other_data_type => {
-                return Err(Error::UnexpectedRecordBatchState {
-                    reason: format!(
-                        "found unexpected attribute value data type {other_data_type:?}"
-                    ),
-                });
-            }
+            other_data_type => Err(Error::UnexpectedRecordBatchState {
+                reason: format!("found unexpected attribute value data type {other_data_type:?}"),
+            }),
         }
     }
 
@@ -858,12 +846,10 @@ impl SortedValuesColumnBuilder {
                             dict_source.values().clone(),
                         )))
                     }
-                    other => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt16],
-                            actual: other.clone(),
-                        });
-                    }
+                    other => Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt16],
+                        actual: other.clone(),
+                    }),
                 }
             }
 
@@ -1007,15 +993,17 @@ impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
                         keys: dict_arr.keys().values().clone(),
                     }))
                 }
-                other_key_type => {
-                    return Err(Error::UnsupportedDictionaryKeyType {
-                        expect_oneof: vec![DataType::UInt16],
-                        actual: other_key_type.clone(),
-                    });
-                }
+                other_key_type => Err(Error::UnsupportedDictionaryKeyType {
+                    expect_oneof: vec![DataType::UInt16],
+                    actual: other_key_type.clone(),
+                }),
             },
             DataType::Float64 => {
-                let float_arr = values_arr.as_any().downcast_ref::<Float64Array>().unwrap();
+                // safety: we can expect here because we've checked the data type
+                let float_arr = values_arr
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .expect("can downcast to Float64");
                 Ok(Self::Float64((
                     float_arr.values().clone(),
                     float_arr.nulls().cloned(),
@@ -1238,13 +1226,17 @@ impl AttrValuesSorter {
                 key_range_sorted_result.extend(sorted_indices.values().iter().map(|i| *i as usize));
 
                 // sort the range, and append the sorted values to the column builder:
-                let values_range_sorted = take(&slice, &sorted_indices, None).unwrap();
+                // safety: the indices we've passed have been computed from sorting the array we'
+                // re currently taking, so it will not be out of bounds
+                let values_range_sorted =
+                    take(&slice, &sorted_indices, None).expect("indices in bounds");
                 match values_range_sorted.data_type() {
                     DataType::Binary => {
                         let binary_arr = values_range_sorted
                             .as_any()
                             .downcast_ref::<BinaryArray>()
-                            .unwrap();
+                            // safety: we've checked the DataType
+                            .expect("can downcast to BinaryArray");
                         value_col_builder.append_data(binary_arr.value_data());
                         value_col_builder
                             .append_offsets(binary_arr.offsets().inner().inner().as_slice());
@@ -1258,7 +1250,8 @@ impl AttrValuesSorter {
                         let string_arr = values_range_sorted
                             .as_any()
                             .downcast_ref::<StringArray>()
-                            .unwrap();
+                            // safety: we've checked the DataType
+                            .expect("can downcast to StringArray");
                         value_col_builder.append_data(string_arr.value_data());
                         value_col_builder
                             .append_offsets(string_arr.offsets().inner().inner().as_slice());
@@ -1272,7 +1265,8 @@ impl AttrValuesSorter {
                         let int_arr = values_range_sorted
                             .as_any()
                             .downcast_ref::<Int64Array>()
-                            .unwrap();
+                            // safety: we've checked the DataType
+                            .expect("can downcast to Int64Array");
                         value_col_builder.append_data(int_arr.values().inner().as_slice());
                         if let Some(nulls) = int_arr.nulls() {
                             value_col_builder.append_nulls(nulls);
@@ -1284,7 +1278,8 @@ impl AttrValuesSorter {
                         let float_arr = values_range_sorted
                             .as_any()
                             .downcast_ref::<Float64Array>()
-                            .unwrap();
+                            // safety: we've checked the DataType
+                            .expect("can downcast to Float64Array");
                         value_col_builder.append_data(float_arr.values().inner().as_slice());
                         if let Some(nulls) = float_arr.nulls() {
                             value_col_builder.append_nulls(nulls);
@@ -1296,7 +1291,8 @@ impl AttrValuesSorter {
                         let bool_arr = values_range_sorted
                             .as_any()
                             .downcast_ref::<BooleanArray>()
-                            .unwrap();
+                            // safety: we've checked the DataType
+                            .expect("can downcast to BooleanArray");
                         value_col_builder.append_bools(bool_arr.values());
                         if let Some(nulls) = bool_arr.nulls() {
                             value_col_builder.append_nulls(nulls);
@@ -1457,7 +1453,7 @@ fn collect_partitions_for_range(
 /// (dozens of elements) this does cause extra overhead and using arrow's `partition` kernel
 ///  may be faster.
 fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>>) -> Result<()> {
-    let next_eq_arr_key = create_next_element_equality_array(&source)?;
+    let next_eq_arr_key = create_next_element_equality_array(source)?;
     // safety: `not` is actually infallible
     let next_eq_inverted = not(&next_eq_arr_key).expect("can invert boolean array");
     let mut set_indices = next_eq_inverted.values().set_indices();
@@ -1497,9 +1493,6 @@ mod test {
     use super::*;
 
     use arrow::datatypes::{Field, Schema, UInt32Type};
-
-    // TODO - add some dedicated tests for the builder
-    // TODO - add some dedicated tests for the partitioning code
 
     #[test]
     fn test_transport_optimize_encode_attrs() {
