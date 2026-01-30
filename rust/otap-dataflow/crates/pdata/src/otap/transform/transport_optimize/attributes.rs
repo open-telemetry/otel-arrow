@@ -67,14 +67,15 @@ use std::{
 use arrow::{
     array::{
         Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BinaryArray, BooleanArray,
-        DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray, RecordBatch,
-        StringArray, UInt8Array, UInt16Array, UInt32Array,
+        BooleanBufferBuilder, DictionaryArray, Float64Array, Int64Array, NullBufferBuilder,
+        PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
     },
-    buffer::{NullBuffer, ScalarBuffer},
+    buffer::{MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
     compute::{SortOptions, cast, concat, not, partition, rank, take},
-    datatypes::{DataType, Schema, ToByteSlice, UInt8Type, UInt16Type},
+    datatypes::{ArrowNativeType, DataType, Schema, ToByteSlice, UInt8Type, UInt16Type},
     util::{bit_iterator::BitIndexIterator, bit_util},
 };
+use tonic::IntoRequest;
 
 use crate::{
     arrays::{get_required_array, get_u8_array},
@@ -675,6 +676,8 @@ fn sort_attrs_type_and_keys_to_indices(
     }
 }
 
+
+
 /// This is a helper struct for building the values column when converting it to transport a
 /// optimized encoding.
 ///
@@ -959,8 +962,8 @@ struct AttrValuesSorter {
     /// this is the values array, or data extracted from it, used for sorting/partitioning
     inner: AttrsValueSorterInner,
 
-    // The rest of temporary buffers used when sorting/partitioning to avoid heap allocations on
-    // each method invocation
+    // The rest of the fields are temporary buffers used when sorting/partitioning to avoid heap
+    // allocations on each method invocation
     array_partitions_scratch: Vec<Range<usize>>,
     rank_sort_scratch: Vec<(usize, u16)>,
     key_partition_scratch: Vec<u16>,
@@ -1246,9 +1249,9 @@ impl AttrValuesSorter {
 /// code allows reusing the `result_buf`, whereas the arrow version forces us to eventually convert
 /// `MutableBuffer` into something that allocates an `Arc` before we can access the bytes.
 ///
-/// Depending on the function that is passed, this will also auto-vectorize decently. For example,
-/// a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use SIMD to do
-/// the comparison
+/// Performance: Depending on the function that is passed, this will also auto-vectorize decently.
+/// For example, a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use
+/// SIMD to do the comparison
 fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
     result_buf.clear();
     result_buf.reserve(bit_util::ceil(len, 64) * 8);
@@ -1278,9 +1281,9 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
     result_buf.truncate(bit_util::ceil(len, 8));
 }
 
-/// Collect partitions of equivalent values in the given range of the source ID into the
-/// passed results Vec. The indices in the ranges will be relative to the passed range, not
-/// to the indices of the passed source.
+/// Collect partitions of equivalent values in the given range of the source ID into the passed
+/// results Vec. The indices in the result ranges will be relative to the passed range, NOT to the
+/// indices of the passed source.
 fn collect_partitions_for_range(
     range: &Range<usize>,
     source: &ArrayRef,
@@ -1306,6 +1309,8 @@ fn collect_partitions_for_range(
                 let right = &dict_key_range_bytes[1..len + 1];
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
+
+                // TODO use collect_partition_boundaries_to_ranges
 
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
@@ -1334,6 +1339,8 @@ fn collect_partitions_for_range(
                 let right = &dict_key_range_vals[1..len + 1];
                 let mut partitions_buffer = Vec::new();
                 collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
+
+                // TODO use collect_partition_boundaries_to_ranges
 
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
@@ -1412,6 +1419,9 @@ mod test {
     use super::*;
 
     use arrow::datatypes::{Field, Schema, UInt32Type};
+
+    // TODO - add some dedicated tests for the builder
+    // TODO - add some dedicated tests for the partitioning code
 
     #[test]
     fn test_transport_optimize_encode_attrs() {
