@@ -839,14 +839,17 @@ impl SortedValuesColumnBuilderV2 {
                 nulls,
             ))),
             DataType::Binary => {
-                let offsets_buffer = self.offsets.unwrap().into();
-                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len));
+                let offsets_buffer = self.offsets.unwrap();
+                let offsets_buffer = offsets_buffer.into();
+                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
                 Ok(Arc::new(BinaryArray::new(offsets, self.data.into(), nulls)))
             }
             DataType::Utf8 => {
-                let offsets_buffer = self.offsets.unwrap().into();
-                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len));
-                Ok(Arc::new(BinaryArray::new(offsets, self.data.into(), nulls)))
+                let offsets_buffer = self.offsets.unwrap();
+                let offsets_buffer = offsets_buffer.into();
+                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
+                let data = self.data.into();
+                Ok(Arc::new(StringArray::new(offsets, data, nulls)))
             }
 
             DataType::Boolean => Ok(Arc::new(BooleanArray::new(
