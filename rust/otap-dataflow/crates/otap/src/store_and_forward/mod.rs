@@ -820,7 +820,7 @@ impl StoreAndForward {
         let key = (bundle_ref.segment_seq.raw(), bundle_ref.bundle_index.raw());
 
         // Skip if this bundle is already in-flight (waiting for ACK/NACK).
-        // This should rarely since we keep the handle claimed, but can occur
+        // This should rarely happen since we keep the handle claimed, but can occur
         // if the bundle was previously sent and is still awaiting response.
         if self.pending_bundles.contains_key(&key) {
             // Bundle is in-flight. Dropping the handle will trigger implicit defer,
