@@ -122,6 +122,12 @@ impl TimerSet {
         }
     }
 
+    /// Cancel all timers.
+    fn cancel_all(&mut self) {
+        self.timers.clear();
+        self.timer_states.clear();
+    }
+
     /// Peek the next expiration instant, if any.
     fn next_expiry(&self) -> Option<Instant> {
         self.timers.peek().map(|Reverse((when, _))| *when)
@@ -304,16 +310,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                     self.event_reporter.report(EngineEvent::pipeline_runtime_error(self.pipeline_key.clone(), "Shutdown failed", err_summary))
                                 }
                             }
-                            // Enter draining mode instead of breaking immediately.
-                            // This allows nodes to send cleanup messages (e.g., CancelTimer,
-                            // CancelTelemetryTimer) during their shutdown sequence.
-                            // The loop will exit when all senders drop their channel ends
-                            // or when the draining deadline is reached.
-                            //
-                            // Calculate draining deadline to use at least 90% of available time,
-                            // with the gap capped at MAX_DRAINING_BUFFER. This maximizes draining
-                            // time while ensuring some buffer for post-draining work.
+                            // Enter draining mode: process ack/nack messages until channels
+                            // close or deadline is reached. Cancel all timers proactively.
                             is_draining = true;
+                            self.tick_timers.cancel_all();
+                            self.telemetry_timers.cancel_all();
                             let now = Instant::now();
                             let time_until_deadline = deadline.saturating_duration_since(now);
                             let buffer = std::cmp::min(
@@ -339,7 +340,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             }
                         }
                         PipelineControlMsg::CancelTimer { node_id } => {
-                            self.tick_timers.cancel(node_id);
+                            // Ignored during draining (timers already canceled proactively)
+                            if !is_draining {
+                                self.tick_timers.cancel(node_id);
+                            }
                         }
                         PipelineControlMsg::StartTelemetryTimer { node_id, duration } => {
                             if is_draining {
@@ -352,8 +356,11 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 self.telemetry_timers.start(node_id, duration);
                             }
                         }
-                        PipelineControlMsg::CancelTelemetryTimer { node_id, _temp } => {
-                            self.telemetry_timers.cancel(node_id);
+                        PipelineControlMsg::CancelTelemetryTimer { node_id, .. } => {
+                            // Ignored during draining (timers already canceled proactively)
+                            if !is_draining {
+                                self.telemetry_timers.cancel(node_id);
+                            }
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
                             if is_draining {
