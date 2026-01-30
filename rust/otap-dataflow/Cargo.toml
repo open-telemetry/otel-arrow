@@ -279,21 +279,21 @@ debug = "line-tables-only"  # minimum required for profiling
 
 # A more in-depth analysis is necessary to determine the optimal parameters for the release profile.
 #[profile.release]
-# lto = "thin"
-# strip = true
+#lto = "thin"
+#strip = true
 
 [profile.bench]
 inherits = "release"
 opt-level = 3
-# debug = false
-# incremental = false
-# lto = "thin"
-# codegen-units = 1
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
 # Potentially override lto for faster builds:
 # lto = "thin"
 # Potentially override debug/strip for easier debugging:
-debug = true
-strip = "none"
+# debug = true
+# strip = "none"
 
 # cargo build --profile release-debug
 [profile.release-debug]

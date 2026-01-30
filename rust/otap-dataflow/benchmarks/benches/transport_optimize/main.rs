@@ -11,7 +11,6 @@ use arrow::array::{
     Array, BooleanArray, DictionaryArray, Float64Array, Int64Array, RecordBatch, StringArray,
     StringBuilder, UInt8Array, UInt16Array,
 };
-use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_otap::fake_data_generator::config::{Config, TrafficConfig};

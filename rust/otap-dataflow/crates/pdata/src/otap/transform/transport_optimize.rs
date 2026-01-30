@@ -879,10 +879,30 @@ pub fn apply_transport_optimized_encodings(
         return Ok((record_batch.clone(), None));
     }
 
-    // TODO - also do this for other attribtue types
-    if *payload_type == ArrowPayloadType::LogAttrs {
+    if (*payload_type == ArrowPayloadType::LogAttrs)
+        | (*payload_type == ArrowPayloadType::SpanAttrs)
+        | (*payload_type == ArrowPayloadType::MetricAttrs)
+        | (*payload_type == ArrowPayloadType::ResourceAttrs)
+        | (*payload_type == ArrowPayloadType::ScopeAttrs)
+    {
         return Ok((
             transport_optimize_encode_attrs::<UInt16Type>(record_batch)?,
+            None,
+        ));
+    }
+
+    if (*payload_type == ArrowPayloadType::SpanLinkAttrs)
+        | (*payload_type == ArrowPayloadType::SpanEventAttrs)
+        | (*payload_type == ArrowPayloadType::SummaryDpAttrs)
+        | (*payload_type == ArrowPayloadType::NumberDpAttrs)
+        | (*payload_type == ArrowPayloadType::NumberDpExemplarAttrs)
+        | (*payload_type == ArrowPayloadType::HistogramDpAttrs)
+        | (*payload_type == ArrowPayloadType::HistogramDpExemplarAttrs)
+        | (*payload_type == ArrowPayloadType::ExpHistogramDpAttrs)
+        | (*payload_type == ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+    {
+        return Ok((
+            transport_optimize_encode_attrs::<UInt32Type>(record_batch)?,
             None,
         ));
     }
