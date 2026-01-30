@@ -13,6 +13,7 @@ use bytes::BytesMut;
 use linkme::distributed_slice;
 use metrics::FakeSignalReceiverMetrics;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
@@ -449,7 +450,9 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.metrics {
             let send_count = metric_count / cache.metrics_batch_size;
             for _ in 0..send_count {
-                effect_handler.send_message(batch.clone()).await?;
+                effect_handler
+                    .send_message_with_source_node(batch.clone())
+                    .await?;
             }
         }
     }
@@ -459,7 +462,9 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.traces {
             let send_count = trace_count / cache.traces_batch_size;
             for _ in 0..send_count {
-                effect_handler.send_message(batch.clone()).await?;
+                effect_handler
+                    .send_message_with_source_node(batch.clone())
+                    .await?;
             }
         }
     }
@@ -469,7 +474,9 @@ async fn send_cached_signals(
         if let Some(batch) = &cache.logs {
             let send_count = log_count / cache.logs_batch_size;
             for _ in 0..send_count {
-                effect_handler.send_message(batch.clone()).await?;
+                effect_handler
+                    .send_message_with_source_node(batch.clone())
+                    .await?;
             }
         }
     }
@@ -512,7 +519,9 @@ async fn generate_signal_fresh(
         for _ in 0..metric_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(generator.generate_metrics(max_batch_size).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_metrics(max_batch_size).try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -527,7 +536,9 @@ async fn generate_signal_fresh(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(generator.generate_metrics(remaining_count).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_metrics(remaining_count).try_into()?,
+                    )
                     .await?;
 
                 // no more signals we have reached the max
@@ -538,7 +549,7 @@ async fn generate_signal_fresh(
         if metric_count_remainder > 0 && max_count >= current_count + metric_count_remainder as u64
         {
             effect_handler
-                .send_message(
+                .send_message_with_source_node(
                     generator
                         .generate_metrics(metric_count_remainder)
                         .try_into()?,
@@ -551,7 +562,9 @@ async fn generate_signal_fresh(
         for _ in 0..trace_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(generator.generate_traces(max_batch_size).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_traces(max_batch_size).try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -565,7 +578,9 @@ async fn generate_signal_fresh(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(generator.generate_traces(remaining_count).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_traces(remaining_count).try_into()?,
+                    )
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -574,7 +589,7 @@ async fn generate_signal_fresh(
         }
         if trace_count_remainder > 0 && max_count >= current_count + trace_count_remainder as u64 {
             effect_handler
-                .send_message(
+                .send_message_with_source_node(
                     generator
                         .generate_traces(trace_count_remainder)
                         .try_into()?,
@@ -587,7 +602,9 @@ async fn generate_signal_fresh(
         for _ in 0..log_count_split {
             if max_count >= current_count + max_batch_size as u64 {
                 effect_handler
-                    .send_message(generator.generate_logs(max_batch_size).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_logs(max_batch_size).try_into()?,
+                    )
                     .await?;
                 current_count += max_batch_size as u64;
             } else {
@@ -601,7 +618,9 @@ async fn generate_signal_fresh(
                             source_detail: String::new(),
                         })?;
                 effect_handler
-                    .send_message(generator.generate_logs(remaining_count).try_into()?)
+                    .send_message_with_source_node(
+                        generator.generate_logs(remaining_count).try_into()?,
+                    )
                     .await?;
                 // no more signals we have reached the max
                 *signal_count = max_count;
@@ -610,7 +629,9 @@ async fn generate_signal_fresh(
         }
         if log_count_remainder > 0 && max_count >= current_count + log_count_remainder as u64 {
             effect_handler
-                .send_message(generator.generate_logs(log_count_remainder).try_into()?)
+                .send_message_with_source_node(
+                    generator.generate_logs(log_count_remainder).try_into()?,
+                )
                 .await?;
             current_count += log_count_remainder as u64;
         }
@@ -620,12 +641,14 @@ async fn generate_signal_fresh(
         // generate and send metric
         for _ in 0..metric_count_split {
             effect_handler
-                .send_message(generator.generate_metrics(max_batch_size).try_into()?)
+                .send_message_with_source_node(
+                    generator.generate_metrics(max_batch_size).try_into()?,
+                )
                 .await?;
         }
         if metric_count_remainder > 0 {
             effect_handler
-                .send_message(
+                .send_message_with_source_node(
                     generator
                         .generate_metrics(metric_count_remainder)
                         .try_into()?,
@@ -636,12 +659,14 @@ async fn generate_signal_fresh(
         // generate and send traces
         for _ in 0..trace_count_split {
             effect_handler
-                .send_message(generator.generate_traces(max_batch_size).try_into()?)
+                .send_message_with_source_node(
+                    generator.generate_traces(max_batch_size).try_into()?,
+                )
                 .await?;
         }
         if trace_count_remainder > 0 {
             effect_handler
-                .send_message(
+                .send_message_with_source_node(
                     generator
                         .generate_traces(trace_count_remainder)
                         .try_into()?,
@@ -652,12 +677,14 @@ async fn generate_signal_fresh(
         // generate and send logs
         for _ in 0..log_count_split {
             effect_handler
-                .send_message(generator.generate_logs(max_batch_size).try_into()?)
+                .send_message_with_source_node(generator.generate_logs(max_batch_size).try_into()?)
                 .await?;
         }
         if log_count_remainder > 0 {
             effect_handler
-                .send_message(generator.generate_logs(log_count_remainder).try_into()?)
+                .send_message_with_source_node(
+                    generator.generate_logs(log_count_remainder).try_into()?,
+                )
                 .await?;
         }
     }

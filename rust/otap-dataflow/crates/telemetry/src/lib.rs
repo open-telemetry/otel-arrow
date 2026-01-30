@@ -34,6 +34,7 @@ use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
 use otap_df_config::pipeline::service::telemetry::logs::{
     LogLevel, LoggingProviders, ProviderMode,
 };
+use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
 
@@ -84,8 +85,8 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:r
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
-/// This bundles the receiver end of the logs channel and pre-encoded resource bytes
-/// for injection into the ITR via the EffectHandler.
+/// This bundles the receiver end of the logs channel, pre-encoded resource bytes,
+/// and a telemetry registry handle for resolving entity keys to scope attributes.
 #[derive(Clone)]
 pub struct InternalTelemetrySettings {
     /// Receiver end of the logs channel for `ObservedEvent::Log` events.
@@ -148,6 +149,9 @@ pub struct InternalTelemetrySystem {
     /// The logging providers.
     provider_modes: LoggingProviders,
 
+    /// Entity key providers for associating log events with their source entity context.
+    context_fn: LogContextFn,
+
     /// Event reporter for asynchronous internal logging modes.
     console_async_reporter: Option<ObservedEventReporter>,
 
@@ -178,7 +182,9 @@ impl InternalTelemetrySystem {
     /// `init_global_subscriber()` when ready to start logging.
     pub fn new(
         config: &TelemetryConfig,
+        telemetry_registry: TelemetryRegistryHandle,
         console_async_reporter: Option<ObservedEventReporter>,
+        context_fn: LogContextFn,
     ) -> Result<Self, Error> {
         // Validate logs config
         config
@@ -187,7 +193,6 @@ impl InternalTelemetrySystem {
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
 
         // 1. Create internal metrics subsystem
-        let telemetry_registry = TelemetryRegistryHandle::new();
         let (collector, metrics_reporter) =
             collector::InternalCollector::new(config, telemetry_registry.clone());
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
@@ -230,6 +235,7 @@ impl InternalTelemetrySystem {
             _otel_runtime: otel_runtime,
             log_level: config.logs.level,
             provider_modes: config.logs.providers.clone(),
+            context_fn,
             console_async_reporter,
             its_reporter,
             its_settings,
@@ -253,7 +259,7 @@ impl InternalTelemetrySystem {
     /// This is useful for per-thread subscriber configuration in the engine.
     /// The event reporter is taken from the internal state.
     #[must_use]
-    pub fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
+    fn tracing_setup_for(&self, mode: ProviderMode) -> TracingSetup {
         let provider = match mode {
             ProviderMode::Noop => ProviderSetup::Noop,
 
@@ -279,7 +285,7 @@ impl InternalTelemetrySystem {
             }
         };
 
-        TracingSetup::new(provider, self.log_level)
+        TracingSetup::new(provider, self.log_level, self.context_fn)
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -363,7 +369,13 @@ impl Default for InternalTelemetrySystem {
         let config = TelemetryConfig::default();
         let dummy_reporter = ObservedEventReporter::new(SendPolicy::default(), sender);
 
-        Self::new(&config, Some(dummy_reporter)).expect("default telemetry config should be valid")
+        Self::new(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(dummy_reporter),
+            LogContext::new,
+        )
+        .expect("default telemetry config should be valid")
     }
 }
 
@@ -400,8 +412,13 @@ mod tests {
     #[test]
     fn its_receiver_presence_depends_on_provider_mode() {
         // Default (no ITS) -> no receiver
-        let its = InternalTelemetrySystem::new(&TelemetryConfig::default(), Some(test_reporter()))
-            .expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &TelemetryConfig::default(),
+            TelemetryRegistryHandle::new(),
+            Some(test_reporter()),
+            LogContext::new,
+        )
+        .expect("should create");
         assert!(
             its.internal_telemetry_settings().is_none(),
             "no ITS mode -> no receiver"
@@ -414,9 +431,13 @@ mod tests {
             internal: ProviderMode::Noop,
             admin: ProviderMode::Noop,
         };
-        let its =
-            InternalTelemetrySystem::new(&config_with_providers(providers), Some(test_reporter()))
-                .expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &config_with_providers(providers),
+            TelemetryRegistryHandle::new(),
+            Some(test_reporter()),
+            LogContext::new,
+        )
+        .expect("should create");
         let its_settings = its.internal_telemetry_settings();
         let rx = its_settings
             .expect("ITS mode should provide receiver")
@@ -447,8 +468,13 @@ mod tests {
             .insert("service.id".to_string(), OTelI64(1234));
         config.logs.providers.global = ProviderMode::ITS;
 
-        let its =
-            InternalTelemetrySystem::new(&config, Some(test_reporter())).expect("should create");
+        let its = InternalTelemetrySystem::new(
+            &config,
+            TelemetryRegistryHandle::new(),
+            Some(test_reporter()),
+            LogContext::new,
+        )
+        .expect("should create");
 
         let settings = its.internal_telemetry_settings().expect("has ITS");
         let parse =

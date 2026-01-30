@@ -27,13 +27,14 @@ pub struct ResourceAttributeSet {
 #[attribute_set(name = "controller.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct EngineAttributeSet {
+    /// Core identifier.
+    #[attribute]
+    pub core_id: usize,
+
     /// Resource attributes.
     #[compose]
     pub resource_attrs: ResourceAttributeSet,
 
-    /// Core identifier.
-    #[attribute]
-    pub core_id: usize,
     /// NUMA node identifier.
     #[attribute]
     pub numa_node_id: usize,
@@ -43,6 +44,10 @@ pub struct EngineAttributeSet {
 #[attribute_set(name = "pipeline.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct PipelineAttributeSet {
+    /// Pipeline identifier as defined in the configuration.
+    #[attribute]
+    pub pipeline_id: Cow<'static, str>,
+
     /// Engine attributes.
     #[compose]
     pub engine_attrs: EngineAttributeSet,
@@ -50,22 +55,20 @@ pub struct PipelineAttributeSet {
     /// Pipeline group identifier.
     #[attribute]
     pub pipeline_group_id: Cow<'static, str>,
-    /// Pipeline identifier as defined in the configuration.
-    #[attribute]
-    pub pipeline_id: Cow<'static, str>,
 }
 
 /// Node attributes.
 #[attribute_set(name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeAttributeSet {
+    /// Node unique identifier (in scope of the pipeline).
+    #[attribute]
+    pub node_id: Cow<'static, str>,
+
     /// Pipeline attributes.
     #[compose]
     pub pipeline_attrs: PipelineAttributeSet,
 
-    /// Node unique identifier (in scope of the pipeline).
-    #[attribute]
-    pub node_id: Cow<'static, str>,
     /// Node plugin URN.
     #[attribute(key = "node.urn")]
     pub node_urn: Cow<'static, str>,
@@ -78,6 +81,10 @@ pub struct NodeAttributeSet {
 #[attribute_set(name = "channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ChannelAttributeSet {
+    /// Unique channel identifier (in scope of the pipeline).
+    #[attribute(key = "channel.id")]
+    pub channel_id: Cow<'static, str>,
+
     /// Node attributes.
     #[compose]
     pub node_attrs: NodeAttributeSet,
@@ -89,9 +96,6 @@ pub struct ChannelAttributeSet {
     #[attribute(key = "node.port")]
     pub node_port: Cow<'static, str>,
 
-    /// Unique channel identifier (in scope of the pipeline).
-    #[attribute(key = "channel.id")]
-    pub channel_id: Cow<'static, str>,
     /// Channel payload kind ("control" or "pdata").
     #[attribute(key = "channel.kind")]
     pub channel_kind: Cow<'static, str>,
