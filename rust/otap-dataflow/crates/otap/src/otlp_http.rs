@@ -556,11 +556,9 @@ impl HttpHandler {
                 None
             };
 
-            let permit_result = tokio::time::timeout(
-                permit_timeout,
-                self.local_semaphore.clone().acquire_owned(),
-            )
-            .await;
+            let permit_result =
+                tokio::time::timeout(permit_timeout, self.local_semaphore.clone().acquire_owned())
+                    .await;
 
             let _local_permit = match permit_result {
                 Ok(Ok(permit)) => permit,

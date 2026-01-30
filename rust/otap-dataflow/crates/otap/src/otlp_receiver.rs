@@ -56,8 +56,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
-use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::ServiceBuilder;
+use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::util::Either;
 
 /// URN for the OTLP Receiver
@@ -544,8 +544,8 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     Either::Right(GlobalConcurrencyLimitLayer::new(grpc_max))
                 };
 
-                let mut server = common::apply_server_tuning(Server::builder(), grpc_config)
-                    .layer(limit_layer);
+                let mut server =
+                    common::apply_server_tuning(Server::builder(), grpc_config).layer(limit_layer);
 
                 if let Some(timeout) = grpc_config.timeout {
                     server = server.timeout(timeout);
