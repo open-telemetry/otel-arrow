@@ -441,15 +441,13 @@ impl PipelinePlanner {
         let mut entries = std::collections::BTreeMap::new();
         let _ = entries.insert(key.clone(), literal_value);
         let insert_transform = InsertTransform::new(entries);
-        
-        // To support upsert semantics (replace if exists), we also add a delete transform
-        // for the same key. The transform logic applies delete before insert.
-        let mut deletes = std::collections::BTreeSet::new();
-        let _ = deletes.insert(key);
-        let delete_transform = DeleteTransform::new(deletes);
+
+        // Note: We use InsertTransform which only inserts if the key does not exist.
+        // This matches the OTel collector attributes processor "insert" action.
+        // We do not support "upsert" (replace if exists) here currently.
+        // Previously we tried to delete then insert, but that is overlapping and invalid.
 
         let transform = AttributesTransform::default()
-            .with_delete(delete_transform)
             .with_insert(insert_transform);
 
         transform.validate().map_err(|e| Error::InvalidPipelineError {

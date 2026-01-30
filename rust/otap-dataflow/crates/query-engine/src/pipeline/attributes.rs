@@ -58,7 +58,11 @@ impl PipelineStage for AttributeTransformPipelineStage {
 
         let has_existing_batch = otap_batch.get(attrs_payload_type).is_some();
 
-        let should_process = self.transform.insert.is_some() || has_existing_batch;
+        // Check if we have any attributes to insert.
+        // If the insert list is empty, we shouldn't trigger processing unless we have an existing batch.
+        let has_insert_items = self.transform.insert.as_ref().map_or(false, |i| !i.is_empty());
+
+        let should_process = has_insert_items || has_existing_batch;
         if !should_process {
             return Ok(otap_batch);
         }
@@ -135,24 +139,22 @@ impl PipelineStage for AttributeTransformPipelineStage {
         };
 
         // transform attributes
-        // We pass None for parent_count if the batch exists? 
-        // No, we should ALWAYS pass parent_count if we want to ensure we cover all parents, 
+        // We pass None for parent_count if the batch exists?
+        // No, we should ALWAYS pass parent_count if we want to ensure we cover all parents,
         // especially if the existing batch is sparse.
         // `create_inserted_batch` with `parent_count` will insert for ALL parents 0..count.
         // If the existing batch is sparse, we WANT to insert for the missing ones too.
         // So always passing `parent_count` is correct for "upsert/extend" semantics.
         let attrs_transformed =
             transform_attributes_with_stats(
-                attrs_record_batch, 
+                attrs_record_batch,
                 &self.transform,
-                Some(parent_count),
-                Some(parent_id_type)
             ).map_err(|e| {
                 Error::ExecutionError {
                     cause: format!("error transforming attributes {e}"),
                 }
             })?.0;
-            
+
         if attrs_transformed.num_rows() == 0 {
             // all attributes deleted (or none inserted). remove as it's now empty
             otap_batch.remove(attrs_payload_type);
