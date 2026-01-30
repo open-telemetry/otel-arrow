@@ -70,7 +70,7 @@ use arrow::{
         BooleanBufferBuilder, DictionaryArray, Float64Array, Int64Array, NullBufferBuilder,
         PrimitiveArray, RecordBatch, StringArray, UInt8Array, UInt16Array, UInt32Array,
     },
-    buffer::{MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
+    buffer::{BooleanBuffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer},
     compute::{SortOptions, cast, concat, not, partition, rank, take},
     datatypes::{ArrowNativeType, DataType, Schema, ToByteSlice, UInt8Type, UInt16Type},
     util::{bit_iterator::BitIndexIterator, bit_util},
@@ -132,30 +132,30 @@ where
     // example for ATTRIBUTE_STR (type=1):
     //   - Rows where type == 1: non-null, sorted by (key, value)
     //   - Rows where type != 1: null
-    let mut sorted_val_columns: [Option<SortedValuesColumnBuilder>; 8] = [
+    let mut sorted_val_columns: [Option<SortedValuesColumnBuilderV2>; 8] = [
         None, // empty - no values column for empty attrs
         record_batch
             .column_by_name(consts::ATTRIBUTE_STR)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilderV2::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_INT)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilderV2::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_DOUBLE)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilderV2::try_new(col))
             .transpose()?,
         record_batch
             .column_by_name(consts::ATTRIBUTE_BOOL)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilderV2::try_new(col))
             .transpose()?,
         // map/slice are special case - see below
         None, // map
         None, // slice
         record_batch
             .column_by_name(consts::ATTRIBUTE_BYTES)
-            .map(|col| SortedValuesColumnBuilder::try_new(col))
+            .map(|col| SortedValuesColumnBuilderV2::try_new(col))
             .transpose()?,
     ];
 
@@ -163,7 +163,7 @@ where
     // column (both AttributeValueType::Map and AttributeValueType::Slice)
     let mut sorted_ser_column = record_batch
         .column_by_name(consts::ATTRIBUTE_SER)
-        .map(|col| SortedValuesColumnBuilder::try_new(col))
+        .map(|col| SortedValuesColumnBuilderV2::try_new(col))
         .transpose()?;
 
     let parent_id_col = get_required_array(record_batch, consts::PARENT_ID)?;
@@ -280,8 +280,9 @@ where
             let values_type_range_by_key =
                 sorted_val_col.take_source(&type_range_indices_key_sorted)?;
 
-            // hint for the number of nulls to the builder
-            sorted_val_col.set_null_count_hint(values_type_range_by_key.null_count());
+            // TODO - might no longer be necessary
+            // // hint for the number of nulls to the builder
+            // sorted_val_col.set_null_count_hint(values_type_range_by_key.null_count());
 
             let mut values_sorter = AttrValuesSorter::try_new(&values_type_range_by_key)?;
 
@@ -294,34 +295,44 @@ where
 
             // iterate over contiguous ranges that have the same attribute key
             for key_range in &key_ranges {
+                // TODO this is wasteful b/c we do this sorting twice ...
                 // this vec will contain a list of indices, relative to the key_range, sorted by
                 // the values. Note: because these indices will be relative to the key_range,
                 // adding key_range.start to the index will make it relative to the type_range
                 key_range_indices_values_sorted.clear();
                 key_range_indices_values_sorted.reserve(key_range.len());
-                values_sorter
-                    .sort_range_to_indices(key_range, &mut key_range_indices_values_sorted)?;
+                // values_sorter
+                //     .sort_range_to_indices(key_range, &mut key_range_indices_values_sorted)?;
 
-                // map the sorted indices back to original source indices, and add them to the
-                // list of indices to take when materializing the sorted values column
+                // // map the sorted indices back to original source indices, and add them to the
+                // // list of indices to take when materializing the sorted values column
 
-                // TODO - internally to `append_indices_to_take`, we actually materialize
-                // the values array IF the underlying values array is dictionary encoded.
-                // This means that when we eventually construct the values array, we don't
-                // actually need to `take` indices from the key buffer. We should find a way
-                // to reuse this ...
-                sorted_val_col.append_indices_to_take(
-                    key_range_indices_values_sorted.iter().map(|&i| {
-                        type_range_indices_key_sorted.value(key_range.start + i as usize)
-                    }),
-                );
+                // // TODO - should now happen in take_and_partition_range?
+                // // // TODO - internally to `append_indices_to_take`, we actually materialize
+                // // // the values array IF the underlying values array is dictionary encoded.
+                // // // This means that when we eventually construct the values array, we don't
+                // // // actually need to `take` indices from the key buffer. We should find a way
+                // // // to reuse this ...
+                // // sorted_val_col.append_indices_to_take(
+                // //     key_range_indices_values_sorted.iter().map(|&i| {
+                // //         type_range_indices_key_sorted.value(key_range.start + i as usize)
+                // //     }),
+                // // );
 
-                // partition the sorted values column into ranges that all contain the same
-                // attribute value and store the results in values_ranges.
+                // // partition the sorted values column into ranges that all contain the same
+                // // attribute value and store the results in values_ranges.
                 values_ranges.clear();
-                values_sorter.take_and_partition_range(
+                // values_sorter.take_and_partition_range(
+                //     key_range,
+                //     &key_range_indices_values_sorted,
+                //     &mut values_ranges,
+                // )?;
+                //
+
+                values_sorter.sort_and_partition_range(
                     key_range,
-                    &key_range_indices_values_sorted,
+                    sorted_val_col,
+                    &mut key_range_indices_values_sorted,
                     &mut values_ranges,
                 )?;
 
@@ -336,7 +347,7 @@ where
                 encoded_parent_id_column.extend(key_range_indices_values_sorted.iter().map(
                     |idx| {
                         let type_range_idx =
-                            type_range_indices_key_sorted.value(key_range.start + *idx as usize);
+                            type_range_indices_key_sorted.value(key_range.start + *idx);
                         parent_id_column_vals[type_range_idx as usize]
                     },
                 ));
@@ -385,7 +396,9 @@ where
             }
 
             if let Some(sorted_val_col_builder) = sorted_val_columns[attr_type as usize].as_mut() {
-                sorted_val_col_builder.append_nulls(type_range.len());
+                let len = type_range.len();
+                sorted_val_col_builder.append_n_default_values(len);
+                sorted_val_col_builder.append_n_nulls(len);
             }
         }
 
@@ -396,7 +409,9 @@ where
             && type_range_attr_type != AttributeValueType::Slice as u8
         {
             if let Some(sorted_val_col_builder) = sorted_ser_column.as_mut() {
-                sorted_val_col_builder.append_nulls(type_range.len());
+                let len = type_range.len();
+                sorted_val_col_builder.append_n_default_values(len);
+                sorted_val_col_builder.append_n_nulls(len);
             }
         }
     }
@@ -457,7 +472,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Str as usize]
-                .as_ref()
+                .take()
                 .expect("str attr column present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -467,7 +482,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Int as usize]
-                .as_ref()
+                .take()
                 .expect("int attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -477,7 +492,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Bool as usize]
-                .as_ref()
+                .take()
                 .expect("bool attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -487,7 +502,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Double as usize]
-                .as_ref()
+                .take()
                 .expect("double attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -497,7 +512,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_val_columns[AttributeValueType::Bytes as usize]
-                .as_ref()
+                .take()
                 .expect("bytes attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -507,7 +522,7 @@ where
             // safety: we initialized this element of sorted_val_column only if the column was
             // present in the original record batch. Since the column is present, this is `Some`
             let sorted_col = sorted_ser_column
-                .as_ref()
+                .take()
                 .expect("serialized attr column is present");
             columns.push(sorted_col.finish()?);
             continue;
@@ -676,7 +691,185 @@ fn sort_attrs_type_and_keys_to_indices(
     }
 }
 
+struct SortedValuesColumnBuilderV2 {
+    source: ArrayRef,
 
+    data: MutableBuffer,
+
+    bool_data: Option<BooleanBufferBuilder>,
+
+    offsets: Option<MutableBuffer>,
+
+    nulls: NullBufferBuilder,
+}
+
+impl SortedValuesColumnBuilderV2 {
+    fn try_new(arr: &ArrayRef) -> Result<Self> {
+        let len = arr.len();
+        let nulls = NullBufferBuilder::new(len);
+        match arr.data_type() {
+            // TODO validate key is u16?
+            DataType::Dictionary(_, _) => Ok(Self {
+                source: arr.clone(),
+                data: MutableBuffer::new(2 * len),
+                bool_data: None,
+                offsets: None,
+                nulls,
+            }),
+            DataType::Int64 | DataType::Float64 => Ok(Self {
+                source: arr.clone(),
+                data: MutableBuffer::new(8 * len),
+                bool_data: None,
+                offsets: None,
+                nulls,
+            }),
+            DataType::Binary => {
+                let data_len = arr
+                    .as_any()
+                    .downcast_ref::<BinaryArray>()
+                    .unwrap()
+                    .values()
+                    .len();
+                Ok(Self {
+                    source: arr.clone(),
+                    data: MutableBuffer::new(data_len),
+                    bool_data: None,
+                    offsets: Some(MutableBuffer::new(4 * len)),
+                    nulls,
+                })
+            }
+            DataType::Utf8 => {
+                let data_len = arr
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .values()
+                    .len();
+
+                Ok(Self {
+                    source: arr.clone(),
+                    data: MutableBuffer::new(data_len),
+                    bool_data: None,
+                    offsets: Some(MutableBuffer::new(4 * len)),
+                    nulls,
+                })
+            }
+
+            DataType::Boolean => Ok(Self {
+                source: arr.clone(),
+                data: MutableBuffer::new(0),
+                bool_data: Some(BooleanBufferBuilder::new(len)),
+                offsets: None,
+                nulls,
+            }),
+            _ => {
+                todo!("invalid values type")
+            }
+        }
+    }
+
+    /// access some rows of the original values column by their indices
+    ///
+    /// this should only be called with indices computed from the original source. Calling this
+    /// with out of bound indices will fail
+    fn take_source(&self, indices: &UInt32Array) -> Result<Arc<dyn Array>> {
+        // safety: take will only panic here if the indices are out of bounds, but this is only
+        // being called with indices taken from the original record batch, so expect is safe
+        Ok(take(self.source.as_ref(), indices, None).expect("indices out of bounds"))
+    }
+
+    fn append_n_default_values(&mut self, count: usize) {
+        match self.source.data_type() {
+            DataType::Dictionary(_, _) => {
+                self.data.extend_zeros(count * 2);
+            }
+            DataType::Int64 | DataType::Float64 => {
+                self.data.extend_zeros(count * 8);
+            }
+            DataType::Binary | DataType::Utf8 => {
+                let curr_len = self.data.len();
+                let offsets = self.offsets.as_mut().unwrap();
+                offsets.extend(std::iter::repeat_n(curr_len as u32, count));
+            }
+            DataType::Boolean => {
+                let bool = self.bool_data.as_mut().unwrap();
+                bool.append_n(count, false);
+            }
+            _ => {
+                todo!("invalid values type")
+            }
+        }
+    }
+
+    fn append_n_nulls(&mut self, count: usize) {
+        self.nulls.append_n_nulls(count);
+    }
+
+    fn append_n_non_nulls(&mut self, count: usize) {
+        self.nulls.append_n_non_nulls(count);
+    }
+
+    fn append_data<T: ArrowNativeType>(&mut self, items: &[T]) {
+        self.data.extend_from_slice(items);
+    }
+
+    fn append_offsets<T: ArrowNativeType>(&mut self, items: &[T]) {
+        // TODO - error handling or unwrap?
+        let offsets = self.offsets.as_mut().unwrap();
+        offsets.extend_from_slice(items);
+    }
+
+    fn append_bools(&mut self, items: &BooleanBuffer) {
+        // TODO - error handling or unwrap
+        let bool_data = self.bool_data.as_mut().unwrap();
+        bool_data.append_buffer(items);
+    }
+
+    fn finish(mut self) -> Result<ArrayRef> {
+        let len = self.source.len();
+        let nulls = self.nulls.finish();
+        match self.source.data_type() {
+            DataType::Dictionary(_, _) => {
+                let dict_source = self
+                    .source
+                    .as_any()
+                    .downcast_ref::<DictionaryArray<UInt16Type>>()
+                    .unwrap();
+                let keys_values = ScalarBuffer::new(self.data.into(), 0, len);
+                let keys = UInt16Array::new(keys_values, nulls);
+                Ok(Arc::new(DictionaryArray::new(
+                    keys,
+                    dict_source.values().clone(),
+                )))
+            }
+
+            DataType::Int64 => Ok(Arc::new(Int64Array::new(
+                ScalarBuffer::new(self.data.into(), 0, len),
+                nulls,
+            ))),
+            DataType::Float64 => Ok(Arc::new(Float64Array::new(
+                ScalarBuffer::new(self.data.into(), 0, len),
+                nulls,
+            ))),
+            DataType::Binary => {
+                let offsets_buffer = self.offsets.unwrap().into();
+                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len));
+                Ok(Arc::new(BinaryArray::new(offsets, self.data.into(), nulls)))
+            }
+            DataType::Utf8 => {
+                let offsets_buffer = self.offsets.unwrap().into();
+                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len));
+                Ok(Arc::new(BinaryArray::new(offsets, self.data.into(), nulls)))
+            }
+
+            DataType::Boolean => Ok(Arc::new(BooleanArray::new(
+                self.bool_data.unwrap().finish(),
+                nulls,
+            ))),
+            _ => todo!(),
+        }
+    }
+}
 
 /// This is a helper struct for building the values column when converting it to transport a
 /// optimized encoding.
@@ -1069,6 +1262,223 @@ impl AttrValuesSorter {
             key_partition_scratch: Vec::new(),
             partition_buffer: Vec::new(),
         })
+    }
+
+    fn sort_and_partition_range(
+        &mut self,
+        range: &Range<usize>,
+        value_col_builder: &mut SortedValuesColumnBuilderV2,
+        key_range_sorted_result: &mut Vec<usize>,
+        result: &mut Vec<NullableRange>,
+    ) -> Result<()> {
+        match &self.inner {
+            AttrsValueSorterInner::KeysAndRanks(keys_and_ranks) => {
+                self.rank_sort_scratch.clear();
+                self.rank_sort_scratch.reserve(range.len());
+                self.rank_sort_scratch.extend(
+                    keys_and_ranks
+                        .ranks
+                        .iter()
+                        .skip(range.start)
+                        .take(range.len())
+                        .copied()
+                        .enumerate(),
+                );
+
+                // sort the ranks in the range:
+                if let Some(nulls) = &keys_and_ranks.nulls {
+                    // comparison may be slightly slower for nulls, but this OK as having null
+                    // in the values column would not be a common way in OTAP
+                    self.rank_sort_scratch.sort_by(|a, b| {
+                        match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
+                            (true, true) => std::cmp::Ordering::Equal,
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            (false, false) => a.1.cmp(&b.1),
+                        }
+                    });
+                } else {
+                    self.rank_sort_scratch.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+
+                // take the sorted values segment
+                let keys_range = &keys_and_ranks.keys[range.start..range.end];
+                self.key_partition_scratch.clear();
+                self.key_partition_scratch.reserve(keys_range.len());
+                self.key_partition_scratch
+                    .extend(self.rank_sort_scratch.iter().map(|(i, _)| keys_range[*i]));
+                key_range_sorted_result.extend(self.rank_sort_scratch.iter().map(|(idx, _)| *idx));
+
+                // append the sorted values to the builder
+                value_col_builder.append_data(&self.key_partition_scratch);
+                if let Some(nulls) = &keys_and_ranks.nulls {
+                    todo!("append nulls")
+                } else {
+                    value_col_builder.append_n_non_nulls(range.len());
+                }
+
+                // populate bitmap where a 1/true bit represents a partition boundary
+                // (e.g. an index where one value is not equal to its neighbour)
+                let boundaries_len = self.key_partition_scratch.len() - 1;
+                let left = &self.key_partition_scratch[0..boundaries_len];
+                let right = &self.key_partition_scratch[1..boundaries_len + 1];
+                collect_bool_inverted(
+                    boundaries_len,
+                    |i| left[i].is_eq(right[i]),
+                    &mut self.partition_buffer,
+                );
+
+                // map the bitmap of partition boundaries to ranges
+                let mut set_indices =
+                    BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
+                self.array_partitions_scratch.clear();
+                collect_partition_boundaries_to_ranges(
+                    &mut set_indices,
+                    boundaries_len,
+                    &mut self.array_partitions_scratch,
+                );
+                result.extend(
+                    self.array_partitions_scratch
+                        .drain(..)
+                        .map(|range| NullableRange {
+                            range,
+                            is_null: false,
+                        }),
+                );
+
+                // TODO -- Should we be coalescing null ranges here?
+                // thinking if indices groups nulls into a single partition, but we're partitioning
+                // on values, null rows are together but may have different values which means
+                // different partitions which is just extra stuff to handle.
+
+                // if there were any nulls in the original values column, fill in any null segments
+                // in the ranges result
+                if let Some(nulls) = &keys_and_ranks.nulls {
+                    for nullable_range in result {
+                        let (start_idx, _) = self.rank_sort_scratch[nullable_range.range.start];
+                        nullable_range.is_null = nulls.is_null(start_idx)
+                    }
+                }
+            }
+
+            // TODO optimize this because there's a bunch of allocations
+            AttrsValueSorterInner::Array(arr) => {
+                let slice = arr.slice(range.start, range.len());
+                let sorted_indices = arrow::compute::sort_to_indices(
+                    &slice,
+                    Some(SortOptions {
+                        nulls_first: false,
+                        ..Default::default()
+                    }),
+                    None,
+                )
+                .map_err(|e| Error::UnexpectedRecordBatchState {
+                    reason: format!(
+                        "encountered a type of values column that could not be sorted {e:?}"
+                    ),
+                })?;
+
+                key_range_sorted_result.extend(sorted_indices.values().iter().map(|i| *i as usize));
+
+                let values_range = arr.slice(range.start, range.len());
+                let values_range_sorted = take(&values_range, &sorted_indices, None).unwrap();
+
+                match values_range_sorted.data_type() {
+                    DataType::Binary => {
+                        let binary_arr = values_range_sorted
+                            .as_any()
+                            .downcast_ref::<BinaryArray>()
+                            .unwrap();
+                        value_col_builder.append_data(binary_arr.value_data());
+                        value_col_builder
+                            .append_offsets(binary_arr.offsets().inner().inner().as_slice());
+                        if binary_arr.nulls().is_some() {
+                            todo!("handle nulls")
+                        } else {
+                            value_col_builder.append_n_non_nulls(range.len());
+                        }
+                    }
+                    DataType::Utf8 => {
+                        let string_arr = values_range_sorted
+                            .as_any()
+                            .downcast_ref::<StringArray>()
+                            .unwrap();
+                        value_col_builder.append_data(string_arr.value_data());
+                        value_col_builder
+                            .append_offsets(string_arr.offsets().inner().inner().as_slice());
+                        if string_arr.nulls().is_some() {
+                            todo!("handle nulls")
+                        } else {
+                            value_col_builder.append_n_non_nulls(range.len());
+                        }
+                    }
+                    DataType::Int64 => {
+                        let int_arr = values_range_sorted
+                            .as_any()
+                            .downcast_ref::<Int64Array>()
+                            .unwrap();
+                        value_col_builder.append_data(int_arr.values().inner().as_slice());
+                        if int_arr.nulls().is_some() {
+                            todo!("handle nulls")
+                        } else {
+                            value_col_builder.append_n_non_nulls(range.len());
+                        }
+                    }
+                    DataType::Float64 => {
+                        let float_arr = values_range_sorted
+                            .as_any()
+                            .downcast_ref::<Float64Array>()
+                            .unwrap();
+                        value_col_builder.append_data(float_arr.values().inner().as_slice());
+                        if float_arr.nulls().is_some() {
+                            todo!("handle nulls")
+                        } else {
+                            value_col_builder.append_n_non_nulls(range.len());
+                        }
+                    }
+                    DataType::Boolean => {
+                        let bool_arr = values_range_sorted
+                            .as_any()
+                            .downcast_ref::<BooleanArray>()
+                            .unwrap();
+                        value_col_builder.append_bools(bool_arr.values());
+                        if bool_arr.nulls().is_some() {
+                            todo!("handle nulls")
+                        } else {
+                            value_col_builder.append_n_non_nulls(range.len());
+                        }
+                    }
+                    _ => {
+                        todo!("other DT")
+                    }
+                }
+
+                self.array_partitions_scratch.clear();
+                collect_partition_from_array(
+                    &values_range_sorted,
+                    &mut self.array_partitions_scratch,
+                )?;
+
+                result.extend(
+                    self.array_partitions_scratch
+                        .drain(..)
+                        .map(|range| NullableRange {
+                            range,
+                            is_null: false,
+                        }),
+                );
+
+                if arr.null_count() > 0 {
+                    for nullable_range in result.iter_mut() {
+                        if values_range_sorted.is_null(nullable_range.range.start) {
+                            nullable_range.is_null = true
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// sort the given range of the contained segment of the values column, and collect the sorted
