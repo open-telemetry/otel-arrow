@@ -1006,7 +1006,7 @@ fn generic_schemaless_concatenate<const N: usize>(
         if select(batches, i).next().is_some() {
             let schema = Arc::new(
                 // Note: The schemas of all the record batches should only differ
-                // by orer at this point. Schema::try_merge is just going to pick
+                // by order at this point. Schema::try_merge is just going to pick
                 // a canonical order for the fields, which we will project
                 // every record batch to.
                 //
