@@ -125,8 +125,8 @@ const SUBSCRIBER_ID: &str = "store-and-forward";
 ///
 /// Follows RFC-aligned telemetry conventions:
 /// - Metric set name follows `otelcol.<entity>` pattern
-/// - Tracks both bundles and individual items (spans, data points, log records)
-/// - Per-signal breakdown for consumed and produced items
+/// - Tracks bundles and individual items (for Arrow data only; OTLP bytes
+///   in pass-through mode skip item counting to avoid parsing overhead)
 #[metric_set(name = "otelcol.node.store_and_forward")]
 #[derive(Debug, Default, Clone)]
 pub struct StoreAndForwardMetrics {
@@ -147,31 +147,37 @@ pub struct StoreAndForwardMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_nacked: Counter<u64>,
 
-    // ─── Consumed item metrics (per signal type) ────────────────────────────
-    /// Number of log records consumed (ingested to WAL).
+    // ─── Consumed Arrow item metrics (per signal type) ──────────────────────
+    /// Number of Arrow log records consumed (ingested to WAL).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{log}")]
-    pub consumed_items_logs: Counter<u64>,
+    pub consumed_arrow_logs: Counter<u64>,
 
-    /// Number of metric data points consumed (ingested to WAL).
+    /// Number of Arrow metric data points consumed (ingested to WAL).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{metric}")]
-    pub consumed_items_metrics: Counter<u64>,
+    pub consumed_arrow_metrics: Counter<u64>,
 
-    /// Number of trace spans consumed (ingested to WAL).
+    /// Number of Arrow trace spans consumed (ingested to WAL).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{span}")]
-    pub consumed_items_traces: Counter<u64>,
+    pub consumed_arrow_traces: Counter<u64>,
 
-    // ─── Produced item metrics (per signal type) ────────────────────────────
-    /// Number of log records produced (sent downstream).
+    // ─── Produced Arrow item metrics (per signal type) ──────────────────────
+    /// Number of Arrow log records produced (sent downstream).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{log}")]
-    pub produced_items_logs: Counter<u64>,
+    pub produced_arrow_logs: Counter<u64>,
 
-    /// Number of metric data points produced (sent downstream).
+    /// Number of Arrow metric data points produced (sent downstream).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{metric}")]
-    pub produced_items_metrics: Counter<u64>,
+    pub produced_arrow_metrics: Counter<u64>,
 
-    /// Number of trace spans produced (sent downstream).
+    /// Number of Arrow trace spans produced (sent downstream).
+    /// OTLP pass-through mode skips counting to avoid parsing overhead.
     #[metric(unit = "{span}")]
-    pub produced_items_traces: Counter<u64>,
+    pub produced_arrow_traces: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
     /// Number of ingest errors.
@@ -581,9 +587,8 @@ impl StoreAndForward {
     ) -> Result<(), Error> {
         let (context, payload) = data.into_parts();
 
-        // Capture signal type and item count before consuming the payload
+        // Capture signal type before consuming the payload
         let signal_type = payload.signal_type();
-        let num_items = payload.num_items() as u64;
 
         // Get the engine reference - NACK with original payload if unavailable
         let engine = match self.engine() {
@@ -604,17 +609,20 @@ impl StoreAndForward {
 
         // Ingest based on payload type and configuration.
         // Adapters preserve the original payload via into_inner() for NACK on failure.
-        let ingest_result = match payload {
+        // Returns (Result, Option<item_count>) - item count is only available for Arrow data.
+        let (ingest_result, item_count) = match payload {
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
                         // Store as opaque binary for efficient pass-through.
+                        // Skip item counting to avoid parsing overhead.
                         let adapter = OtlpBytesAdapter::new(otlp_bytes);
-                        match engine.ingest(&adapter).await {
+                        let result = match engine.ingest(&adapter).await {
                             Ok(()) => Ok(()),
                             Err(e) => Err((e, OtapPayload::OtlpBytes(adapter.into_inner()))),
-                        }
+                        };
+                        (result, None) // No item count for pass-through
                     }
                     OtlpHandling::ConvertToArrow => {
                         // Convert to Arrow for queryability.
@@ -622,15 +630,18 @@ impl StoreAndForward {
                         let bytes_for_nack = otlp_bytes.clone();
                         match OtapPayload::OtlpBytes(otlp_bytes).try_into() {
                             Ok(records) => {
+                                // Count items from Arrow data (cheap - just num_rows)
+                                let num_items = records.num_items() as u64;
                                 let adapter = OtapRecordBundleAdapter::new(records);
-                                match engine.ingest(&adapter).await {
+                                let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     // Ingest failed: NACK with the Arrow records we tried to store
                                     Err(e) => Err((
                                         e,
                                         OtapPayload::OtapArrowRecords(adapter.into_inner()),
                                     )),
-                                }
+                                };
+                                (result, Some(num_items))
                             }
                             Err(e) => {
                                 // Conversion failed - NACK with original bytes so upstream can retry
@@ -652,12 +663,14 @@ impl StoreAndForward {
                 }
             }
             OtapPayload::OtapArrowRecords(records) => {
-                // Native Arrow data: store directly.
+                // Native Arrow data: count items (cheap) and store directly.
+                let num_items = records.num_items() as u64;
                 let adapter = OtapRecordBundleAdapter::new(records);
-                match engine.ingest(&adapter).await {
+                let result = match engine.ingest(&adapter).await {
                     Ok(()) => Ok(()),
                     Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
-                }
+                };
+                (result, Some(num_items))
             }
         };
 
@@ -666,11 +679,13 @@ impl StoreAndForward {
             Ok(()) => {
                 self.metrics.bundles_ingested.add(1);
 
-                // Track consumed items by signal type
-                match signal_type {
-                    SignalType::Logs => self.metrics.consumed_items_logs.add(num_items),
-                    SignalType::Metrics => self.metrics.consumed_items_metrics.add(num_items),
-                    SignalType::Traces => self.metrics.consumed_items_traces.add(num_items),
+                // Track consumed Arrow items by signal type
+                if let Some(num_items) = item_count {
+                    match signal_type {
+                        SignalType::Logs => self.metrics.consumed_arrow_logs.add(num_items),
+                        SignalType::Metrics => self.metrics.consumed_arrow_metrics.add(num_items),
+                        SignalType::Traces => self.metrics.consumed_arrow_traces.add(num_items),
+                    }
                 }
 
                 // ACK upstream after successful WAL write.
@@ -863,9 +878,12 @@ impl StoreAndForward {
         // Convert the reconstructed bundle to OtapPdata
         match convert_bundle_to_pdata(handle.data()) {
             Ok(mut pdata) => {
-                // Capture signal type and item count for metrics before moving pdata
-                let signal_type = pdata.signal_type();
-                let num_items = pdata.num_items() as u64;
+                // Get item count for Arrow data (cheap); skip for OTLP bytes (expensive)
+                let item_count = match pdata.payload() {
+                    OtapPayload::OtapArrowRecords(records) => Some(records.num_items() as u64),
+                    OtapPayload::OtlpBytes(_) => None,
+                };
+                let signal_type = pdata.payload().signal_type();
 
                 // Subscribe for ACK/NACK with BundleRef in calldata
                 let calldata = encode_bundle_ref(bundle_ref);
@@ -880,13 +898,19 @@ impl StoreAndForward {
                     Ok(()) => {
                         self.metrics.bundles_sent.add(1);
 
-                        // Track produced items by signal type
-                        match signal_type {
-                            SignalType::Logs => self.metrics.produced_items_logs.add(num_items),
-                            SignalType::Metrics => {
-                                self.metrics.produced_items_metrics.add(num_items)
+                        // Track produced Arrow items by signal type
+                        if let Some(num_items) = item_count {
+                            match signal_type {
+                                SignalType::Logs => {
+                                    self.metrics.produced_arrow_logs.add(num_items)
+                                }
+                                SignalType::Metrics => {
+                                    self.metrics.produced_arrow_metrics.add(num_items)
+                                }
+                                SignalType::Traces => {
+                                    self.metrics.produced_arrow_traces.add(num_items)
+                                }
                             }
-                            SignalType::Traces => self.metrics.produced_items_traces.add(num_items),
                         }
 
                         otel_debug!(
