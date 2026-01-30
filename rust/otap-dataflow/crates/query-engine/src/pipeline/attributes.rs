@@ -77,46 +77,6 @@ impl PipelineStage for AttributeTransformPipelineStage {
             _ => DataType::UInt32,
         };
 
-        // Ensure the root record batch has an ID column.
-        // The OTLP encoder generic logic requires the parent batch to have an 'id' column
-        // to link it to the attribute batch's 'parent_id'.
-        // If the original batch had no attributes, the encoder might have skipped generating IDs.
-        let root_payload_type = otap_batch.root_payload_type();
-        if let Some(root_batch) = otap_batch.get(root_payload_type) {
-            if root_batch.column_by_name(consts::ID).is_none() {
-                let num_rows = root_batch.num_rows();
-                let id_array: ArrayRef = match parent_id_type {
-                    DataType::UInt16 => {
-                        let values: Vec<u16> = (0..num_rows).map(|i| i as u16).collect();
-                        Arc::new(UInt16Array::from(values))
-                    }
-                    DataType::UInt32 => {
-                        let values: Vec<u32> = (0..num_rows).map(|i| i as u32).collect();
-                        Arc::new(UInt32Array::from(values))
-                    }
-                    _ => unreachable!("unsupported parent id type"),
-                };
-
-                let mut fields = root_batch.schema().fields().to_vec();
-                fields.push(Arc::new(Field::new(consts::ID, parent_id_type.clone(), false)));
-                let new_schema = Arc::new(Schema::new_with_metadata(
-                    fields,
-                    root_batch.schema().metadata().clone(),
-                ));
-
-                let mut columns = root_batch.columns().to_vec();
-                columns.push(id_array);
-
-                let new_root_batch = RecordBatch::try_new(new_schema, columns).map_err(|e| {
-                    Error::ExecutionError {
-                        cause: e.to_string(),
-                    }
-                })?;
-
-                otap_batch.set(root_payload_type, new_root_batch);
-            }
-        }
-
         // If we need to process but have no batch (i.e. insert into empty), create a dummy batch
         // We need at least the ATTRIBUTE_KEY column for the transform logic to work (it checks for existence)
         let dummy_batch;
@@ -608,7 +568,7 @@ mod test {
         test_insert_attributes_types::<OplParser>().await;
     }
 
-    async fn test_insert_attributes_scopes<P: Parser>() {
+    async fn test_insert_attributes_on_nested_field<P: Parser>() {
         let result = exec_logs_pipeline::<P>(
             "logs |
                 extend
@@ -627,13 +587,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_insert_attributes_scopes_kql_parser() {
-        test_insert_attributes_scopes::<KqlParser>().await;
+    async fn test_insert_attributes_on_nested_field_kql_parser() {
+        test_insert_attributes_on_nested_field::<KqlParser>().await;
     }
 
     #[tokio::test]
-    async fn test_insert_attributes_scopes_opl_parser() {
-        test_insert_attributes_scopes::<OplParser>().await;
+    async fn test_insert_attributes_on_nested_field_opl_parser() {
+        test_insert_attributes_on_nested_field::<OplParser>().await;
     }
 
     async fn test_insert_attributes_replacement<P: Parser>() {

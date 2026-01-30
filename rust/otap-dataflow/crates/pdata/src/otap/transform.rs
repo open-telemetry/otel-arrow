@@ -4383,7 +4383,9 @@ where
     }
 
     // Get unique parents
-    let parent_ids_accessor = parent_ids_accessor.as_ref().expect("must have parent ids");
+    let parent_ids_accessor = parent_ids_accessor.as_ref().ok_or_else(|| Error::ColumnNotFound {
+        name: consts::PARENT_ID.into(),
+    })?;
     let mut unique_parents = BTreeSet::new();
     for i in 0..parent_ids_accessor.len() {
         if let Some(parent) = parent_ids_accessor.value_at(i) {
@@ -4524,7 +4526,7 @@ where
     }
 
     Ok((
-        RecordBatch::try_new(Arc::new(schema.clone()), columns).expect("schema check"),
+        RecordBatch::try_new(Arc::new(schema.clone()), columns).map_err(|e| Error::ArrowError { source: e })?,
         total_rows,
     ))
 }
