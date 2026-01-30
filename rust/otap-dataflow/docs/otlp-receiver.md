@@ -333,9 +333,18 @@ upstream proxy can perform the conversion.
 
 ### Shared vs Per-Protocol Concurrency
 
-The `max_concurrent_requests` in the HTTP config is used only when the HTTP
-server runs standalone. When HTTP is configured alongside gRPC (the typical
-case), both protocols share the gRPC semaphore to ensure unified backpressure.
+When both protocols are enabled, gRPC and HTTP each enforce their own
+`max_concurrent_requests` (per-protocol limits).
+
+To keep the overall receiver from overwhelming the pipeline, the receiver also
+applies an additional **global cap** derived from the downstream channel
+capacity. In "both" mode, each request must acquire:
+
+- a global permit (shared across gRPC + HTTP)
+- a protocol-local permit (gRPC or HTTP)
+
+In single-protocol deployments (gRPC-only or HTTP-only), the global cap is not
+applied.
 
 ### Service Cloning Pattern
 

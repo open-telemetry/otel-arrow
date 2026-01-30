@@ -57,6 +57,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::ServiceBuilder;
 use tower::util::Either;
 
 /// URN for the OTLP Receiver
@@ -70,7 +71,7 @@ const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// The receiver supports three deployment modes matching the Go collector's `otlpreceiver`:
 /// - **gRPC only**: Configure only `protocols.grpc`
 /// - **HTTP only**: Configure only `protocols.http`
-/// - **Both**: Configure both protocols with shared concurrency limiting
+/// - **Both**: Configure both protocols (per-protocol limits + optional global cap)
 ///
 /// # Example configurations
 ///
@@ -182,6 +183,9 @@ pub struct OTLPReceiver {
     // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
     // tonic requirements.
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    // Global concurrency cap derived from downstream capacity. When both gRPC and HTTP are
+    // enabled, this prevents combined ingress from exceeding what the pipeline can absorb.
+    global_max_concurrent_requests: Option<usize>,
 }
 
 /// Declares the OTLP receiver as a shared receiver factory.
@@ -234,13 +238,19 @@ impl OTLPReceiver {
             pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
         ));
 
-        Ok(Self { config, metrics })
+        Ok(Self {
+            config,
+            metrics,
+            global_max_concurrent_requests: None,
+        })
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
-        // Set both protocols to downstream_capacity.
-        // When both are enabled, they share a single semaphore pool,
-        // so the true ceiling is downstream_capacity (not 2x).
+        // Derive a receiver-wide ceiling from the downstream channel capacity.
+        // This is used as a global cap when both protocols are enabled.
+        self.global_max_concurrent_requests = Some(downstream_capacity.max(1));
+
+        // Tune per-protocol limits relative to downstream capacity.
         if let Some(grpc) = self.config.protocols.grpc.as_mut() {
             common::tune_max_concurrent_requests(grpc, downstream_capacity);
         }
@@ -274,8 +284,8 @@ impl OTLPReceiver {
         let grpc_wait = grpc_settings.is_some_and(|s| s.wait_for_result);
         let wait_for_result_any = grpc_wait || http_wait;
 
-        // The shared semaphore capacity bounds concurrent wait-for-result subscriptions
-        // across all enabled protocols.
+        // This capacity bounds concurrent wait-for-result subscriptions across all enabled
+        // protocols.
         let shared_ack_slot_capacity = if wait_for_result_any {
             max_concurrent_requests.max(1)
         } else {
@@ -453,6 +463,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     ) -> Result<TerminalState, Error> {
         let grpc_enabled = self.config.protocols.grpc.is_some();
         let http_enabled = self.config.protocols.http.is_some();
+        let both_enabled = grpc_enabled && http_enabled;
 
         otap_df_telemetry::otel_info!(
             "receiver.start",
@@ -461,22 +472,30 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             http_enabled = http_enabled
         );
 
-        // Determine max concurrent requests from whichever protocol is configured.
-        // When both are enabled, they share a semaphore so we use the gRPC value (which is tuned).
-        let max_concurrent_requests = self
+        // Determine per-protocol concurrency limits. These are tuned in
+        // `tune_max_concurrent_requests()` to not exceed downstream capacity.
+        let grpc_max = self
             .config
             .protocols
             .grpc
             .as_ref()
             .map(|g| g.max_concurrent_requests)
-            .or_else(|| {
-                self.config
-                    .protocols
-                    .http
-                    .as_ref()
-                    .map(|h| h.max_concurrent_requests)
-            })
             .unwrap_or(1)
+            .max(1);
+        let http_max = self
+            .config
+            .protocols
+            .http
+            .as_ref()
+            .map(|h| h.max_concurrent_requests)
+            .unwrap_or(1)
+            .max(1);
+
+        // Optional global receiver-wide cap (derived from downstream capacity in
+        // `tune_max_concurrent_requests`). Applied only when both protocols are enabled.
+        let global_max = self
+            .global_max_concurrent_requests
+            .unwrap_or_else(|| grpc_max.max(http_max))
             .max(1);
 
         // Build gRPC settings if gRPC is enabled.
@@ -492,13 +511,19 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             .build_signal_services(
                 &effect_handler,
                 grpc_settings.as_ref(),
-                max_concurrent_requests,
+                if both_enabled {
+                    global_max
+                } else if grpc_enabled {
+                    grpc_max
+                } else {
+                    http_max
+                },
             );
 
-        // Create shared semaphore for concurrency limiting.
-        // When both protocols are enabled, they share the same pool.
-        // When only one protocol is enabled, it still uses the semaphore for consistency.
-        let shared_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
+        // Optional receiver-wide semaphore used to cap combined gRPC + HTTP load.
+        // Only enabled when the cap is provided (i.e., tuning has occurred).
+        let global_semaphore = (both_enabled && self.global_max_concurrent_requests.is_some())
+            .then(|| Arc::new(Semaphore::new(global_max)));
 
         // Build gRPC server task if gRPC is enabled.
         let grpc_task: Option<GrpcServerTask> =
@@ -506,22 +531,21 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 let listener = effect_handler.tcp_listener(grpc_config.listening_addr)?;
                 let incoming = grpc_config.build_tcp_incoming(listener);
 
-                // Use shared semaphore when both protocols are enabled, otherwise use
-                // GlobalConcurrencyLimitLayer for gRPC-only (preserves prior behavior).
-                let (limit_layer, _) = if http_enabled {
-                    (
-                        Either::Left(SharedConcurrencyLayer::new(shared_semaphore.clone())),
-                        Some(shared_semaphore.clone()),
+                // gRPC enforces its own per-protocol concurrency limit.
+                // When HTTP is also enabled, apply an additional global cap so the combined
+                // ingress cannot exceed downstream capacity.
+                let limit_layer = if let Some(global) = global_semaphore.clone() {
+                    Either::Left(
+                        ServiceBuilder::new()
+                            .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
+                            .layer(SharedConcurrencyLayer::new(global)),
                     )
                 } else {
-                    (
-                        Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
-                        None,
-                    )
+                    Either::Right(GlobalConcurrencyLimitLayer::new(grpc_max))
                 };
 
-                let mut server =
-                    common::apply_server_tuning(Server::builder(), grpc_config).layer(limit_layer);
+                let mut server = common::apply_server_tuning(Server::builder(), grpc_config)
+                    .layer(limit_layer);
 
                 if let Some(timeout) = grpc_config.timeout {
                     server = server.timeout(timeout);
@@ -573,22 +597,12 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let http_shutdown = CancellationToken::new();
         let http_task: Option<HttpServerTask> =
             if let Some(http_config) = self.config.protocols.http.clone() {
-                // When HTTP-only, create a dedicated semaphore.
-                // When both protocols are enabled, share the semaphore.
-                let semaphore_for_http = if grpc_enabled {
-                    Some(shared_semaphore.clone())
-                } else {
-                    // HTTP-only mode: the HTTP server will create its own semaphore
-                    // based on its max_concurrent_requests setting.
-                    None
-                };
-
                 Some(Box::pin(crate::otlp_http::serve(
                     effect_handler.clone(),
                     http_config,
                     ack_registry.clone(),
                     self.metrics.clone(),
-                    semaphore_for_http,
+                    global_semaphore.clone(),
                     http_shutdown.clone(),
                 )))
             } else {
@@ -1471,6 +1485,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1515,6 +1530,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1606,6 +1622,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1704,6 +1721,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1763,6 +1781,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1831,6 +1850,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1920,6 +1940,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1981,6 +2002,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2041,6 +2063,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2149,6 +2172,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2232,6 +2256,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2293,6 +2318,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2355,6 +2381,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2440,6 +2467,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2539,6 +2567,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2618,6 +2647,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2707,6 +2737,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2760,6 +2791,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2818,6 +2850,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -2938,6 +2971,7 @@ mod tests {
                 metrics: Arc::new(Mutex::new(
                     pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
                 )),
+                global_max_concurrent_requests: Some(1),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
