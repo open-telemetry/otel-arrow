@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -22,6 +21,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ProcessorFactory};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -191,7 +191,10 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     .any(|p| p.as_ref() == desired_port);
 
                 if has_port {
-                    match effect_handler.send_message_to(desired_port, data).await {
+                    match effect_handler
+                        .send_message_with_source_node_to(desired_port, data)
+                        .await
+                    {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_named(st);
@@ -206,7 +209,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                         }
                     }
                 } else {
-                    match effect_handler.send_message(data).await {
+                    match effect_handler.send_message_with_source_node(data).await {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_default(st);
@@ -368,7 +371,7 @@ mod tests {
         use otap_df_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
         };
-        use otap_df_engine::message::Message;
+        use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::InternalTelemetrySystem;
@@ -431,7 +434,7 @@ mod tests {
                 // Effect handler with a logs named port
                 let (tx_logs, rx_logs) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_LOGS.into(), LocalSender::mpsc(tx_logs));
+                let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -505,7 +508,7 @@ mod tests {
                 let (tx_logs, rx_logs) = mpsc::Channel::new(1);
                 drop(rx_logs); // close to trigger SendError::Closed
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_LOGS.into(), LocalSender::mpsc(tx_logs));
+                let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -569,7 +572,7 @@ mod tests {
                 // Only a single out port (non-named for logs); default path should be used
                 let (tx_out, rx_out) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx_out));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -638,7 +641,7 @@ mod tests {
                 let (tx_out, rx_out) = mpsc::Channel::new(1);
                 drop(rx_out);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx_out));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -703,7 +706,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_TRACES.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -760,7 +763,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_TRACES.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -813,7 +816,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -870,7 +873,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -924,7 +927,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_METRICS.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -983,7 +986,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_METRICS.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -1038,7 +1041,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -1097,7 +1100,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 

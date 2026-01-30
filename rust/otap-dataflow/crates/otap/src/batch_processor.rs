@@ -37,6 +37,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -951,7 +952,7 @@ where
                     &mut pdata,
                 );
             }
-            effect.send_message(pdata).await?;
+            effect.send_message_with_source_node(pdata).await?;
         }
 
         Ok(())

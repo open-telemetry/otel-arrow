@@ -21,7 +21,8 @@ use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
+    ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     context::PipelineContext,
     control::{AckMsg, NackMsg, NodeControlMsg},
@@ -184,7 +185,7 @@ impl TransformProcessor {
             // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
             // and we can just handle the batch normally.
             let pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
-            effect_handler.send_message(pdata).await?;
+            effect_handler.send_message_with_source_node(pdata).await?;
             return Ok(());
         }
 
@@ -232,7 +233,7 @@ impl TransformProcessor {
                 &mut pdata,
             );
         }
-        effect_handler.send_message(pdata).await?;
+        effect_handler.send_message_with_source_node(pdata).await?;
 
         // handle any batches that need to be forwarded to a specific out_port thanks to invocation
         // of a "route_to" operator call
@@ -281,7 +282,9 @@ impl TransformProcessor {
                 );
             }
 
-            effect_handler.send_message_to(port_name, pdata).await?;
+            effect_handler
+                .send_message_with_source_node_to(port_name, pdata)
+                .await?;
         }
 
         Ok(())
@@ -382,7 +385,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 if !self.should_process(&payload) {
                     // skip handling this pdata
                     effect_handler
-                        .send_message(OtapPdata::new(context, payload))
+                        .send_message_with_source_node(OtapPdata::new(context, payload))
                         .await?;
                 } else {
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
@@ -967,7 +970,7 @@ mod test {
                     999,
                 );
 
-                let (inbound_context, payload) = pdata.into_parts();
+                let (mut inbound_context, payload) = pdata.into_parts();
                 let pdata = OtapPdata::new(inbound_context.clone(), payload);
 
                 // Process the message through the transform processor
@@ -985,6 +988,12 @@ mod test {
 
                 // assert that since the pipeline did no routing, the outbound context should be
                 // same as the inbound
+                assert_eq!(inbound_context.source_node(), None);
+                assert_eq!(
+                    outbound_context.source_node(),
+                    Some("transform-processor".into())
+                );
+                inbound_context.set_source_node(Some("transform-processor".into()));
                 assert_eq!(inbound_context, outbound_context);
                 assert!(outbound_context.has_subscribers());
             })
