@@ -125,20 +125,14 @@ const SUBSCRIBER_ID: &str = "store-and-forward";
 ///
 /// Follows RFC-aligned telemetry conventions:
 /// - Metric set name follows `otelcol.<entity>` pattern
-/// - Tracks bundles and individual items (for Arrow data only; OTLP bytes
-///   in pass-through mode skip item counting to avoid parsing overhead)
+/// - Channel metrics already track bundle send/receive counts
+/// - This tracks ACK/NACK status, Arrow item counts, storage, and retries
 #[metric_set(name = "otelcol.node.store_and_forward")]
 #[derive(Debug, Default, Clone)]
 pub struct StoreAndForwardMetrics {
-    // ─── Bundle-level metrics ───────────────────────────────────────────────
-    /// Number of bundles ingested to storage.
-    #[metric(unit = "{bundle}")]
-    pub bundles_ingested: Counter<u64>,
-
-    /// Number of bundles sent downstream.
-    #[metric(unit = "{bundle}")]
-    pub bundles_sent: Counter<u64>,
-
+    // ─── ACK/NACK tracking ──────────────────────────────────────────────────
+    // Note: Bundle send/receive counts are tracked by channel metrics.
+    // These metrics track downstream acknowledgement status.
     /// Number of bundles acknowledged by downstream.
     #[metric(unit = "{bundle}")]
     pub bundles_acked: Counter<u64>,
@@ -679,8 +673,6 @@ impl StoreAndForward {
         // Handle ingest result
         match ingest_result {
             Ok(()) => {
-                self.metrics.bundles_ingested.add(1);
-
                 // Track consumed Arrow items by signal type
                 if let Some(num_items) = item_count {
                     match signal_type {
@@ -898,8 +890,6 @@ impl StoreAndForward {
                 // Try non-blocking send downstream
                 match effect_handler.try_send_message(pdata) {
                     Ok(()) => {
-                        self.metrics.bundles_sent.add(1);
-
                         // Track produced Arrow items by signal type
                         if let Some(num_items) = item_count {
                             match signal_type {
