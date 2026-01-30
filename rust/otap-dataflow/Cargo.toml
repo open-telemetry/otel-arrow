@@ -105,10 +105,14 @@ num_enum = "0.7"
 object_store = {version = "0.12.3", default-features = false}
 once_cell = "1.20.2"
 opentelemetry = "0.31.0"
-opentelemetry-appender-tracing = "0.31.1"
-opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]} #TODO - use it from submodule instead of crate(?)
-opentelemetry_sdk = "0.31.0"
-opentelemetry-stdout = "0.31.0"
+
+# TODO: Note this dependency is duplicate with crates/pdata/src/proto which
+# generates the code from a submodule. Ideally we could share this dependency,a
+# it means moving the derive macros used in our tests upstream.
+opentelemetry-proto = { version = "0.31", default-features = false, features = ["gen-tonic-messages", "logs"]} 
+
+opentelemetry_sdk = { version = "0.31.0", features = ["metrics", "internal-logs"] }
+opentelemetry-stdout = { version = "0.31.0", features = ["metrics"] }
 opentelemetry-otlp = "0.31.0"
 opentelemetry-prometheus = "0.31.0"
 parking_lot = "0.12.5"
