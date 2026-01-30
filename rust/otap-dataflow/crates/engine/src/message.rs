@@ -86,6 +86,14 @@ impl<Data> Message<Data> {
 }
 
 /// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
+///
+/// Rationale:
+/// - Local nodes run on a single-threaded `LocalSet`, so it is safe for them to hold either a
+///   local sender or a shared sender. This lets the engine select shared channels when any edge
+///   requires `Send` (e.g. mixed local/shared fan-in) without extra wiring paths.
+/// - Shared nodes keep `SharedSender` directly because their effect handlers must be `Send` to run
+///   on multi-threaded executors (`tokio::spawn`). Wrapping in this enum would make them `!Send`
+///   and introduce unnecessary branching on hot paths.
 #[must_use = "A `Sender` is requested but not used."]
 pub enum Sender<T> {
     /// Sender of a local channel.
@@ -127,6 +135,9 @@ impl<T> Sender<T> {
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
+///
+/// See [`Sender`] for the rationale behind using the enum in local contexts while keeping shared
+/// nodes on `SharedReceiver` directly.
 pub enum Receiver<T> {
     /// Receiver of a local channel.
     Local(LocalReceiver<T>),

@@ -1136,6 +1136,7 @@ mod telemetry_tests {
     use super::*;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
+    use otap_df_engine::message::Sender;
     use otap_df_engine::testing::{setup_test_runtime, test_node};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1172,7 +1173,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(out_tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1264,7 +1265,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);

@@ -564,6 +564,7 @@ mod test {
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
     use otap_df_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
+    use otap_df_engine::message::Sender;
     use otap_df_engine::node::NodeId;
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::shared::processor::EffectHandler as SharedProcessorEffectHandler;
@@ -783,9 +784,9 @@ mod test {
 
     #[tokio::test]
     async fn local_processor_send_with_source_node() {
-        let (tx, rx) = LocalChannel::new(4);
+        let (tx, rx) = LocalChannel::<OtapPdata>::new(4);
         let mut senders = HashMap::new();
-        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let handler = LocalProcessorEffectHandler::new(
@@ -810,11 +811,11 @@ mod test {
 
     #[tokio::test]
     async fn local_processor_send_with_source_to_named_port() {
-        let (a_tx, a_rx) = LocalChannel::new(4);
-        let (b_tx, b_rx) = LocalChannel::new(4);
+        let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(4);
+        let (b_tx, b_rx) = LocalChannel::<OtapPdata>::new(4);
         let mut senders = HashMap::new();
-        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
-        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let handler = LocalProcessorEffectHandler::new(
@@ -840,9 +841,9 @@ mod test {
 
     #[tokio::test]
     async fn local_processor_try_send_with_source_node() {
-        let (tx, rx) = LocalChannel::new(1);
+        let (tx, rx) = LocalChannel::<OtapPdata>::new(1);
         let mut senders = HashMap::new();
-        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let handler = LocalProcessorEffectHandler::new(
@@ -866,11 +867,11 @@ mod test {
 
     #[tokio::test]
     async fn local_processor_try_send_with_source_to_named_port() {
-        let (a_tx, a_rx) = LocalChannel::new(1);
-        let (b_tx, b_rx) = LocalChannel::new(1);
+        let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(1);
+        let (b_tx, b_rx) = LocalChannel::<OtapPdata>::new(1);
         let mut senders = HashMap::new();
-        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
-        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let handler = LocalProcessorEffectHandler::new(
@@ -895,11 +896,11 @@ mod test {
 
     #[tokio::test]
     async fn local_receiver_try_send_with_source_to_named_port() {
-        let (a_tx, a_rx) = LocalChannel::new(1);
-        let (b_tx, b_rx) = LocalChannel::new(1);
+        let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(1);
+        let (b_tx, b_rx) = LocalChannel::<OtapPdata>::new(1);
         let mut senders = HashMap::new();
-        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
-        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -926,9 +927,9 @@ mod test {
 
     #[tokio::test]
     async fn local_receiver_send_with_source_node() {
-        let (tx, rx) = LocalChannel::new(2);
+        let (tx, rx) = LocalChannel::<OtapPdata>::new(2);
         let mut senders = HashMap::new();
-        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -955,11 +956,11 @@ mod test {
 
     #[tokio::test]
     async fn local_receiver_send_with_source_to_named_port() {
-        let (a_tx, a_rx) = LocalChannel::new(2);
-        let (b_tx, b_rx) = LocalChannel::new(2);
+        let (a_tx, a_rx) = LocalChannel::<OtapPdata>::new(2);
+        let (b_tx, b_rx) = LocalChannel::<OtapPdata>::new(2);
         let mut senders = HashMap::new();
-        let _ = senders.insert("a".into(), LocalSender::mpsc(a_tx));
-        let _ = senders.insert("b".into(), LocalSender::mpsc(b_tx));
+        let _ = senders.insert("a".into(), Sender::Local(LocalSender::mpsc(a_tx)));
+        let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -987,9 +988,9 @@ mod test {
 
     #[tokio::test]
     async fn local_receiver_try_send_with_source_node() {
-        let (tx, rx) = LocalChannel::new(1);
+        let (tx, rx) = LocalChannel::<OtapPdata>::new(1);
         let mut senders = HashMap::new();
-        let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+        let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
