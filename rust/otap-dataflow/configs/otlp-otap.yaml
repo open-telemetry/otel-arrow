@@ -13,8 +13,10 @@ nodes:
           - exporter
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
-      # timeout: "30s"  # Optional: timeout for RPC requests
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+          # timeout: "30s"  # Optional: timeout for RPC requests
 
       # TLS / mTLS (receiver-side)
       # tls:
