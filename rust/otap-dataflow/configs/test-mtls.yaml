@@ -24,16 +24,15 @@ nodes:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
+          # Receiver mTLS configuration (server-side)
+          tls:
+            # Server identity (required for TLS)
+            cert_file: "./test-certs/server.crt"
+            key_file: "./test-certs/server.key"
 
-      # Receiver mTLS configuration (server-side)
-      tls:
-        # Server identity (required for TLS)
-        cert_file: "./test-certs/server.crt"
-        key_file: "./test-certs/server.key"
-
-        # Client certificate verification for mTLS
-        client_ca_file: "./test-certs/ca.crt"
-        include_system_ca_certs_pool: false
+            # Client certificate verification for mTLS
+            client_ca_file: "./test-certs/ca.crt"
+            include_system_ca_certs_pool: false
 
   exporter:
     kind: exporter

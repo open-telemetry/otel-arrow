@@ -24,8 +24,6 @@ use crate::otap_grpc::otlp::server_new::{
 use crate::pdata::OtapPdata;
 #[cfg(feature = "experimental-tls")]
 use crate::tls_utils::{build_tls_acceptor, create_tls_stream};
-#[cfg(feature = "experimental-tls")]
-use otap_df_config::tls::TlsServerConfig;
 
 use crate::otap_grpc::common;
 use crate::otap_grpc::common::AckRegistry;
@@ -101,17 +99,30 @@ const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 ///     http:
 ///       listening_addr: "0.0.0.0:4318"
 /// ```
+///
+/// ## With TLS (each protocol has its own TLS config)
+/// ```yaml
+/// config:
+///   protocols:
+///     grpc:
+///       listening_addr: "0.0.0.0:4317"
+///       tls:
+///         cert_file: "/path/to/server.crt"
+///         key_file: "/path/to/server.key"
+///     http:
+///       listening_addr: "0.0.0.0:4318"
+///       tls:
+///         cert_file: "/path/to/server.crt"
+///         key_file: "/path/to/server.key"
+/// ```
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Protocol configurations.
     ///
     /// At least one protocol (gRPC or HTTP) must be configured.
+    /// Each protocol can have its own TLS configuration.
     pub protocols: Protocols,
-
-    /// TLS configuration for gRPC (HTTP has its own TLS config within `protocols.http`).
-    #[cfg(feature = "experimental-tls")]
-    pub tls: Option<TlsServerConfig>,
 }
 
 /// Protocol configurations for the OTLP receiver.
@@ -523,7 +534,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     .add_service(traces_server.expect("gRPC enabled but traces_server is None"));
 
                 #[cfg(feature = "experimental-tls")]
-                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                let maybe_tls_acceptor = build_tls_acceptor(grpc_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
@@ -533,7 +544,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     })?;
 
                 #[cfg(feature = "experimental-tls")]
-                let handshake_timeout = self.config.tls.as_ref().and_then(|t| t.handshake_timeout);
+                let handshake_timeout = grpc_config.tls.as_ref().and_then(|t| t.handshake_timeout);
 
                 let task: GrpcServerTask = {
                     #[cfg(feature = "experimental-tls")]
@@ -776,8 +787,6 @@ mod tests {
                 grpc: Some(grpc),
                 http: None,
             },
-            #[cfg(feature = "experimental-tls")]
-            tls: None,
         }
     }
 
@@ -793,8 +802,6 @@ mod tests {
                 grpc: None,
                 http: Some(http),
             },
-            #[cfg(feature = "experimental-tls")]
-            tls: None,
         }
     }
 
