@@ -103,64 +103,19 @@ impl InFlightExports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
-    use azure_core::time::OffsetDateTime;
     use reqwest::Client;
-    use std::sync::{Arc, Mutex};
     use std::time::Duration as StdDuration;
 
     // ==================== Test Helpers ====================
 
-    #[derive(Debug)]
-    struct MockCredential {
-        token: String,
-        expires_in: azure_core::time::Duration,
-        call_count: Arc<Mutex<usize>>,
-    }
-
-    impl MockCredential {
-        fn new(token: &str, expires_in_minutes: i64) -> (Arc<Self>, Arc<Mutex<usize>>) {
-            let call_count = Arc::new(Mutex::new(0));
-            let cred = Arc::new(Self {
-                token: token.to_string(),
-                expires_in: azure_core::time::Duration::minutes(expires_in_minutes),
-                call_count: call_count.clone(),
-            });
-            (cred, call_count)
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl TokenCredential for MockCredential {
-        async fn get_token(
-            &self,
-            _scopes: &[&str],
-            _options: Option<TokenRequestOptions<'_>>,
-        ) -> azure_core::Result<AccessToken> {
-            let mut count = self.call_count.lock().unwrap();
-            *count += 1;
-
-            Ok(AccessToken {
-                token: self.token.clone().into(),
-                expires_on: OffsetDateTime::now_utc() + self.expires_in,
-            })
-        }
-    }
-
     fn create_test_client() -> LogsIngestionClient {
-        let (credential, _) = MockCredential::new("test_token", 60);
         // Use a client that will fail fast if actually used
         let http_client = Client::builder()
             .timeout(StdDuration::from_millis(1))
             .build()
             .expect("failed to create HTTP client");
 
-        LogsIngestionClient::from_parts(
-            http_client,
-            "http://localhost".to_string(),
-            credential as Arc<dyn TokenCredential>,
-            "scope".to_string(),
-        )
+        LogsIngestionClient::from_parts(http_client, "http://localhost".to_string())
     }
 
     /// Create a future that completes immediately with a success result.

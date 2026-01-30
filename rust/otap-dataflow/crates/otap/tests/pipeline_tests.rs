@@ -19,9 +19,11 @@ use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::fake_data_generator::config::{
     Config as FakeDataGeneratorConfig, DataSource, TrafficConfig,
 };
+use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
+use otap_df_otap::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
-use serde_json::to_value;
+use serde_json::{json, to_value};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use weaver_common::vdir::VirtualDirectoryPath;
@@ -132,6 +134,35 @@ fn test_pipeline_fan_in_builds() {
     assert_eq!(registry.entity_count(), expected_entities);
 }
 
+#[test]
+fn test_pipeline_mixed_receivers_shared_channel_builds() {
+    let pipeline_group_id: PipelineGroupId = "test-group".into();
+    let pipeline_id: PipelineId = "mixed-receiver-pipeline".into();
+    let config =
+        build_mixed_receiver_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
+
+    let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+    assert!(
+        channel_metrics_enabled,
+        "channel metrics should be enabled for this test"
+    );
+
+    // Pipeline + nodes + control channels (one per node) + pdata channels (sender+receiver per edge).
+    let expected_entities = expected_entity_count(&config);
+
+    let telemetry_system = InternalTelemetrySystem::default();
+    let registry = telemetry_system.registry();
+    let controller_ctx = ControllerContext::new(registry.clone());
+    let pipeline_ctx = controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 0);
+
+    let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let _runtime_pipeline = OTAP_PIPELINE_FACTORY
+        .build(pipeline_ctx, config, None)
+        .expect("failed to build mixed receiver pipeline");
+
+    assert_eq!(registry.entity_count(), expected_entities);
+}
+
 fn build_test_pipeline_config(
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
@@ -174,6 +205,31 @@ fn build_fan_in_pipeline_config(
         .expect("failed to build pipeline config")
 }
 
+fn build_mixed_receiver_pipeline_config(
+    pipeline_group_id: PipelineGroupId,
+    pipeline_id: PipelineId,
+) -> PipelineConfig {
+    let local_receiver_config_value = fake_receiver_config_value();
+    let shared_receiver_config_value = otlp_receiver_config_value();
+
+    PipelineConfigBuilder::new()
+        .add_receiver(
+            "local_receiver",
+            OTAP_FAKE_DATA_GENERATOR_URN,
+            Some(local_receiver_config_value),
+        )
+        .round_robin("local_receiver", "out", ["exporter"])
+        .add_receiver(
+            "shared_receiver",
+            OTLP_RECEIVER_URN,
+            Some(shared_receiver_config_value),
+        )
+        .add_exporter("exporter", NOOP_EXPORTER_URN, None)
+        .round_robin("shared_receiver", "out", ["exporter"])
+        .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
+        .expect("failed to build pipeline config")
+}
+
 fn fake_receiver_config_value() -> serde_json::Value {
     let traffic_config = TrafficConfig::new(Some(1), Some(1), 1, 1, 1, 1);
     let registry_path = VirtualDirectoryPath::GitRepo {
@@ -184,6 +240,12 @@ fn fake_receiver_config_value() -> serde_json::Value {
     let receiver_config = FakeDataGeneratorConfig::new(traffic_config, registry_path)
         .with_data_source(DataSource::Static);
     to_value(receiver_config).expect("failed to serialize receiver config")
+}
+
+fn otlp_receiver_config_value() -> serde_json::Value {
+    json!({
+        "listening_addr": "127.0.0.1:0",
+    })
 }
 
 fn expected_entity_count(config: &PipelineConfig) -> usize {
