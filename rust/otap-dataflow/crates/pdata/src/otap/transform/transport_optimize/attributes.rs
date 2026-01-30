@@ -14,9 +14,50 @@
 //! Then delta encoding is applied to segments of the parent_id column
 //!
 //! Note that the values are contained in multiple columns. For the most part, there is one column
-//! per type of attribute, however Map & Slice type attributes are a special case
+//! per type of attribute, however Map & Slice type attributes are a special case where these two
+//! types of attributes share a values column called "ser".
 //!
-//! TODO finish this module documentation
+//! In this encoding, the parent_id column is delta-encoded for sequences of rows sharing the same
+//! type, key and value, with two exceptions:
+//! - parent_ids for Map & Slice types are not delta encoded
+//! - attributes where the value is null do not have their parent_id column delta encoded.
+//!
+//! An row is considered to contain a null attribute if:
+//! - the type column = 0, which corresponds to [`AttributeValueType::Empty`]
+//! - the value column contains a null
+//! - the value column is not present
+//!
+//! Note that the latter two cases (column contains null, values column missing), would be unusual.
+//! Typically to represent a null value, it is best to set `AttributeValueType::Empty` in the type
+//! column. Not only does this more clearly express the semantic of no value, but there are the
+//! process of adding this encoding is more optimal if there are no nulls in the values column
+//! where type != `Empty.
+//!
+//! Example:
+//!
+//!  type      | key    | str  | int   | parent_id
+//! -----------|---- ---|------|-------|-----------
+//!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 0
+//!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 2 (delta encoded b/c type,key,val are equal to previous row)
+//!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 3
+//!  1 (str)   | "k1"   | "v2" | null  |  1     <- parent_id = 1 (value changed, broke delta encoding sequence)
+//!  1 (str)   | "k1"   | "v2" | null  |  1     <- parent_id = 2
+//!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 1 (key changed, broke delta encoding sequence)
+//!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 2
+//!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 3
+//!  2 (int)   | null   | "v2" | 1     |  1     <- parent_id = 1 (type changed, broke delta encoding sequence)
+//!  2 (int)   | null   | "v2" | 1     |  1     <- parent_id = 2
+//! ...
+//!  0 (empty) | null   | null | null  |  1     <- parent_id = 1 (value null b/c type = empty, no delta encoding)
+//! ...
+//!  3 (float) | null   | null | null  |  1     <- parent_id = 1 (value null b/c value column missing, no delta encoding)
+//! ...
+//!  1 (str)   | null   | null | null  |  1     <- parent_id = 1 (value null b/c null in values column, no delta encoding)
+//! ...
+//!  5 (map)   | null   | null | null  |  1     <- parent_id = 1 (no delta encoding. not supported by type = map)
+//! ...
+//! 6 (slice)   | null   | null | null  |  1     <- parent_id = 1 (no delta encoding. not supported by type = slice)
+//!
 
 use std::{
     ops::{Range, Sub},
@@ -29,7 +70,7 @@ use arrow::{
         DictionaryArray, Float64Array, Int64Array, NullBufferBuilder, PrimitiveArray, RecordBatch,
         StringArray, UInt8Array, UInt16Array, UInt32Array,
     },
-    buffer::{NullBuffer, ScalarBuffer},
+    buffer::{MutableBuffer, NullBuffer, ScalarBuffer},
     compute::{SortOptions, cast, concat, not, partition, rank, take},
     datatypes::{DataType, Schema, ToByteSlice, UInt8Type, UInt16Type},
     util::{bit_iterator::BitIndexIterator, bit_util},
@@ -109,8 +150,7 @@ where
             let as_prim = cast(parent_id_col, &T::DATA_TYPE).map_err(|_| {
                 // cast would only fail here if the dictionary values were not something that can
                 // be cast to <T as ArrowPrimitiveType>::DATA_TYPE (e.g. if the parent_id column
-                // was completely the wong type). This would be very unusual and would suggest a
-                // malformed record batch
+                // was completely the wong type).
                 Error::ColumnDataTypeMismatch {
                     name: consts::PARENT_ID.into(),
                     actual: *v.clone(),
@@ -665,7 +705,12 @@ impl SortedValuesColumnBuilder {
     /// the final sorted values column
     fn append_indices_to_take<I: IntoIterator<Item = u32>>(&mut self, new_indices: I) {
         // extends to the current segment of non-null indices if one is available, otherwise
-        // just creates a new segment of non-null indices
+        // just creates a new segment of non-null indices.
+        //
+        // It would be typical that we are appending multiple non-null segments in a row, because
+        // this will be called from a place where we've sorted by type, and are inserting all the
+        // indices for rows having this type. appending to the end of the exiting vec saves us from
+        // allocating a new vec for each segment.
         if let Some(SortedValuesColumnSegment::NonNull(non_null_indices)) =
             self.sorted_segments.last_mut()
         {
@@ -690,6 +735,8 @@ impl SortedValuesColumnBuilder {
     }
 
     fn finish(&self) -> Result<Arc<dyn Array>> {
+        // TODO - add debug asserts that the sorted_segments.len < 3 and add comments about why
+
         // TODO write test for this
         if self.sorted_segments.is_empty() {
             return Ok(self.gen_source_nulls(0)?);
@@ -717,7 +764,8 @@ impl SortedValuesColumnBuilder {
                     // safety: take will only fail here if we called it with indices out of bounds,
                     // but all the indices we're using have been computed from the original source
                     // array, so it is safe to expect here
-                    return Ok(take(self.source.as_ref(), &indices_array, None).expect("indices in bounds"));
+                    return Ok(take(self.source.as_ref(), &indices_array, None)
+                        .expect("indices in bounds"));
                 }
             }
         }
@@ -872,36 +920,39 @@ impl SortedValuesColumnBuilder {
     }
 }
 
-// TODO comments
-// TODO - this should have a "reset" method on it so we can reuse it
+/// This helper struct is used for sorting and partitioning segments of the values columns.
+///
+/// Because multiple ranges of the values array may need to be sorted and partitioned, this struct
+/// keeps some internal state to avoid heap allocations for each sequence of attributes.
 struct AttrValuesSorter {
+    /// this is the values array, or data extracted from it, used for sorting/partitioning
     inner: AttrsValueSorterInner,
+
+    // The rest of temporary buffers used when sorting/partitioning to avoid heap allocations on
+    // each method invocation
     array_partitions_scratch: Vec<Range<usize>>,
     rank_sort_scratch: Vec<(usize, u16)>,
     key_partition_scratch: Vec<u16>,
     partition_buffer: Vec<u8>,
-    partition_buffer_bitlen: usize,
 }
 
-struct AttrValueDictKeysAndRanks {
-    keys: Vec<u16>,
-    ranks: Vec<u16>,
-    nulls: Option<NullBuffer>,
-}
-
+/// References to the values array data kept for sorting & partitioning. In some cases, the
+/// original Arrow array kept. For other cases we keep only some references to the original data
+/// which can be handled in a more performant manner. Generally this means not using the arrow
+/// compute kernels for sorting & partitioning to avoid the `Arc`s they would force us to allocate.
 enum AttrsValueSorterInner {
+    /// inner references to values array dictionary keys, the rank of the keys, and the null buffer.
     KeysAndRanks(AttrValueDictKeysAndRanks),
+
+    /// an arrow Array containing some segment of the values column
     Array(ArrayRef),
 }
 
-struct NullableRange {
-    range: Range<usize>,
-    is_null: bool,
-}
+impl TryFrom<&ArrayRef> for AttrsValueSorterInner {
+    type Error = Error;
 
-impl AttrValuesSorter {
-    fn try_new(values_arr: &ArrayRef) -> Result<Self> {
-        let inner = match values_arr.data_type() {
+    fn try_from(values_arr: &ArrayRef) -> Result<Self> {
+        match values_arr.data_type() {
             DataType::Dictionary(k, _) => match k.as_ref() {
                 &DataType::UInt16 => {
                     // safety: we can call expect below because we've checked the datatype just above
@@ -939,11 +990,11 @@ impl AttrValuesSorter {
                         None
                     };
 
-                    AttrsValueSorterInner::KeysAndRanks(AttrValueDictKeysAndRanks {
+                    Ok(Self::KeysAndRanks(AttrValueDictKeysAndRanks {
                         ranks: key_ranks,
                         nulls: rank_nulls,
                         keys: dict_arr.keys().values().to_vec(),
-                    })
+                    }))
                 }
                 other_key_type => {
                     return Err(Error::UnsupportedDictionaryKeyType {
@@ -952,23 +1003,80 @@ impl AttrValuesSorter {
                     });
                 }
             },
-            _ => AttrsValueSorterInner::Array(values_arr.clone()),
-        };
+            _ => Ok(Self::Array(values_arr.clone())),
+        }
+    }
+}
 
+/// Dictionary keys and the sorted rank of those keys for some segment of the
+struct AttrValueDictKeysAndRanks {
+    keys: Vec<u16>,
+    ranks: Vec<u16>,
+
+    /// validity bitmap for the keys field
+    nulls: Option<NullBuffer>,
+}
+
+/// Range returned by the partitioning methods on [`AttrValuesSorter`] which is either all valid
+/// or entirely null
+struct NullableRange {
+    range: Range<usize>,
+    is_null: bool,
+}
+
+impl AttrValuesSorter {
+    fn try_new(values_arr: &ArrayRef) -> Result<Self> {
         Ok(Self {
-            inner,
+            inner: values_arr.try_into()?,
             array_partitions_scratch: Vec::new(),
             rank_sort_scratch: Vec::new(),
             key_partition_scratch: Vec::new(),
             partition_buffer: Vec::new(),
-            partition_buffer_bitlen: 0,
         })
     }
 
+    /// sort the given range of the contained segment of the values column, and collect the sorted
+    /// indices into the result vec
     fn sort_range_to_indices(&mut self, range: &Range<usize>, result: &mut Vec<u32>) -> Result<()> {
         match &self.inner {
+            AttrsValueSorterInner::KeysAndRanks(ranks) => {
+                // take the range from the key ranks, and map to (idx, rank)
+                self.rank_sort_scratch.clear();
+                self.rank_sort_scratch.reserve(range.len());
+                self.rank_sort_scratch.extend(
+                    ranks
+                        .ranks
+                        .iter()
+                        .skip(range.start)
+                        .take(range.len())
+                        .copied()
+                        .enumerate(),
+                );
+
+                // sort the ranks in the range:
+                if let Some(nulls) = &ranks.nulls {
+                    // comparison may be slightly slower for nulls, but this OK as having null
+                    // in the values column would not be a common way in OTAP
+                    self.rank_sort_scratch.sort_by(|a, b| {
+                        match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
+                            (true, true) => std::cmp::Ordering::Equal,
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            (false, false) => a.1.cmp(&b.1),
+                        }
+                    });
+                } else {
+                    self.rank_sort_scratch.sort_by(|a, b| a.1.cmp(&b.1));
+                }
+
+                // map sorted (idx, rank) to idx
+                result.extend(self.rank_sort_scratch.iter().map(|(idx, _)| *idx as u32));
+            }
+
             AttrsValueSorterInner::Array(arr) => {
-                // TODO Arcs created and dropped here
+                // This is the less optimized path, which uses the arrow compute kernels. The
+                // reason this is less optimal is that we allocate new Arcs/Arrays and then
+                // dispose of them
                 let slice = arr.slice(range.start, range.len());
                 let sorted_indices = arrow::compute::sort_to_indices(
                     &slice,
@@ -983,41 +1091,21 @@ impl AttrValuesSorter {
                         "encountered a type of values column that could not be sorted {e:?}"
                     ),
                 })?;
-                result.extend(sorted_indices.values());
-            }
 
-            AttrsValueSorterInner::KeysAndRanks(ranks) => {
-                self.rank_sort_scratch.clear();
-                self.rank_sort_scratch.reserve(range.len());
-                self.rank_sort_scratch.extend(
-                    ranks
-                        .ranks
-                        .iter()
-                        .skip(range.start)
-                        .take(range.len())
-                        .copied()
-                        .enumerate(),
-                );
-                if let Some(nulls) = &ranks.nulls {
-                    // slower path for nulls
-                    self.rank_sort_scratch.sort_by(|a, b| {
-                        match (nulls.is_valid(a.0), nulls.is_valid(b.0)) {
-                            (true, true) => std::cmp::Ordering::Equal,
-                            (true, false) => std::cmp::Ordering::Less,
-                            (false, true) => std::cmp::Ordering::Greater,
-                            (false, false) => a.1.cmp(&b.1),
-                        }
-                    });
-                } else {
-                    self.rank_sort_scratch.sort_by(|a, b| a.1.cmp(&b.1));
-                }
-                result.extend(self.rank_sort_scratch.iter().map(|(idx, _)| *idx as u32));
+                result.extend(sorted_indices.values());
             }
         }
 
         Ok(())
     }
 
+    /// Slices the contained values column for the given range, takes the values from the range at
+    /// the passed indices and then collects partitions of equivalent values into the results vec.
+    ///
+    /// For the purposes of computing range nullability, this method assumes that the passed
+    /// indices are arranged in such a way that all null values will be grouped into together
+    /// into a single partition. (e.g. the indices represent a sorted segment of the values buffer,
+    /// and this sorting has been done in such a way that takes nulls into account)
     fn take_and_partition_range(
         &mut self,
         range: &Range<usize>,
@@ -1025,7 +1113,63 @@ impl AttrValuesSorter {
         result: &mut Vec<NullableRange>,
     ) -> Result<()> {
         match &self.inner {
+            AttrsValueSorterInner::KeysAndRanks(keys) => {
+                // slice values keys by range, and take rows for the desired indices
+                let keys_range = &keys.keys[range.start..range.end];
+                self.key_partition_scratch.clear();
+                self.key_partition_scratch.reserve(keys_range.len());
+                self.key_partition_scratch
+                    .extend(indices.iter().map(|i| keys_range[*i as usize]));
+
+                // populate bitmap where a 1/true bit represents a partition boundary
+                // (e.g. an index where one value is not equal to its neighbour)
+                let boundaries_len = self.key_partition_scratch.len() - 1;
+                let left = &self.key_partition_scratch[0..boundaries_len];
+                let right = &self.key_partition_scratch[1..boundaries_len + 1];
+                collect_bool_inverted(
+                    boundaries_len,
+                    |i| left[i].is_eq(right[i]),
+                    &mut self.partition_buffer,
+                );
+
+                // map the bitmap of partition boundaries to ranges
+                let mut set_indices =
+                    BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
+                self.array_partitions_scratch.clear();
+                collect_partition_boundaries_to_ranges(
+                    &mut set_indices,
+                    boundaries_len,
+                    &mut self.array_partitions_scratch,
+                );
+                result.extend(
+                    self.array_partitions_scratch
+                        .drain(..)
+                        .map(|range| NullableRange {
+                            range,
+                            is_null: false,
+                        }),
+                );
+
+                // TODO -- Should we be coalescing null ranges here?
+                // thinking if indices groups nulls into a single partition, but we're partitioning
+                // on values, null rows are together but may have different values which means
+                // different partitions which is just extra stuff to handle.
+
+                // if there were any nulls in the original values column, fill in any null segments
+                // in the ranges result
+                if let Some(nulls) = &keys.nulls {
+                    for nullable_range in result {
+                        nullable_range.is_null =
+                            nulls.is_null(indices[nullable_range.range.start] as usize)
+                    }
+                }
+            }
+
             AttrsValueSorterInner::Array(arr) => {
+                // this is a less optimized version of the block above, because it allocates
+                // many Arcs & Arrays, but it is a fallback for types for which we haven't yet
+                // written an  optimized implementation such as non-dict encoded str/byte and
+                // boolean columns
                 let indices = UInt32Array::from_iter_values(indices.iter().copied());
                 let values_range = arr.slice(range.start, range.len());
                 let values_range_sorted = take(&values_range, &indices, None).unwrap();
@@ -1052,71 +1196,26 @@ impl AttrValuesSorter {
                     }
                 }
             }
-            AttrsValueSorterInner::KeysAndRanks(keys) => {
-                let keys_range = &keys.keys[range.start..range.end];
-                self.key_partition_scratch.clear();
-                self.key_partition_scratch.reserve(keys_range.len());
-                self.key_partition_scratch
-                    .extend(indices.iter().map(|i| keys_range[*i as usize]));
-                self.fill_keys_partition_from_scratch_buffer();
-
-                let boundaries_len = self.partition_buffer_bitlen;
-                let mut set_indices =
-                    BitIndexIterator::new(&self.partition_buffer, 0, boundaries_len);
-                self.array_partitions_scratch.clear();
-                collect_partition_ranges(
-                    &mut set_indices,
-                    boundaries_len,
-                    &mut self.array_partitions_scratch,
-                );
-
-                result.extend(
-                    self.array_partitions_scratch
-                        .drain(..)
-                        .map(|range| NullableRange {
-                            range,
-                            is_null: false,
-                        }),
-                );
-            }
-        }
-
-        // fill in the null values ..
-        // note: this happens below the block above to avoid running afoul of the borrow checker
-        if let AttrsValueSorterInner::KeysAndRanks(keys) = &self.inner {
-            if let Some(nulls) = &keys.nulls {
-                for nullable_range in result {
-                    nullable_range.is_null =
-                        nulls.is_null(indices[nullable_range.range.start] as usize)
-                }
-            }
         }
 
         Ok(())
     }
-
-    // TODO - for now this probably doesn't need to be a separate method
-    fn fill_keys_partition_from_scratch_buffer(&mut self) {
-        let len = self.key_partition_scratch.len() - 1;
-
-        let left = &self.key_partition_scratch[0..len];
-        let right = &self.key_partition_scratch[1..len + 1];
-
-        let f = |i: usize| -> bool {
-            #[allow(unsafe_code)]
-            let a = unsafe { *left.get_unchecked(i) };
-            #[allow(unsafe_code)]
-            let b = unsafe { *right.get_unchecked(i) };
-            a.is_eq(b)
-        };
-
-        collect_bool_inverted(len, f, &mut self.partition_buffer);
-
-        self.partition_buffer_bitlen = len;
-    }
 }
 
-/// TODO comments
+/// Executes the function f for every index from `0..len` to create a bitmask, which is inverted
+/// and then collected into the `result_buf`.
+///
+/// Generally, this function would be used to create a bitmap of partition boundaries, e.g. where
+/// one value is not equal to its neighbour, by passing a function that checks if the values at
+/// adjacent indices are equal.
+///
+/// This code is adapted from arrow's [`arrow::buffer::MutableBuffer::collect_bool`], however this
+/// code allows reusing the `result_buf`, whereas the arrow version forces us to eventually convert
+/// `MutableBuffer` into something that allocates an `Arc` before we can access the bytes.
+///
+/// Depending on the function that is passed, this will also auto-vectorize decently. For example,
+/// a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use SIMD to do
+/// the comparison
 fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
     result_buf.clear();
     result_buf.reserve(bit_util::ceil(len, 64) * 8);
@@ -1130,8 +1229,6 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
             packed |= (f(i) as u64) << bit_idx;
         }
 
-        // // SAFETY: Already allocated sufficient capacity
-        // unsafe { buffer.push_unchecked(packed) }
         result_buf.extend_from_slice((!packed).to_byte_slice());
     }
 
@@ -1142,8 +1239,6 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
             packed |= (f(i) as u64) << bit_idx;
         }
 
-        // // SAFETY: Already allocated sufficient capacity
-        // unsafe { buffer.push_unchecked(packed) }
         result_buf.extend_from_slice((!packed).to_byte_slice());
     }
 
@@ -1176,15 +1271,8 @@ fn collect_partitions_for_range(
                 let len = dict_key_range_bytes.len() - 1;
                 let left = &dict_key_range_bytes[0..len];
                 let right = &dict_key_range_bytes[1..len + 1];
-                let f = |i: usize| -> bool {
-                    #[allow(unsafe_code)]
-                    let a = unsafe { *left.get_unchecked(i) };
-                    #[allow(unsafe_code)]
-                    let b = unsafe { *right.get_unchecked(i) };
-                    a.is_eq(b)
-                };
                 let mut partitions_buffer = Vec::new();
-                collect_bool_inverted(len, f, &mut partitions_buffer);
+                collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
 
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
@@ -1211,15 +1299,8 @@ fn collect_partitions_for_range(
                 let len = dict_key_range_vals.len() - 1;
                 let left = &dict_key_range_vals[0..len];
                 let right = &dict_key_range_vals[1..len + 1];
-                let f = |i: usize| -> bool {
-                    #[allow(unsafe_code)]
-                    let a = unsafe { *left.get_unchecked(i) };
-                    #[allow(unsafe_code)]
-                    let b = unsafe { *right.get_unchecked(i) };
-                    a.is_eq(b)
-                };
                 let mut partitions_buffer = Vec::new();
-                collect_bool_inverted(len, f, &mut partitions_buffer);
+                collect_bool_inverted(len, |i| left[i].is_eq(right[i]), &mut partitions_buffer);
 
                 let set_indices = BitIndexIterator::new(&partitions_buffer, 0, len);
                 let mut current = 0;
@@ -1251,11 +1332,22 @@ fn collect_partitions_for_range(
 
 /// Collect partitions of equal values from the passed array. This is very similar to arrow's
 /// partition compute kernel, except that it allows reusing the vector of ranges.
+///
+/// Performance: this uses the arrow `eq` compute kernel to compute the partitions which is
+/// generally fast from using SIMD. However, this call allocates a handful of temporary Arrays.
+/// For large arrays, the performance overhead is usually worth it, but for small arrays
+/// (dozens of elements) this does cause extra overhead and using arrow's `partition` kernel
+///  may be faster.
 fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>>) -> Result<()> {
     let next_eq_arr_key = create_next_element_equality_array(&source)?;
-    let next_eq_inverted = not(&next_eq_arr_key).unwrap();
+    // safety: `not` is actually infallible
+    let next_eq_inverted = not(&next_eq_arr_key).expect("can invert boolean array");
     let mut set_indices = next_eq_inverted.values().set_indices();
-    collect_partition_ranges(&mut set_indices, next_eq_inverted.values().len(), result);
+    collect_partition_boundaries_to_ranges(
+        &mut set_indices,
+        next_eq_inverted.values().len(),
+        result,
+    );
 
     Ok(())
 }
@@ -1265,7 +1357,7 @@ fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>
 ///
 /// This is somewhat similar to what arrow's `partition` kernel does internally, however it
 /// allows for reuse of the vec that contains the ranges
-fn collect_partition_ranges<I: Iterator<Item = usize>>(
+fn collect_partition_boundaries_to_ranges<I: Iterator<Item = usize>>(
     boundaries: &mut I,
     len: usize,
     result: &mut Vec<Range<usize>>,
