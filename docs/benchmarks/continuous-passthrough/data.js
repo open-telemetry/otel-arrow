@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769733094614,
+  "lastUpdate": 1769734425735,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2686,6 +2686,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11343304.559586143,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "129437996+c1ly@users.noreply.github.com",
+            "name": "c1ly",
+            "username": "c1ly"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d895debb34a90b66be13d3b978682550ea43bad7",
+          "message": "[otap-dataflow] Save source node in Pdata msg (#1899)\n\nDefined two new effect handler extension traits one for local, one for\nshared that allows us to update otap pdata with the source node\n\n```rust\n/// Effect handler extension for adding message source\n#[async_trait(?Send)]\npub trait MessageSourceLocalEffectHandlerExtension<PData> {\n    /// Send data after tagging with the source node.\n    async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;\n    /// Try to send data after tagging with the source node.\n    fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;\n    /// Send data to a specific port after tagging with the source node.\n    async fn send_message_with_source_node_to<P>(\n        &self,\n        port: P,\n        data: PData,\n    ) -> Result<(), TypedError<PData>>\n    where\n        P: Into<PortName> + Send + 'static;\n    /// Try to send data to a specific port after tagging with the source node.\n    fn try_send_message_with_source_node_to<P>(\n        &self,\n        port: P,\n        data: PData,\n    ) -> Result<(), TypedError<PData>>\n    where\n        P: Into<PortName> + Send + 'static;\n}\n\n/// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).\n#[async_trait]\npub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {\n    /// Send data after tagging with the source node.\n    async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;\n    /// Try to send data after tagging with the source node.\n    fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;\n    /// Send data to a specific port after tagging with the source node.\n    async fn send_message_with_source_node_to<P>(\n        &self,\n        port: P,\n        data: PData,\n    ) -> Result<(), TypedError<PData>>\n    where\n        P: Into<PortName> + Send + 'static;\n    /// Try to send data to a specific port after tagging with the source node.\n    fn try_send_message_with_source_node_to<P>(\n        &self,\n        port: P,\n        data: PData,\n    ) -> Result<(), TypedError<PData>>\n    where\n        P: Into<PortName> + Send + 'static;\n}\n```\n\nAdded a field to the Context struct that will store the node information\nand added new functions for OtapPdata and Context getting and setting\nthe source node\n\n```rust\npub struct Context {\n    source_node: Option<NodeId>,\n    stack: Vec<Frame>,\n}\n\n...\n\n\n  /// update the source node\n  pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self {\n      self.source_node = node_id;\n      self\n  }\n\n  /// return the source node field\n  pub fn get_source_node(&self) -> Option<NodeId> {\n      self.source_node.clone()\n  }\n```\n\nUpdated pipeline nodes to use send_message functions that will tag\notappdata with source node name\n\nCloses #1880",
+          "timestamp": "2026-01-30T00:14:46Z",
+          "tree_id": "3ea46d7b476afc9fc8384dff94c55b0c4d0bd170",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d895debb34a90b66be13d3b978682550ea43bad7"
+        },
+        "date": 1769734425057,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.9528863430023193,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.9944914780962,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.37290284832588,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.71627604166667,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 49.0546875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 516896.5445750887,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 526990.9469428575,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003156,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11468013.534200806,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11408065.408024665,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
