@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769734425735,
+  "lastUpdate": 1769738885520,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2770,6 +2770,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11408065.408024665,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d1f9b0bd4eefcc144e4a89c69729921df7c0be3",
+          "message": "fix: Batches may differ by field order after unification (#1922)\n\n# Change Summary\n\nNote this is a band-aid to avoid larger changes, but it does solve a\nbunch of panics.\n\n- Project batches to the merged schema before coalescing (reorder the\nfields to be the same)\n\n## What issue does this PR close?\n\nRelated to: https://github.com/open-telemetry/otel-arrow/issues/1334.\n\n## How are these changes tested?\n\nNew unit tests for the coalescing.\n\n## Are there any user-facing changes?\n\nNo.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-01-30T00:26:59Z",
+          "tree_id": "37f6dfdc465e3c1d3b9932bf39d5e186c0505304",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/2d1f9b0bd4eefcc144e4a89c69729921df7c0be3"
+        },
+        "date": 1769738884715,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0.4723619818687439,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.06338047052014,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.4356542766468,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 44.579296875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 46.1875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 527446.0718235332,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 524954.617159404,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.006711,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11371878.599867726,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11322005.546260633,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
