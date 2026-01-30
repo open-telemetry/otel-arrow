@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1769738881035,
+  "lastUpdate": 1769744427241,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2386,6 +2386,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.6799,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "33842784+JakeDern@users.noreply.github.com",
+            "name": "Jake Dern",
+            "username": "JakeDern"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d901f72f37936e97c6bfa82c2cd2c3f2cd563ac4",
+          "message": "refactor: Use `.fields.find()` instead of `.index_of()` to look up field indices when batching (#1924)\n\n# Change Summary\n\nSwap out the `index_of` API which creates and expensive string on the\nfailure/missing case for `.fields.find()` API which just returns an\noption.\n\n\n## What issue does this PR close?\n\nAlbert pointed this out to me here:\nhttps://github.com/open-telemetry/otel-arrow/pull/1922#discussion_r2744264230\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-01-30T03:02:21Z",
+          "tree_id": "8c48b5eb137d32f1c3055451e3acc629e2f332a1",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d901f72f37936e97c6bfa82c2cd2c3f2cd563ac4"
+        },
+        "date": 1769744426364,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.902,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.7689,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.7571,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5446,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7432,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
