@@ -375,7 +375,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
                 }
-                // Handle timer expiration events.
+                // Handle timer expiration events (or draining deadline wake-up).
                 _ = async {
                     if let Some(when) = next_earliest {
                         let now = Instant::now();
@@ -385,6 +385,12 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                     }
                 }, if next_earliest.is_some() => {
+                    // During draining, this branch only wakes us up to check the deadline.
+                    // Skip all timer and metrics work.
+                    if is_draining {
+                        continue;
+                    }
+
                     let now = Instant::now();
 
                     // Collect all due timer events, then send asynchronously outside of the
