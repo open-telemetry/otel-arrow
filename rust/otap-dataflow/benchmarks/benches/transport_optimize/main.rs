@@ -18,7 +18,6 @@ use otap_df_otap::fake_data_generator::config::{Config, TrafficConfig};
 use otap_df_otap::fake_data_generator::semconv_signal::semconv_otlp_logs;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::materialize_parent_id_for_attributes;
-use otap_df_pdata::otap::transform::transport_optimize::transport_encode_parent_id_for_attributes;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -229,7 +228,6 @@ fn bench_materialize_parent_ids(c: &mut Criterion) {
     group.finish()
 }
 
-// TODO - add cases to this for if the IDs are dict encoded
 fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
     let mut group = c.benchmark_group("encode_transport_optimized");
     for size in [127, 1536, 8096] {

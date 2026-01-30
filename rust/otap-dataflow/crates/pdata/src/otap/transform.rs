@@ -435,12 +435,6 @@ where
                         batch_idx += 1;
                     }
                 }
-
-                // // handle any remaining non-delta values after last delta range ...
-                // // just read the last value if there are any remaining
-                // if batch_idx <= eq_range_end {
-                //     curr_parent_id = materialized_parent_ids[eq_range_end];
-                // }
             }
         }
 
