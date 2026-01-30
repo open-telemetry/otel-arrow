@@ -357,7 +357,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                         }
                         PipelineControlMsg::DelayData { node_id, when, data } => {
                             if is_draining {
-                                otel_debug!(
+                                otel_warn!(
                                     "pipeline.draining.ignored_delay_data",
                                     node_id = node_id,
                                     "Ignoring DelayData during shutdown draining"
