@@ -13,7 +13,7 @@ use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
-    error::Error,
+    error::{Error, TypedError},
     exporter::ExporterWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
@@ -211,6 +211,55 @@ pub trait ConsumerEffectHandlerExtension<PData> {
     async fn notify_nack(&self, nack: NackMsg<PData>) -> Result<(), Error>;
 }
 
+/// Effect handler extension for adding message source
+#[async_trait(?Send)]
+pub trait MessageSourceLocalEffectHandlerExtension<PData> {
+    /// Send data after tagging with the source node.
+    async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to send data after tagging with the source node.
+    fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Send data to a specific port after tagging with the source node.
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
+    /// Try to send data to a specific port after tagging with the source node.
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
+}
+
+/// Send-friendly variant for use in `Send` contexts (e.g., `tokio::spawn`).
+#[async_trait]
+pub trait MessageSourceSharedEffectHandlerExtension<PData: Send + 'static> {
+    /// Send data after tagging with the source node.
+    async fn send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Try to send data after tagging with the source node.
+    fn try_send_message_with_source_node(&self, data: PData) -> Result<(), TypedError<PData>>;
+    /// Send data to a specific port after tagging with the source node.
+    async fn send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
+    /// Try to send data to a specific port after tagging with the source node.
+    fn try_send_message_with_source_node_to<P>(
+        &self,
+        port: P,
+        data: PData,
+    ) -> Result<(), TypedError<PData>>
+    where
+        P: Into<PortName> + Send + 'static;
+}
 /// Builds a pipeline factory for initialization.
 ///
 /// This function is used as a placeholder when declaring a pipeline factory with the
