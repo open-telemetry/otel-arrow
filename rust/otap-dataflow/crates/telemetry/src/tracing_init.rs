@@ -186,6 +186,15 @@ mod tests {
         TracingSetup::new(p, l, LogContext::new)
     }
 
+    const ALL_LEVELS: [LogLevel; 6] = [
+        LogLevel::Off,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+        LogLevel::Trace,
+    ];
+
     #[test]
     fn noop_provider_runs() {
         let setup = test_setup(ProviderSetup::Noop, LogLevel::Info);
@@ -196,13 +205,7 @@ mod tests {
 
     #[test]
     fn noop_provider_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::Noop, level);
             setup.with_subscriber(|| {
                 otel_debug!("debug");
@@ -223,13 +226,7 @@ mod tests {
 
     #[test]
     fn console_direct_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::ConsoleDirect, level);
             setup.with_subscriber(|| {
                 otel_debug!("debug");
@@ -259,13 +256,7 @@ mod tests {
 
     #[test]
     fn console_async_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
             setup.with_subscriber(|| {
@@ -290,7 +281,7 @@ mod tests {
 
     #[test]
     fn trace_level_logging() {
-        for level in [LogLevel::Debug, LogLevel::Trace] {
+        for level in ALL_LEVELS {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
             setup.with_subscriber(|| {
