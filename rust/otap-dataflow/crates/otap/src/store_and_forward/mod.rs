@@ -495,8 +495,6 @@ impl StoreAndForward {
         otel_info!(
             "persistence.engine.init",
             path = %core_data_dir.display(),
-            core_id = self.core_id,
-            num_cores = self.num_cores,
             total_size_cap = total_size_cap,
             per_core_size_cap = per_core_size_cap,
             policy = ?policy,
@@ -893,7 +891,6 @@ impl StoreAndForward {
 
                         otel_debug!(
                             "persistence.bundle.forwarded",
-                            core_id = self.core_id,
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             retry_count = retry_count
