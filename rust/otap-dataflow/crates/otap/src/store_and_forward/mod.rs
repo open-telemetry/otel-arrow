@@ -89,11 +89,11 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 
 use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
-pub use config::{OtlpHandling, StoreAndForwardConfig, SizeCapPolicy};
+pub use config::{OtlpHandling, SizeCapPolicy, StoreAndForwardConfig};
 
-use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
@@ -106,7 +106,7 @@ use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
-use otap_df_pdata::OtapPayload;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -628,7 +628,9 @@ impl StoreAndForward {
                         // Convert to Arrow for queryability.
                         // Clone bytes for NACK on conversion failure (conversion consumes the input).
                         let bytes_for_nack = otlp_bytes.clone();
-                        match OtapPayload::OtlpBytes(otlp_bytes).try_into() {
+                        let conversion_result: Result<OtapArrowRecords, _> =
+                            OtapPayload::OtlpBytes(otlp_bytes).try_into();
+                        match conversion_result {
                             Ok(records) => {
                                 // Count items from Arrow data (cheap - just num_rows)
                                 let num_items = records.num_items() as u64;
@@ -879,11 +881,11 @@ impl StoreAndForward {
         match convert_bundle_to_pdata(handle.data()) {
             Ok(mut pdata) => {
                 // Get item count for Arrow data (cheap); skip for OTLP bytes (expensive)
-                let item_count = match pdata.payload() {
-                    OtapPayload::OtapArrowRecords(records) => Some(records.num_items() as u64),
-                    OtapPayload::OtlpBytes(_) => None,
+                let item_count = match pdata.signal_format() {
+                    SignalFormat::OtapRecords => Some(pdata.num_items() as u64),
+                    SignalFormat::OtlpBytes => None,
                 };
-                let signal_type = pdata.payload().signal_type();
+                let signal_type = pdata.signal_type();
 
                 // Subscribe for ACK/NACK with BundleRef in calldata
                 let calldata = encode_bundle_ref(bundle_ref);
@@ -901,9 +903,7 @@ impl StoreAndForward {
                         // Track produced Arrow items by signal type
                         if let Some(num_items) = item_count {
                             match signal_type {
-                                SignalType::Logs => {
-                                    self.metrics.produced_arrow_logs.add(num_items)
-                                }
+                                SignalType::Logs => self.metrics.produced_arrow_logs.add(num_items),
                                 SignalType::Metrics => {
                                     self.metrics.produced_arrow_metrics.add(num_items)
                                 }
