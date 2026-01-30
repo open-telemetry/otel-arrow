@@ -315,8 +315,14 @@ pub struct OtlpBytesAdapter {
 
 impl OtlpBytesAdapter {
     /// Create a new adapter for the given OtlpProtoBytes.
-    #[must_use]
-    pub fn new(bytes: OtlpProtoBytes) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns the original bytes along with the error if the Arrow RecordBatch
+    /// cannot be created, allowing the caller to NACK without cloning.
+    pub fn new(
+        bytes: OtlpProtoBytes,
+    ) -> Result<Self, (BundleConversionError, OtlpProtoBytes)> {
         let signal_type = match &bytes {
             OtlpProtoBytes::ExportLogsRequest(_) => SignalType::Logs,
             OtlpProtoBytes::ExportMetricsRequest(_) => SignalType::Metrics,
@@ -325,8 +331,15 @@ impl OtlpBytesAdapter {
 
         // Create a record batch with a single binary column containing the OTLP bytes
         let binary_array = BinaryArray::from_vec(vec![bytes.as_bytes()]);
-        let batch = RecordBatch::try_new(otlp_binary_schema(), vec![Arc::new(binary_array)])
-            .expect("valid schema and array");
+        let batch = match RecordBatch::try_new(otlp_binary_schema(), vec![Arc::new(binary_array)]) {
+            Ok(batch) => batch,
+            Err(e) => {
+                return Err((
+                    BundleConversionError::RecordBatchCreationError(e.to_string()),
+                    bytes,
+                ));
+            }
+        };
 
         let slot_id = to_otlp_slot_id(signal_type);
         let descriptor = BundleDescriptor::new(vec![SlotDescriptor::new(
@@ -334,13 +347,13 @@ impl OtlpBytesAdapter {
             otlp_slot_label(signal_type),
         )]);
 
-        Self {
+        Ok(Self {
             bytes,
             signal_type,
             batch,
             descriptor,
             ingestion_time: SystemTime::now(),
-        }
+        })
     }
 
     /// Consume the adapter and return the original OtlpProtoBytes.
@@ -392,6 +405,9 @@ pub enum BundleConversionError {
     /// Failed to extract binary data from OTLP slot.
     #[error("failed to extract OTLP bytes: {0}")]
     OtlpExtractionError(String),
+    /// Failed to create Arrow RecordBatch for OTLP storage.
+    #[error("failed to create OTLP storage batch: {0}")]
+    RecordBatchCreationError(String),
 }
 
 /// Check if the bundle contains an OTLP opaque slot.
@@ -695,7 +711,7 @@ mod tests {
         let test_bytes = b"test OTLP protobuf data".to_vec();
         let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Logs, test_bytes.clone());
 
-        let adapter = OtlpBytesAdapter::new(otlp);
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
 
         // Check descriptor
         let descriptor = adapter.descriptor();
@@ -728,7 +744,7 @@ mod tests {
         let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Traces, original_bytes.clone());
 
         // Store in adapter
-        let adapter = OtlpBytesAdapter::new(otlp);
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
 
         // Get the batch from the adapter
         let slot = to_otlp_slot_id(SignalType::Traces);
@@ -743,7 +759,7 @@ mod tests {
     fn test_find_otlp_slot() {
         // Test with OTLP bundle
         let otlp = OtlpProtoBytes::new_from_bytes(SignalType::Metrics, b"data".to_vec());
-        let adapter = OtlpBytesAdapter::new(otlp);
+        let adapter = OtlpBytesAdapter::new(otlp).map_err(|(e, _)| e).unwrap();
         let slot = to_otlp_slot_id(SignalType::Metrics);
         let payload = adapter.payload(slot).unwrap();
 

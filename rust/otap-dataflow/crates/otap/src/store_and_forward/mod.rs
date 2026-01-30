@@ -611,12 +611,32 @@ impl StoreAndForward {
                     OtlpHandling::PassThrough => {
                         // Store as opaque binary for efficient pass-through.
                         // Skip item counting to avoid parsing overhead.
-                        let adapter = OtlpBytesAdapter::new(otlp_bytes);
-                        let result = match engine.ingest(&adapter).await {
-                            Ok(()) => Ok(()),
-                            Err(e) => Err((e, OtapPayload::OtlpBytes(adapter.into_inner()))),
-                        };
-                        (result, None) // No item count for pass-through
+                        match OtlpBytesAdapter::new(otlp_bytes) {
+                            Ok(adapter) => {
+                                let result = match engine.ingest(&adapter).await {
+                                    Ok(()) => Ok(()),
+                                    Err(e) => {
+                                        Err((e, OtapPayload::OtlpBytes(adapter.into_inner())))
+                                    }
+                                };
+                                (result, None) // No item count for pass-through
+                            }
+                            Err((e, original_bytes)) => {
+                                // Adapter creation failed - NACK with original bytes
+                                self.metrics.ingest_errors.add(1);
+                                otel_error!("persistence.otlp.adapter_failed", error = %e);
+
+                                let nack_pdata =
+                                    OtapPdata::new(context, OtapPayload::OtlpBytes(original_bytes));
+                                effect_handler
+                                    .notify_nack(NackMsg::new(
+                                        format!("OTLP adapter creation failed: {}", e),
+                                        nack_pdata,
+                                    ))
+                                    .await?;
+                                return Ok(());
+                            }
+                        }
                     }
                     OtlpHandling::ConvertToArrow => {
                         // Convert to Arrow for queryability.
