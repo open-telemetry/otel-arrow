@@ -534,6 +534,11 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 // gRPC enforces its own per-protocol concurrency limit.
                 // When HTTP is also enabled, apply an additional global cap so the combined
                 // ingress cannot exceed downstream capacity.
+                //
+                // Important: `SharedConcurrencyLayer` acquires permits in `poll_ready` (not in
+                // `call`), so tonic will apply backpressure and stop accepting new HTTP/2
+                // streams when the shared pool is saturated. This avoids unbounded queuing of
+                // parked request futures holding decoded payloads in memory.
                 let limit_layer = if let Some(global) = global_semaphore.clone() {
                     Either::Left(
                         ServiceBuilder::new()
