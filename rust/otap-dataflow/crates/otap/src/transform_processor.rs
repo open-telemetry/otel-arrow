@@ -514,8 +514,13 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context =
-            controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
         let node_id = test_node("transform-processor");
         create_transform_processor(
             pipeline_context,

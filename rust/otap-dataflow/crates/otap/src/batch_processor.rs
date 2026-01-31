@@ -1367,6 +1367,7 @@ mod tests {
             PipelineGroupId::from("test_group".to_string()),
             PipelineId::from("test_pipeline".to_string()),
             0,
+            1, // num_cores
             0,
         );
         (pipeline_ctx, telemetry_registry)
@@ -1386,7 +1387,7 @@ mod tests {
 
         // Create processor using TestRuntime's registry
         let controller = ControllerContext::new(telemetry_registry.clone());
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;

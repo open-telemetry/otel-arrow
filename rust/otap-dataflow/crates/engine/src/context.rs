@@ -97,6 +97,9 @@ pub struct ControllerContext {
 pub struct PipelineContext {
     controller_context: ControllerContext,
     core_id: usize,
+    /// Total number of cores allocated to this pipeline.
+    /// Used by nodes that need to share resources across cores (e.g., disk budgets).
+    num_cores: usize,
     thread_id: usize,
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
@@ -128,6 +131,7 @@ impl ControllerContext {
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         core_id: usize,
+        num_cores: usize,
         thread_id: usize,
     ) -> PipelineContext {
         PipelineContext::new(
@@ -135,6 +139,7 @@ impl ControllerContext {
             pipeline_group_id,
             pipeline_id,
             core_id,
+            num_cores,
             thread_id,
         )
     }
@@ -147,6 +152,7 @@ impl PipelineContext {
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         core_id: usize,
+        num_cores: usize,
         thread_id: usize,
     ) -> Self {
         Self {
@@ -154,6 +160,7 @@ impl PipelineContext {
             pipeline_id,
             pipeline_group_id,
             core_id,
+            num_cores,
             thread_id,
             node_id: Default::default(),
             node_urn: Default::default(),
@@ -178,6 +185,15 @@ impl PipelineContext {
     #[must_use]
     pub fn core_id(&self) -> usize {
         self.core_id
+    }
+
+    /// Returns the total number of cores allocated to this pipeline.
+    ///
+    /// This is useful for nodes that need to share resources (like disk budgets)
+    /// across all cores running the same pipeline.
+    #[must_use]
+    pub fn num_cores(&self) -> usize {
+        self.num_cores
     }
 
     /// Sets the internal telemetry settings for the Internal Telemetry Receiver.
@@ -364,6 +380,7 @@ impl PipelineContext {
         Self {
             controller_context: self.controller_context.clone(),
             core_id: self.core_id,
+            num_cores: self.num_cores,
             thread_id: self.thread_id,
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),

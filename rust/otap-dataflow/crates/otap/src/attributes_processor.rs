@@ -624,7 +624,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         // Set up processor test runtime and run one message
         let node = test_node("attributes-processor-test");
@@ -707,7 +707,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-delete-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -794,7 +794,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -875,7 +875,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-int");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -945,7 +945,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-double");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1013,7 +1013,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-bool");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1084,7 +1084,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-no-overwrite");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1168,7 +1168,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-insert-mixed");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1238,7 +1238,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-delete-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1314,7 +1314,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-delete-scope");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1394,7 +1394,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-delete-signal-and-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1473,7 +1473,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("attributes-processor-delete-resource");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();
@@ -1536,7 +1536,7 @@ mod telemetry_tests {
 
         // 2) Pipeline context sharing the same registry handle
         let controller = ControllerContext::new(rt.metrics_registry().clone());
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
 
         // 3) Build processor with simple rename+delete (applies to signal domain by default)
         let cfg = json!({

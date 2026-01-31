@@ -26,7 +26,7 @@ mod tests {
     fn create_test_pipeline_context() -> PipelineContext {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry);
-        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
+        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
     }
 
     #[test]

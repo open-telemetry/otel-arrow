@@ -1155,6 +1155,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1248,6 +1249,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 

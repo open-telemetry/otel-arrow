@@ -476,6 +476,7 @@ mod tests {
             pipeline_group_id.clone(),
             pipeline_id.clone(),
             core_id,
+            1, // num_cores
             thread_id,
         );
 
@@ -910,6 +911,7 @@ mod tests {
                     pipeline_group_id.clone(),
                     pipeline_id.clone(),
                     core_id,
+                    1, // num_cores
                     thread_id,
                 );
                 let pipeline_entity_key = pipeline_context.register_pipeline_entity();

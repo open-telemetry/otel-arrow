@@ -423,7 +423,7 @@ past the segment to be deleted.
 Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
-| Concern | Quiver (Library) | Embedding Layer (e.g., persistence_processor) |
+| Concern | Quiver (Library) | Embedding Layer (e.g., store_and_forward) |
 | ------- | ---------------- | --------------------------------------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
@@ -1172,7 +1172,7 @@ nodes:
 
   persistence:
     kind: processor
-    plugin_urn: "urn:otap:processor:persistence"
+    plugin_urn: "urn:otel:store_and_forward:processor"
     out_ports:
       out_port:
         destinations:
@@ -1249,7 +1249,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   restore per-subscriber state directly--no log replay required.
 
 Nack handling is owned by the embedding layer, not Quiver. When an exporter
-returns a NACK, the embedding layer (e.g., persistence_processor):
+returns a NACK, the embedding layer (e.g., store_and_forward):
 
 1. Computes retry delay using its backoff policy
 2. Schedules retry via the pipeline's delay mechanism
@@ -1324,7 +1324,7 @@ The key insight for async ingest is that **completion should mean durability**.
 
 This design provides:
 
-- **Correct ACK semantics**: The persistence processor can ACK upstream only
+- **Correct ACK semantics**: The store and forward processor can ACK upstream only
   after `ingest().await` completes, knowing data is safe on disk.
 - **Natural backpressure**: Slow disk I/O = slow `await` completion = upstream
   gets throttled automatically. No separate backpressure mechanism needed.
@@ -1471,22 +1471,22 @@ and avoids the complexity of maintaining both sync and async code paths.
 | Maintenance | `maintain().await` - async |
 | Flush | `flush().await` - async |
 
-#### Persistence Processor Integration Pattern
+#### Store and Forward Processor Integration Pattern
 
-With the async API and cancellation support, the persistence processor integration
+With the async API and cancellation support, the store and forward processor integration
 becomes straightforward:
 
 ```rust
 use quiver::CancellationToken;
 use std::time::Duration;
 
-struct PersistenceProcessor {
+struct StoreAndForward {
     engine: Arc<QuiverEngine>,
     subscriber_id: SubscriberId,
     shutdown: CancellationToken,
 }
 
-impl PersistenceProcessor {
+impl StoreAndForward {
     // Ingest path (receiving upstream data)
     async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
         // ingest().await completes only after WAL fsync

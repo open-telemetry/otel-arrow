@@ -46,8 +46,13 @@ fn test_telemetry_registries_cleanup() {
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx =
-        controller_ctx.pipeline_context_with(pipeline_group_id.clone(), pipeline_id.clone(), 0, 0);
+    let pipeline_ctx = controller_ctx.pipeline_context_with(
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
+        0,
+        1,
+        0,
+    );
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -124,7 +129,8 @@ fn test_pipeline_fan_in_builds() {
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx = controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 0);
+    let pipeline_ctx =
+        controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 1, 0);
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY
@@ -153,7 +159,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
     let telemetry_system = InternalTelemetrySystem::default();
     let registry = telemetry_system.registry();
     let controller_ctx = ControllerContext::new(registry.clone());
-    let pipeline_ctx = controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 0);
+    let pipeline_ctx =
+        controller_ctx.pipeline_context_with(pipeline_group_id, pipeline_id, 0, 1, 0);
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY

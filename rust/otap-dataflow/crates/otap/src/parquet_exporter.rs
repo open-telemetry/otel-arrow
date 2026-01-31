@@ -1413,7 +1413,7 @@ mod test {
         // Build exporter with metrics via from_config
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx = controller_ctx
-            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
