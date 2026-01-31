@@ -1635,15 +1635,23 @@ mod tests {
         }
     }
 
-    /// Generate an end-entity (leaf) certificate for use as server or client cert.
+    /// Generate an end-entity (leaf) certificate signed by a CA.
     ///
-    /// Unlike `generate_cert`, this creates a certificate without CA:TRUE,
-    /// making it suitable for use as an end-entity certificate that won't
-    /// trigger "CaUsedAsEndEntity" errors in rustls.
+    /// This creates a proper PKI hierarchy:
+    /// - CA certificate (`CA:TRUE`) → can be added to root stores as trust anchor
+    /// - End-entity certificate (`CA:FALSE`) → presented during TLS handshake
     ///
-    /// For server certificates, includes a Subject Alternative Name (SAN)
-    /// extension for the CN to pass hostname verification.
-    fn generate_end_entity_cert(dir: &Path, name: &str, cn: &str) {
+    /// This avoids two issues:
+    /// 1. `CaUsedAsEndEntity` error when using CA certs as server/client certs
+    /// 2. `ExtensionValueInvalid` error on macOS when adding non-CA certs to root stores
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to write certificate files
+    /// * `ca_name` - Base name for CA files (creates `{ca_name}.crt` and `{ca_name}.key`)
+    /// * `cert_name` - Base name for end-entity cert files
+    /// * `cn` - Common Name for the end-entity cert (also used as SAN for hostname verification)
+    fn generate_ca_signed_cert(dir: &Path, ca_name: &str, cert_name: &str, cn: &str) {
+        // Step 1: Generate CA key and self-signed CA cert
         let output = Command::new("openssl")
             .args([
                 "req",
@@ -1651,29 +1659,90 @@ mod tests {
                 "-newkey",
                 "rsa:2048",
                 "-keyout",
-                &format!("{}.key", name),
+                &format!("{}.key", ca_name),
                 "-out",
-                &format!("{}.crt", name),
+                &format!("{}.crt", ca_name),
                 "-days",
                 "1",
                 "-nodes",
                 "-subj",
-                &format!("/CN={}", cn),
+                &format!("/CN={}CA", cn),
                 "-addext",
-                "basicConstraints=critical,CA:FALSE",
-                "-addext",
-                &format!("subjectAltName=DNS:{}", cn),
+                "basicConstraints=critical,CA:TRUE",
             ])
             .current_dir(dir)
             .output()
-            .expect(
-                "Failed to execute openssl. Ensure OpenSSL CLI is installed: \
-                 macOS: `brew install openssl`, Ubuntu: `apt-get install openssl`",
-            );
+            .expect("Failed to execute openssl for CA generation");
 
         if !output.status.success() {
             panic!(
-                "End-entity certificate generation failed: {}",
+                "CA certificate generation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Step 2: Generate end-entity key and CSR
+        let output = Command::new("openssl")
+            .args([
+                "req",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                &format!("{}.key", cert_name),
+                "-out",
+                &format!("{}.csr", cert_name),
+                "-nodes",
+                "-subj",
+                &format!("/CN={}", cn),
+            ])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to execute openssl for CSR generation");
+
+        if !output.status.success() {
+            panic!(
+                "CSR generation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        // Step 3: Create extensions file for SAN
+        let ext_file = dir.join(format!("{}.ext", cert_name));
+        fs::write(
+            &ext_file,
+            format!(
+                "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:{}\n",
+                cn
+            ),
+        )
+        .expect("Failed to write extensions file");
+
+        // Step 4: Sign the CSR with the CA
+        let output = Command::new("openssl")
+            .args([
+                "x509",
+                "-req",
+                "-in",
+                &format!("{}.csr", cert_name),
+                "-CA",
+                &format!("{}.crt", ca_name),
+                "-CAkey",
+                &format!("{}.key", ca_name),
+                "-CAcreateserial",
+                "-out",
+                &format!("{}.crt", cert_name),
+                "-days",
+                "1",
+                "-extfile",
+                ext_file.file_name().unwrap().to_str().unwrap(),
+            ])
+            .current_dir(dir)
+            .output()
+            .expect("Failed to execute openssl for certificate signing");
+
+        if !output.status.success() {
+            panic!(
+                "Certificate signing failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -1952,8 +2021,8 @@ mod tests {
     /// Test accept_tls_connection with server-side TLS only (no client cert required).
     ///
     /// This test verifies the full TLS handshake flow:
-    /// 1. Server creates TLS acceptor with self-signed cert
-    /// 2. Client connects and trusts the server cert
+    /// 1. Server creates TLS acceptor with CA-signed cert
+    /// 2. Client connects and trusts the CA
     /// 3. TLS handshake completes successfully
     /// 4. Data can be exchanged over the encrypted connection
     #[tokio::test]
@@ -1966,8 +2035,9 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
-        // Generate server certificate (end-entity, not CA)
-        generate_end_entity_cert(path, "server", "localhost");
+        // Generate CA and CA-signed server certificate
+        // CA cert goes in client's trust store, server cert is presented during TLS
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
 
         // Build server TLS config (no client auth)
         let server_config = TlsServerConfig {
@@ -1997,12 +2067,11 @@ mod tests {
             .expect("Failed to bind TCP listener");
         let server_addr = listener.local_addr().expect("Failed to get server address");
 
-        // Build client TLS config that trusts our self-signed server cert
-        let server_cert_pem =
-            fs::read(path.join("server.crt")).expect("Failed to read server cert");
+        // Build client TLS config that trusts the CA (not the server cert directly)
+        let ca_cert_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
         let mut root_store = RootCertStore::empty();
-        for cert in CertificateDer::pem_slice_iter(&server_cert_pem) {
-            let cert = cert.expect("Failed to parse server cert");
+        for cert in CertificateDer::pem_slice_iter(&ca_cert_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
             root_store
                 .add(cert)
                 .expect("Failed to add cert to root store");
@@ -2066,8 +2135,8 @@ mod tests {
     /// Test accept_tls_connection with mTLS (mutual TLS - both server and client certs).
     ///
     /// This test verifies mutual authentication:
-    /// 1. Server requires client certificate
-    /// 2. Client presents a certificate signed by the trusted CA
+    /// 1. Server requires client certificate signed by a trusted CA
+    /// 2. Client trusts server's CA and presents its own certificate
     /// 3. Both sides authenticate each other
     /// 4. TLS handshake completes successfully
     #[tokio::test]
@@ -2080,14 +2149,12 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
-        // Generate server and client certs (end-entity, not CA)
-        // For mTLS with self-signed certs, we generate end-entity certs and
-        // trust them directly (the cert itself acts as the trust anchor).
-        generate_end_entity_cert(path, "server", "localhost");
-        generate_end_entity_cert(path, "client", "TestClient");
+        // Generate CA-signed server and client certs
+        // Using separate CAs for server and client to properly test mTLS
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
 
         // Build server TLS config with client CA (mTLS)
-        // We use the client cert directly as the CA file since it's self-signed
         let server_config = TlsServerConfig {
             config: TlsConfig {
                 cert_file: Some(path.join("server.crt")),
@@ -2096,8 +2163,8 @@ mod tests {
                 key_pem: None,
                 reload_interval: None,
             },
-            // Use client cert as trust anchor (self-signed)
-            client_ca_file: Some(path.join("client.crt")),
+            // Server trusts client CA
+            client_ca_file: Some(path.join("client_ca.crt")),
             client_ca_pem: None,
             include_system_ca_certs_pool: None,
             watch_client_ca: false,
@@ -2116,12 +2183,11 @@ mod tests {
             .expect("Failed to bind TCP listener");
         let server_addr = listener.local_addr().expect("Failed to get server address");
 
-        // Build client TLS config with client certificate
-        let server_cert_pem =
-            fs::read(path.join("server.crt")).expect("Failed to read server cert");
+        // Build client TLS config - client trusts server CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
         let mut root_store = RootCertStore::empty();
-        for cert in CertificateDer::pem_slice_iter(&server_cert_pem) {
-            let cert = cert.expect("Failed to parse server cert");
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
             root_store
                 .add(cert)
                 .expect("Failed to add cert to root store");
@@ -2205,7 +2271,8 @@ mod tests {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
 
-        generate_end_entity_cert(path, "server", "localhost");
+        // Generate CA-signed server cert (same pattern as other tests)
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
 
         let server_config = TlsServerConfig {
             config: TlsConfig {
