@@ -25,9 +25,9 @@ use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
 
 /// Maximum time buffer between the end of draining and the shutdown deadline.
-/// The actual buffer is the minimum of this value and 10% of the time until deadline,
-/// ensuring we use at least 90% of available time for draining while capping the
-/// post-draining buffer at 1 second.
+/// The actual buffer is the minimum of this value and 10% of the time until deadline.
+/// This is a best-effort attempt to ensure that `PipelineCtrlMsgManager` exits before
+/// the caller's timeout fires, avoiding a race where both expire simultaneously.
 const MAX_DRAINING_BUFFER_DURATION: Duration = Duration::from_secs(1);
 
 /// Represents delayed data with scheduling information.
