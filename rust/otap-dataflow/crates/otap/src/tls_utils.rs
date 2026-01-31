@@ -1998,11 +1998,14 @@ mod tests {
         let server_addr = listener.local_addr().expect("Failed to get server address");
 
         // Build client TLS config that trusts our self-signed server cert
-        let server_cert_pem = fs::read(path.join("server.crt")).expect("Failed to read server cert");
+        let server_cert_pem =
+            fs::read(path.join("server.crt")).expect("Failed to read server cert");
         let mut root_store = RootCertStore::empty();
         for cert in CertificateDer::pem_slice_iter(&server_cert_pem) {
             let cert = cert.expect("Failed to parse server cert");
-            root_store.add(cert).expect("Failed to add cert to root store");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
         }
 
         let client_config = rustls::ClientConfig::builder()
@@ -2012,7 +2015,10 @@ mod tests {
 
         // Spawn server task
         let server_handle = tokio::spawn(async move {
-            let (stream, _peer_addr) = listener.accept().await.expect("Failed to accept connection");
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
 
             // Perform TLS handshake using accept_tls_connection
             let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
@@ -2035,8 +2041,8 @@ mod tests {
                 .await
                 .expect("Failed to connect to server");
 
-            let server_name = rustls_pki_types::ServerName::try_from("localhost")
-                .expect("Invalid server name");
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
 
             let mut tls_stream = client_connector
                 .connect(server_name, stream)
@@ -2111,24 +2117,26 @@ mod tests {
         let server_addr = listener.local_addr().expect("Failed to get server address");
 
         // Build client TLS config with client certificate
-        let server_cert_pem = fs::read(path.join("server.crt")).expect("Failed to read server cert");
+        let server_cert_pem =
+            fs::read(path.join("server.crt")).expect("Failed to read server cert");
         let mut root_store = RootCertStore::empty();
         for cert in CertificateDer::pem_slice_iter(&server_cert_pem) {
             let cert = cert.expect("Failed to parse server cert");
-            root_store.add(cert).expect("Failed to add cert to root store");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
         }
 
         // Load client cert and key
-        let client_cert_pem = fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
         let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
 
-        let client_certs: Vec<_> =
-            CertificateDer::pem_slice_iter(&client_cert_pem)
-                .collect::<Result<_, _>>()
-                .expect("Failed to parse client certs");
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
         let client_key =
-            PrivateKeyDer::from_pem_slice(&client_key_pem)
-                .expect("Failed to parse client key");
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
 
         let client_config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
@@ -2138,7 +2146,10 @@ mod tests {
 
         // Spawn server task
         let server_handle = tokio::spawn(async move {
-            let (stream, _peer_addr) = listener.accept().await.expect("Failed to accept connection");
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
 
             // Perform TLS handshake using accept_tls_connection
             let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
@@ -2161,8 +2172,8 @@ mod tests {
                 .await
                 .expect("Failed to connect to server");
 
-            let server_name = rustls_pki_types::ServerName::try_from("localhost")
-                .expect("Invalid server name");
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
 
             let mut tls_stream = client_connector
                 .connect(server_name, stream)
@@ -2223,10 +2234,14 @@ mod tests {
 
         // Spawn server task that expects timeout
         let server_handle = tokio::spawn(async move {
-            let (stream, _peer_addr) = listener.accept().await.expect("Failed to accept connection");
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
 
             // Use a very short timeout
-            let result = accept_tls_connection(stream, &tls_acceptor, Duration::from_millis(100)).await;
+            let result =
+                accept_tls_connection(stream, &tls_acceptor, Duration::from_millis(100)).await;
 
             // Should timeout because client never sends TLS handshake
             assert!(result.is_err());
