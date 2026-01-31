@@ -247,8 +247,9 @@ impl<PData> PipelineCtrlMsgManager<PData> {
     ///   deadline is reached (whichever comes first)
     ///
     /// The draining deadline uses at least 90% of the available time, with the gap between
-    /// draining end and shutdown deadline capped at [`MAX_DRAINING_BUFFER`]. This ensures
-    /// we maximize draining time while reserving a reasonable buffer for post-draining work.
+    /// draining end and shutdown deadline capped at [`MAX_DRAINING_BUFFER_DURATION`]. This is a
+    /// best-effort attempt to ensure that `PipelineCtrlMsgManager` exits before the caller's
+    /// timeout fires, avoiding a race where both expire simultaneously.
     ///
     /// This allows nodes to send cleanup messages during their shutdown sequence.
     pub async fn run(mut self) -> Result<(), Error> {
