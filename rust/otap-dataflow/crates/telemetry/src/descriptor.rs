@@ -3,10 +3,10 @@
 
 //! Metric and Attribute descriptor types for metrics reflection.
 
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
 /// The type of instrument used to record the metric. Must be one of the following variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Instrument {
     /// A monotonic sum.
@@ -20,7 +20,7 @@ pub enum Instrument {
 }
 
 /// Aggregation temporality for sum-like instruments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Temporality {
     /// Each snapshot represents a delta over the reporting interval.
@@ -30,7 +30,7 @@ pub enum Temporality {
 }
 
 /// Numeric representation used by a metric field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricValueType {
     /// Unsigned 64-bit integer.

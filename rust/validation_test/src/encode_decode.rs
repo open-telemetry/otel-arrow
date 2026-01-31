@@ -3,18 +3,10 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-// ToDo: Add support to simulate a pipeline with various processors
-// ToDo: Move the validation process to it's own CICD job (outside of the tests)
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
 use otap_df_pdata::{Consumer, Producer};
-use weaver_common::result::WResult;
-use weaver_common::vdir::VirtualDirectoryPath;
-use weaver_forge::registry::ResolvedRegistry;
-use weaver_resolver::SchemaResolver;
-use weaver_semconv::registry::SemConvRegistry;
-use weaver_semconv::registry_repo::RegistryRepo;
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
 pub struct OtelProtoSimulator {
@@ -42,13 +34,6 @@ impl OtelProtoSimulator {
         };
         otap_to_otlp(&otap_message)
     }
-
-    // ToDo: add function to simulate pipeline
-    // if pipeline alters the data via a processor that performs some transofmration we should expect the equivalent assert to fail
-    // otherwise the assert should succeed
-    // pub fn simulate_pipeline(proto_message: OtlpProtoMessage) -> OtlpProtoMessage {
-    //     // todo: run a pipeline
-    // }
 }
 
 impl Default for OtelProtoSimulator {
@@ -63,10 +48,16 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fake_data_generator::semconv_signal::{
+    use otap_df_otap::fake_data_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
+    use weaver_common::result::WResult;
+    use weaver_common::vdir::VirtualDirectoryPath;
+    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_resolver::SchemaResolver;
+    use weaver_semconv::registry::SemConvRegistry;
+    use weaver_semconv::registry_repo::RegistryRepo;
 
     const LOG_SIGNAL_COUNT: usize = 100;
     const METRIC_SIGNAL_COUNT: usize = 100;
