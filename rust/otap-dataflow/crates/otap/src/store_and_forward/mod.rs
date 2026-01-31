@@ -757,6 +757,10 @@ impl StoreAndForward {
         let deadline = Instant::now() + drain_budget;
         let mut bundles_processed = 0usize;
 
+        // Track the first skipped bundle to detect when we've cycled through all
+        // available bundles without making progress (all are in-flight or scheduled).
+        let mut first_skipped: Option<(u64, u32)> = None;
+
         loop {
             // Check time budget before each bundle to ensure we yield back for new data
             if Instant::now() >= deadline {
@@ -787,13 +791,32 @@ impl StoreAndForward {
 
             match poll_result {
                 Ok(Some(handle)) => {
+                    let bundle_key = (
+                        handle.bundle_ref().segment_seq.raw(),
+                        handle.bundle_ref().bundle_index.raw(),
+                    );
                     match self.try_process_bundle_handle(handle, effect_handler) {
                         ProcessBundleResult::Sent => {
                             bundles_processed += 1;
+                            first_skipped = None; // Reset on progress
                         }
                         ProcessBundleResult::Skipped => {
                             // Bundle was skipped (in-flight or scheduled for retry).
-                            // Continue looking for other sendable bundles.
+                            // Check if we've cycled back to the first skipped bundle.
+                            if first_skipped == Some(bundle_key) {
+                                // We've seen this bundle before - all available bundles
+                                // are blocked. Break to avoid busy-looping.
+                                otel_debug!(
+                                    "persistence.drain.all_blocked",
+                                    bundles_processed = bundles_processed,
+                                    in_flight = self.pending_bundles.len(),
+                                    retry_scheduled = self.retry_scheduled.len()
+                                );
+                                break;
+                            }
+                            if first_skipped.is_none() {
+                                first_skipped = Some(bundle_key);
+                            }
                         }
                         ProcessBundleResult::Backpressure => {
                             // Downstream channel is full, stop processing and let the
