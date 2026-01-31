@@ -320,9 +320,7 @@ impl OtlpBytesAdapter {
     ///
     /// Returns the original bytes along with the error if the Arrow RecordBatch
     /// cannot be created, allowing the caller to NACK without cloning.
-    pub fn new(
-        bytes: OtlpProtoBytes,
-    ) -> Result<Self, (BundleConversionError, OtlpProtoBytes)> {
+    pub fn new(bytes: OtlpProtoBytes) -> Result<Self, (BundleConversionError, OtlpProtoBytes)> {
         let signal_type = match &bytes {
             OtlpProtoBytes::ExportLogsRequest(_) => SignalType::Logs,
             OtlpProtoBytes::ExportMetricsRequest(_) => SignalType::Metrics,
