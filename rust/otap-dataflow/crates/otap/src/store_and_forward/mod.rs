@@ -487,7 +487,31 @@ impl StoreAndForward {
         // Divide the total size cap across all cores.
         // Each core gets an equal share of the configured retention_size_cap.
         let total_size_cap = self.config.size_cap_bytes();
-        let per_core_size_cap = total_size_cap / self.num_cores.max(1) as u64;
+        let num_cores = self.num_cores.max(1) as u64;
+        let per_core_size_cap = total_size_cap / num_cores;
+
+        // Minimum per-core capacity: 1 MiB (enough for WAL + at least a small segment).
+        // Default segment target is 32 MiB, so this is quite small but prevents
+        // obviously broken configurations (e.g., 100 bytes for 1000 cores).
+        const MIN_PER_CORE_BYTES: u64 = 1024 * 1024; // 1 MiB
+
+        if per_core_size_cap < MIN_PER_CORE_BYTES {
+            otel_error!(
+                "persistence.config.invalid",
+                total_size_cap = total_size_cap,
+                num_cores = num_cores,
+                per_core_size_cap = per_core_size_cap,
+                min_per_core_bytes = MIN_PER_CORE_BYTES,
+                message = "per-core storage capacity is below minimum threshold"
+            );
+            return Err(Error::InternalError {
+                message: format!(
+                    "retention_size_cap ({} bytes) is too small for {} cores; \
+                     per-core capacity is {} bytes but minimum is {} bytes (1 MiB)",
+                    total_size_cap, num_cores, per_core_size_cap, MIN_PER_CORE_BYTES
+                ),
+            });
+        }
 
         // Create per-core data directory: {base_path}/core_{core_id}
         let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
