@@ -12,6 +12,7 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::time::{Duration, sleep};
@@ -33,6 +34,7 @@ const PIPELINE_GROUP_ID: &str = "validation_test";
 const PIPELINE_ID_TRAFFIC: &str = "traffic_gen";
 const PIPELINE_ID_SUV: &str = "suv";
 const PIPELINE_ID_VALIDATION: &str = "validate";
+pub const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
 
 /// Helps distinguish between the message types
 #[derive(Debug, Deserialize, Serialize)]
@@ -121,7 +123,7 @@ impl PipelineValidation {
         sleep(Duration::from_secs(pipeline_delay_sec)).await;
 
         let assert_snapshot = fetch_metrics(&admin_client, base).await?;
-        let result = assert_valid_from_metrics(&assert_snapshot);
+        let result = validation_from_metrics(&assert_snapshot);
 
         // shutdown the pipeline
         let _ = admin_client
@@ -146,9 +148,9 @@ impl PipelineValidation {
         // get pipeline group template to run validation test
         let template = fs::read_to_string(template_path)
             .map_err(|_| PipelineError::Io(format!("Failed to read in from {template_path}")))?;
-
         let mut env = Environment::new();
-        let _ = env.add_template("template", template.as_str());
+        env.add_template("template", template.as_str())
+            .map_err(|e| PipelineError::Template(e.to_string()))?;
         let tmpl = env
             .get_template("template")
             .map_err(|e| PipelineError::Template(e.to_string()))?;
@@ -225,11 +227,12 @@ fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
     false
 }
 
-fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
+fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
+    println!("{snapshot}");
     if let Some(v) = snapshot
         .metric_sets
         .iter()
-        .find(|set| set.name == "assert_valid.exporter.metrics")
+        .find(|set| set.name == "validation.exporter.metrics")
         .and_then(|set| {
             set.metrics
                 .iter()
@@ -242,30 +245,47 @@ fn assert_valid_from_metrics(snapshot: &MetricsSnapshot) -> bool {
     false
 }
 
-#[cfg(test)]
-mod test {
-    use super::*;
-    use otap_df_otap::OTAP_PIPELINE_FACTORY;
-    use std::fs::File;
+/// Execute pipeline validations from the given config file path (or the default).
+pub async fn run_validation_tests(config_path: Option<&str>) -> Result<(), PipelineError> {
+    let path = config_path.unwrap_or(PIPELINE_CONFIG_YAML);
+    let file =
+        File::open(path).map_err(|e| PipelineError::Io(format!("failed to open {path}: {e}")))?;
+    let config: PipelineValidationConfig = serde_yaml::from_reader(file)
+        .map_err(|e| PipelineError::Config(format!("Could not deserialize {path}: {e}")))?;
 
-    const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
+    println!("========== Running Pipeline Validation ===========");
 
-    // validate the encoding and decoding
-    #[tokio::test]
-    async fn validate_pipeline() {
-        let file = File::open(PIPELINE_CONFIG_YAML).expect("failed to get config file");
-        let config: PipelineValidationConfig =
-            serde_yaml::from_reader(file).expect("Could not deserialize config");
-        println!("========== Running Pipeline Validation ===========");
-        println!("========== Pipeline Validation Results ===========");
-        for mut config in config.tests {
-            match config.render_template(VALIDATION_TEMPLATE_PATH) {
-                Ok(rendered_template) => match config.validate(rendered_template).await {
-                    Ok(result) => println!("Pipeline: {} => {}", config.name, result),
-                    Err(error) => println!("Pipeline: {} => {}", config.name, error),
-                },
-                Err(error) => println!("Pipeline: {} => {}", config.name, error),
+    let mut report = String::from("========== Pipeline Validation Results ===========\n");
+    let mut failures = 0usize;
+
+    for mut config in config.tests {
+        match config.render_template(VALIDATION_TEMPLATE_PATH) {
+            Ok(rendered_template) => match config.validate(rendered_template).await {
+                Ok(result) => {
+                    report.push_str(&format!("Pipeline: {} => {}\n", config.name, result));
+                    if !result {
+                        failures += 1;
+                    }
+                }
+                Err(error) => {
+                    report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                    failures += 1;
+                }
+            },
+            Err(error) => {
+                report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                failures += 1;
             }
         }
+    }
+
+    print!("{report}");
+
+    if failures == 0 {
+        Ok(())
+    } else {
+        Err(PipelineError::Validation(format!(
+            "{failures} pipeline validation(s) failed"
+        )))
     }
 }

@@ -12,6 +12,7 @@ pub enum PipelineError {
     Config(String),
     Http(String),
     Ready(String),
+    Validation(String),
 }
 
 impl fmt::Display for PipelineError {
@@ -22,6 +23,7 @@ impl fmt::Display for PipelineError {
             PipelineError::Config(e) => write!(f, "config error: {e}"),
             PipelineError::Http(e) => write!(f, "http error: {e}"),
             PipelineError::Ready(e) => write!(f, "ready check failed: {e}"),
+            PipelineError::Validation(e) => write!(f, "validation failed: {e}"),
         }
     }
 }

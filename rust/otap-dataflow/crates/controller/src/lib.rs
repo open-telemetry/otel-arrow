@@ -413,7 +413,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Used in Validation test where shutdown signal is used to end pipeline groups and admin endpoint
     /// Starts the controller with the given engine configurations.
     /// ToDo [LQ] We need to minimize duplication of code here
-    pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
+   pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
         let EngineConfig {
             settings: engine_settings,
             pipeline_groups,
@@ -431,8 +431,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .sum::<usize>()
         );
 
+        // Create the shared telemetry registry first - it will be used by both
+        // the observed state store and the internal telemetry system.
+        let telemetry_registry = TelemetryRegistryHandle::new();
+
         // Create the observed state store for the telemetry system.
-        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
+        let obs_state_store =
+            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
         let engine_evt_reporter =
             obs_state_store.reporter(engine_settings.observed_state.engine_events);
@@ -445,8 +450,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
         // providers use the ITS mode.
-        let telemetry_system =
-            InternalTelemetrySystem::new(telemetry_config, console_async_reporter)?;
+        let telemetry_system = InternalTelemetrySystem::new(
+            telemetry_config,
+            telemetry_registry.clone(),
+            console_async_reporter,
+            engine_context,
+        )?;
+
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
@@ -511,8 +521,6 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
 
-        // Start the metrics aggregation
-        let telemetry_registry = telemetry_system.registry();
         let internal_collector = telemetry_system.collector();
         let metrics_agg_handle = spawn_thread_local_task(
             "metrics-aggregator",
@@ -703,6 +711,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         Ok(())
     }
+
     /// Selects which CPU cores to use based on the given allocation.
     fn select_cores_for_allocation(
         mut available_core_ids: Vec<CoreId>,

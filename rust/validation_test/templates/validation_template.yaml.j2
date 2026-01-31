@@ -44,21 +44,24 @@ pipeline_groups:
               listening_addr: "127.0.0.1:4318"
               {{ receiver_extra_config }}
 
-          # control_receiver:
-          #   kind: receiver
-          #   plugin_urn: {{ receiver_plugin_urn }}
-          #   out_ports:
-          #     out_port:
-          #       destinations:
-          #         - validation_exporter1
-          #       dispatch_strategy: round_robin
-          #   config:
-          #     listening_addr: "127.0.0.1:4316"
+          control_receiver:
+            kind: receiver
+            plugin_urn: "{{ receiver_plugin_urn }}"
+            out_ports:
+              out_port:
+                destinations:
+                  - validation_exporter
+                dispatch_strategy: round_robin
+            config:
+              listening_addr: "127.0.0.1:4316"
+              {{ receiver_extra_config }}
           validation_exporter:
             kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
+            plugin_urn: "urn:otel:validation:exporter"
             config:
-                # expect_failure: {{ expect_failure }}
+                expect_failure: {{ expect_failure }}
+                control_input: control_receiver
+                suv_input: suv_receiver
 
       # ======================================================================
       # System Under Validation pipeline

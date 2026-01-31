@@ -3,6 +3,7 @@
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::NodeId as NodeName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ExporterFactory;
@@ -14,7 +15,6 @@ use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
-use otap_df_config::NodeId as NodeName;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
@@ -26,21 +26,22 @@ use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::Instant;
 
-pub const ASSERT_VALID_EXPORTER_URN: &str = "urn:otel:assert_valid:exporter";
+pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 
 #[derive(Debug, Deserialize)]
-struct AssertValidExporterConfig {
-    suv_node: NodeName,
-    control_node: NodeName,
+struct ValidationExporterConfig {
+    suv_input: NodeName,
+    control_input: NodeName,
     /// When true, a failing equivalence check is considered expected.
     #[serde(default)]
     expect_failure: bool,
 }
 
-#[metric_set(name = "validation.assert.exporter.metrics")]
+#[metric_set(name = "validation.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
-struct AssertValidExporterMetrics {
+struct ValidationExporterMetrics {
     /// Number of comparisons that did not match expectation
     #[metric(name = "comparison.failed", unit = "{comparison}")]
     failed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
@@ -53,63 +54,40 @@ struct AssertValidExporterMetrics {
     valid: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
-pub struct AssertValidExporter {
-    config: AssertValidExporterConfig,
+pub struct ValidationExporter {
+    config: ValidationExporterConfig,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<OtlpProtoMessage>,
-    metrics: MetricSet<AssertValidExporterMetrics>,
-}
-
-pub fn create_assert_exporter(
-    pipeline_ctx: PipelineContext,
-    node: NodeId,
-    node_config: Arc<NodeUserConfig>,
-    exporter_config: &ExporterConfig,
-) -> Result<ExporterWrapper<OtapPdata>, ConfigError> {
-    let config = serde_json::from_value(node_config.config.clone()).map_err(|e| {
-        ConfigError::InvalidUserConfig {
-            error: e.to_string(),
-        }
-    })?;
-    let metrics = pipeline_ctx.register_metrics::<AssertValidExporterMetrics>();
-    Ok(ExporterWrapper::local(
-        AssertValidExporter {
-            config,
-            control_msgs: Vec::new(),
-            suv_msgs: Vec::new(),
-            metrics,
-        },
-        node,
-        node_config,
-        exporter_config,
-    ))
+    metrics: MetricSet<ValidationExporterMetrics>,
 }
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
-pub static ASSERT_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
-    name: ASSERT_VALID_EXPORTER_URN,
+pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
+    name: VALIDATION_EXPORTER_URN,
     create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
-        create_assert_exporter(pipeline_ctx, node, node_config, exporter_config)
+        Ok(ExporterWrapper::local(
+            ValidationExporter::from_config(pipeline_ctx, &node_config.config)?,
+            node,
+            node_config,
+            exporter_config,
+        ))
     },
 };
 
-impl AssertValidExporter {
-
-    fn new() -> Self {
-        Self {
-            config,
-            control_msgs: Vec::new(),
-            suv_msgs: Vec::new(),
-            metrics
-        }
-    }
-    }
+impl ValidationExporter {
     /// compares control and suv msgs and updates the metrics
-    fn assert(&mut self) {
+    fn compare_and_record(&mut self) {
+        if self.control_msgs.is_empty()
+            || self.suv_msgs.is_empty()
+            || self.control_msgs.len() != self.suv_msgs.len()
+        {
+            return;
+        }
+
         let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
             assert_equivalent(&self.control_msgs, &self.suv_msgs)
         }))
@@ -126,13 +104,32 @@ impl AssertValidExporter {
             self.metrics.valid.set(1);
         } else {
             self.metrics.failed_comparisons.add(1);
-            self.metrics.valid.set(0);
+            self.metrics.valid.set(1);
         }
+    }
+
+    pub fn from_config(
+        pipeline_ctx: PipelineContext,
+        config: &serde_json::Value,
+    ) -> Result<Self, ConfigError> {
+        let metrics = pipeline_ctx.register_metrics::<ValidationExporterMetrics>();
+        let config: ValidationExporterConfig =
+            serde_json::from_value(config.clone()).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?;
+        Ok(Self {
+            config,
+            metrics,
+            control_msgs: Vec::new(),
+            suv_msgs: Vec::new(),
+        })
     }
 }
 
 #[async_trait(?Send)]
-impl Exporter<OtapPdata> for AssertValidExporter {
+impl Exporter<OtapPdata> for ValidationExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
@@ -150,32 +147,37 @@ impl Exporter<OtapPdata> for AssertValidExporter {
                 }
                 Message::PData(pdata) => {
                     let (context, payload) = pdata.into_parts();
-                    let source_node: Option<NodeName> = None;
+                    let source_node = context.source_node();
                     let msg = OtlpProtoBytes::try_from(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
-                    if let Some(msg) = msg && let Some(node_name) = source_node {
+                    if let Some(msg) = msg
+                        && let Some(node_name) = source_node
+                    {
                         match node_name {
                             // match node name and update the vec of msgs and compare
-                            name if name == self.config.suv_node => {
+                            name if name == self.config.suv_input => {
                                 self.suv_msgs.push(msg);
-                                self.assert();
+                                self.compare_and_record();
                             }
-                            name if name == self.config.control_node => {
+                            name if name == self.config.control_input => {
                                 self.control_msgs.push(msg);
-                                self.assert();
+                                self.compare_and_record();
                             }
-                            _ => {
-
-                            }
+                            _ => {}
                         }
+                    } else {
+                        self.compare_and_record();
                     }
                 }
                 _ => {}
             }
         }
 
-        Ok(TerminalState::default())
+        Ok(TerminalState::new(
+            Instant::now(),
+            [self.metrics.snapshot()],
+        ))
     }
 }
