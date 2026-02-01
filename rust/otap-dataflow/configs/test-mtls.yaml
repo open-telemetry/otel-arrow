@@ -39,7 +39,8 @@ nodes:
     plugin_urn: "urn:otel:otlp:exporter"
     config:
       # Send to another OTLP receiver with mTLS enabled
-      grpc_endpoint: "https://127.0.0.1:4318"
+      # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
+      grpc_endpoint: "https://127.0.0.1:4319"
 
       # Exporter mTLS configuration (client-side)
       tls:
