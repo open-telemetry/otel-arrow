@@ -26,7 +26,7 @@ steps:
           - ready_check_http:
               url: http://localhost:8087/telemetry/metrics?reset=false
               method: GET
-              expected_status: 200
+              expected_status_code: 200
   - name: Deploy Dataflow Engine
     action:
       component_action:
@@ -46,7 +46,7 @@ steps:
           - ready_check_http:
               url: http://localhost:8086/telemetry/metrics?reset=false
               method: GET
-              expected_status: 200
+              expected_status_code: 200
   - name: Deploy Load Generator
     action:
       component_action:
@@ -84,7 +84,7 @@ steps:
           - ready_check_http:
               url: http://localhost:8085/telemetry/metrics?reset=false
               method: GET
-              expected_status: 200
+              expected_status_code: 200
   - name: Monitor All
     action:
       multi_component_action:
