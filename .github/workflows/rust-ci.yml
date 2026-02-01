@@ -96,7 +96,7 @@ jobs:
       # building the collector or running code coverage, so no cleanup is needed.
 
       - name: install cargo-llvm-cov and nextest
-        uses: taiki-e/install-action@0e76c5c569f13f7eb21e8e5b26fe710062b57b62 # v2.65.13
+        uses: taiki-e/install-action@650c5ca14212efbbf3e580844b04bdccf68dac31 # v2.67.18
         with:
           tool: cargo-llvm-cov,cargo-nextest
       # The collector is only built on Linux. Integration tests that require
@@ -250,25 +250,25 @@ jobs:
           toolchain: stable
       - name: advisories
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
+        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           command: check advisories
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: licenses
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
+        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           command: check licenses
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: bans
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
+        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           command: check bans
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
       - name: sources
         if: '!cancelled()'
-        uses: EmbarkStudios/cargo-deny-action@76cd80eb775d7bbbd2d80292136d74d39e1b4918 # v2.0.14
+        uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
