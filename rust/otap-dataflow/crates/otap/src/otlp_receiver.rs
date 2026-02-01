@@ -464,7 +464,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
     ) -> Result<TerminalState, Error> {
         let grpc_enabled = self.config.protocols.grpc.is_some();
         let http_enabled = self.config.protocols.http.is_some();
-        let both_enabled = grpc_enabled && http_enabled;
+        let both_enabled = self.config.protocols.has_both();
 
         otap_df_telemetry::otel_info!(
             "receiver.start",
