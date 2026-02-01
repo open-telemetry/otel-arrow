@@ -23,16 +23,21 @@ nodes:
         # OTLP/HTTP receiver only (default port: 4318)
         http:
           listening_addr: "127.0.0.1:4318"
-          # wait_for_result: false
-          # max_concurrent_requests: 0
-          # max_request_body_size: "4MiB"
-          # accept_compressed_requests: true
-          # timeout: "30s"  # Optional: timeout for requests
-          # TLS / mTLS (receiver-side)
+
+          # --- Request/Response behavior ---
+          # wait_for_result: false        # Wait for downstream ACK before responding
+          # timeout: "30s"                # Request processing timeout
+          # max_request_body_size: "4MiB" # Max body size (applies to compressed & decompressed)
+          # accept_compressed_requests: true  # Accept gzip/deflate/zstd bodies
+
+          # --- Concurrency limits ---
+          # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
+
+          # --- TLS configuration ---
           # tls:
-          #   cert_file: "/path/to/server.crt"   # or `cert_pem: | ...`
-          #   key_file: "/path/to/server.key"    # or `key_pem: | ...`
-          #   client_ca_file: "/path/to/client-ca.crt"  # or `client_ca_pem: | ...`
+          #   cert_file: "/path/to/server.crt"
+          #   key_file: "/path/to/server.key"
+          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
           #   include_system_ca_certs_pool: false
           #   handshake_timeout: "10s"
           #   reload_interval: "5m"
