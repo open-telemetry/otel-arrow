@@ -399,7 +399,7 @@ where
     // If the original Parent ID type was a dictionary, cast it back to a dictionary of this type.
     if let Some(dict_key_type) = parent_dict_key_type {
         parent_id_col = match cast(
-            &parent_id_col.clone(),
+            &parent_id_col,
             &DataType::Dictionary(Box::new(dict_key_type), Box::new(T::DATA_TYPE)),
         ) {
             Ok(as_dict) => as_dict,
