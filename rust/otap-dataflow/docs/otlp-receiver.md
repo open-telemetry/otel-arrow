@@ -32,21 +32,20 @@ and HTTP/1.1 protocols with unified concurrency control.
                |   +---------------------------------------+   |
                |   |        Global Semaphore               |   |
                |   |   (bounds total across both protos)   |   |
-               |   +-------------------+-------------------+   |
-               |                       |                       |
-        +------v-------+        +------v-------+        +------v-------+
-        | gRPC Local   |        |              |        | HTTP Local   |
-        | Semaphore    |        |              |        | Semaphore    |
-        | (per-proto)  |        |              |        | (per-proto)  |
-        +------+-------+        |              |        +------+-------+
-               |                |              |               |
-               | poll_ready     |              |  acquire_owned()
-               | (backpressure) |              |  + timeout    |
-               +----------------+--------------+---------------+
-                                |
-                          +-----v-----------------+
-                          | OtapPdata             |
-                          |   context: Context    |
+               |   +---------+-----------------+-----------+   |
+               |             |                 |               |
+        +------v-------------v--+         +----v---------------v-------+
+        | gRPC Local Semaphore  |         | HTTP Local Semaphore       |
+        | (per-proto)           |         | (per-proto)                |
+        +------+----------------+         +---------------+------------+
+               |                                          |
+               | poll_ready                               | acquire_owned()
+               | (backpressure)                           | + timeout
+               +--------------------+---------------------+
+                                    |
+                          +---------v---------+
+                          | OtapPdata         |
+                          |   context: Context|
                           |   payload: OtlpBytes  | <-- Raw serialized
                           +-----------+-----------+
                                       |
@@ -79,11 +78,15 @@ The receiver supports three deployment modes with different concurrency strategi
 
 #### Deployment Modes
 
+<!-- markdownlint-disable MD013 -->
+
 | Mode | Configuration | Semaphores Used |
-|------|---------------|-----------------|
+|------|---------------|-----------------||
 | **gRPC-only** | Only `protocols.grpc` configured | Local gRPC semaphore only |
 | **HTTP-only** | Only `protocols.http` configured | Local HTTP semaphore only |
 | **Both protocols** | Both `protocols.grpc` and `protocols.http` | Global + per-protocol local |
+
+<!-- markdownlint-enable MD013 -->
 
 #### Dual-Protocol Mode (Global + Local Semaphores)
 
@@ -261,6 +264,8 @@ Result:
 
 **Key Takeaways:**
 
+<!-- markdownlint-disable MD013 -->
+
 | Setting | Behavior |
 |---------|----------|
 | `max_concurrent_requests: 0` | Auto-tune to downstream capacity |
@@ -268,6 +273,8 @@ Result:
 | Explicit value > downstream | Global semaphore still enforces downstream limit |
 | Sum of limits < downstream | Receiver never saturates downstream |
 | Sum of limits > downstream | Protocols compete for global permits |
+
+<!-- markdownlint-enable MD013 -->
 
 ### Unified Metrics
 
