@@ -105,7 +105,7 @@ impl PipelineValidation {
         let admin_client = Client::new();
 
         // wait for ready signal if no ready signal is reached then we error out
-        let _ = wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await?;
+        wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await?;
 
         // wait for loadgen to send all msgs
         let loadgen_deadline = Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
