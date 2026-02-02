@@ -150,7 +150,7 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
     }
 
     #[test]
@@ -186,7 +186,7 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
     }
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
         let ca_path = temp_ca_file.path().to_str().unwrap();
 
         let result = OtlpExporterProvider::get_tls_config(ca_path);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "get_tls_config failed: {:?}", result.err());
     }
 
     fn create_test_ca_file() -> tempfile::NamedTempFile {

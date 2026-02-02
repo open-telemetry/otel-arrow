@@ -577,7 +577,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 3).await;
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 278).await;
                 })
@@ -761,7 +761,7 @@ mod test {
             ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -849,7 +849,7 @@ mod test {
             ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1296,7 +1296,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1366,7 +1366,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1599,7 +1599,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    assert!(exporter_result.is_ok(), "Exporter failed: {:?}", exporter_result.err());
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
                 })
             });
