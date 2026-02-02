@@ -416,7 +416,7 @@ where
     for field in record_batch.schema().fields() {
         let field_name = field.name();
 
-        if field.name() == consts::PARENT_ID {
+        if field_name == consts::PARENT_ID {
             // add encoding the metadata to the parent_id column
             fields.push(
                 field
