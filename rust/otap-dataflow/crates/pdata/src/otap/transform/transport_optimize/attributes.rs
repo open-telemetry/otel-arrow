@@ -4,8 +4,8 @@
 //! This module contains utilities for applying "transport optimized" encoding to Attributes
 //! [`RecordBatch`]s.
 //!
-//! The goal of the encoding optimize the compression ratio of the IPC serialized record batch when
-//! general compression is applied.
+//! The goal of the encoding is to optimize the compression ratio of the IPC serialized record
+//! batch when general compression is applied.
 //!
 //! In this encoding, the record batch sorted by the columns:
 //! - type
@@ -183,7 +183,7 @@ where
             let as_prim = cast(parent_id_col, &T::DATA_TYPE).map_err(|_| {
                 // cast would only fail here if the dictionary values were not something that can
                 // be cast to <T as ArrowPrimitiveType>::DATA_TYPE (e.g. if the parent_id column
-                // was completely the wong type, indicating an invalid record batch was received).
+                // was completely the wrong type, indicating an invalid record batch was received).
                 Error::ColumnDataTypeMismatch {
                     name: consts::PARENT_ID.into(),
                     actual: *v.clone(),
@@ -518,7 +518,7 @@ where
 }
 
 /// Sort the slice in ascending order, and then apply delta encoding. We sort because
-/// negative are not allowed, since the parent_id column is always an unsigned type.
+/// negative deltas are not allowed, since the parent_id column is always an unsigned type.
 fn sort_and_delta_encode<T: Copy + Ord + Sub<Output = T>>(vals: &mut [T]) {
     vals.sort_unstable();
     let mut prev = vals[0];
