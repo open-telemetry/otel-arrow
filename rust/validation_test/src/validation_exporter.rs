@@ -26,7 +26,7 @@ use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Instant;
+use tokio::time::Duration;
 
 pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 
@@ -51,6 +51,7 @@ struct ValidationExporterMetrics {
     /// The value of the last comparison result
     /// 0 -> not valid
     /// 1 -> valid
+    #[metric(unit = "{input}")]
     valid: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
@@ -81,31 +82,23 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 impl ValidationExporter {
     /// compares control and suv msgs and updates the metrics
     fn compare_and_record(&mut self) {
-        if self.control_msgs.is_empty()
-            || self.suv_msgs.is_empty()
-            || self.control_msgs.len() != self.suv_msgs.len()
-        {
-            return;
-        }
-
         let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
             assert_equivalent(&self.control_msgs, &self.suv_msgs)
         }))
         .is_ok();
 
-        let passed = if self.config.expect_failure {
-            !equiv
-        } else {
-            equiv
-        };
+        // we do this if we expect the data to be altered due
+        // to a transformative processor in the pipeline
+        // passed is equal to !equiv if expect_failure is true
+        // passed is equal to equiv if expect_failure is false
 
-        if passed {
+        if equiv {
             self.metrics.passed_comparisons.add(1);
-            self.metrics.valid.set(1);
         } else {
             self.metrics.failed_comparisons.add(1);
-            self.metrics.valid.set(1);
         }
+        let passed = equiv ^ self.config.expect_failure;
+        self.metrics.valid.set(passed as u64);
     }
 
     pub fn from_config(
@@ -133,17 +126,20 @@ impl Exporter<OtapPdata> for ValidationExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
-        _effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let _ = effect_handler
+            .start_periodic_telemetry(Duration::from_secs(1))
+            .await?;
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    let _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report(&mut self.metrics);
                 }
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
-                    break;
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    return Ok(TerminalState::new(deadline, [self.metrics]));
                 }
                 Message::PData(pdata) => {
                     let (context, payload) = pdata.into_parts();
@@ -167,17 +163,10 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             }
                             _ => {}
                         }
-                    } else {
-                        self.compare_and_record();
                     }
                 }
                 _ => {}
             }
         }
-
-        Ok(TerminalState::new(
-            Instant::now(),
-            [self.metrics.snapshot()],
-        ))
     }
 }

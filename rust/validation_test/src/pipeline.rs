@@ -104,8 +104,10 @@ impl PipelineValidation {
 
         let admin_client = Client::new();
 
-        let _ = wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await;
+        // wait for ready signal if no ready signal is reached then we error out
+        let _ = wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await?;
 
+        // wait for loadgen to send all msgs
         let loadgen_deadline = Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
         loop {
             let snapshot = fetch_metrics(&admin_client, base).await?;
@@ -120,8 +122,10 @@ impl PipelineValidation {
             sleep(Duration::from_secs(metric_poll_cooldown)).await;
         }
 
+        // wait sometime to allow msgs to propogate through the pipelines
         sleep(Duration::from_secs(pipeline_delay_sec)).await;
 
+        // get metrics to check the validation exporter and retrieve the result
         let assert_snapshot = fetch_metrics(&admin_client, base).await?;
         let result = validation_from_metrics(&assert_snapshot);
 
@@ -154,6 +158,7 @@ impl PipelineValidation {
         let tmpl = env
             .get_template("template")
             .map_err(|e| PipelineError::Template(e.to_string()))?;
+        // pass the context variables
         let ctx = context! {
             loadgen_exporter_type => &self.variables.loadgen_exporter_type,
             backend_receiver_type => &self.variables.backend_receiver_type,
@@ -167,6 +172,7 @@ impl PipelineValidation {
     }
 }
 
+/// wait_for_ready probes the ready endpoint until it reaches success or used up all retry attempts
 async fn wait_for_ready(
     client: &Client,
     base: &str,
@@ -195,6 +201,7 @@ async fn wait_for_ready(
     ))
 }
 
+/// fetch_metric fetches metrics from the metric endpoint and returns them as a serialized struct
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, PipelineError> {
     client
         .get(format!("{base}/telemetry/metrics"))
@@ -209,6 +216,8 @@ async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, P
         .map_err(|e| PipelineError::Http(e.to_string()))
 }
 
+/// loadgen_reached checks the metric for the fake_data_generator metrics
+/// and returns true if the max signal count has been reached
 fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
     // Prefer the fake data generator metrics if present.
     if let Some(v) = snapshot
@@ -227,8 +236,9 @@ fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
     false
 }
 
+/// validation_from_metrics checks the metrics for the validation metrics
+/// returns true if validation passed
 fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
-    println!("{snapshot}");
     if let Some(v) = snapshot
         .metric_sets
         .iter()
@@ -258,29 +268,38 @@ pub async fn run_validation_tests(config_path: Option<&str>) -> Result<(), Pipel
     let mut report = String::from("========== Pipeline Validation Results ===========\n");
     let mut failures = 0usize;
 
+    // loop through each test config
     for mut config in config.tests {
+        // render the pipeline group yaml
         match config.render_template(VALIDATION_TEMPLATE_PATH) {
+            // run the validation process on the pipeline group and get the result
+            // build a report string
             Ok(rendered_template) => match config.validate(rendered_template).await {
                 Ok(result) => {
                     report.push_str(&format!("Pipeline: {} => {}\n", config.name, result));
+                    // keep track of failed results
                     if !result {
                         failures += 1;
                     }
                 }
                 Err(error) => {
                     report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                    // keep track of failed results
                     failures += 1;
                 }
             },
             Err(error) => {
                 report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                // keep track of failed results
                 failures += 1;
             }
         }
     }
 
-    print!("{report}");
+    // print out the report string
+    println!("{report}");
 
+    // trigger failed test if we encountered any failed results
     if failures == 0 {
         Ok(())
     } else {

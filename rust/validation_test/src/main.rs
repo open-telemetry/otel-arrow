@@ -3,7 +3,7 @@
 
 //! Entry point to run pipeline validations manually instead of via tests.
 
-use validation_test::pipeline::{run_validation_tests, PIPELINE_CONFIG_YAML};
+use validation_test::pipeline::{PIPELINE_CONFIG_YAML, run_validation_tests};
 
 #[tokio::main]
 async fn main() {

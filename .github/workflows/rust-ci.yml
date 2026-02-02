@@ -28,6 +28,7 @@ jobs:
           - otap-dataflow
           - experimental/query_abstraction
           - experimental/query_engine
+          - validation_test
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -144,9 +145,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
           toolchain: stable
-      - name: cargo test validation_test
+      - name: cargo run validation_test
         run: |
-          cargo test
+          cargo run
         working-directory: ./rust/validation_test
 
   fmt:
