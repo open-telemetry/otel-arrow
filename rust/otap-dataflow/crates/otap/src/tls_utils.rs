@@ -2272,4 +2272,296 @@ mod tests {
         server_result.expect("Server task panicked");
         client_result.expect("Client task panicked");
     }
+
+    /// Test that client rejects server certificate from untrusted CA.
+    ///
+    /// This verifies that TLS properly enforces certificate validation:
+    /// - Server presents a certificate signed by CA-A
+    /// - Client only trusts CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_server() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert signed by one CA
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate a different CA that client will trust (but server doesn't use)
+        generate_ca_signed_cert(path, "other_ca", "other", "other");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts a DIFFERENT CA (other_ca), not the server's CA (server_ca)
+        let other_ca_pem = fs::read(path.join("other_ca.crt")).expect("Failed to read other CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&other_ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may fail or succeed from server's perspective,
+            // but we expect an error on one side
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects - should fail because it doesn't trust server's CA
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject the server's certificate
+            assert!(
+                result.is_err(),
+                "Client should reject untrusted server certificate"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that server rejects client certificate from untrusted CA in mTLS.
+    ///
+    /// This verifies that mTLS properly enforces client certificate validation:
+    /// - Server expects client certs signed by CA-A
+    /// - Client presents a certificate signed by CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_client() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate client cert signed by one CA
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
+        // Generate a different CA that server will trust (but client doesn't use)
+        generate_ca_signed_cert(path, "trusted_client_ca", "trusted_client", "TrustedClient");
+
+        // Server trusts trusted_client_ca, but client will present cert from client_ca
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            // Server trusts a DIFFERENT CA than what client uses
+            client_ca_file: Some(path.join("trusted_client_ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts server's CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        // Client uses cert from client_ca (which server doesn't trust)
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
+
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
+        let client_key =
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(client_certs, client_key)
+            .expect("Failed to configure client auth");
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task - should reject client cert
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            let result = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+
+            // Server should reject the client's certificate
+            assert!(
+                result.is_err(),
+                "Server should reject untrusted client certificate"
+            );
+        });
+
+        // Client connects with untrusted cert
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            // Handshake may fail on client side too when server rejects
+            let _ = client_connector.connect(server_name, stream).await;
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that client rejects server certificate with hostname mismatch.
+    ///
+    /// This verifies hostname verification:
+    /// - Server cert has SAN for "wronghost"
+    /// - Client connects expecting "localhost"
+    /// - Handshake should fail due to hostname mismatch
+    #[tokio::test]
+    async fn test_accept_tls_connection_hostname_mismatch() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert with SAN for "wronghost", not "localhost"
+        generate_ca_signed_cert(path, "ca", "server", "wronghost");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts the CA
+        let ca_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may succeed, but client will reject
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects expecting "localhost" but server cert has "wronghost"
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            // Client expects "localhost" but cert has SAN for "wronghost"
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject due to hostname mismatch
+            assert!(
+                result.is_err(),
+                "Client should reject certificate with hostname mismatch"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
 }
