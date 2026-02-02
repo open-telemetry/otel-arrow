@@ -34,12 +34,6 @@ pub enum LogLevel {
     Warn,
     /// Error level logging.
     Error,
-    /// Trace level logging.
-    ///
-    /// Note: typically this is associated with span logging and
-    /// without special configuration this will be very
-    /// expensive. This may be considered useful during development.
-    Trace,
 }
 
 /// Logging providers for different execution contexts.

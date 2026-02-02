@@ -29,7 +29,6 @@ pub fn create_env_filter(level: LogLevel) -> EnvFilter {
         LogLevel::Info => LevelFilter::INFO,
         LogLevel::Warn => LevelFilter::WARN,
         LogLevel::Error => LevelFilter::ERROR,
-        LogLevel::Trace => LevelFilter::TRACE,
     };
 
     EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -173,7 +172,7 @@ mod tests {
     use super::*;
     use crate::event::ObservedEvent;
     use crate::self_tracing::LogContext;
-    use crate::{otel_debug, otel_error, otel_info, otel_info_span, otel_warn};
+    use crate::{otel_debug, otel_error, otel_info, otel_warn};
     use otap_df_config::observed_state::SendPolicy;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
@@ -186,13 +185,12 @@ mod tests {
         TracingSetup::new(p, l, LogContext::new)
     }
 
-    const ALL_LEVELS: [LogLevel; 6] = [
+    const ALL_LEVELS: [LogLevel; 5] = [
         LogLevel::Off,
         LogLevel::Debug,
         LogLevel::Info,
         LogLevel::Warn,
         LogLevel::Error,
-        LogLevel::Trace,
     ];
 
     #[test]
@@ -269,29 +267,13 @@ mod tests {
 
             let cnt = receiver.into_iter().count();
             let expect = match level {
-                LogLevel::Off | LogLevel::Trace => 0,
+                LogLevel::Off => 0,
                 LogLevel::Debug => 4,
                 LogLevel::Info => 3,
                 LogLevel::Warn => 2,
                 LogLevel::Error => 1,
             };
             assert_eq!(cnt, expect);
-        }
-    }
-
-    #[test]
-    fn trace_level_logging() {
-        for level in ALL_LEVELS {
-            let (reporter, receiver) = test_reporter();
-            let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
-            setup.with_subscriber(|| {
-                otel_info_span!("important_request");
-            });
-
-            drop(setup);
-
-            let cnt = receiver.into_iter().count();
-            assert_eq!(cnt, if level == LogLevel::Trace { 1 } else { 0 });
         }
     }
 

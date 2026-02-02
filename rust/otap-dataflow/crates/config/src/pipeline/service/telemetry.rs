@@ -1,17 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Telemetry level configurations.
+//! OTel SDK telemetry configuration for service-level observability.
+//!
+//! This module configures how telemetry data is exported to external
+//! backends using the OpenTelemetry SDK. For internal pipeline
+//! telemetry settings, see `crate::settings::telemetry`.
 
-pub mod logs;
 pub mod metrics;
+
+// Re-export logs configuration from its new home for backward compatibility.
+pub use crate::settings::telemetry::logs;
 
 use std::{collections::HashMap, time::Duration};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::pipeline::service::telemetry::{logs::LogsConfig, metrics::MetricsConfig};
+use crate::settings::telemetry::logs::LogsConfig;
+
+use metrics::MetricsConfig;
 
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
