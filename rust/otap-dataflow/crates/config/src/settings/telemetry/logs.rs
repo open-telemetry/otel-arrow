@@ -72,23 +72,9 @@ impl LoggingProviders {
             || self.admin.uses_its_provider()
     }
 
-    /// Returns true if this uses an async logs provider.
-    #[must_use]
-    pub const fn uses_any_internal_provider(&self) -> bool {
-        // Note: internal is not checked, it's not permitted.
-        debug_assert!(!self.internal.uses_any_internal_provider());
-
-        self.global.uses_any_internal_provider()
-            || self.engine.uses_any_internal_provider()
-            || self.admin.uses_any_internal_provider()
-    }
-
     /// Returns true if this uses an console_async provider.
     #[must_use]
     pub const fn uses_console_async_provider(&self) -> bool {
-        // Note: internal is not checked, it's not permitted.
-        debug_assert!(!self.internal.uses_any_internal_provider());
-
         self.global.uses_console_async_provider()
             || self.engine.uses_console_async_provider()
             || self.admin.uses_console_async_provider()
@@ -120,7 +106,7 @@ pub enum ProviderMode {
 impl ProviderMode {
     /// Is this any console logging mode?
     #[must_use]
-    pub const fn uses_any_internal_provider(&self) -> bool {
+    const fn uses_any_internal_provider(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
     }
 
