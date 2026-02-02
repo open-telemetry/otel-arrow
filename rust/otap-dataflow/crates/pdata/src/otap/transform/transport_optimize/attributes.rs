@@ -1,52 +1,55 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This code utilities for applying "transport optimized" encoding to Attributes record batches.
+//! This module contains utilities for applying "transport optimized" encoding to Attributes
+//! [`RecordBatch`]s.
 //!
-//! The goal of the transport optimized encoding optimize the compression ratio of the IPC
-//! serialized record batch when general compression is applied.
+//! The goal of the encoding optimize the compression ratio of the IPC serialized record batch when
+//! general compression is applied.
 //!
 //! In this encoding, the record batch sorted by the columns:
 //! - type
 //! - key
-//! - value*
-//! - parent_id
+//! - value
 //!
-//! Then delta encoding is applied to segments of the parent_id column
+//! Delta encoding is then applied to some segments of the parent_id column.
 //!
-//! Note that the values are contained in multiple columns. For the most part, there is one column
-//! per type of attribute, however Map & Slice type attributes are a special case where these two
-//! types of attributes share a values column called "ser".
+//! The attribute values are contained within multiple columns. There is one column per type of
+//! attribute value, with the exception Map & Slice type attributes which share a single values
+//! column called "ser".
 //!
-//! In this encoding, the parent_id column is delta-encoded for sequences of rows sharing the same
-//! type, key and value, with two exceptions:
+//! The "type" column identifies which values column contains the attribute value for the row. It
+//! contains non-nullable u8 corresponding to the [`AttributeValueType`] enum.
+//!
+//! The "parent_id" column is delta-encoded for sequences of rows sharing the same type, key and
+//! value, with two exceptions:
 //! - parent_ids for Map & Slice types are not delta encoded
 //! - attributes where the value is null do not have their parent_id column delta encoded.
 //!
-//! An row is considered to contain a null attribute if:
+//! A row will be interpreted as containing a null attribute if:
 //! - the type column = 0, which corresponds to [`AttributeValueType::Empty`]
 //! - the value column contains a null
-//! - the value column is not present
+//! - the value column is not present indicating all rows for values of the type are null
 //!
-//! Note that the latter two cases (column contains null, values column missing), would be unusual.
-//! Typically to represent a null value, it is best to set `AttributeValueType::Empty` in the type
-//! column. Not only does this more clearly express the semantic of no value, but there are the
-//! process of adding this encoding is more optimal if there are no nulls in the values column
-//! where type != `Empty.
+//! Note that the latter two cases (column contains null, values column missing), while valid arrow
+//! data, are atypical ways to represent a null attribute. It is preferred to set
+//! `AttributeValueType::Empty` in the type column. Not only does this more clearly express the
+//! semantic of an absent value, but the process of adding this encoding is more optimal if there
+//! are no nulls in the values column where type != `Empty`.
 //!
 //! Example:
 //!
 //!  type      | key    | str  | int   | parent_id
 //! -----------|---- ---|------|-------|-----------
-//!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 0
+//!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 1
 //!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 2 (delta encoded b/c type,key,val are equal to previous row)
 //!  1 (str)   | "k1"   | "v1" | null  |  1     <- parent_id = 3
-//!  1 (str)   | "k1"   | "v2" | null  |  1     <- parent_id = 1 (value changed, broke delta encoding sequence)
+//!  1 (str)   | "k1"   | "v2" | null  |  1     <- parent_id = 1 (value changed, breaks delta encoding sequence)
 //!  1 (str)   | "k1"   | "v2" | null  |  1     <- parent_id = 2
-//!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 1 (key changed, broke delta encoding sequence)
+//!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 1 (key changed, breaks delta encoding sequence)
 //!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 2
 //!  1 (str)   | "k2"   | "v2" | null  |  1     <- parent_id = 3
-//!  2 (int)   | null   | "v2" | 1     |  1     <- parent_id = 1 (type changed, broke delta encoding sequence)
+//!  2 (int)   | null   | "v2" | 1     |  1     <- parent_id = 1 (type changed, breaks delta encoding sequence)
 //!  2 (int)   | null   | "v2" | 1     |  1     <- parent_id = 2
 //! ...
 //!  0 (empty) | null   | null | null  |  1     <- parent_id = 1 (value null b/c type = empty, no delta encoding)
@@ -88,16 +91,17 @@ use crate::{
 /// Applies the transport optimized encoding to the record batch (see module documentation for
 /// description of the encoding).
 ///
-/// This function first sorts the types and keys together. Then from this sorted array, it
-/// partitions by type to select the correct values column for this sorted segment and subsequently
-/// partitions by key within this type range to select segments of the values column for sorting.
-/// It then sorts each segment of the values column, partitions this sorted segment, and maybe
-/// applies sorting/delta encoding to the parent_ids within each partition (depending on the rules
-/// for when to delta encode, which are spelled out above).
+/// This procedure first sorts the types and keys together. From this sorted array, it partitions
+/// by type to select the correct values column for this segment of sorted rows, and subsequently
+/// partitions by key within the type range to select segments of the values column for sorting.
+/// It then sorts each segment of the values column, partitions this sorted values segment, and
+/// optionally applies delta encoding to the parent_ids within each partition (according to the
+/// rules for when to delta encode, which are outlined above).
 ///
-/// The idea is to sort as efficiently as possible, while collecting enough context along the way
-/// that we know: a) when to apply delta encoding to the parent IDs without having to do a second
-/// partition pass, and b) how to efficiently reconstruct the sorted values columns at the end
+/// The goal is to sort the rows as efficiently as possible, while collecting enough context during
+/// the process so that we know: a) when to apply delta encoding to the parent IDs (without having
+/// to do a second partition pass, and b) how to efficiently reconstruct the sorted values columns
+/// at the end)
 ///
 pub(crate) fn transport_optimize_encode_attrs<T: ArrowPrimitiveType>(
     record_batch: &RecordBatch,
@@ -106,8 +110,8 @@ where
     <T as ArrowPrimitiveType>::Native: Ord + Sub<Output = <T as ArrowPrimitiveType>::Native>,
 {
     if record_batch.num_rows() <= 1 {
-        // sorting & encoding rows would not change the data if there is 1 or fewer rows, so we skip
-        // handling the data and just update the schema metadata
+        // sorting & encoding rows would not change the data if there is 1 or fewer rows.
+        // skip handling the data and just update the schema metadata
         let schema = update_field_metadata(
             record_batch.schema_ref(),
             consts::PARENT_ID,
@@ -119,15 +123,16 @@ where
         // the incoming batch, just with a single updated field metadata
         let result = RecordBatch::try_new(Arc::new(schema), record_batch.columns().to_vec())
             .expect("can create record batch");
+
         return Ok(result);
     }
 
-    // builders for each attribute value column, indexed by AttributeValueType.
+    // initialize builders for each attribute value column, indexed by AttributeValueType.
     //
     // the final sorted layout for each column will be:
     // - rows grouped by attribute type (matching the type column)
-    // - within each type segment, rows sorted by: key, then value
     // - rows outside a column's type segment are set to null
+    // - within the type segment, rows sorted by: key, then value
     //
     // example for ATTRIBUTE_STR (type=1):
     //   - Rows where type == 1: non-null, sorted by (key, value)
@@ -168,10 +173,9 @@ where
 
     let parent_id_col = get_required_array(record_batch, consts::PARENT_ID)?;
 
-    // if the parent ID column is a dictionary, we cast it to a primitive array so we can work
-    // directly with the ScalarBuffer containing the values. We then cast it back to dictionary
+    // if the parent ID column is a dictionary, we cast it to a primitive array so we can read
+    // directly from the ScalarBuffer containing the values. We then cast it back to dictionary
     // array when reconstructing the final dataset.
-    //
     // TODO investigate if there's a more performant alternative to doing this cast
     let mut parent_dict_key_type = None;
     let parent_id_column_vals = match parent_id_col.data_type() {
@@ -179,7 +183,7 @@ where
             let as_prim = cast(parent_id_col, &T::DATA_TYPE).map_err(|_| {
                 // cast would only fail here if the dictionary values were not something that can
                 // be cast to <T as ArrowPrimitiveType>::DATA_TYPE (e.g. if the parent_id column
-                // was completely the wong type).
+                // was completely the wong type, indicating an invalid record batch was received).
                 Error::ColumnDataTypeMismatch {
                     name: consts::PARENT_ID.into(),
                     actual: *v.clone(),
@@ -207,18 +211,18 @@ where
             .clone(), // internally just an Arc<Bytes>
     };
 
-    // this is the buffer into which we'll be appending sorted + quasi-delta encoded parent_ids
+    // this is the buffer into which we'll be appending the encoded parent IDs
     let mut encoded_parent_id_column = Vec::with_capacity(record_batch.num_rows());
 
     // first sort by type/key to indices. This will allow us to take new columns for type/key
     // and we'll use these indices later on to take values columns/parent_id column for each
-    // partition of rows with equivalent type/value
+    // partition of rows with equivalent type & key
     let type_col = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
     let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY)?;
     let type_and_key_indices = sort_attrs_type_and_keys_to_indices(type_col, key_col.clone())?;
 
     // safety: we can call "expect" here because the indices we're taking are computed from the
-    // indices of the array we're taking by the sort_attrs_type_and_keys_to_indices function
+    // indices of original batch by the sort_attrs_type_and_keys_to_indices function
     let type_col_sorted =
         take(type_col, &type_and_key_indices, None).expect("can take sorted indices in bounds");
     let key_col_sorted =
@@ -232,10 +236,7 @@ where
         .expect("type is UInt8Array");
     let type_col_sorted_bytes = type_prim_arr.values().inner().as_slice();
 
-    // safety: partition can only be expected to fail if multiple arrays are passed that have
-    // different lengths, or if an array type is passed for which the values cannot be compared.
-    // neither of these failing criteria are met for a single uint8 column
-    let mut type_partitions = Vec::with_capacity(8);
+    let mut type_partitions = Vec::with_capacity(8); // 8 = number of possible value types
     collect_partition_from_array(&type_col_sorted, &mut type_partitions)?;
 
     // These `Vec`s are used farther below when handling the values w/in each range of sorted keys.
@@ -244,14 +245,14 @@ where
     let mut values_ranges = Vec::new();
     let mut key_range_indices_values_sorted = Vec::new();
 
-    // iterates of ranges of of value types in ascending order. For example, we iterate over type
-    // ranges Empty, String, Int. and so on..
+    // iterates ranges of types in ascending order. For example, we iterate over type ranges
+    // Empty, String, Int. and so on..
     for type_range in type_partitions {
-        // the byte
-        let type_range_attr_type = type_col_sorted_bytes[type_range.start];
+        let type_range_attr_type =
+            AttributeValueType::try_from(type_col_sorted_bytes[type_range.start])?;
 
-        let is_ser_col_type = type_range_attr_type == AttributeValueType::Map as u8
-            || type_range_attr_type == AttributeValueType::Slice as u8;
+        let is_ser_col_type = type_range_attr_type == AttributeValueType::Map
+            || type_range_attr_type == AttributeValueType::Slice;
 
         let sorted_val_col_builder = if is_ser_col_type {
             sorted_ser_column.as_mut()
@@ -260,7 +261,7 @@ where
         };
 
         // this contains indices of rows from the original record batch that are of the type for
-        // the range we're currently handling sorted by key. For example, if the current range is
+        // the range we're currently handling, sorted by key. For example, if the current range is
         // for string type, this will contain all indices from the original record batch that are a
         // string type attribute, sorted attribute key.
         let type_range_indices_key_sorted =
@@ -280,7 +281,7 @@ where
             let values_type_range_by_key =
                 sorted_val_col.take_source(&type_range_indices_key_sorted)?;
 
-            // init struct that will help us sort the values for w/in each range of equivalent keys
+            // init struct that will help us sort the values w/in each range of equivalent keys
             let mut values_sorter = AttrValuesSorter::try_new(&values_type_range_by_key)?;
 
             // partition the keys column into ranges where all rows have the same key.
@@ -306,13 +307,13 @@ where
                     &mut values_ranges,
                 )?;
 
-                // keep the current length of the encoded parent IDs for later, when we need to
+                // keep the current length of the encoded parent IDs for later. Below where we
                 // iterate over the values ranges to sort and add delta encoding, and this will
                 // make it easier to calculate the ranges containing parent IDs for each value
                 let values_range_offset = encoded_parent_id_column.len();
 
                 // push the values for parent IDs that have this key into the results column.
-                // They'll be inserted in the wrong order, but we're going to sort them afterward
+                // They may be inserted in the wrong order, but we're going to sort them afterward
                 // for any non-null ranges for type that support quasi-delta encoding
                 encoded_parent_id_column.extend(key_range_indices_values_sorted.iter().map(
                     |idx| {
@@ -327,13 +328,11 @@ where
                         + values_range_offset
                         ..values_range.range.end + values_range_offset];
 
-                    // nulls never count as equal for the purposes of delta encoding.
-                    // Map & Slice type are never considered "equal" for the purposes of delta
-                    // encoding so we skip adding quasi-delta encoding for this range, which means
-                    // the parent_id segment also does not need to be sorted
+                    // nulls never count as equal for the purposes of delta encoding, and neither
+                    // are Map & Slice types
                     if !values_range.is_null
-                        && type_range_attr_type != AttributeValueType::Map as u8
-                        && type_range_attr_type != AttributeValueType::Slice as u8
+                        && type_range_attr_type != AttributeValueType::Map
+                        && type_range_attr_type != AttributeValueType::Slice
                     {
                         sort_and_delta_encode(parent_ids_range);
                     }
@@ -342,8 +341,8 @@ where
         } else {
             // The values column is missing - which either means that the column was all null, or the
             // attribute type is "empty". Either way, we interpret this as "null' attribute, which
-            // and nulls are not equal for the purposes of whether we should delta encode the column
-            // so we can just append the unsorted parent IDs for the type range
+            // means we should not delta encode the column. We just append the unsorted parent IDs
+            // for the type range
             encoded_parent_id_column.extend(
                 type_range_indices_key_sorted
                     .values()
@@ -352,13 +351,14 @@ where
             );
         }
 
-        // push the unsorted values for columns not of this type to fill in gaps
+        // push null values into the all the values columns that were not of the type for this
+        // range. This will fill in gaps in these columns.
         for attr_type in [
-            AttributeValueType::Str as u8,
-            AttributeValueType::Int as u8,
-            AttributeValueType::Double as u8,
-            AttributeValueType::Bool as u8,
-            AttributeValueType::Bytes as u8,
+            AttributeValueType::Str,
+            AttributeValueType::Int,
+            AttributeValueType::Double,
+            AttributeValueType::Bool,
+            AttributeValueType::Bytes,
         ] {
             if attr_type == type_range_attr_type {
                 // skip because we already pushed the sorted section for this type
@@ -367,21 +367,25 @@ where
 
             if let Some(sorted_val_col_builder) = sorted_val_columns[attr_type as usize].as_mut() {
                 let len = type_range.len();
-                sorted_val_col_builder.append_n_default_values(len);
+                // append the nulls to the null buffer
                 sorted_val_col_builder.append_n_nulls(len);
+                // fill in the data buffers with default values
+                sorted_val_col_builder.append_n_default_values(len);
             }
         }
 
         // push unsorted values from slice/map type if not already pushed. This is handled as
         // special case from the loop above b/c both slice and map attrs types use the same column,
         // and we only want to append segment to the column builder once per value column per type
-        if type_range_attr_type != AttributeValueType::Map as u8
-            && type_range_attr_type != AttributeValueType::Slice as u8
+        if type_range_attr_type != AttributeValueType::Map
+            && type_range_attr_type != AttributeValueType::Slice
         {
             if let Some(sorted_val_col_builder) = sorted_ser_column.as_mut() {
                 let len = type_range.len();
-                sorted_val_col_builder.append_n_default_values(len);
+                // append the nulls to the null buffer
                 sorted_val_col_builder.append_n_nulls(len);
+                // fill in the data buffers with default values
+                sorted_val_col_builder.append_n_default_values(len);
             }
         }
     }
@@ -401,7 +405,7 @@ where
             Ok(as_dict) => as_dict,
 
             // If this cast failed, it means that the deltas have more unique values than would fit
-            //into the original sized dictionary. Just return the native array as a fallback
+            // into the original sized dictionary. Just return the native array as a fallback
             Err(_) => parent_id_col,
         }
     }
@@ -513,7 +517,8 @@ where
     Ok(batch)
 }
 
-/// Sort the slice in ascending order, and then apply delta encoding
+/// Sort the slice in ascending order, and then apply delta encoding. We sort because
+/// negative are not allowed, since the parent_id column is always an unsigned type.
 fn sort_and_delta_encode<T: Copy + Ord + Sub<Output = T>>(vals: &mut [T]) {
     vals.sort_unstable();
     let mut prev = vals[0];
@@ -526,14 +531,14 @@ fn sort_and_delta_encode<T: Copy + Ord + Sub<Output = T>>(vals: &mut [T]) {
 
 /// sort the type and key and return the indices of the sorted batch.
 ///
-/// To improve sort performance, does something similar to what would be done by arrow's
-/// RowConverter, which is to combine the columns into a row based byte array and then sort that.
+/// To improve sort performance, we use an approach similar to arrow's RowConverter, which
+/// combines the columns into a row based byte array and sorts it.
 ///
-/// However, this implementation is more optimal when keys are dictionary encoded, which they
+/// However, this implementation is more optimal when "keys" are dictionary encoded, which they
 /// usually will be. Unlike RowConverter, we don't expand the dictionary when creating the sorting
 /// target. Instead, if keys is dictionary encoded, we rank the dictionary values, convert the
 /// dictionary keys to their ranks, and sort that alongside type. The dictionary keys are normally
-/// low cardinality, so ranking is fast.
+/// low cardinality, so ranking them is faster than expanding the dictionary.
 fn sort_attrs_type_and_keys_to_indices(
     type_col: &UInt8Array,
     key_col: ArrayRef,
@@ -654,9 +659,9 @@ fn sort_attrs_type_and_keys_to_indices(
 
 /// A builder for constructing sorted attribute values columns.
 ///
-/// This builder is designed to efficiently construct Arrow arrays by appending values
-/// in a sorted order. It supports multiple Arrow data types including dictionaries,
-/// primitives (Int64, Float64), variable-length types (Binary, Utf8), and Boolean.
+/// This builder is designed to efficiently reconstruct the values column from data that was
+/// appended in a sorted order. It supports all the Arrow types which OTAP may use to contain
+/// attribute values.
 ///
 /// The builder maintains separate buffers for different data type components:
 /// - `data`: holds the actual values for most types
@@ -760,9 +765,9 @@ impl SortedValuesColumnBuilder {
         }
     }
 
-    /// access some rows of the original values column by their indices
+    /// Access some rows of the original values column by their indices
     ///
-    /// this should only be called with indices computed from the original source. Calling this
+    /// This should only be called with indices computed from the original source. Calling this
     /// with out of bound indices will fail
     fn take_source(&self, indices: &UInt32Array) -> Result<Arc<dyn Array>> {
         // safety: take will only panic here if the indices are out of bounds, but this is only
@@ -870,8 +875,7 @@ impl SortedValuesColumnBuilder {
                 let offsets_buffer = self.offsets.expect("offsets not None");
                 let offsets_buffer = offsets_buffer.into();
                 let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
-                let data = self.data.into();
-                Ok(Arc::new(StringArray::new(offsets, data, nulls)))
+                Ok(Arc::new(StringArray::new(offsets, self.data.into(), nulls)))
             }
 
             DataType::Boolean => Ok(Arc::new(BooleanArray::new(
@@ -891,7 +895,7 @@ impl SortedValuesColumnBuilder {
 /// This helper struct is used for sorting and partitioning segments of the values columns.
 ///
 /// Because multiple ranges of the values array may need to be sorted and partitioned, this struct
-/// keeps some internal state to avoid heap allocations for each sequence of attributes.
+/// keeps some internal state to avoid heap allocations for each sequence of attribute values.
 struct AttrValuesSorter {
     /// this is the values array, or data extracted from it, used for sorting/partitioning
     inner: AttrsValueSorterInner,
@@ -906,17 +910,16 @@ struct AttrValuesSorter {
     rank_sort: Vec<(usize, u16)>,
     key_partition: Vec<u16>,
 
-    // scratch buffers for sorting the float value column.
+    // reusable scratch buffers for sorting the float value column.
     float64_sort: Vec<(usize, f64)>,
     float64_partition: Vec<f64>,
 }
 
 /// References to the values array data kept for sorting & partitioning. In some cases, the
 /// original Arrow array kept. For other cases we keep only some references to the original data
-/// which can be handled in a more performant manner. Generally this means not using the arrow
-/// compute kernels for sorting & partitioning to avoid the `Arc`s they would force us to allocate.
+/// which can be handled in a more performant manner.
 enum AttrsValueSorterInner {
-    /// inner references to values array dictionary keys, the rank of the keys, and the null buffer.
+    /// Inner references to values array dictionary keys, the rank of the keys, and the null buffer.
     /// this allows us to sort many segments of dictionary encoded values columns by the rank of the
     /// dictionary keys, while only having sorted the dictionary values one time.
     KeysAndRanks(AttrValueDictKeysAndRanks),
@@ -1104,8 +1107,8 @@ impl AttrValuesSorter {
                     is_null: false,
                 }));
 
-                // if there were any nulls in the original values column, fill in any null segments
-                // in the ranges result
+                // if there were any nulls in the original values column, fill in any null segment
+                // flags in the ranges result
                 if let Some(nulls) = &nulls {
                     for nullable_range in result {
                         let (start_idx, _) = self.float64_sort[nullable_range.range.start];
@@ -1188,8 +1191,8 @@ impl AttrValuesSorter {
                     is_null: false,
                 }));
 
-                // if there were any nulls in the original values column, fill in any null segments
-                // in the ranges result
+                // if there were any nulls in the original values column, fill in any null segment/
+                // flags in the ranges result
                 if let Some(nulls) = &keys_and_ranks.nulls {
                     for nullable_range in result {
                         let (start_idx, _) = self.rank_sort[nullable_range.range.start];
@@ -1271,19 +1274,6 @@ impl AttrValuesSorter {
                             value_col_builder.append_n_non_nulls(range.len());
                         }
                     }
-                    DataType::Float64 => {
-                        let float_arr = values_range_sorted
-                            .as_any()
-                            .downcast_ref::<Float64Array>()
-                            // safety: we've checked the DataType
-                            .expect("can downcast to Float64Array");
-                        value_col_builder.append_data(float_arr.values().inner().as_slice());
-                        if let Some(nulls) = float_arr.nulls() {
-                            value_col_builder.append_nulls(nulls);
-                        } else {
-                            value_col_builder.append_n_non_nulls(range.len());
-                        }
-                    }
                     DataType::Boolean => {
                         let bool_arr = values_range_sorted
                             .as_any()
@@ -1337,12 +1327,12 @@ impl AttrValuesSorter {
 /// adjacent indices are equal.
 ///
 /// This code is adapted from arrow's [`arrow::buffer::MutableBuffer::collect_bool`], however this
-/// code allows reusing the `result_buf`, whereas the arrow version forces us to eventually convert
-/// `MutableBuffer` into something that allocates an `Arc` before we can access the bytes.
+/// implementation allows reusing the `result_buf`, whereas the arrow version forces us to eventually
+/// convert `MutableBuffer` into something that allocates an `Arc` before we can access the bytes.
 ///
-/// Performance: Depending on the function that is passed, this will also auto-vectorize decently.
+/// Performance: Depending on the function that is passed, this can also be auto-vectorized.
 /// For example, a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use
-/// SIMD to do the comparison
+/// SIMD to do the comparisons
 fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
     result_buf.clear();
     result_buf.reserve(bit_util::ceil(len, 64) * 8);
@@ -1444,14 +1434,14 @@ fn collect_partitions_for_range(
 /// Collect partitions of equal values from the passed array. This is very similar to arrow's
 /// partition compute kernel, except that it allows reusing the vector of ranges.
 ///
-/// Performance: this uses the arrow `eq` compute kernel to compute the partitions which is
-/// generally fast from using SIMD. However, this call allocates a handful of temporary Arrays.
-/// For large arrays, the performance overhead is usually worth it, but for small arrays
+/// Performance: internally this uses the arrow `eq` compute kernel to compute the partitions
+/// which is generally fast from using SIMD. However, this call allocates a handful of temporary
+/// Arrays. For large arrays, the performance overhead is usually worth it, but for small arrays
 /// (dozens of elements) this does cause extra overhead and using arrow's `partition` kernel
 ///  may be faster.
 fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>>) -> Result<()> {
     let next_eq_arr_key = create_next_element_equality_array(source)?;
-    // safety: `not` is actually infallible
+    // safety: `not` is actually infallible, so we can expect here.
     let next_eq_inverted = not(&next_eq_arr_key).expect("can invert boolean array");
     let mut set_indices = next_eq_inverted.values().set_indices();
     collect_partition_boundaries_to_ranges(
@@ -1466,8 +1456,8 @@ fn collect_partition_from_array(source: &ArrayRef, result: &mut Vec<Range<usize>
 /// Given a iterator of positions representing an index which is a boundary between a range
 /// of partitions, fill in the result vec with partition ranges.
 ///
-/// This is somewhat similar to what arrow's `partition` kernel does internally, however it
-/// allows for reuse of the vec that contains the ranges
+/// This is somewhat similar to what arrow's [`arrow::compute::Partitions::ranges`] method
+/// does internally, however it allows reusing the result vec across subsequent calls
 fn collect_partition_boundaries_to_ranges<I: Iterator<Item = usize>>(
     boundaries: &mut I,
     len: usize,
