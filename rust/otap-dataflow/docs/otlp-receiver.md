@@ -28,34 +28,38 @@ and HTTP/1.1 protocols with unified concurrency control.
         | - No deserialization   |                | - Decompression        |
         +------+-----------------+                +------------+-----------+
                |                                               |
+               |             (dual-protocol mode only)         |
                |   +---------------------------------------+   |
-               |   |        Shared Semaphore               |   |
-               |   |    (Arc<Semaphore> across both)       |   |
+               |   |        Global Semaphore               |   |
+               |   |   (bounds total across both protos)   |   |
                |   +-------------------+-------------------+   |
                |                       |                       |
-               | acquire via           | acquire_owned()       |
-               | Tower layer           | + timeout             |
-               |                       |                       |
-               +----------+------------+------------+----------+
-                          |  (permit acquired)     |
-                          +------------+-----------+
-                                       |
-                          +------------v--------------+
-                          | OtapPdata                 |
-                          |   context: Context        |
-                          |   payload: OtlpProtoBytes | <-- Raw serialized
-                          +------------+--------------+
-                                       |
-       +-------------------------------v-------------------------------+
-       |              Shared Infrastructure (gRPC + HTTP)              |
-       |  - AckRegistry (wait_for_result subscriptions)                |
-       |  - Unified Metrics (requests, acks, nacks, errors)            |
-       |  - Control Loop (ACK/NACK routing, telemetry, shutdown)       |
-       +-------------------------------+-------------------------------+
-                                       |
-                          +------------v--------------+
-                          | Pipeline (Bounded MPSC)   |
-                          +---------------------------+
+        +------v-------+        +------v-------+        +------v-------+
+        | gRPC Local   |        |              |        | HTTP Local   |
+        | Semaphore    |        |              |        | Semaphore    |
+        | (per-proto)  |        |              |        | (per-proto)  |
+        +------+-------+        |              |        +------+-------+
+               |                |              |               |
+               | poll_ready     |              |  acquire_owned()
+               | (backpressure) |              |  + timeout    |
+               +----------------+--------------+---------------+
+                                |
+                          +-----v-----------------+
+                          | OtapPdata             |
+                          |   context: Context    |
+                          |   payload: OtlpBytes  | <-- Raw serialized
+                          +-----------+-----------+
+                                      |
+       +------------------------------v-------------------------------+
+       |              Shared Infrastructure (gRPC + HTTP)             |
+       |  - AckRegistry (wait_for_result subscriptions)               |
+       |  - Unified Metrics (requests, acks, nacks, errors)           |
+       |  - Control Loop (ACK/NACK routing, telemetry, shutdown)      |
+       +------------------------------+-------------------------------+
+                                      |
+                          +-----------v-----------+
+                          | Pipeline (Bounded MPSC)|
+                          +-----------------------+
 ```
 
 ## Key Design Principles
@@ -69,38 +73,201 @@ overhead and memory allocations on the hot path.
 - **gRPC**: Custom `OtlpBytesCodec` extracts the raw bytes without parsing
 - **HTTP**: Body is collected and (optionally) decompressed, but not decoded
 
-### Shared Concurrency Control
+### Concurrency Control
 
-When both protocols are enabled, a single `tokio::sync::Semaphore`
-controls admission:
+The receiver supports three deployment modes with different concurrency strategies:
+
+#### Deployment Modes
+
+| Mode | Configuration | Semaphores Used |
+|------|---------------|-----------------|
+| **gRPC-only** | Only `protocols.grpc` configured | Local gRPC semaphore only |
+| **HTTP-only** | Only `protocols.http` configured | Local HTTP semaphore only |
+| **Both protocols** | Both `protocols.grpc` and `protocols.http` | Global + per-protocol local |
+
+#### Dual-Protocol Mode (Global + Local Semaphores)
+
+When both protocols are enabled, a two-level semaphore design controls admission:
 
 ```text
                      +---------------------------+
-                     |   Shared Semaphore        |
-                     |   (max_concurrent_requests)|
+                     |    Global Semaphore       |
+                     | (bounds total inflight)   |
                      +-------------+-------------+
                                    |
               +--------------------+--------------------+
               |                                         |
    +----------v-----------+              +--------------v-----------+
-   | gRPC                 |              | HTTP                     |
+   | gRPC Local Semaphore |              | HTTP Local Semaphore     |
    | poll_ready gating    |              | acquire_owned() + timeout|
    | (backpressure)       |              | (default 30s or timeout) |
    +----------------------+              +--------------------------+
 ```
 
+Each request must acquire **both** a global permit and a protocol-local permit:
+
+1. **Global semaphore**: Ensures total inflight requests across both protocols
+   never exceed downstream channel capacity
+2. **Per-protocol semaphore**: Allows independent rate limiting per protocol
+
 This ensures total inflight requests never exceed downstream channel capacity,
 regardless of which protocol clients use.
 
-**Protocol-specific behavior:**
+#### Single-Protocol Modes
 
-- **gRPC only (no HTTP configured):** Uses the original
-  `GlobalConcurrencyLimitLayer` with early refusal at `poll_ready`.
-- **Both protocols:** Shared semaphore; gRPC acquires a permit in `poll_ready`
-  (backpressure propagates to HTTP/2 so new streams are not accepted while the
-  pool is saturated). HTTP queues on the shared semaphore with a permit timeout
-  (default: `http.timeout`, 30s).
-- **HTTP only:** Uses its own semaphore and permit timeout (default: 30s).
+- **gRPC only:** Uses `GlobalConcurrencyLimitLayer` with early refusal at
+  `poll_ready`. No global semaphore overhead.
+- **HTTP only:** Uses its own local semaphore with permit timeout (default 30s).
+  No global semaphore overhead.
+
+#### Backpressure Behavior
+
+- **gRPC**: Permit acquired in `poll_ready` via Tower layer; backpressure
+  propagates to HTTP/2 so new streams are not accepted while saturated.
+- **HTTP**: Requests queue for up to `timeout` waiting for a permit; on timeout,
+  respond 503 Service Unavailable.
+
+#### Tuning Examples
+
+The `max_concurrent_requests` setting interacts with downstream pipeline capacity
+(configured via `default_pdata_channel_size` in pipeline settings). Here are
+common scenarios:
+
+##### Scenario 1: Full Auto-Tuning (Recommended Default)
+
+```yaml
+settings:
+  default_pdata_channel_size: 100  # Downstream capacity
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 0   # Auto-tune
+    http:
+      max_concurrent_requests: 0   # Auto-tune
+```
+
+Result:
+
+- Global semaphore: 100 permits (matches downstream)
+- gRPC local: 100 permits
+- HTTP local: 100 permits
+- Total inflight across both: capped at 100 by global semaphore
+- Either protocol can use full capacity when the other is idle
+
+##### Scenario 2: Explicit Equal Limits
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 50
+    http:
+      max_concurrent_requests: 50
+```
+
+Result:
+
+- Global semaphore: 100 permits
+- gRPC local: 50 permits (capped at 50 even if HTTP is idle)
+- HTTP local: 50 permits (capped at 50 even if gRPC is idle)
+- Total inflight: max 100, but each protocol limited to 50
+
+##### Scenario 3: Prioritize gRPC Over HTTP
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 80
+    http:
+      max_concurrent_requests: 20
+```
+
+Result:
+
+- Global semaphore: 100 permits
+- gRPC can handle up to 80 concurrent requests
+- HTTP limited to 20 concurrent requests
+- If both saturated: gRPC gets 80, HTTP gets 20
+
+##### Scenario 4: Oversubscribed Limits
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 100
+    http:
+      max_concurrent_requests: 100
+```
+
+Result:
+
+- Global semaphore: 100 permits (still bounds total)
+- Each protocol can burst to 100 when alone
+- When both active: global semaphore ensures total never exceeds 100
+- Requests compete for global permits; neither protocol starves the other
+  because both acquire from the same semaphore with equal priority (permits
+  are granted in FIFO order as they become available)
+
+##### Scenario 5: Single Protocol (gRPC-only)
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 0   # Auto-tunes to 100
+```
+
+Result:
+
+- No global semaphore (single protocol optimization)
+- gRPC local: 100 permits
+- Lower overhead than dual-protocol mode
+
+##### Scenario 6: Limit Below Downstream Capacity
+
+```yaml
+settings:
+  default_pdata_channel_size: 100
+
+config:
+  protocols:
+    grpc:
+      max_concurrent_requests: 25
+    http:
+      max_concurrent_requests: 25
+```
+
+Result:
+
+- Global semaphore: 100 permits
+- Total receiver load capped at 50 (25 + 25)
+- Useful when receiver should not saturate downstream, leaving headroom for
+  other pipeline inputs
+
+**Key Takeaways:**
+
+| Setting | Behavior |
+|---------|----------|
+| `max_concurrent_requests: 0` | Auto-tune to downstream capacity |
+| Explicit value < downstream | Hard cap per protocol |
+| Explicit value > downstream | Global semaphore still enforces downstream limit |
+| Sum of limits < downstream | Receiver never saturates downstream |
+| Sum of limits > downstream | Protocols compete for global permits |
 
 ### Unified Metrics
 
@@ -113,6 +280,9 @@ A single `MetricSet` tracks receiver activity across both protocols:
 
 ## Configuration
 
+The receiver uses a `protocols` structure to configure gRPC and/or HTTP endpoints.
+At least one protocol must be configured.
+
 ### Minimal Configuration (gRPC only)
 
 ```yaml
@@ -121,7 +291,22 @@ nodes:
     kind: receiver
     plugin_urn: "urn:otel:otlp:receiver"
     config:
-      listening_addr: "0.0.0.0:4317"
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+```
+
+### Minimal Configuration (HTTP only)
+
+```yaml
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    config:
+      protocols:
+        http:
+          listening_addr: "0.0.0.0:4318"
 ```
 
 ### Full Configuration (gRPC + HTTP)
@@ -132,73 +317,85 @@ nodes:
     kind: receiver
     plugin_urn: "urn:otel:otlp:receiver"
     config:
-      # ---------------------------------------------------------
-      # gRPC Settings (flattened at root level)
-      # ---------------------------------------------------------
-      listening_addr: "0.0.0.0:4317"
+      protocols:
+        # ---------------------------------------------------------
+        # gRPC Settings
+        # ---------------------------------------------------------
+        grpc:
+          listening_addr: "0.0.0.0:4317"
 
-      # Concurrency: 0 = auto-tune to downstream channel capacity
-      max_concurrent_requests: 0
+          # --- Request/Response behavior ---
+          wait_for_result: false        # Wait for downstream ACK before responding
+          timeout: "30s"                # Timeout for gRPC requests
 
-      # Wait for downstream ACK before responding to client
-      wait_for_result: false
+          # --- Concurrency limits ---
+          # 0 = auto-tune to downstream channel capacity
+          max_concurrent_requests: 0
+          max_concurrent_streams: null  # HTTP/2 streams per connection (null = auto)
+          transport_concurrency_limit: null  # Per-connection limit (null = auto)
+          load_shed: true               # Fast reject when overloaded
 
-      # Request timeout (humantime format)
-      timeout: "30s"
+          # --- Compression ---
+          request_compression:          # Methods accepted for requests
+            - zstd
+            - gzip
+            - deflate
+          response_compression: []      # Methods for responses (empty = none)
 
-      # Compression methods accepted for requests
-      # Default: [zstd, gzip, deflate]
-      request_compression:
-        - zstd
-        - gzip
+          # --- TCP socket tuning ---
+          tcp_nodelay: true
+          tcp_keepalive: "45s"
+          tcp_keepalive_interval: "15s"
+          tcp_keepalive_retries: 5
 
-      # Compression methods for responses (default: none)
-      response_compression: []
+          # --- HTTP/2 tuning ---
+          initial_stream_window_size: "8MiB"
+          initial_connection_window_size: "24MiB"
+          http2_adaptive_window: false
+          max_frame_size: "16KiB"
+          max_decoding_message_size: "4MiB"
+          http2_keepalive_interval: "30s"
+          http2_keepalive_timeout: "10s"
 
-      # TCP socket tuning
-      tcp_nodelay: true
-      tcp_keepalive: "45s"
-      tcp_keepalive_interval: "15s"
-      tcp_keepalive_retries: 5
+          # --- TLS configuration ---
+          # tls:
+          #   cert_file: "/path/to/server.crt"
+          #   key_file: "/path/to/server.key"
+          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+          #   include_system_ca_certs_pool: false
+          #   handshake_timeout: "10s"
+          #   reload_interval: "5m"
 
-      # HTTP/2 tuning
-      max_concurrent_streams: 100
-      initial_stream_window_size: "8MiB"
-      initial_connection_window_size: "24MiB"
-      http2_adaptive_window: false
-      max_frame_size: "16KiB"
-      http2_keepalive_interval: "30s"
-      http2_keepalive_timeout: "10s"
+        # ---------------------------------------------------------
+        # HTTP Settings
+        # ---------------------------------------------------------
+        http:
+          listening_addr: "0.0.0.0:4318"
 
-      # Message size limit
-      max_decoding_message_size: "4MiB"
+          # --- Request/Response behavior ---
+          wait_for_result: false        # Wait for downstream ACK before responding
+          timeout: "30s"                # Request processing timeout
+          max_request_body_size: "4MiB" # Max body size (wire + decompressed)
+          accept_compressed_requests: true  # Accept gzip/deflate/zstd bodies
 
-      # Load shedding behavior
-      load_shed: true
+          # --- Concurrency limits ---
+          # 0 = auto-tune to downstream channel capacity
+          max_concurrent_requests: 0
 
-      # ---------------------------------------------------------
-      # HTTP Settings (nested under 'http' key)
-      # ---------------------------------------------------------
-      http:
-        listening_addr: "0.0.0.0:4318"
+          # --- TCP socket tuning ---
+          tcp_nodelay: true
+          tcp_keepalive: "45s"
+          tcp_keepalive_interval: "15s"
+          tcp_keepalive_retries: 5
 
-        # Concurrency: 0 = share gRPC semaphore capacity
-        max_concurrent_requests: 0
-
-        wait_for_result: false
-        timeout: "30s"
-
-        # Body size limit (wire + decompressed)
-        max_request_body_size: "4MiB"
-
-        # Accept gzip/deflate/zstd compressed request bodies
-        accept_compressed_requests: true
-
-        # TCP socket tuning
-        tcp_nodelay: true
-        tcp_keepalive: "45s"
-        tcp_keepalive_interval: "15s"
-        tcp_keepalive_retries: 5
+          # --- TLS configuration ---
+          # tls:
+          #   cert_file: "/path/to/server.crt"
+          #   key_file: "/path/to/server.key"
+          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+          #   include_system_ca_certs_pool: false
+          #   handshake_timeout: "10s"
+          #   reload_interval: "5m"
 ```
 
 ## Protocol Details
@@ -213,8 +410,8 @@ nodes:
 | Transport | HTTP/2 via tonic |
 | Endpoints | Standard gRPC service methods |
 | Compression | zstd, gzip, deflate (configurable) |
-| Concurrency | `GlobalConcurrencyLimitLayer` when HTTP is disabled; shared semaphore when HTTP is enabled |
-| Backpressure | `poll_ready` gating (both gRPC-only and dual-protocol); backpressure propagates to HTTP/2 |
+| Concurrency | Local semaphore only (gRPC-only mode); global + local (dual-protocol mode) |
+| Backpressure | `poll_ready` gating; backpressure propagates to HTTP/2 |
 
 ### OTLP/HTTP
 
@@ -225,7 +422,7 @@ nodes:
 | Endpoints | `POST /v1/logs`, `/v1/metrics`, `/v1/traces` |
 | Content-Type | `application/x-protobuf` (JSON not supported) |
 | Compression | gzip, deflate, zstd via `Content-Encoding` |
-| Concurrency | Direct semaphore acquisition with timeout (shared when HTTP+gRPC) |
+| Concurrency | Local semaphore only (HTTP-only mode); global + local (dual-protocol mode) |
 | Backpressure | Waits up to `timeout` for permit, then 503 |
 
 #### HTTP Endpoints
@@ -276,38 +473,61 @@ Both protocols enforce timeouts to mitigate slow-client (Slowloris-style) DoS:
 
 ### Concurrency Limits
 
-When both protocols are enabled, the shared semaphore bounds total inflight
-requests across gRPC and HTTP. When at capacity:
+The receiver enforces concurrency limits to prevent overwhelming downstream
+components. The behavior depends on deployment mode:
 
-- **gRPC (dual-protocol):** Permit acquired in `poll_ready`; backpressure
-  propagates to HTTP/2 so new streams are not accepted while saturated.
-- **HTTP (dual-protocol):** Requests queue for up to `timeout` (default 30s)
-  waiting for a permit; on timeout, respond 503.
+**Dual-protocol mode (gRPC + HTTP):**
 
-When only gRPC is enabled, the original `GlobalConcurrencyLimitLayer` applies:
-excess requests are refused at `poll_ready` rather than queued.
+- Global semaphore bounds total inflight requests across both protocols
+- Per-protocol semaphores provide additional per-protocol limits
+- **gRPC**: Permit acquired in `poll_ready`; backpressure propagates to HTTP/2
+- **HTTP**: Requests queue for up to `timeout` (default 30s); 503 on timeout
+
+**Single-protocol modes:**
+
+- **gRPC only**: `GlobalConcurrencyLimitLayer` applies; excess requests refused
+  at `poll_ready` rather than queued
+- **HTTP only**: Local semaphore with permit timeout (default 30s)
+
+When `max_concurrent_requests: 0` (the default), the limit is auto-tuned to
+match downstream channel capacity.
 
 ## TLS Support
 
-TLS is available via the `experimental-tls` feature flag:
+TLS is available via the `experimental-tls` feature flag. Each protocol has its
+own independent TLS configuration:
 
 ```yaml
 config:
-  # gRPC TLS
-  tls:
-    cert_file: "/path/to/cert.pem"
-    key_file: "/path/to/key.pem"
-    # Optional client CA for mTLS
-    client_ca_file: "/path/to/ca.pem"
-    handshake_timeout: "10s"
+  protocols:
+    grpc:
+      listening_addr: "0.0.0.0:4317"
+      tls:
+        cert_file: "/path/to/server.crt"
+        key_file: "/path/to/server.key"
+        # Optional: Client CA for mutual TLS (mTLS)
+        client_ca_file: "/path/to/client-ca.crt"
+        # Optional: Include system CA certificates
+        include_system_ca_certs_pool: false
+        # Optional: TLS handshake timeout
+        handshake_timeout: "10s"
+        # Optional: Certificate reload interval
+        reload_interval: "5m"
 
-  http:
-    listening_addr: "0.0.0.0:4318"
-    # HTTP TLS (independent from gRPC)
-    tls:
-      cert_file: "/path/to/cert.pem"
-      key_file: "/path/to/key.pem"
+    http:
+      listening_addr: "0.0.0.0:4318"
+      # HTTP TLS is independent from gRPC TLS
+      tls:
+        cert_file: "/path/to/server.crt"
+        key_file: "/path/to/server.key"
+        client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+        include_system_ca_certs_pool: false
+        handshake_timeout: "10s"
+        reload_interval: "5m"
 ```
+
+You can use TLS on one protocol while keeping the other plaintext, or use
+different certificates for each protocol.
 
 ## Wait-for-Result Mode
 
@@ -331,20 +551,29 @@ this receiver efficient. To preserve the zero-deserialization path and lower
 CPU/memory cost, JSON is intentionally unsupported. If JSON is needed, an
 upstream proxy can perform the conversion.
 
-### Shared vs Per-Protocol Concurrency
+### Global vs Per-Protocol Concurrency
 
-When both protocols are enabled, gRPC and HTTP each enforce their own
-`max_concurrent_requests` (per-protocol limits).
+The receiver implements a two-level concurrency control strategy:
 
-To keep the overall receiver from overwhelming the pipeline, the receiver also
-applies an additional **global cap** derived from the downstream channel
-capacity. In "both" mode, each request must acquire:
+**Dual-protocol mode (gRPC + HTTP):**
 
-- a global permit (shared across gRPC + HTTP)
-- a protocol-local permit (gRPC or HTTP)
+Each request must acquire two permits:
 
-In single-protocol deployments (gRPC-only or HTTP-only), the global cap is not
-applied.
+1. **Global permit**: Bounds total inflight requests across both protocols,
+   derived from downstream channel capacity
+2. **Protocol-local permit**: Independent per-protocol limit from
+   `max_concurrent_requests`
+
+This design allows:
+
+- Total receiver load to be bounded by downstream capacity
+- Independent tuning of each protocol's limit
+- Either protocol to use full capacity when the other is idle
+
+**Single-protocol modes (gRPC-only or HTTP-only):**
+
+Only the protocol-local semaphore is used. The global semaphore is not created,
+avoiding unnecessary overhead.
 
 ### Service Cloning Pattern
 

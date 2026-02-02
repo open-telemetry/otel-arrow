@@ -540,6 +540,13 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                 // `call`), so tonic will apply backpressure and stop accepting new HTTP/2
                 // streams when the shared pool is saturated. This avoids unbounded queuing of
                 // parked request futures holding decoded payloads in memory.
+                //
+                // TODO(optimization): When `grpc_max == global_max` (the default case after
+                // tuning), the per-protocol `GlobalConcurrencyLimitLayer` is redundant since
+                // both semaphores have the same capacity. We could skip it to save one
+                // semaphore acquire/release per request. However, the performance benefit is
+                // marginal (semaphore ops are ~nanoseconds), and keeping both layers preserves
+                // flexibility for users who explicitly set different per-protocol limits.
                 let limit_layer = if let Some(global) = global_semaphore.clone() {
                     Either::Left(
                         ServiceBuilder::new()
