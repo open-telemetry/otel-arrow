@@ -239,7 +239,11 @@ async fn otlp_exporter_allows_http_with_tls_config() {
     };
 
     let result = settings.build_endpoint_with_tls().await;
-    assert!(result.is_ok(), "build_endpoint_with_tls failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "build_endpoint_with_tls failed: {:?}",
+        result.err()
+    );
 }
 
 #[tokio::test]

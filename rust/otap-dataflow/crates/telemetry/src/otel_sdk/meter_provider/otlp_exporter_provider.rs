@@ -150,7 +150,11 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "configure_otlp_metric_exporter failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -168,7 +172,11 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "configure_otlp_metric_exporter failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -186,7 +194,11 @@ mod tests {
             &std::time::Duration::from_secs(10),
             None,
         );
-        assert!(result.is_ok(), "configure_otlp_metric_exporter failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "configure_otlp_metric_exporter failed: {:?}",
+            result.err()
+        );
     }
 
     #[test]

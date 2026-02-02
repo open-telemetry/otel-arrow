@@ -638,7 +638,11 @@ mod tests {
     fn test_new_validates_config() {
         let config = create_test_config();
         let exporter = AzureMonitorExporter::new(config);
-        assert!(exporter.is_ok(), "AzureMonitorExporter::new failed: {:?}", exporter.err());
+        assert!(
+            exporter.is_ok(),
+            "AzureMonitorExporter::new failed: {:?}",
+            exporter.err()
+        );
     }
 
     #[test]
