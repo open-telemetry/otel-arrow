@@ -9,12 +9,10 @@ use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
+use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-// Re-export for backward compatibility.
-pub use crate::settings::TelemetrySettings;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;

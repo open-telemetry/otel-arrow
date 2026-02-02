@@ -31,9 +31,7 @@ use crate::registry::TelemetryRegistryHandle;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
-use otap_df_config::settings::telemetry::logs::{
-    LogLevel, LoggingProviders, LogsConfig, ProviderMode,
-};
+use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;

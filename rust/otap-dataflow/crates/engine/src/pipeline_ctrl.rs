@@ -16,7 +16,7 @@ use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, Pipelin
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
-use otap_df_config::pipeline::TelemetrySettings;
+use otap_df_config::settings::TelemetrySettings;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::otel_warn;
 use otap_df_telemetry::reporter::MetricsReporter;
