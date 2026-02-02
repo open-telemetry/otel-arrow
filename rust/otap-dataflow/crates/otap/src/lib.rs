@@ -116,7 +116,6 @@ pub mod tls_utils;
 pub mod console_exporter;
 
 /// Store and forward for durable buffering via Quiver
-#[cfg(feature = "persistence")]
 pub mod store_and_forward;
 
 /// Factory for OTAP-based pipeline

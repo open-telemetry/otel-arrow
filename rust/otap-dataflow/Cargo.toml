@@ -34,7 +34,6 @@ otap-df-config.workspace = true
 otap-df-controller.workspace = true
 otap-df-otap.workspace = true
 thiserror.workspace = true
-quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
@@ -204,8 +203,6 @@ azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
-# Store and forward processor using Quiver (opt-in)
-persistence = ["quiver", "otap-df-otap/persistence"]
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 # Experimental exporters (opt-in)

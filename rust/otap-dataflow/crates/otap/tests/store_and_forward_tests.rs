@@ -12,8 +12,6 @@
 //! The tests use actual Quiver instances (not mocks) to catch integration
 //! issues like timing, threading, and assumption mismatches.
 
-#![cfg(feature = "persistence")]
-
 mod common;
 
 use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
