@@ -1045,7 +1045,7 @@ fn project_to_schema(schema: SchemaRef, rb: &RecordBatch) -> Result<RecordBatch>
     let projection: Vec<usize> = schema
         .fields()
         .iter()
-        .filter_map(|f| rb.schema().index_of(f.name()).ok())
+        .filter_map(|f| rb.schema().fields().find(f.name()).map(|(idx, _)| idx))
         .collect();
 
     rb.project(&projection)

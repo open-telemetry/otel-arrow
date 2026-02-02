@@ -144,7 +144,7 @@ socket2 = { version = "0.6.1", features = ["all"] }
 ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
-sysinfo = "0.37"
+sysinfo = "0.38"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
