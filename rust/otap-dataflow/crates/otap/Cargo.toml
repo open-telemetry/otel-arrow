@@ -100,7 +100,7 @@ rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
 
-# Quiver persistence engine (store and forward processor)
+# Quiver persistence engine (durable buffer processor)
 quiver = { package = "otap-df-quiver", path = "../quiver" }
 blake3.workspace = true
 byte-unit.workspace = true

@@ -423,7 +423,7 @@ past the segment to be deleted.
 Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
-| Concern | Quiver (Library) | Embedding Layer (e.g., store_and_forward) |
+| Concern | Quiver (Library) | Embedding Layer (e.g., durable_buffer) |
 | ------- | ---------------- | --------------------------------------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
@@ -462,8 +462,7 @@ Receiver -> [Signal Processor] -> [Quiver Persistence] -> [Exporters]
 
 Protects processed data; smaller footprint, buffers during downstream outages
 
-- **Optional**: Persistence is an optional component; disable for pure memory
-  streaming.
+- **Optional**: The durable buffer processor is an optional component.
 - **Per-Core**: Each core has its own Quiver instance (no cross-core locking).
 - **Durability**: When enabled, data is acknowledged after WAL flush; segment
   finalization happens after.
@@ -1140,7 +1139,7 @@ a naive per-core cap. Preliminary goals:
 - Preserve ordering; escalate to unprocessed deletion only under `drop_oldest`.
 - Limit transient overshoot to ~one segment per concurrently finalizing core.
 
-### Complete otap-dataflow Persistence Configuration Example
+### Complete otap-dataflow Durable Buffer Configuration Example
 
 ```yaml
 nodes:
@@ -1150,7 +1149,7 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - persistence
+          - durable_buffer
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
@@ -1163,16 +1162,16 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - persistence
+          - durable_buffer
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4318"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
-  persistence:
+  durable_buffer:
     kind: processor
-    plugin_urn: "urn:otel:store_and_forward:processor"
+    plugin_urn: "urn:otel:durable_buffer:processor"
     out_ports:
       out_port:
         destinations:
@@ -1215,7 +1214,7 @@ nodes:
 
 ### Example: Dual Exporters with Completion Tracking
 
-Consider a single `persistence` node feeding both a Parquet exporter (local file
+Consider a single `durable_buffer` node feeding both a Parquet exporter (local file
 writer) and an OTLP exporter (remote endpoint). Each exporter is a Quiver
 subscriber with its own cursor and participates in the OTAP Ack/Nack protocol.
 
@@ -1249,7 +1248,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   restore per-subscriber state directly--no log replay required.
 
 Nack handling is owned by the embedding layer, not Quiver. When an exporter
-returns a NACK, the embedding layer (e.g., store_and_forward):
+returns a NACK, the embedding layer (e.g., durable_buffer):
 
 1. Computes retry delay using its backoff policy
 2. Schedules retry via the pipeline's delay mechanism
@@ -1324,7 +1323,7 @@ The key insight for async ingest is that **completion should mean durability**.
 
 This design provides:
 
-- **Correct ACK semantics**: The store and forward processor can ACK upstream only
+- **Correct ACK semantics**: The durable buffer processor can ACK upstream only
   after `ingest().await` completes, knowing data is safe on disk.
 - **Natural backpressure**: Slow disk I/O = slow `await` completion = upstream
   gets throttled automatically. No separate backpressure mechanism needed.
@@ -1471,22 +1470,22 @@ and avoids the complexity of maintaining both sync and async code paths.
 | Maintenance | `maintain().await` - async |
 | Flush | `flush().await` - async |
 
-#### Store and Forward Processor Integration Pattern
+#### Durable Buffer Processor Integration Pattern
 
-With the async API and cancellation support, the store and forward processor integration
+With the async API and cancellation support, the durable buffer processor integration
 becomes straightforward:
 
 ```rust
 use quiver::CancellationToken;
 use std::time::Duration;
 
-struct StoreAndForward {
+struct DurableBuffer {
     engine: Arc<QuiverEngine>,
     subscriber_id: SubscriberId,
     shutdown: CancellationToken,
 }
 
-impl StoreAndForward {
+impl DurableBuffer {
     // Ingest path (receiving upstream data)
     async fn handle_pdata(&mut self, data: OtapPdata) -> Result<()> {
         // ingest().await completes only after WAL fsync

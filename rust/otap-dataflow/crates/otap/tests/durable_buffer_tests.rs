@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Integration tests for the store and forward.
+//! Integration tests for the durable buffer.
 //!
-//! These tests verify the end-to-end behavior of the store and forward,
+//! These tests verify the end-to-end behavior of the durable buffer,
 //! including:
 //! - Data flow through the processor (ingest → wal + segment → downstream)
 //! - Recovery from finalized segments on restart
@@ -23,9 +23,9 @@ use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
 use otap_df_engine::entity_context::set_pipeline_entity_key;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
+use otap_df_otap::durable_buffer::DURABLE_BUFFER_URN;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
-use otap_df_otap::store_and_forward::STORE_AND_FORWARD_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::json;
@@ -41,12 +41,12 @@ const ERROR_EXPORTER_URN: &str = "urn:otel:error:exporter";
 // Test Configuration Builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Builder for store and forward test configurations.
+/// Builder for durable buffer test configurations.
 ///
 /// Consolidates all config variants into a single builder pattern.
 #[derive(Clone)]
 struct TestConfigBuilder {
-    persistence_path: std::path::PathBuf,
+    buffer_path: std::path::PathBuf,
     max_signal_count: Option<u64>,
     max_batch_size: usize,
     signals_per_second: Option<usize>,
@@ -75,9 +75,9 @@ enum ExporterType {
 }
 
 impl TestConfigBuilder {
-    fn new(persistence_path: std::path::PathBuf) -> Self {
+    fn new(buffer_path: std::path::PathBuf) -> Self {
         Self {
-            persistence_path,
+            buffer_path,
             max_signal_count: Some(10),
             max_batch_size: 5,
             signals_per_second: Some(100),
@@ -170,8 +170,8 @@ impl TestConfigBuilder {
             "data_source": "static"
         });
 
-        let mut persistence_config = json!({
-            "path": self.persistence_path.to_string_lossy(),
+        let mut buffer_config = json!({
+            "path": self.buffer_path.to_string_lossy(),
             "poll_interval": "20ms",
             "retention_size_cap": "100MB",
             "size_cap_policy": self.size_cap_policy,
@@ -179,9 +179,7 @@ impl TestConfigBuilder {
         });
 
         if let Some(retry) = self.retry_config {
-            if let (Some(base), Some(extra)) =
-                (persistence_config.as_object_mut(), retry.as_object())
-            {
+            if let (Some(base), Some(extra)) = (buffer_config.as_object_mut(), retry.as_object()) {
                 for (k, v) in extra {
                     let _ = base.insert(k.clone(), v.clone());
                 }
@@ -189,7 +187,7 @@ impl TestConfigBuilder {
         }
 
         if let Some(handling) = self.otlp_handling {
-            if let Some(obj) = persistence_config.as_object_mut() {
+            if let Some(obj) = buffer_config.as_object_mut() {
                 let _ = obj.insert("otlp_handling".to_owned(), json!(handling));
             }
         }
@@ -221,14 +219,10 @@ impl TestConfigBuilder {
                 OTAP_FAKE_DATA_GENERATOR_URN,
                 Some(receiver_config_value),
             )
-            .add_processor(
-                "persistence",
-                STORE_AND_FORWARD_URN,
-                Some(persistence_config),
-            )
+            .add_processor("durable_buffer", DURABLE_BUFFER_URN, Some(buffer_config))
             .add_exporter(exporter_name, exporter_urn, exporter_config)
-            .round_robin("fake_receiver", "out", ["persistence"])
-            .round_robin("persistence", "out", [exporter_name])
+            .round_robin("fake_receiver", "out", ["durable_buffer"])
+            .round_robin("durable_buffer", "out", [exporter_name])
             .build(
                 PipelineType::Otap,
                 pipeline_group_id.clone(),
@@ -399,9 +393,9 @@ where
 /// A background thread waits for NACKs to occur (condition-based, not fixed timeout),
 /// then flips the exporter to ACK mode.
 #[test]
-fn test_store_and_forward_retries_on_nack() {
+fn test_durable_buffer_retries_on_nack() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "retry-test".into();
     let pipeline_id: PipelineId = "retry-pipeline".into();
     let test_id = "retries_on_nack";
@@ -410,7 +404,7 @@ fn test_store_and_forward_retries_on_nack() {
     let counter = Arc::new(AtomicU64::new(0));
     flaky_exporter::register_state(test_id, counter.clone(), false); // Start in NACK mode
 
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(None) // Generate continuously
         .max_batch_size(5)
         .signals_per_second(Some(50)) // Fast enough to generate data quickly
@@ -477,7 +471,7 @@ fn test_store_and_forward_retries_on_nack() {
     );
 
     // Validate: The retry mechanism worked - data was NACKed but eventually delivered
-    // This proves the store and forward's retry logic is functioning.
+    // This proves the durable buffer's retry logic is functioning.
     assert!(
         nacks_before_flip >= 5,
         "Should have observed at least 5 NACKs before flip, got {}",
@@ -487,7 +481,7 @@ fn test_store_and_forward_retries_on_nack() {
 
 /// Test recovery after downstream outage with data integrity validation.
 ///
-/// This test verifies the core persistence guarantee: data survives process
+/// This test verifies the core durability guarantee: data survives process
 /// restarts when downstream is unavailable, and is correctly recovered.
 ///
 /// Run 1: Downstream fails (error exporter), data accumulates in Quiver
@@ -499,16 +493,16 @@ fn test_store_and_forward_retries_on_nack() {
 /// - Run 2 recovers and delivers all persisted data plus new data
 /// - Exact count verification ensures no data loss or duplication
 #[test]
-fn test_store_and_forward_recovery_after_outage() {
+fn test_durable_buffer_recovery_after_outage() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "outage-test".into();
     let pipeline_id: PipelineId = "outage-pipeline".into();
 
     let run1_signals = 25u64;
 
     // Run 1: Downstream failing (all NACKs) - data persists to Quiver
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run1_signals))
         .max_batch_size(5)
         .signals_per_second(Some(500))
@@ -533,7 +527,7 @@ fn test_store_and_forward_recovery_after_outage() {
 
     // Verify data was persisted
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Run 1 should have created Quiver data directory"
     );
 
@@ -546,7 +540,7 @@ fn test_store_and_forward_recovery_after_outage() {
     // Generate some new data in Run 2 to keep the pipeline alive long enough
     // for recovery. Timer ticks poll Quiver for recovered data, but only fire
     // when the pipeline's message loop is running.
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run2_signals))
         .max_batch_size(5)
         .signals_per_second(Some(500)) // Fast generation
@@ -585,13 +579,13 @@ fn test_store_and_forward_recovery_after_outage() {
 
 /// Test that multiple signal types (traces + logs) flow correctly together.
 ///
-/// Verifies that the store and forward correctly handles mixed signal types
+/// Verifies that the durable buffer correctly handles mixed signal types
 /// in the same pipeline. Uses traces and logs (not metrics, since pdata metrics
 /// view is not yet implemented - see payload.rs:290).
 #[test]
-fn test_store_and_forward_mixed_signal_types() {
+fn test_durable_buffer_mixed_signal_types() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "signal-types-test".into();
     let pipeline_id: PipelineId = "signal-types-pipeline".into();
     let test_id = "mixed_signal_types";
@@ -600,7 +594,7 @@ fn test_store_and_forward_mixed_signal_types() {
     counting_exporter::register_counter(test_id, counter.clone());
 
     let total_signals = 20u64;
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(total_signals))
         .max_batch_size(5)
         // Mix of traces (50%) and logs (50%), no metrics (pdata limitation)
@@ -630,9 +624,9 @@ fn test_store_and_forward_mixed_signal_types() {
         delivered
     );
 
-    // Verify persistence was used
+    // Verify durable buffer was used
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
     );
 }
@@ -640,14 +634,14 @@ fn test_store_and_forward_mixed_signal_types() {
 /// Test OTLP-to-Arrow conversion mode.
 ///
 /// Verifies that when `otlp_handling: convert_to_arrow` is set:
-/// - OTLP data is converted to Arrow format before persistence
+/// - OTLP data is converted to Arrow format before storage
 /// - Data flows through correctly and is delivered downstream
 ///
 /// This exercises the OtapRecordBundleAdapter code path in bundle_adapter.rs.
 #[test]
-fn test_store_and_forward_convert_to_arrow_mode() {
+fn test_durable_buffer_convert_to_arrow_mode() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "arrow-mode-test".into();
     let pipeline_id: PipelineId = "arrow-mode-pipeline".into();
     let test_id = "convert_to_arrow_mode";
@@ -656,7 +650,7 @@ fn test_store_and_forward_convert_to_arrow_mode() {
     counting_exporter::register_counter(test_id, counter.clone());
 
     let total_signals = 10u64;
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(total_signals))
         .max_batch_size(5)
         .otlp_handling("convert_to_arrow")
@@ -685,9 +679,9 @@ fn test_store_and_forward_convert_to_arrow_mode() {
         delivered
     );
 
-    // Verify persistence directory was created
+    // Verify durable buffer directory was created
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
     );
 }
@@ -705,9 +699,9 @@ fn test_store_and_forward_convert_to_arrow_mode() {
 /// processing when shutdown is triggered, then verifying clean termination
 /// and that at least the threshold amount of data was delivered.
 #[test]
-fn test_store_and_forward_graceful_shutdown_drain() {
+fn test_durable_buffer_graceful_shutdown_drain() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "shutdown-drain-test".into();
     let pipeline_id: PipelineId = "shutdown-drain-pipeline".into();
     let test_id = "graceful_shutdown_drain";
@@ -725,7 +719,7 @@ fn test_store_and_forward_graceful_shutdown_drain() {
     // 2. Shutdown completed successfully (no channel errors)
     // 3. More data was delivered after shutdown started (drain worked)
     let threshold_for_shutdown = 20u64;
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(None) // Continuous generation until shutdown
         .max_batch_size(10)
         .signals_per_second(Some(200))
@@ -749,9 +743,9 @@ fn test_store_and_forward_graceful_shutdown_drain() {
     counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
-    // Verify persistence directory was created
+    // Verify durable buffer directory was created
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
     );
 
@@ -770,15 +764,15 @@ fn test_store_and_forward_graceful_shutdown_drain() {
 ///
 /// This test generates a large amount of data to ensure:
 /// - Multiple segments are created and finalized
-/// - Data correctly flows through the full persistence lifecycle
+/// - Data correctly flows through the full buffering lifecycle
 /// - No data loss under sustained load
 ///
 /// This test generates enough data over a long enough duration to trigger
 /// multiple segment rotations and finalizations.
 #[test]
-fn test_store_and_forward_high_volume_throughput() {
+fn test_durable_buffer_high_volume_throughput() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "high-volume-test".into();
     let pipeline_id: PipelineId = "high-volume-pipeline".into();
     let test_id = "high_volume_throughput";
@@ -789,7 +783,7 @@ fn test_store_and_forward_high_volume_throughput() {
     // Generate 500 signals in batches of 50 - enough to trigger multiple
     // segment finalizations (max_segment_open_duration is 200ms by default)
     let total_signals = 500u64;
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(total_signals))
         .max_batch_size(50)
         .signals_per_second(Some(2000)) // Fast generation
@@ -811,9 +805,9 @@ fn test_store_and_forward_high_volume_throughput() {
     counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
-    // Verify persistence infrastructure was used
+    // Verify durable buffer infrastructure was used
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
     );
 
@@ -836,9 +830,9 @@ fn test_store_and_forward_high_volume_throughput() {
 /// buffer which is difficult in unit tests (minimum segment size constraints).
 /// This test validates the configuration path is exercised correctly.
 #[test]
-fn test_store_and_forward_drop_oldest_policy() {
+fn test_durable_buffer_drop_oldest_policy() {
     let temp_dir = tempdir().expect("failed to create temp dir");
-    let persistence_path = temp_dir.path().to_path_buf();
+    let buffer_path = temp_dir.path().to_path_buf();
     let pipeline_group_id: PipelineGroupId = "drop-oldest-test".into();
     let pipeline_id: PipelineId = "drop-oldest-pipeline".into();
     let test_id = "drop_oldest_policy";
@@ -849,7 +843,7 @@ fn test_store_and_forward_drop_oldest_policy() {
     // Use drop_oldest policy with standard retention size.
     // This validates the policy configuration is accepted and functions.
     let total_signals = 50u64;
-    let config = TestConfigBuilder::new(persistence_path.clone())
+    let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(total_signals))
         .max_batch_size(10)
         .signals_per_second(Some(500))
@@ -871,9 +865,9 @@ fn test_store_and_forward_drop_oldest_policy() {
     counting_exporter::unregister_counter(test_id);
     let delivered = counter.load(Ordering::Relaxed);
 
-    // Verify persistence was used
+    // Verify durable buffer was used
     assert!(
-        persistence_path.join("core_0").exists(),
+        buffer_path.join("core_0").exists(),
         "Quiver data directory should exist"
     );
 

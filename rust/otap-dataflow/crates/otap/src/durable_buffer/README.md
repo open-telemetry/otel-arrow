@@ -1,18 +1,16 @@
-# Store and Forward
+# Durable Buffer
 
-The Store and Forward provides crash-resilient durable buffering using a
+The Durable Buffer provides crash-resilient buffering using a
 write-ahead log (WAL) and segment storage. Data is persisted before forwarding
 downstream, enabling recovery after crashes or network outages.
-
-Enable with `--features persistence`.
 
 ## Configuration
 
 ```yaml
 nodes:
-  store_and_forward:
+  durable_buffer:
     kind: processor
-    plugin_urn: "urn:otel:store_and_forward:processor"
+    plugin_urn: "urn:otel:durable_buffer:processor"
     out_ports:
       out_port:
         destinations:
@@ -20,7 +18,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       # Directory for persistent storage (required)
-      path: /var/lib/otap/persistence
+      path: /var/lib/otap/buffer
 
       # Maximum disk space (default: 10 GiB)
       retention_size_cap: 10 GiB

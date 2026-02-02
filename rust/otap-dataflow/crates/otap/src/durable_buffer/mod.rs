@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Store and forward for durable buffering of OTAP data.
+//! Durable buffer for crash-resilient buffering of OTAP data.
 //!
-//! This processor provides crash-resilient persistence by writing incoming
+//! This processor provides durable buffering by writing incoming
 //! telemetry data to a write-ahead log and segment storage before forwarding
 //! downstream. On acknowledgement from downstream, the data is marked as
 //! consumed; on rejection, data can be replayed.
@@ -11,7 +11,7 @@
 //! # Architecture
 //!
 //! ```text
-//! Upstream → StoreAndForward → Downstream
+//! Upstream → DurableBuffer → Downstream
 //!                    ↓
 //!              StorageEngine
 //!                    ↓
@@ -89,7 +89,7 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 
 use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
-pub use config::{OtlpHandling, SizeCapPolicy, StoreAndForwardConfig};
+pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -111,25 +111,25 @@ use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
-/// URN for the store and forward.
-pub const STORE_AND_FORWARD_URN: &str = "urn:otel:store_and_forward:processor";
+/// URN for the durable buffer.
+pub const DURABLE_BUFFER_URN: &str = "urn:otel:durable_buffer:processor";
 
 /// Subscriber ID used by this processor.
-const SUBSCRIBER_ID: &str = "store-and-forward";
+const SUBSCRIBER_ID: &str = "durable-buffer";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Metrics
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Metrics for the store and forward.
+/// Metrics for the durable buffer processor.
 ///
 /// Follows RFC-aligned telemetry conventions:
 /// - Metric set name follows `otelcol.<entity>` pattern
 /// - Channel metrics already track bundle send/receive counts
 /// - This tracks ACK/NACK status, Arrow item counts, storage, and retries
-#[metric_set(name = "otelcol.node.store_and_forward")]
+#[metric_set(name = "otelcol.node.durable_buffer")]
 #[derive(Debug, Default, Clone)]
-pub struct StoreAndForwardMetrics {
+pub struct DurableBufferMetrics {
     // ─── ACK/NACK tracking ──────────────────────────────────────────────────
     // Note: Bundle send/receive counts are tracked by channel metrics.
     // These metrics track downstream acknowledgement status.
@@ -300,7 +300,7 @@ enum ProcessBundleResult {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// StoreAndForward
+// DurableBuffer
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Type alias for the bundle handle with our callback type.
@@ -319,8 +319,8 @@ enum EngineState {
     Failed(String),
 }
 
-/// Store and forward that provides durable buffering via Quiver.
-pub struct StoreAndForward {
+/// Durable buffer that provides crash-resilient buffering via Quiver.
+pub struct DurableBuffer {
     /// The Quiver engine state (lazy initialized on first message).
     engine_state: EngineState,
 
@@ -334,7 +334,7 @@ pub struct StoreAndForward {
     retry_scheduled: HashSet<(u64, u32)>,
 
     /// Configuration.
-    config: StoreAndForwardConfig,
+    config: DurableBufferConfig,
 
     /// Core ID for per-core data directory.
     /// Per ARCHITECTURE.md, each core has its own Quiver instance.
@@ -345,22 +345,22 @@ pub struct StoreAndForward {
     num_cores: usize,
 
     /// Metrics.
-    metrics: MetricSet<StoreAndForwardMetrics>,
+    metrics: MetricSet<DurableBufferMetrics>,
 
     /// Whether timer has been started.
     timer_started: bool,
 }
 
-impl StoreAndForward {
-    /// Creates a new store and forward with the given configuration.
+impl DurableBuffer {
+    /// Creates a new durable buffer with the given configuration.
     ///
     /// Note: The Quiver engine is lazily initialized on the first message
     /// to ensure we're running within an async context.
     pub fn new(
-        config: StoreAndForwardConfig,
+        config: DurableBufferConfig,
         pipeline_ctx: &PipelineContext,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<StoreAndForwardMetrics>();
+        let metrics = pipeline_ctx.register_metrics::<DurableBufferMetrics>();
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
 
@@ -497,7 +497,7 @@ impl StoreAndForward {
 
         if per_core_size_cap < MIN_PER_CORE_BYTES {
             otel_error!(
-                "persistence.config.invalid",
+                "durable_buffer.config.invalid",
                 total_size_cap = total_size_cap,
                 num_cores = num_cores,
                 per_core_size_cap = per_core_size_cap,
@@ -517,7 +517,7 @@ impl StoreAndForward {
         let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
 
         otel_info!(
-            "persistence.engine.init",
+            "durable_buffer.engine.init",
             path = %core_data_dir.display(),
             total_size_cap = total_size_cap,
             per_core_size_cap = per_core_size_cap,
@@ -559,7 +559,7 @@ impl StoreAndForward {
             })?;
 
         otel_info!(
-            "persistence.engine.ready",
+            "durable_buffer.engine.ready",
             path = %self.config.path.display(),
             subscriber_id = %subscriber_id.as_str()
         );
@@ -613,7 +613,7 @@ impl StoreAndForward {
             Ok((engine, _)) => engine,
             Err(e) => {
                 self.metrics.ingest_errors.add(1);
-                otel_error!("persistence.engine.unavailable", error = %e);
+                otel_error!("durable_buffer.engine.unavailable", error = %e);
                 let nack_pdata = OtapPdata::new(context, payload);
                 effect_handler
                     .notify_nack(NackMsg::new(
@@ -648,7 +648,7 @@ impl StoreAndForward {
                             Err((e, original_bytes)) => {
                                 // Adapter creation failed - NACK with original bytes
                                 self.metrics.ingest_errors.add(1);
-                                otel_error!("persistence.otlp.adapter_failed", error = %e);
+                                otel_error!("durable_buffer.otlp.adapter_failed", error = %e);
 
                                 let nack_pdata =
                                     OtapPdata::new(context, OtapPayload::OtlpBytes(original_bytes));
@@ -686,7 +686,7 @@ impl StoreAndForward {
                             Err(e) => {
                                 // Conversion failed - NACK with original bytes so upstream can retry
                                 self.metrics.ingest_errors.add(1);
-                                otel_error!("persistence.otlp.conversion_failed", error = %e);
+                                otel_error!("durable_buffer.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
                                     OtapPdata::new(context, OtapPayload::OtlpBytes(bytes_for_nack));
@@ -734,13 +734,13 @@ impl StoreAndForward {
             }
             Err((e, original_payload)) => {
                 self.metrics.ingest_errors.add(1);
-                otel_error!("persistence.ingest.failed", error = %e);
+                otel_error!("durable_buffer.ingest.failed", error = %e);
 
                 // Preserve original payload so upstream can retry
                 let nack_pdata = OtapPdata::new(context, original_payload);
                 effect_handler
                     .notify_nack(NackMsg::new(
-                        format!("persistence failed: {}", e),
+                        format!("durable buffer failed: {}", e),
                         nack_pdata,
                     ))
                     .await?;
@@ -769,7 +769,7 @@ impl StoreAndForward {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                otel_warn!("persistence.flush.failed", error = %e);
+                otel_warn!("durable_buffer.flush.failed", error = %e);
             }
         }
 
@@ -789,7 +789,7 @@ impl StoreAndForward {
             // Check time budget before each bundle to ensure we yield back for new data
             if Instant::now() >= deadline {
                 otel_debug!(
-                    "persistence.drain.budget_exhausted",
+                    "durable_buffer.drain.budget_exhausted",
                     bundles_processed = bundles_processed,
                     budget_ms = drain_budget.as_millis()
                 );
@@ -799,7 +799,7 @@ impl StoreAndForward {
             // Check max_in_flight limit to prevent thundering herd
             if !self.can_send_more() {
                 otel_debug!(
-                    "persistence.drain.at_capacity",
+                    "durable_buffer.drain.at_capacity",
                     bundles_processed = bundles_processed,
                     in_flight = self.pending_bundles.len(),
                     max_in_flight = self.config.max_in_flight
@@ -831,7 +831,7 @@ impl StoreAndForward {
                                 // We've seen this bundle before - all available bundles
                                 // are blocked. Break to avoid busy-looping.
                                 otel_debug!(
-                                    "persistence.drain.all_blocked",
+                                    "durable_buffer.drain.all_blocked",
                                     bundles_processed = bundles_processed,
                                     in_flight = self.pending_bundles.len(),
                                     retry_scheduled = self.retry_scheduled.len()
@@ -846,7 +846,7 @@ impl StoreAndForward {
                             // Downstream channel is full, stop processing and let the
                             // processor handle other messages (including incoming data)
                             otel_debug!(
-                                "persistence.drain.backpressure",
+                                "durable_buffer.drain.backpressure",
                                 bundles_processed = bundles_processed
                             );
                             break;
@@ -862,7 +862,7 @@ impl StoreAndForward {
                 }
                 Err(e) => {
                     self.metrics.read_errors.add(1);
-                    otel_error!("persistence.poll.failed", error = %e);
+                    otel_error!("durable_buffer.poll.failed", error = %e);
                     break;
                 }
             }
@@ -876,7 +876,7 @@ impl StoreAndForward {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.maintain().await {
-                otel_warn!("persistence.maintenance.failed", error = %e);
+                otel_warn!("durable_buffer.maintenance.failed", error = %e);
             }
         }
 
@@ -918,7 +918,7 @@ impl StoreAndForward {
             // but since we already hold the original handle, this one is a duplicate claim.
             // This shouldn't happen in normal operation since we keep bundles claimed.
             otel_warn!(
-                "persistence.bundle.duplicate",
+                "durable_buffer.bundle.duplicate",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw()
             );
@@ -971,7 +971,7 @@ impl StoreAndForward {
                         }
 
                         otel_debug!(
-                            "persistence.bundle.forwarded",
+                            "durable_buffer.bundle.forwarded",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             retry_count = retry_count
@@ -1024,7 +1024,7 @@ impl StoreAndForward {
             }
             Err(e) => {
                 self.metrics.read_errors.add(1);
-                otel_error!("persistence.bundle.conversion_failed", error = %e);
+                otel_error!("durable_buffer.bundle.conversion_failed", error = %e);
                 // Reject the bundle since we can't process it
                 handle.reject();
                 // Conversion error is not counted as "sent" but also shouldn't stop processing
@@ -1055,13 +1055,13 @@ impl StoreAndForward {
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
             otel_debug!(
-                "persistence.bundle.acked",
+                "durable_buffer.bundle.acked",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw()
             );
         } else {
             otel_warn!(
-                "persistence.ack.unknown_bundle",
+                "durable_buffer.ack.unknown_bundle",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw()
             );
@@ -1101,7 +1101,7 @@ impl StoreAndForward {
             let backoff = self.calculate_backoff(retry_count);
 
             otel_debug!(
-                "persistence.bundle.nacked",
+                "durable_buffer.bundle.nacked",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 retry_count = retry_count,
@@ -1123,14 +1123,14 @@ impl StoreAndForward {
                 self.metrics.retries_scheduled.add(1);
             } else {
                 otel_warn!(
-                    "persistence.retry.schedule_failed",
+                    "durable_buffer.retry.schedule_failed",
                     segment_seq = bundle_ref.segment_seq.raw(),
                     bundle_index = bundle_ref.bundle_index.raw()
                 );
             }
         } else {
             otel_warn!(
-                "persistence.nack.unknown_bundle",
+                "durable_buffer.nack.unknown_bundle",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw()
             );
@@ -1149,12 +1149,12 @@ impl StoreAndForward {
     ) -> Result<(), Error> {
         // Decode the retry ticket
         let Some(calldata) = retry_ticket.current_calldata() else {
-            otel_warn!("persistence.retry.missing_calldata");
+            otel_warn!("durable_buffer.retry.missing_calldata");
             return Ok(());
         };
 
         let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
-            otel_warn!("persistence.retry.invalid_calldata");
+            otel_warn!("durable_buffer.retry.invalid_calldata");
             return Ok(());
         };
 
@@ -1163,7 +1163,7 @@ impl StoreAndForward {
             // At capacity - re-schedule with a short delay.
             // Bundle stays in retry_scheduled (wasn't removed yet).
             otel_debug!(
-                "persistence.retry.deferred",
+                "durable_buffer.retry.deferred",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 in_flight = self.pending_bundles.len(),
@@ -1183,7 +1183,7 @@ impl StoreAndForward {
             {
                 // Failed to re-schedule - remove from retry_scheduled so poll can pick it up
                 self.unschedule_retry(bundle_ref);
-                otel_warn!("persistence.retry.reschedule_failed");
+                otel_warn!("durable_buffer.retry.reschedule_failed");
             }
             return Ok(());
         }
@@ -1208,7 +1208,7 @@ impl StoreAndForward {
                 ) {
                     ProcessBundleResult::Sent => {
                         otel_debug!(
-                            "persistence.retry.sent",
+                            "durable_buffer.retry.sent",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             retry_count = retry_count
@@ -1217,7 +1217,7 @@ impl StoreAndForward {
                     ProcessBundleResult::Skipped => {
                         // Shouldn't happen - we just claimed it and removed from retry_scheduled
                         otel_warn!(
-                            "persistence.retry.skipped",
+                            "durable_buffer.retry.skipped",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw()
                         );
@@ -1226,7 +1226,7 @@ impl StoreAndForward {
                         // Channel full - the handle was dropped (deferred).
                         // Re-schedule retry with a short delay.
                         otel_debug!(
-                            "persistence.retry.backpressure",
+                            "durable_buffer.retry.backpressure",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw()
                         );
@@ -1250,7 +1250,7 @@ impl StoreAndForward {
             Err(e) => {
                 // Claim failed - bundle may have been resolved or segment dropped
                 otel_debug!(
-                    "persistence.retry.claim_failed",
+                    "durable_buffer.retry.claim_failed",
                     segment_seq = bundle_ref.segment_seq.raw(),
                     bundle_index = bundle_ref.bundle_index.raw(),
                     error = %e
@@ -1280,7 +1280,7 @@ impl StoreAndForward {
         deadline: Instant,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        otel_info!("persistence.shutdown.start", deadline = ?deadline);
+        otel_info!("durable_buffer.shutdown.start", deadline = ?deadline);
 
         // Only process if engine was initialized
         if !matches!(self.engine_state, EngineState::Ready { .. }) {
@@ -1289,16 +1289,16 @@ impl StoreAndForward {
 
         // Check deadline before flush/drain sequence
         if Instant::now() >= deadline {
-            otel_warn!("persistence.shutdown.deadline_exceeded");
+            otel_warn!("durable_buffer.shutdown.deadline_exceeded");
         } else {
             // Flush to finalize any open segment - this makes buffered data visible
             // for the drain loop below. Even if this is skipped, engine.shutdown()
             // will finalize the segment.
-            otel_info!("persistence.shutdown.flushing");
+            otel_info!("durable_buffer.shutdown.flushing");
             {
                 let (engine, _) = self.engine()?;
                 if let Err(e) = engine.flush().await {
-                    otel_error!("persistence.shutdown.flush_failed", error = %e);
+                    otel_error!("durable_buffer.shutdown.flush_failed", error = %e);
                 }
             }
 
@@ -1308,7 +1308,7 @@ impl StoreAndForward {
                 // Check deadline on each iteration
                 if Instant::now() >= deadline {
                     otel_warn!(
-                        "persistence.shutdown.drain_deadline",
+                        "durable_buffer.shutdown.drain_deadline",
                         bundles_drained = drained
                     );
                     break;
@@ -1329,23 +1329,23 @@ impl StoreAndForward {
                             ProcessBundleResult::Backpressure => {
                                 // During shutdown, if we hit backpressure just log and continue
                                 // The bundle is deferred and will be picked up on next run
-                                otel_warn!("persistence.shutdown.backpressure");
+                                otel_warn!("durable_buffer.shutdown.backpressure");
                                 break;
                             }
                             ProcessBundleResult::Error(e) => {
-                                otel_warn!("persistence.shutdown.bundle_error", error = %e);
+                                otel_warn!("durable_buffer.shutdown.bundle_error", error = %e);
                             }
                         }
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        otel_warn!("persistence.shutdown.poll_error", error = %e);
+                        otel_warn!("durable_buffer.shutdown.poll_error", error = %e);
                         break;
                     }
                 }
             }
             if drained > 0 {
-                otel_info!("persistence.shutdown.drained", bundles_drained = drained);
+                otel_info!("durable_buffer.shutdown.drained", bundles_drained = drained);
             }
         }
 
@@ -1355,9 +1355,9 @@ impl StoreAndForward {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.shutdown().await {
-                otel_error!("persistence.shutdown.engine_failed", error = %e);
+                otel_error!("durable_buffer.shutdown.engine_failed", error = %e);
             } else {
-                otel_info!("persistence.shutdown.complete");
+                otel_info!("durable_buffer.shutdown.complete");
             }
         }
 
@@ -1370,7 +1370,7 @@ impl StoreAndForward {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[async_trait(?Send)]
-impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward {
+impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -1388,7 +1388,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward 
                 .await;
             self.timer_started = true;
             otel_debug!(
-                "persistence.timer.started",
+                "durable_buffer.timer.started",
                 poll_interval = ?self.config.poll_interval
             );
         }
@@ -1433,7 +1433,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward 
                         })
                 }
                 NodeControlMsg::Config { config } => {
-                    otel_debug!("persistence.config.update", config = ?config);
+                    otel_debug!("durable_buffer.config.update", config = ?config);
                     Ok(())
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
@@ -1445,7 +1445,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward 
                         }
                     }
                     // Not a retry ticket - shouldn't happen, but handle gracefully
-                    otel_warn!("persistence.delayed_data.unexpected");
+                    otel_warn!("durable_buffer.delayed_data.unexpected");
                     Ok(())
                 }
             },
@@ -1457,22 +1457,24 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for StoreAndForward 
 // Factory Registration
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Factory function to create a StoreAndForward.
-pub fn create_store_and_forward(
+/// Factory function to create a DurableBuffer.
+pub fn create_durable_buffer(
     pipeline_ctx: PipelineContext,
     node: NodeId,
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let config: StoreAndForwardConfig = serde_json::from_value(node_config.config.clone())
-        .map_err(|e| ConfigError::InvalidUserConfig {
-            error: format!("failed to parse persistence configuration: {}", e),
+    let config: DurableBufferConfig =
+        serde_json::from_value(node_config.config.clone()).map_err(|e| {
+            ConfigError::InvalidUserConfig {
+                error: format!("failed to parse durable buffer configuration: {}", e),
+            }
         })?;
 
     // Create processor with lazy engine initialization
     // The Quiver engine will be initialized on the first message when we're
     // guaranteed to be in an async context
-    let processor = StoreAndForward::new(config, &pipeline_ctx)?;
+    let processor = DurableBuffer::new(config, &pipeline_ctx)?;
 
     Ok(ProcessorWrapper::local(
         processor,
@@ -1482,12 +1484,12 @@ pub fn create_store_and_forward(
     ))
 }
 
-/// Register StoreAndForward as an OTAP processor factory.
+/// Register DurableBuffer as an OTAP processor factory.
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static STORE_AND_FORWARD_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
-    name: STORE_AND_FORWARD_URN,
-    create: create_store_and_forward,
+pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+    name: DURABLE_BUFFER_URN,
+    create: create_durable_buffer,
 };
 
 #[cfg(test)]
@@ -1574,7 +1576,7 @@ mod tests {
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("test".into(), "test".into(), 0, 1, 0);
 
-        let config = StoreAndForwardConfig {
+        let config = DurableBufferConfig {
             path: std::path::PathBuf::from("/tmp/test"),
             retention_size_cap: byte_unit::Byte::from_u64(1024),
             max_age: None,
@@ -1588,7 +1590,7 @@ mod tests {
             max_in_flight: 1000,
         };
 
-        let processor = StoreAndForward::new(config, &pipeline_ctx).unwrap();
+        let processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
 
         // retry 0: 1s * 2^0 = 1s (with jitter 0.5-1.0x)
         let backoff0 = processor.calculate_backoff(0);

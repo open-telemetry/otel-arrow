@@ -1,10 +1,10 @@
-# Fake Data -> Store-and-Forward -> Noop pipeline for throughput testing
+# Fake Data -> Durable Buffer -> Noop pipeline for throughput testing
 #
 # This configuration uses the fake data generator to produce synthetic OTAP data,
 # persists it through Quiver, and sends to noop exporter.
 #
-# Build with: cargo build --release --features persistence
-# Run with:   ./target/release/df_engine --pipeline configs/fake-store-and-forward-noop.yaml
+# Build with: cargo build --release
+# Run with:   ./target/release/df_engine --pipeline configs/fake-durable-buffer-noop.yaml
 
 settings:
   default_pipeline_ctrl_msg_channel_size: 100
@@ -18,7 +18,7 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - store_and_forward
+          - durable_buffer
         dispatch_strategy: round_robin
     config:
       traffic_config:
@@ -31,9 +31,9 @@ nodes:
         # Only generate logs (100% weight to logs)
         log_weight: 100
 
-  store_and_forward:
+  durable_buffer:
     kind: processor
-    plugin_urn: "urn:otel:store_and_forward:processor"
+    plugin_urn: "urn:otel:durable_buffer:processor"
     out_ports:
       out_port:
         destinations:

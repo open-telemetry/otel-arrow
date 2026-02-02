@@ -4,7 +4,7 @@
 //! Adapter implementing Quiver's `RecordBundle` trait for OTAP data types.
 //!
 //! This module bridges the OTAP data model (`OtapArrowRecords`) with Quiver's
-//! persistence layer by implementing the `RecordBundle` trait.
+//! storage layer by implementing the `RecordBundle` trait.
 //!
 //! # Slot ID Design
 //!

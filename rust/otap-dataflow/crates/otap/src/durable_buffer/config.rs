@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configuration for the store and forward.
+//! Configuration for the durable buffer.
 //!
 //! # Dispatch Strategy
 //!
-//! The store and forward should be connected with `RoundRobin` (or `Random`/`LeastLoaded`)
+//! The durable buffer should be connected with `RoundRobin` (or `Random`/`LeastLoaded`)
 //! dispatch on its incoming edge. Using `Broadcast` will cause each message to be persisted
 //! multiple times (once per core), leading to:
 //! - N× storage consumption
@@ -99,9 +99,9 @@ impl From<SizeCapPolicy> for RetentionPolicy {
     }
 }
 
-/// Configuration for the store and forward.
+/// Configuration for the durable buffer.
 #[derive(Debug, Clone, Deserialize)]
-pub struct StoreAndForwardConfig {
+pub struct DurableBufferConfig {
     /// Directory path for persistent storage.
     pub path: PathBuf,
 
@@ -171,7 +171,7 @@ pub struct StoreAndForwardConfig {
     pub max_in_flight: usize,
 }
 
-impl StoreAndForwardConfig {
+impl DurableBufferConfig {
     /// Get the retention size cap in bytes.
     #[must_use]
     pub const fn size_cap_bytes(&self) -> u64 {
@@ -193,22 +193,22 @@ mod tests {
     fn test_size_cap_serde() {
         // Test string with IEC units
         let json = r#"{"path": "/tmp/test", "retention_size_cap": "500 GiB"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.size_cap_bytes(), 500 * 1024 * 1024 * 1024);
 
         // Test string with SI units
         let json = r#"{"path": "/tmp/test", "retention_size_cap": "100 MB"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.size_cap_bytes(), 100 * 1000 * 1000);
 
         // Test raw bytes as string
         let json = r#"{"path": "/tmp/test", "retention_size_cap": "1073741824"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.size_cap_bytes(), 1024 * 1024 * 1024);
 
         // Test decimal values
         let json = r#"{"path": "/tmp/test", "retention_size_cap": "1.5 GiB"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(
             config.size_cap_bytes(),
             (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
@@ -218,18 +218,18 @@ mod tests {
     #[test]
     fn test_size_cap_policy_serde() {
         let json = r#"{"path": "/tmp/test", "size_cap_policy": "drop_oldest"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.size_cap_policy, SizeCapPolicy::DropOldest);
 
         let json = r#"{"path": "/tmp/test", "size_cap_policy": "backpressure"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.size_cap_policy, SizeCapPolicy::Backpressure);
     }
 
     #[test]
     fn test_config_defaults() {
         let json = r#"{"path": "/tmp/test"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         // Default is 10 GiB
         assert_eq!(config.size_cap_bytes(), 10 * 1024 * 1024 * 1024);
         assert_eq!(config.size_cap_policy, SizeCapPolicy::Backpressure);
@@ -253,7 +253,7 @@ mod tests {
             "retry_multiplier": 1.5,
             "max_in_flight": 500
         }"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.initial_retry_interval, Duration::from_millis(500));
         assert_eq!(config.max_retry_interval, Duration::from_secs(60));
         assert!((config.retry_multiplier - 1.5).abs() < f64::EPSILON);
@@ -263,11 +263,11 @@ mod tests {
     #[test]
     fn test_otlp_handling_serde() {
         let json = r#"{"path": "/tmp/test", "otlp_handling": "pass_through"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.otlp_handling, OtlpHandling::PassThrough);
 
         let json = r#"{"path": "/tmp/test", "otlp_handling": "convert_to_arrow"}"#;
-        let config: StoreAndForwardConfig = serde_json::from_str(json).unwrap();
+        let config: DurableBufferConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.otlp_handling, OtlpHandling::ConvertToArrow);
     }
 }

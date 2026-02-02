@@ -1,12 +1,12 @@
-# OTLP -> Store-and-Forward -> OTLP pipeline example
+# OTLP -> Durable Buffer -> OTLP pipeline example
 #
-# This configuration demonstrates the store and forward providing
-# durable buffering for OTLP data. By default, OTLP bytes are stored as
+# This configuration demonstrates the durable buffer providing
+# crash-resilient buffering for OTLP data. By default, OTLP bytes are stored as
 # opaque binary for efficient pass-through (near-zero CPU overhead).
 # Set otlp_handling: convert_to_arrow to enable querying on stored data.
 #
-# Build with: cargo build --release --features persistence
-# Run with:   ./target/release/df_engine --pipeline configs/otlp-store-and-forward-otlp.yaml
+# Build with: cargo build --release
+# Run with:   ./target/release/df_engine --pipeline configs/otlp-durable-buffer-otlp.yaml
 #
 # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
 
@@ -22,14 +22,14 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - store_and_forward
+          - durable_buffer
         dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
 
-  store_and_forward:
+  durable_buffer:
     kind: processor
-    plugin_urn: "urn:otel:store_and_forward:processor"
+    plugin_urn: "urn:otel:durable_buffer:processor"
     out_ports:
       out_port:
         destinations:
@@ -42,7 +42,7 @@ nodes:
       poll_interval: 100ms
       # Maximum age of data to retain (e.g., "24h", "7d")
       max_age: 72h
-      # Maximum disk usage for persistence storage
+      # Maximum disk usage for the durable buffer
       retention_size_cap: "10GB"
       # What to do when size cap is exceeded: backpressure or drop_oldest
       size_cap_policy: backpressure
