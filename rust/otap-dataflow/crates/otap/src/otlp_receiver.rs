@@ -233,6 +233,18 @@ impl OTLPReceiver {
             });
         }
 
+        // Validate that gRPC and HTTP do not use the same listening address.
+        if let (Some(grpc), Some(http)) = (&config.protocols.grpc, &config.protocols.http) {
+            if grpc.listening_addr == http.listening_addr {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "gRPC and HTTP protocols cannot use the same listening address ({})",
+                        grpc.listening_addr
+                    ),
+                });
+            }
+        }
+
         // Register OTLP receiver metrics for this node.
         let metrics = Arc::new(Mutex::new(
             pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
@@ -1175,12 +1187,33 @@ mod tests {
         let config_no_protocols = json!({
             "protocols": {}
         });
-        let result = OTLPReceiver::from_config(pipeline_ctx, &config_no_protocols);
+        let result = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_no_protocols);
         assert!(result.is_err());
         let err = result.err().expect("Expected error");
         assert!(
             err.to_string().contains("At least one protocol"),
             "Expected error about protocol configuration, got: {}",
+            err
+        );
+
+        // Test that gRPC and HTTP with the same listening address fails validation
+        let config_same_addr = json!({
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "127.0.0.1:4317"
+                },
+                "http": {
+                    "listening_addr": "127.0.0.1:4317"
+                }
+            }
+        });
+        let result = OTLPReceiver::from_config(pipeline_ctx, &config_same_addr);
+        assert!(result.is_err());
+        let err = result.err().expect("Expected error");
+        assert!(
+            err.to_string()
+                .contains("cannot use the same listening address"),
+            "Expected error about duplicate listening address, got: {}",
             err
         );
     }
