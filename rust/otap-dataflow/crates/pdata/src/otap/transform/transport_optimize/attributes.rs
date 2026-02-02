@@ -1110,6 +1110,7 @@ impl AttrValuesSorter {
                 // if there were any nulls in the original values column, fill in any null segment
                 // flags in the ranges result
                 if let Some(nulls) = &nulls {
+                    let nulls = nulls.slice(range.start, range.len());
                     for nullable_range in result {
                         let (start_idx, _) = self.float64_sort[nullable_range.range.start];
                         nullable_range.is_null = nulls.is_null(start_idx)
@@ -1197,6 +1198,7 @@ impl AttrValuesSorter {
                 // if there were any nulls in the original values column, fill in any null segment/
                 // flags in the ranges result
                 if let Some(nulls) = &keys_and_ranks.nulls {
+                    let nulls = nulls.slice(range.start, range.len());
                     for nullable_range in result {
                         let (start_idx, _) = self.rank_sort[nullable_range.range.start];
                         nullable_range.is_null = nulls.is_null(start_idx)
@@ -2540,7 +2542,7 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values([
-                    0, 1, 2, 3, 4, 5, 6, 4, 7, 8, 9, 10, 11,
+                    0, 1, 2, 3, 4, 5, 6, 4, 7, 8, 9, 10, 11, 12, 13,
                 ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
@@ -2554,11 +2556,13 @@ mod test {
                     AttributeValueType::Double as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -2573,7 +2577,9 @@ mod test {
                         None, // null str attr (dict encoded)
                         None,
                         None, // null str attr (dict encoded) with different key
+                        None, // null str attr (dict encoded) with different key
                         Some(1),
+                        None,
                         None,
                         None,
                     ]),
@@ -2591,6 +2597,8 @@ mod test {
                     None, // null float attr (not dict encoded)
                     None,
                     None,
+                    None,
+                    None, // null float attr (not dict encoded) with different key
                     None, // null float attr (not dict encoded) with different key
                     Some(2.0),
                 ])),
@@ -2617,7 +2625,7 @@ mod test {
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values([
-                    0, 1, 4, 6, 4, 9, 8, 5, 2, 3, 7, 11, 10,
+                    0, 1, 4, 6, 4, 10, 8, 9, 5, 2, 3, 7, 13, 11, 12,
                 ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
@@ -2627,6 +2635,8 @@ mod test {
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
@@ -2635,7 +2645,7 @@ mod test {
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1]),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1]),
                     Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
@@ -2647,6 +2657,8 @@ mod test {
                         None, // null str attr (dict encoded)
                         Some(1),
                         None, // null str attr (dict encoded) with different key
+                        None, // null str attr (dict encoded) with different key
+                        None,
                         None,
                         None,
                         None,
@@ -2664,11 +2676,13 @@ mod test {
                     None,
                     None,
                     None,
+                    None,
                     Some(1.5),
                     Some(2.0),
                     None, // null float attr (not dict encoded)
                     None, // null float attr (not dict encoded)
                     Some(2.0),
+                    None, // null float attr (not dict encoded) with different key
                     None, // null float attr (not dict encoded) with different key
                 ])),
             ],
