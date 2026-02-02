@@ -3,9 +3,16 @@
 
 //! Benchmarks for functions that transform attributes
 
-use arrow::array::{DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder};
+use arrow::array::{
+    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder, UInt8Builder,
+    UInt16Array, UInt16Builder,
+};
+use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_pdata::otap::transform::transport_optimize::apply_transport_optimized_encodings;
+use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
 use std::sync::Arc;
@@ -287,13 +294,105 @@ fn bench_transform_attributes(c: &mut Criterion) {
     group.finish();
 }
 
+fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool) -> RecordBatch {
+    let mut parent_id_builder = UInt16Builder::with_capacity(num_rows);
+    let mut type_builder = UInt8Builder::with_capacity(num_rows);
+    let mut keys_builder = StringBuilder::new();
+    let mut values_builder = StringBuilder::new();
+
+    // generate a batch with 8 different attr keys, 4 attrs per parent this is a bit arbitrary,
+    // but it should allow us to create something that the renaming will break delta encoding
+    // if not handled correctly, which triggers the code path we're of which trying to measure
+    // the overhead
+    for i in 0..num_rows {
+        parent_id_builder.append_value(i as u16 / 4);
+        type_builder.append_value(AttributeValueType::Str as u8);
+        keys_builder.append_value(format!("key_{}", i % 4));
+        values_builder.append_value("val");
+    }
+
+    let key_array: ArrayRef = if dict_encoded_keys {
+        let keys_arr = keys_builder.finish();
+        let keys_arr_dict = cast(
+            &keys_arr,
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+        )
+        .expect("can cast to dict");
+        Arc::new(keys_arr_dict)
+    } else {
+        Arc::new(keys_builder.finish())
+    };
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+        Field::new(consts::ATTRIBUTE_KEY, key_array.data_type().clone(), false),
+        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+    ]));
+
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(parent_id_builder.finish()),
+            Arc::new(type_builder.finish()),
+            key_array,
+            Arc::new(values_builder.finish()),
+        ],
+    )
+    .expect("record batch OK");
+
+    let (result, _) = apply_transport_optimized_encodings(&ArrowPayloadType::LogAttrs, &batch)
+        .expect("transport optimize encoding apply");
+
+    result
+}
+
+/// benchmarks for transforming attributes when batches are transport optimized encoded. This
+/// requires some extra handling to ensure we don't break the interpretation of the IDs column
+fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transform_attributes_transport_optimized");
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8092] {
+            let benchmark_id_param =
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys}");
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
+
+            let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
+                b.iter_batched(
+                    || {
+                        let transform1 =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("attr3".into(), "attr5".into())].into_iter().collect(),
+                            ));
+                        let transform2 =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("attr4".into(), "attr5".into())].into_iter().collect(),
+                            ));
+                        (input, transform1, transform2)
+                    },
+                    |(input, transform1, transform2)| {
+                        let result1 = transform_attributes(input, &transform1).expect("no error");
+                        let result2 =
+                            transform_attributes(&result1, &transform2).expect("no error");
+                        black_box(result2)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod benches {
     use super::*;
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_transform_attributes
+        targets = bench_transform_attributes, bench_transport_optimized_transform_attributes
     );
 }
 criterion_main!(benches::benches);

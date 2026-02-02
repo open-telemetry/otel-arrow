@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -886,16 +886,27 @@ pub fn transform_attributes_with_stats(
                 name: consts::ATTRIBUTE_KEY.into(),
             })?;
 
+    // TODO comment how we're pulling out transport_optimize
     // Check if we need early materialization for insert
     // We only need to materialize if insert is present AND we have parent_id column
     // This allows us to get the full list of parents before any deletes are applied
     let insert_needed =
         transform.insert.is_some() && schema.column_with_name(consts::PARENT_ID).is_some();
-    let attrs_record_batch_cow = if insert_needed {
+    let (attrs_record_batch_cow, is_transport_optimized) = if insert_needed {
         let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
-        Cow::Owned(rb)
+        (Cow::Owned(rb), false)
     } else {
-        Cow::Borrowed(attrs_record_batch)
+        // check if the column is already decoded
+        let column_encoding = get_field_metadata(
+            attrs_record_batch.schema_ref(),
+            consts::PARENT_ID,
+            metadata::COLUMN_ENCODING,
+        );
+
+        (
+            Cow::Borrowed(attrs_record_batch),
+            column_encoding != Some(metadata::encodings::PLAIN),
+        )
     };
     let attrs_record_batch = attrs_record_batch_cow.as_ref();
     let schema = attrs_record_batch.schema();
@@ -1169,6 +1180,8 @@ struct KeysTransformResult {
 }
 
 /// Transform the attributes key array
+///
+/// TODO comment on track_rename_ranges arg
 fn transform_keys(
     array: &StringArray,
     transform: &AttributesTransform,
@@ -1230,21 +1243,21 @@ fn transform_keys(
     let mut last_end_offset = 0;
 
     // iterate over the transform ranges, copying unmodified ranges and replacing renamed keys
-    for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().copied() {
+    for transform_range in transform_ranges.iter() {
         // directly copy all the bytes of the values that were not replaced
-        let start_offset = offsets[start_idx] as usize;
+        let start_offset = offsets[transform_range.range.start] as usize;
         new_values.extend_from_slice(
             &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
         );
 
-        match range_type {
+        match transform_range.range_type {
             KeyTransformRangeType::Replace => {
                 // insert the replaced values into the new_values buffer
                 let replacement_bytes = &replacement_plan
                     .as_ref()
                     .expect("replacement plan should be initialized")
-                    .replacement_bytes[transform_idx];
-                for _ in start_idx..end_idx {
+                    .replacement_bytes[transform_range.idx];
+                for _ in transform_range.range.start..transform_range.range.end {
                     new_values.extend_from_slice(replacement_bytes);
                 }
             }
@@ -1254,7 +1267,7 @@ fn transform_keys(
             }
         }
 
-        last_end_offset = offsets[end_idx] as usize;
+        last_end_offset = offsets[transform_range.range.end] as usize;
     }
 
     // copy any bytes from the tail of the source value buffer
@@ -1281,11 +1294,11 @@ fn transform_keys(
         // pointer to the end of the previous range where the values were replaced
         let mut prev_range_index_end = 0;
 
-        for (start_idx, end_idx, transform_idx, range_type) in transform_ranges.iter().copied() {
+        for transform_range in transform_ranges.iter() {
             // copy offsets for values that were not replaced, but add the offset adjustment
             offsets
                 .inner()
-                .slice(prev_range_index_end, start_idx - prev_range_index_end)
+                .slice(prev_range_index_end, transform_range.range.start - prev_range_index_end)
                 .into_iter()
                 .for_each(|offset| {
                     // safety: we've pre-allocated the new_offsets buffer with enough space for all the
@@ -1298,15 +1311,15 @@ fn transform_keys(
                     }
                 });
 
-            match range_type {
+            match transform_range.range_type {
                 KeyTransformRangeType::Replace => {
                     // append offsets for values that were replaced, but add the offset adjustment
                     let replacement_bytes = &replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_bytes[transform_idx];
-                    let mut offset = offsets[start_idx] + curr_total_offset_adjustment;
-                    for _ in start_idx..end_idx {
+                        .replacement_bytes[transform_range.idx];
+                    let mut offset = offsets[transform_range.range.start] + curr_total_offset_adjustment;
+                    for _ in transform_range.range.start..transform_range.range.end {
                         new_offsets.push(offset);
                         offset += replacement_bytes.len() as i32;
                     }
@@ -1316,8 +1329,8 @@ fn transform_keys(
                     let val_len_diff = replacement_plan
                         .as_ref()
                         .expect("replacement plan should be initialized")
-                        .replacement_byte_len_diffs[transform_idx];
-                    curr_total_offset_adjustment += val_len_diff * (end_idx - start_idx) as i32;
+                        .replacement_byte_len_diffs[transform_range.idx];
+                    curr_total_offset_adjustment += val_len_diff * transform_range.range.len() as i32;
                 }
                 KeyTransformRangeType::Delete => {
                     // for deleted ranges we don't need to append any offsets to the buffer, so we
@@ -1325,14 +1338,14 @@ fn transform_keys(
                     let deleted_val_len = delete_plan
                         .as_ref()
                         .expect("delete plan should be initialized")
-                        .target_keys[transform_idx]
+                        .target_keys[transform_range.idx]
                         .len();
                     curr_total_offset_adjustment -=
-                        (deleted_val_len * (end_idx - start_idx)) as i32;
+                        (deleted_val_len * transform_range.range.len()) as i32;
                 }
             }
 
-            prev_range_index_end = end_idx;
+            prev_range_index_end = transform_range.range.end;
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
@@ -1378,9 +1391,9 @@ fn transform_keys(
         } else {
             let mut keep_ranges: Vec<(usize, usize)> = vec![];
             let mut last_delete_range_end = 0;
-            for (start, end, _, _) in &d.ranges {
-                keep_ranges.push((last_delete_range_end, *start));
-                last_delete_range_end = *end;
+            for (start, end) in d.ranges.iter().map(|d| (d.range.start, d.range.end)) {
+                keep_ranges.push((last_delete_range_end, start));
+                last_delete_range_end = end;
             }
             // add final range
             keep_ranges.push((last_delete_range_end, len));
@@ -1416,6 +1429,7 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     /// Ranges of of the additional columns which should be kept.
     ///
     /// This will be `None` if there are no ranges that have been deleted
+    // TODO - change to range?
     keep_ranges: Option<Vec<(usize, usize)>>,
 
     /// Exact number of rows that were deleted due to delete rules
@@ -1425,6 +1439,8 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
 }
 
 /// transforms the keys for the dictionary array.
+///
+// TODO comment on the track_rename_ranges arg
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
@@ -1451,7 +1467,7 @@ where
             dict_values.offsets(),
             rename,
         )?;
-        for (start_idx, end_idx, _, _) in repl_plan.ranges.iter().copied() {
+        for (start_idx, end_idx) in repl_plan.ranges.iter().map(|k| (k.range.start, k.range.end)) {
             for i in start_idx..end_idx {
                 if let Some(slot) = value_index_renamed.get_mut(i) {
                     *slot = true;
@@ -1477,6 +1493,8 @@ where
             new_keys: new_dict,
             keep_ranges: None,
             deleted_rows: 0,
+
+            // TODO - this is expensive to calculate if we don't need it
             renamed_rows: {
                 // Count renamed rows among kept rows (all rows are kept in this branch)
                 let mut renamed = 0usize;
@@ -1674,10 +1692,20 @@ enum KeyTransformRangeType {
     Delete,
 }
 
+// TODO comments
+#[derive(Clone)]
+struct KeyTransformRange {
+    range: Range<usize>,
+
+    idx: usize,
+
+    range_type: KeyTransformRangeType,
+}
+
 fn merge_transform_ranges<'a>(
     replacement_plan: Option<&'a KeyReplacementPlan<'_>>,
     delete_plan: Option<&'a KeyDeletePlan<'_>>,
-) -> Cow<'a, [(usize, usize, usize, KeyTransformRangeType)]> {
+) -> Cow<'a, [KeyTransformRange]> {
     match (replacement_plan, delete_plan) {
         (Some(replacement_plan), Some(delete_plan)) => {
             let mut result =
@@ -1687,15 +1715,15 @@ fn merge_transform_ranges<'a>(
             let mut del_idx = 0;
 
             while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
-                let rep_start = replacement_plan.ranges[rep_idx].0;
-                let del_start = delete_plan.ranges[del_idx].0;
+                let rep_start = replacement_plan.ranges[rep_idx].range.start;
+                let del_start = delete_plan.ranges[del_idx].range.start;
 
                 if rep_start <= del_start {
-                    let &rep_range = &replacement_plan.ranges[rep_idx];
+                    let rep_range = replacement_plan.ranges[rep_idx].clone();
                     result.push(rep_range);
                     rep_idx += 1;
                 } else {
-                    let &del_range = &delete_plan.ranges[del_idx];
+                    let del_range = delete_plan.ranges[del_idx].clone();
                     result.push(del_range);
                     del_idx += 1;
                 }
@@ -1703,14 +1731,14 @@ fn merge_transform_ranges<'a>(
 
             // append any remaining replacements
             while rep_idx < replacement_plan.ranges.len() {
-                let &rep_range = &replacement_plan.ranges[rep_idx];
+                let rep_range = replacement_plan.ranges[rep_idx].clone();
                 result.push(rep_range);
                 rep_idx += 1;
             }
 
             // append any remaining deletions
             while del_idx < delete_plan.ranges.len() {
-                let &del_range = &delete_plan.ranges[del_idx];
+                let del_range = delete_plan.ranges[del_idx].clone();
                 result.push(del_range);
                 del_idx += 1;
             }
@@ -1727,8 +1755,7 @@ fn merge_transform_ranges<'a>(
 /// rename certain attribute keys. It is produced by `plan_key_replacements`
 struct KeyReplacementPlan<'a> {
     /// contiguous ranges in the original array's values buffer that should be replaced.
-    /// this is keyed as (start, end, idx) where idx is the index into `replacement_bytes`
-    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
+    ranges: Vec<KeyTransformRange>,
 
     /// this contains the bytes to replace each value in each of `ranges`
     replacement_bytes: &'a [Vec<u8>],
@@ -1788,7 +1815,7 @@ fn plan_key_replacements<'a>(
 pub struct KeyDeletePlan<'a> {
     /// contiguous ranges in the original array's values buffer that should be deleted.
     /// this is keyed as (start, end, idx) where idx is the index into `target_bytes``
-    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
+    ranges: Vec<KeyTransformRange>,
 
     /// the bytes of the key being deleted in each `range`
     target_keys: &'a [Vec<u8>],
@@ -1833,7 +1860,7 @@ struct KeyTransformTargetRanges {
     // that was passed to `find_matching_key_ranges`.
     //
     // This also be sorted by first element in the tuple (the start index)
-    ranges: Vec<(usize, usize, usize, KeyTransformRangeType)>,
+    ranges: Vec<KeyTransformRange>,
 
     // count of many occurrences of each of the `target_bytes` were found in the passed values
     // buffer. This will have the same order as passed `target_bytes`. This can be used to
@@ -1898,18 +1925,29 @@ fn find_matching_key_ranges(
             // if we're here, we've found a non matching value
             if let Some(s) = eq_range_start.take() {
                 // close current range
-                ranges.push((s, i, target_idx, range_type));
+                ranges.push(KeyTransformRange {
+                    range: Range { start: s, end: i },
+                    idx: target_idx,
+                    range_type,
+                });
             }
         }
 
         // add the final trailing range
         if let Some(s) = eq_range_start {
-            ranges.push((s, array_len, target_idx, range_type));
+            ranges.push(KeyTransformRange {
+                range: Range {
+                    start: s,
+                    end: array_len,
+                },
+                idx: target_idx,
+                range_type,
+            });
         }
     }
 
     // Sort the ranges to replace by start_index (first element in contained tuple)
-    ranges.sort_unstable_by_key(|r| r.0);
+    ranges.sort_unstable_by_key(|r| r.range.start);
 
     Ok(KeyTransformTargetRanges {
         ranges,
@@ -1988,6 +2026,48 @@ fn take_null_buffer_ranges(
             None => Some(nulls.clone()),
         }
     })
+}
+
+fn remap_transport_encoded_parent_for_transform<'a, T: ArrowPrimitiveType>(
+    attr_record_batch: &'a RecordBatch,
+    transform_ranges: &[KeyTransformRange],
+) -> Result<Cow<'a, RecordBatch>> {
+    for i in 0..transform_ranges.len() {
+        // let index_before: Option<usize> = {
+        //     let j = i;
+        //     while j != 0 {
+        //         let range_before = ranges[j - 1];
+
+        //     }
+        // };
+
+        // let index_after: Option<usize> = {
+        //     todo!()
+        // };
+
+
+
+    }
+
+    todo!()
+}
+
+fn find_index_before_after_transformed(
+    index: usize,
+    transform_ranges: &[KeyTransformRange]
+) -> Option<(usize, Option<usize>)> {
+    if index == 0 {
+        return None
+    }
+
+    // TODO does rev copy here?
+    for range in transform_ranges.iter().rev() {
+        if range.range.end != index {
+            return Some((index - 1, None))
+        }
+        if
+    }
+    todo!()
 }
 
 /// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
