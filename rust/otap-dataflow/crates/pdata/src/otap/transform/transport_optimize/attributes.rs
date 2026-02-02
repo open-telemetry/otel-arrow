@@ -425,6 +425,8 @@ where
                     .with_encoding(consts::metadata::encodings::QUASI_DELTA)
                     .with_data_type(parent_id_col.data_type().clone()),
             );
+            columns.push(parent_id_col.clone());
+            continue;
         } else {
             fields.push(field.as_ref().clone());
         }
@@ -496,11 +498,6 @@ where
                 .take()
                 .expect("serialized attr column is present");
             columns.push(sorted_col.finish()?);
-            continue;
-        }
-
-        if field_name == consts::PARENT_ID {
-            columns.push(parent_id_col.clone());
             continue;
         }
 
