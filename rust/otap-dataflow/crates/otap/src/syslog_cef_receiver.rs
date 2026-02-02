@@ -36,7 +36,7 @@ use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 #[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::otel_debug;
+use otap_df_telemetry::{otel_debug, otel_warn};
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -71,7 +71,7 @@ struct Config {
     /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
     ///
     /// When configured, TCP connections will require TLS. This is only applicable
-    /// when `protocol` is `tcp`. UDP does not support TLS (use DTLS separately if needed).
+    /// when `protocol` is `tcp`. UDP does not support TLS.
     #[cfg(feature = "experimental-tls")]
     pub tls: Option<TlsServerConfig>,
 }
@@ -86,19 +86,6 @@ impl Config {
             #[cfg(feature = "experimental-tls")]
             tls: None,
         }
-    }
-
-    /// Returns the TLS handshake timeout from config.
-    ///
-    /// The `TlsServerConfig.handshake_timeout` field has a serde default of 10 seconds,
-    /// so this will always return a value when TLS is configured.
-    #[cfg(feature = "experimental-tls")]
-    fn handshake_timeout(&self) -> Duration {
-        self.tls
-            .as_ref()
-            .expect("handshake_timeout called without TLS config")
-            .handshake_timeout
-            .expect("handshake_timeout should have serde default")
     }
 }
 
@@ -186,17 +173,21 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         source_detail: format_error_sources(&e),
                     })?;
 
-                // Only compute handshake timeout when TLS is configured
+                // Extract handshake timeout from TLS config (if present)
                 #[cfg(feature = "experimental-tls")]
-                let maybe_handshake_timeout = if maybe_tls_acceptor.is_some() {
+                let maybe_handshake_timeout = self
+                    .config
+                    .tls
+                    .as_ref()
+                    .and_then(|tls| tls.handshake_timeout);
+
+                #[cfg(feature = "experimental-tls")]
+                if maybe_tls_acceptor.is_some() {
                     otel_info!(
                         "receiver.tls_enabled",
                         message = "TLS enabled for Syslog/CEF TCP receiver"
                     );
-                    Some(self.config.handshake_timeout())
-                } else {
-                    None
-                };
+                }
 
                 loop {
                     tokio::select! {
@@ -246,9 +237,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         #[cfg(feature = "experimental-tls")]
                                         let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
-                                            // tls_handshake_timeout is guaranteed to be Some when acceptor is Some
+                                            // Use configured timeout or fall back to 10 seconds (the serde default)
                                             let timeout = tls_handshake_timeout
-                                                .expect("handshake timeout should be set when TLS is configured");
+                                                .unwrap_or(Duration::from_secs(10));
                                             match accept_tls_connection(socket, &acceptor, timeout).await {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
@@ -259,7 +250,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     Box::new(BufReader::new(tls_stream))
                                                 }
                                                 Err(e) => {
-                                                    otel_debug!(
+                                                    otel_warn!(
                                                         "tls.handshake.failed",
                                                         peer = %peer_addr,
                                                         error = %e,

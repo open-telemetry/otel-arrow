@@ -1517,17 +1517,11 @@ where
 {
     match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
         Ok(Ok(tls_stream)) => Ok(tls_stream),
-        Ok(Err(e)) => {
-            otel_warn!("TLS handshake failed", error = ?e);
-            Err(e)
-        }
-        Err(_) => {
-            otel_warn!("TLS handshake timed out", timeout = ?handshake_timeout);
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("TLS handshake timed out after {:?}", handshake_timeout),
-            ))
-        }
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("TLS handshake timed out after {:?}", handshake_timeout),
+        )),
     }
 }
 
