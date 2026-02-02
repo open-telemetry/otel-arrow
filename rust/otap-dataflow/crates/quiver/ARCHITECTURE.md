@@ -423,7 +423,7 @@ past the segment to be deleted.
 Quiver is a standalone persistence library with no knowledge of the embedding
 pipeline's control flow semantics. Responsibilities are split as follows:
 
-| Concern | Quiver (Library) | Embedding Layer (e.g., durable_buffer) |
+| Concern | Quiver (Library) | Embedding Layer (e.g., durable_buffer_processor) |
 | ------- | ---------------- | --------------------------------------------- |
 | WAL + Segment storage | Yes | |
 | Per-subscriber progress files | Yes | |
@@ -1248,7 +1248,7 @@ Happy-path flow for segment `seg-120` (4 MiB, 3 `RecordBundle`s):
   restore per-subscriber state directly--no log replay required.
 
 Nack handling is owned by the embedding layer, not Quiver. When an exporter
-returns a NACK, the embedding layer (e.g., durable_buffer):
+returns a NACK, the embedding layer (e.g., durable_buffer_processor):
 
 1. Computes retry delay using its backoff policy
 2. Schedules retry via the pipeline's delay mechanism

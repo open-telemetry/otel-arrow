@@ -40,7 +40,7 @@
 //! via `next_bundle()`. The embedding layer does NOT need to track deferred
 //! bundles separately—Quiver handles this internally.
 //!
-//! The embedding layer (e.g., otap-dataflow's durable_buffer) may still
+//! The embedding layer (e.g., otap-dataflow's durable_buffer_processor) may still
 //! choose to track deferred bundles for custom retry timing, backoff strategies,
 //! or priority scheduling—but this is optional.
 //!
