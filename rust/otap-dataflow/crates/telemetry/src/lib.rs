@@ -31,8 +31,8 @@ use crate::registry::TelemetryRegistryHandle;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
-use otap_df_config::pipeline::service::telemetry::logs::{
-    LogLevel, LoggingProviders, ProviderMode,
+use otap_df_config::settings::telemetry::logs::{
+    LogLevel, LoggingProviders, LogsConfig, ProviderMode,
 };
 use self_tracing::LogContextFn;
 use std::sync::Arc;
@@ -370,6 +370,7 @@ mod tests {
         AttributeValue::String as OTelString,
         logs::{LoggingProviders, ProviderMode},
     };
+    use otap_df_config::settings::telemetry::logs::LogsConfig;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
@@ -384,7 +385,7 @@ mod tests {
 
     fn config_with_providers(providers: LoggingProviders) -> TelemetryConfig {
         TelemetryConfig {
-            logs: otap_df_config::pipeline::service::telemetry::logs::LogsConfig {
+            logs: LogsConfig {
                 providers,
                 ..Default::default()
             },

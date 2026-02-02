@@ -9,7 +9,7 @@
 
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord, RawLoggingLayer};
-use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
