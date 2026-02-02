@@ -2,6 +2,15 @@ settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
+  telemetry:
+    logs:
+      level: "info"
+      processors:
+        - batch:
+            exporter:
+              otlp:
+                protocol: "grpc/protobuf"
+                endpoint: "http://127.0.0.1:43480"
 
 nodes:
   receiver:
@@ -36,14 +45,6 @@ nodes:
 
 service:
   telemetry:
-    logs:
-      level: "info"
-      processors:
-        - batch:
-            exporter:
-              otlp:
-                protocol: "grpc/protobuf"
-                endpoint: "http://127.0.0.1:43480"
     metrics:
       readers:
         - periodic:

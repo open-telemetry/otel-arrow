@@ -126,7 +126,6 @@ mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
         AttributeValue,
-        logs::LogsConfig,
         metrics::{
             MetricsConfig,
             readers::{
@@ -135,6 +134,7 @@ mod tests {
             },
         },
     };
+    use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use std::{f64::consts::PI, time::Duration};

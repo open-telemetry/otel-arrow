@@ -364,11 +364,9 @@ impl Default for InternalTelemetrySystem {
 mod tests {
     use super::*;
     use otap_df_config::pipeline::service::telemetry::{
-        AttributeValue::I64 as OTelI64,
-        AttributeValue::String as OTelString,
-        logs::{LoggingProviders, ProviderMode},
+        AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
-    use otap_df_config::settings::telemetry::logs::LogsConfig;
+    use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
     use otap_df_pdata::proto::opentelemetry::logs::{v1::LogsData, v1::ResourceLogs};
