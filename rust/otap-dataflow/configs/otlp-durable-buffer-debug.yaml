@@ -34,7 +34,7 @@ nodes:
           - debug
         dispatch_strategy: round_robin
     config:
-      path: /tmp/quiver_test
+      path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
       poll_interval: 100ms
       retention_size_cap: "1GB"
       size_cap_policy: backpressure

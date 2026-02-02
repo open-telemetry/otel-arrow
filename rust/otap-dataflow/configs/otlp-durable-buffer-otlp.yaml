@@ -37,7 +37,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       # Directory for WAL and segment files (created if not exists)
-      path: ./quiver_data
+      path: /var/lib/otap/otlp-durable-buffer-otlp-example/buffer
       # How often to poll Quiver for available bundles (default: 100ms)
       poll_interval: 100ms
       # Maximum age of data to retain (e.g., "24h", "7d")

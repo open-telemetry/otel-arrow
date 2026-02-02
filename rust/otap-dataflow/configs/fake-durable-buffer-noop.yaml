@@ -40,8 +40,7 @@ nodes:
           - noop
         dispatch_strategy: round_robin
     config:
-      # Store in a temp directory
-      path: /tmp/quiver_perf_test
+      path: /var/lib/otap/fake-durable-buffer-noop-example/buffer
       poll_interval: 10ms
       retention_size_cap: "500MB"
       size_cap_policy: backpressure

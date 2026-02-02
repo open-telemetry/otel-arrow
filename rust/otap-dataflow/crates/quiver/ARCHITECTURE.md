@@ -1180,7 +1180,7 @@ nodes:
         dispatch_strategy: round_robin
     config:
       # Platform-appropriate persistent storage location
-      path: ./quiver_data
+      path: /var/lib/otap/buffer
       # Durability mode: "wal" (default) or "segment_only"
       # Use "segment_only" for ~3x throughput when data loss is acceptable
       durability: wal
