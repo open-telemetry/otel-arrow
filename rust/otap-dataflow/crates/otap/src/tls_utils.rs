@@ -1635,7 +1635,7 @@ mod tests {
         }
     }
 
-    /// Generate an end-entity (leaf) certificate signed by a CA.
+    /// Generate an end-entity (leaf) certificate signed by a CA using rcgen.
     ///
     /// This creates a proper PKI hierarchy:
     /// - CA certificate (`CA:TRUE`) → can be added to root stores as trust anchor
@@ -1651,101 +1651,51 @@ mod tests {
     /// * `cert_name` - Base name for end-entity cert files
     /// * `cn` - Common Name for the end-entity cert (also used as SAN for hostname verification)
     fn generate_ca_signed_cert(dir: &Path, ca_name: &str, cert_name: &str, cn: &str) {
-        // Step 1: Generate CA key and self-signed CA cert
-        let output = Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", ca_name),
-                "-out",
-                &format!("{}.crt", ca_name),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                &format!("/CN={}CA", cn),
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to execute openssl for CA generation");
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
 
-        if !output.status.success() {
-            panic!(
-                "CA certificate generation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        // Step 1: Generate CA certificate
+        let mut ca_params = CertificateParams::default();
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, format!("{}CA", cn));
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
 
-        // Step 2: Generate end-entity key and CSR
-        let output = Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", cert_name),
-                "-out",
-                &format!("{}.csr", cert_name),
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to execute openssl for CSR generation");
+        let ca_key_pair = KeyPair::generate().expect("Failed to generate CA key pair");
+        let ca_cert = ca_params
+            .self_signed(&ca_key_pair)
+            .expect("Failed to self-sign CA certificate");
 
-        if !output.status.success() {
-            panic!(
-                "CSR generation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        // Step 3: Create extensions file for SAN
-        let ext_file = dir.join(format!("{}.ext", cert_name));
+        // Write CA cert and key
+        fs::write(dir.join(format!("{}.crt", ca_name)), ca_cert.pem())
+            .expect("Failed to write CA cert");
         fs::write(
-            &ext_file,
-            format!(
-                "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:{}\n",
-                cn
-            ),
+            dir.join(format!("{}.key", ca_name)),
+            ca_key_pair.serialize_pem(),
         )
-        .expect("Failed to write extensions file");
+        .expect("Failed to write CA key");
 
-        // Step 4: Sign the CSR with the CA
-        let output = Command::new("openssl")
-            .args([
-                "x509",
-                "-req",
-                "-in",
-                &format!("{}.csr", cert_name),
-                "-CA",
-                &format!("{}.crt", ca_name),
-                "-CAkey",
-                &format!("{}.key", ca_name),
-                "-CAcreateserial",
-                "-out",
-                &format!("{}.crt", cert_name),
-                "-days",
-                "1",
-                "-extfile",
-                ext_file.file_name().unwrap().to_str().unwrap(),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to execute openssl for certificate signing");
+        // Step 2: Generate end-entity certificate signed by CA
+        let mut ee_params =
+            CertificateParams::new(vec![cn.to_string()]).expect("Failed to create cert params");
+        ee_params.distinguished_name.push(DnType::CommonName, cn);
+        ee_params.is_ca = IsCa::ExplicitNoCa;
 
-        if !output.status.success() {
-            panic!(
-                "Certificate signing failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        let ee_key_pair = KeyPair::generate().expect("Failed to generate end-entity key pair");
+
+        // Create issuer from CA params and key pair
+        let issuer = Issuer::from_params(&ca_params, &ca_key_pair);
+        let ee_cert = ee_params
+            .signed_by(&ee_key_pair, &issuer)
+            .expect("Failed to sign end-entity certificate");
+
+        // Write end-entity cert and key
+        fs::write(dir.join(format!("{}.crt", cert_name)), ee_cert.pem())
+            .expect("Failed to write end-entity cert");
+        fs::write(
+            dir.join(format!("{}.key", cert_name)),
+            ee_key_pair.serialize_pem(),
+        )
+        .expect("Failed to write end-entity key");
     }
 
     #[tokio::test]
@@ -2027,9 +1977,6 @@ mod tests {
     /// 4. Data can be exchanged over the encrypted connection
     #[tokio::test]
     async fn test_accept_tls_connection_server_only() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2141,9 +2088,6 @@ mod tests {
     /// 4. TLS handshake completes successfully
     #[tokio::test]
     async fn test_accept_tls_connection_mtls() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2263,9 +2207,6 @@ mod tests {
     /// Test accept_tls_connection timeout when client doesn't complete handshake.
     #[tokio::test]
     async fn test_accept_tls_connection_timeout() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
