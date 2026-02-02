@@ -1686,7 +1686,7 @@ where
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum KeyTransformRangeType {
     Replace,
     Delete,
@@ -2052,22 +2052,40 @@ fn remap_transport_encoded_parent_for_transform<'a, T: ArrowPrimitiveType>(
     todo!()
 }
 
-fn find_index_before_after_transformed(
-    index: usize,
+fn find_index_untransformed_index_before(
+    mut index: usize,
     transform_ranges: &[KeyTransformRange]
-) -> Option<(usize, Option<usize>)> {
+) -> Option<usize> {
+    // nothing can come before index 0
     if index == 0 {
         return None
     }
 
-    // TODO does rev copy here?
+
     for range in transform_ranges.iter().rev() {
         if range.range.end != index {
-            return Some((index - 1, None))
+            return Some(index - 1)
         }
-        if
+
+        // we found a range
+        match range.range_type {
+            KeyTransformRangeType::Replace => {
+                // TODO comment on why we can do this
+                // due to key validation, ranges can't have
+                // equal keys after transform lol
+                // comment on validation about this too
+                return None
+            }
+            KeyTransformRangeType::Delete => {
+                index = range.range.start;
+                if index == 0 {
+                    return None
+                }
+            }
+        }
     }
-    todo!()
+
+    Some(index - 1)
 }
 
 /// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
