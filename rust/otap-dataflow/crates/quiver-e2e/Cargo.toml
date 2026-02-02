@@ -28,7 +28,7 @@ clap.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 ratatui = "0.30"
 crossterm = "0.29"
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 [target.'cfg(not(windows))'.dependencies]
 tikv-jemallocator.workspace = true
