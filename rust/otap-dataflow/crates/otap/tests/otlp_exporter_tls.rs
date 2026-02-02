@@ -238,12 +238,10 @@ async fn otlp_exporter_allows_http_with_tls_config() {
         ..GrpcClientSettings::default()
     };
 
-    let result = settings.build_endpoint_with_tls().await;
-    assert!(
-        result.is_ok(),
-        "build_endpoint_with_tls failed: {:?}",
-        result.err()
-    );
+    settings
+        .build_endpoint_with_tls()
+        .await
+        .expect("build_endpoint_with_tls should succeed");
 }
 
 #[tokio::test]
