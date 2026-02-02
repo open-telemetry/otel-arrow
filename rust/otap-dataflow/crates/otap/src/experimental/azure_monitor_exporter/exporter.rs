@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn test_new_validates_config() {
         let config = create_test_config();
-        AzureMonitorExporter::new(config).expect("AzureMonitorExporter::new should succeed");
+        let _ = AzureMonitorExporter::new(config).unwrap();
     }
 
     #[test]

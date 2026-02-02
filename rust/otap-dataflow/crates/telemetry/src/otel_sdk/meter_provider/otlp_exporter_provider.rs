@@ -144,13 +144,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
         )
-        .expect("configure_otlp_metric_exporter should succeed");
+        .unwrap();
     }
 
     #[test]
@@ -162,13 +162,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
         )
-        .expect("configure_otlp_metric_exporter should succeed");
+        .unwrap();
     }
 
     #[test]
@@ -180,13 +180,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
         )
-        .expect("configure_otlp_metric_exporter should succeed");
+        .unwrap();
     }
 
     #[test]
@@ -212,7 +212,7 @@ mod tests {
         let temp_ca_file = create_test_ca_file();
         let ca_path = temp_ca_file.path().to_str().unwrap();
 
-        OtlpExporterProvider::get_tls_config(ca_path).expect("get_tls_config should succeed");
+        let _ = OtlpExporterProvider::get_tls_config(ca_path).unwrap();
     }
 
     fn create_test_ca_file() -> tempfile::NamedTempFile {
