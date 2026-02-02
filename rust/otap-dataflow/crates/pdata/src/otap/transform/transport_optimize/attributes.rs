@@ -1046,7 +1046,10 @@ impl AttrValuesSorter {
 
                 if let Some(nulls) = nulls {
                     self.float64_sort.sort_unstable_by(|a, b| {
-                        match (nulls.is_null(a.0), nulls.is_null(b.0)) {
+                        match (
+                            nulls.is_null(range.start + a.0),
+                            nulls.is_null(range.start + b.0),
+                        ) {
                             (true, true) => std::cmp::Ordering::Equal,
                             (true, false) => std::cmp::Ordering::Greater,
                             (false, true) => std::cmp::Ordering::Less,
@@ -1069,7 +1072,7 @@ impl AttrValuesSorter {
                 // append the sorted values to the builder
                 value_col_builder.append_data(&self.float64_partition);
                 if let Some(nulls) = &nulls {
-                    let null_bits = nulls.inner();
+                    let null_bits = nulls.inner().slice(range.start, range.len());
                     let sorted_range_null_bits =
                         BooleanBuffer::collect_bool(range.len(), |idx: usize| {
                             null_bits.value(key_range_sorted_result[idx])
@@ -1131,7 +1134,10 @@ impl AttrValuesSorter {
                     // comparison may be slightly slower for nulls, but this OK as having null
                     // in the values column would not be a common way in OTAP
                     self.rank_sort.sort_unstable_by(|a, b| {
-                        match (nulls.is_null(a.0), nulls.is_null(b.0)) {
+                        match (
+                            nulls.is_null(range.start + a.0),
+                            nulls.is_null(range.start + b.0),
+                        ) {
                             (true, true) => std::cmp::Ordering::Equal,
                             (true, false) => std::cmp::Ordering::Greater,
                             (false, true) => std::cmp::Ordering::Less,
@@ -1153,7 +1159,7 @@ impl AttrValuesSorter {
                 // append the sorted values to the builder
                 value_col_builder.append_data(&self.key_partition);
                 if let Some(nulls) = &keys_and_ranks.nulls {
-                    let null_bits = nulls.inner();
+                    let null_bits = nulls.inner().slice(range.start, range.len());
                     let sorted_range_null_bits =
                         BooleanBuffer::collect_bool(range.len(), |idx: usize| {
                             null_bits.value(key_range_sorted_result[idx])
@@ -2533,7 +2539,9 @@ mod test {
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 2, 3, 4, 5, 6, 4, 7])),
+                Arc::new(UInt16Array::from_iter_values([
+                    0, 1, 2, 3, 4, 5, 6, 4, 7, 8, 9, 10, 11,
+                ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
@@ -2544,10 +2552,14 @@ mod test {
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(["ka"])),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
                     UInt16Array::from_iter([
@@ -2559,6 +2571,10 @@ mod test {
                         None,
                         None, // null str attr (dict encoded)
                         None, // null str attr (dict encoded)
+                        None,
+                        None, // null str attr (dict encoded) with different key
+                        Some(1),
+                        None,
                         None,
                     ]),
                     Arc::new(StringArray::from_iter_values(["a", "b"])),
@@ -2573,6 +2589,10 @@ mod test {
                     None,
                     None,
                     None, // null float attr (not dict encoded)
+                    None,
+                    None,
+                    None, // null float attr (not dict encoded) with different key
+                    Some(2.0),
                 ])),
             ],
         )
@@ -2596,21 +2616,27 @@ mod test {
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),
             vec![
-                Arc::new(UInt16Array::from_iter_values([0, 1, 4, 6, 4, 5, 2, 3, 7])),
+                Arc::new(UInt16Array::from_iter_values([
+                    0, 1, 4, 6, 4, 9, 8, 5, 2, 3, 7, 11, 10,
+                ])),
                 Arc::new(UInt8Array::from_iter_values([
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
                     AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                     AttributeValueType::Double as u8,
                 ])),
                 Arc::new(DictionaryArray::new(
-                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 0, 0, 0, 0]),
-                    Arc::new(StringArray::from_iter_values(["ka"])),
+                    UInt8Array::from_iter_values([0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1]),
+                    Arc::new(StringArray::from_iter_values(["ka", "kb"])),
                 )),
                 Arc::new(DictionaryArray::new(
                     UInt16Array::from_iter([
@@ -2619,6 +2645,10 @@ mod test {
                         None, // null str attr (dict encoded)
                         None, // null str attr (dict encoded)
                         None, // null str attr (dict encoded)
+                        Some(1),
+                        None, // null str attr (dict encoded) with different key
+                        None,
+                        None,
                         None,
                         None,
                         None,
@@ -2632,10 +2662,14 @@ mod test {
                     None,
                     None,
                     None,
+                    None,
+                    None,
                     Some(1.5),
                     Some(2.0),
                     None, // null float attr (not dict encoded)
                     None, // null float attr (not dict encoded)
+                    Some(2.0),
+                    None, // null float attr (not dict encoded) with different key
                 ])),
             ],
         )
