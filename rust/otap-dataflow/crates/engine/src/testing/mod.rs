@@ -22,6 +22,7 @@ use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 pub mod exporter;
+pub mod extension;
 pub mod node;
 pub mod processor;
 pub mod receiver;

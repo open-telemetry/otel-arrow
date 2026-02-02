@@ -10,11 +10,12 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    config::{ExporterConfig, ExtensionConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
+    extension::ExtensionWrapper,
     local::message::{LocalReceiver, LocalSender},
     message::{Receiver, Sender},
     node::{Node, NodeDefs, NodeId, NodeName, NodeType},
@@ -42,6 +43,7 @@ use std::{collections::HashMap, sync::OnceLock};
 
 pub mod error;
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;
@@ -154,6 +156,35 @@ impl<PData> Clone for ExporterFactory<PData> {
 }
 
 impl<PData> NamedFactory for ExporterFactory<PData> {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// A factory for creating extensions.
+pub struct ExtensionFactory<PData> {
+    /// The name of the extension.
+    pub name: &'static str,
+    /// A function that creates a new extension instance.
+    pub create: fn(
+        pipeline: PipelineContext,
+        node: NodeId,
+        node_config: Arc<NodeUserConfig>,
+        extension_config: &ExtensionConfig,
+    ) -> Result<ExtensionWrapper<PData>, otap_df_config::error::Error>,
+}
+
+// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
+impl<PData> Clone for ExtensionFactory<PData> {
+    fn clone(&self) -> Self {
+        ExtensionFactory {
+            name: self.name,
+            create: self.create,
+        }
+    }
+}
+
+impl<PData> NamedFactory for ExtensionFactory<PData> {
     fn name(&self) -> &'static str {
         self.name
     }
@@ -283,15 +314,17 @@ pub const fn build_factory<PData: 'static + Clone>() -> PipelineFactory<PData> {
 
 /// A pipeline factory.
 ///
-/// This factory contains a registry of all the micro-factories for receivers, processors, and
-/// exporters, as well as the logic for creating pipelines based on a given configuration.
+/// This factory contains a registry of all the micro-factories for receivers, processors,
+/// exporters, and extensions, as well as the logic for creating pipelines based on a given configuration.
 pub struct PipelineFactory<PData: 'static + Clone> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    extension_factory_map: OnceLock<HashMap<&'static str, ExtensionFactory<PData>>>,
     receiver_factories: &'static [ReceiverFactory<PData>],
     processor_factories: &'static [ProcessorFactory<PData>],
     exporter_factories: &'static [ExporterFactory<PData>],
+    extension_factories: &'static [ExtensionFactory<PData>],
 }
 
 impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
@@ -306,9 +339,31 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
             receiver_factories,
             processor_factories,
             exporter_factories,
+            extension_factories: &[],
+        }
+    }
+
+    /// Creates a new factory registry with extension factories included.
+    #[must_use]
+    pub const fn with_extensions(
+        receiver_factories: &'static [ReceiverFactory<PData>],
+        processor_factories: &'static [ProcessorFactory<PData>],
+        exporter_factories: &'static [ExporterFactory<PData>],
+        extension_factories: &'static [ExtensionFactory<PData>],
+    ) -> Self {
+        Self {
+            receiver_factory_map: OnceLock::new(),
+            processor_factory_map: OnceLock::new(),
+            exporter_factory_map: OnceLock::new(),
+            extension_factory_map: OnceLock::new(),
+            receiver_factories,
+            processor_factories,
+            exporter_factories,
+            extension_factories,
         }
     }
 
@@ -339,6 +394,16 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 .iter()
                 .map(|f| (f.name(), f.clone()))
                 .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
+        })
+    }
+
+    /// Gets the extension factory map, initializing it if necessary.
+    pub fn get_extension_factory_map(&self) -> &HashMap<&'static str, ExtensionFactory<PData>> {
+        self.extension_factory_map.get_or_init(|| {
+            self.extension_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExtensionFactory<PData>>>()
         })
     }
 
@@ -472,7 +537,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
             .expect("default_pdata_channel_size must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
+        // Extensions don't participate in pdata processing, so we pass an empty vec for now
+        let extensions = Vec::new();
+        let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, extensions, nodes);
         let wirings = edges
             .into_iter()
             .map(|hyper_edge| {
@@ -1239,6 +1306,26 @@ impl<PData> TelemetryWrapped for ExporterWrapper<PData> {
     }
 }
 
+impl<PData> TelemetryWrapped for ExtensionWrapper<PData> {
+    fn with_control_channel_metrics(
+        self,
+        pipeline_ctx: &PipelineContext,
+        channel_metrics: &mut ChannelMetricsRegistry,
+        channel_metrics_enabled: bool,
+    ) -> Self {
+        ExtensionWrapper::with_control_channel_metrics(
+            self,
+            pipeline_ctx,
+            channel_metrics,
+            channel_metrics_enabled,
+        )
+    }
+
+    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
+        ExtensionWrapper::with_node_telemetry_guard(self, guard)
+    }
+}
+
 struct NodeRegistration {
     node_id: NodeId,
     node_type: NodeType,
@@ -1282,6 +1369,7 @@ impl<PData> BuildState<PData> {
                 NodeType::Receiver => Error::ReceiverAlreadyExists { receiver: node_id },
                 NodeType::Processor => Error::ProcessorAlreadyExists { processor: node_id },
                 NodeType::Exporter => Error::ExporterAlreadyExists { exporter: node_id },
+                NodeType::Extension => Error::ExtensionAlreadyExists { extension: node_id },
             });
         }
 
@@ -1315,7 +1403,8 @@ impl<PData> BuildState<PData> {
         let registration = self.registration(name)?;
         match registration.node_type {
             NodeType::Processor | NodeType::Exporter => Ok(registration.node_id.clone()),
-            NodeType::Receiver => Err(Error::UnknownNode { node: name.clone() }),
+            // Receivers and extensions don't receive pdata
+            NodeType::Receiver | NodeType::Extension => Err(Error::UnknownNode { node: name.clone() }),
         }
     }
 }
