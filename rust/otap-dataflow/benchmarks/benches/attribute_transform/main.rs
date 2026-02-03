@@ -345,9 +345,10 @@ fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool)
     )
     .expect("record batch OK");
 
-    let (result, _) = apply_transport_optimized_encodings(&ArrowPayloadType::LogAttrs, &batch)
-        .expect("transport optimize encoding apply");
+    // let (result, _) = apply_transport_optimized_encodings(&ArrowPayloadType::LogAttrs, &batch)
+    //     .expect("transport optimize encoding apply");
 
+    let result = batch;
     result
 }
 
@@ -367,7 +368,7 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
                     || {
                         let transform1 =
                             AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("key_1".into(), "key_3".into())].into_iter().collect(),
+                                [("key_1".into(), "key_2".into())].into_iter().collect(),
                             ));
                         let transform2 =
                             AttributesTransform::default().with_rename(RenameTransform::new(
@@ -377,9 +378,10 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
                     },
                     |(input, transform1, transform2)| {
                         let result1 = transform_attributes(input, &transform1).expect("no error");
-                        let result2 =
-                            transform_attributes(&result1, &transform2).expect("no error");
-                        black_box(result2)
+                        black_box(result1)
+                        // let result2 =
+                        //     transform_attributes(&result1, &transform2).expect("no error");
+                        // black_box(result2)
                     },
                     BatchSize::SmallInput,
                 )
@@ -408,9 +410,9 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
                     },
                     |(input, transform1, transform2)| {
                         let result1 = transform_attributes(input, &transform1).expect("no error");
-                        let result2 =
-                            transform_attributes(&result1, &transform2).expect("no error");
-                        black_box(result2)
+                        // let result2 =
+                        //     transform_attributes(&result1, &transform2).expect("no error");
+                        black_box(result1)
                     },
                     BatchSize::SmallInput,
                 )

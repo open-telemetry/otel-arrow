@@ -1755,10 +1755,86 @@ where
     })
 }
 
+fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
+    attr_keys: &DictionaryArray<K>,
+    dict_value_transform_ranges: &[KeyTransformRange],
+) -> Vec<KeyTransformRange> {
+    // TODO don't think we should get in here in these conditions, but w/e check anyway?
+    // TODO verify
+    if attr_keys.len() == 0 {
+        todo!()
+    }
+    if dict_value_transform_ranges.len() == 0 {
+        todo!()
+    }
+
+    // normally, this would only be called when the attributes values are transport optimize
+    // encoded, which means it's sorted by attribute type & key, so the number of ranges
+    // transformed in the dict values should be roughly equal to the number of ranges of dict keys,
+    // unless the same key is used for values of different types. That's why we use calculate
+    // capacity like this
+    let mut dict_key_transform_ranges = Vec::with_capacity(dict_value_transform_ranges.len());
+
+    let dict_keys = attr_keys.keys().values();
+    let len = attr_keys.len();
+
+    let mut curr_range_start = 0;
+    let mut curr_range_key = dict_keys[0];
+    let mut curr_range_idx = dict_value_transform_ranges[0]
+        .range
+        .contains(&curr_range_key.as_usize())
+        .then_some(0);
+
+    for i in 1..len {
+        if dict_keys[i] == curr_range_key {
+            continue;
+        }
+
+        if let Some(curr_range_idx) = curr_range_idx {
+            let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
+            dict_key_transform_ranges.push(KeyTransformRange {
+                range: Range { start: curr_range_start, end: i },
+                idx: curr_tx_range.idx,
+                range_type: curr_tx_range.range_type
+            });
+        }
+
+        let dict_key = dict_keys[i].as_usize();
+        let dict_val_range_idx =
+            dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
+                if dict_key < range.start() {
+                    Ordering::Less
+                } else if dict_key >= range.end() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+
+        curr_range_start = i;
+        curr_range_key = dict_keys[i];
+        curr_range_idx = dict_val_range_idx.ok();
+    }
+
+    // deal with last range
+    if let Some(curr_range_idx) = curr_range_idx {
+        let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
+        dict_key_transform_ranges.push(KeyTransformRange {
+            range: Range { start: curr_range_start, end: len },
+            idx: curr_tx_range.idx,
+            range_type: curr_tx_range.range_type
+        });
+    }
+
+
+    dict_key_transform_ranges
+}
+
 fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     attr_keys: &DictionaryArray<K>,
     dict_value_transform_ranges: &[KeyTransformRange],
 ) -> Vec<KeyTransformRange> {
+    //
     // normally, this would only be called when the attributes values are transport optimize
     // encoded, which means it's sorted by attribute type & key, so the number of ranges
     // transformed in the dict values should be roughly equal to the number of ranges of dict keys,
@@ -1778,21 +1854,33 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
         &mut partition_boundaries,
     );
 
+    let unintialized = -2;
+    let not_present = -1;
+    let mut dict_val_range_cache = vec![unintialized; attr_keys.values().len()];
+
     let mut find_and_maybe_push_key_range = |start: usize, end: usize| {
         let dict_key = dict_keys[start].as_usize();
-        let dict_val_range_idx =
-            dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
-                if dict_key < range.start() {
-                    Ordering::Less
-                } else if dict_key >= range.end() {
-                    Ordering::Greater
-                } else {
-                    Ordering::Equal
-                }
-            });
+        if dict_val_range_cache[dict_key] == unintialized {
+            let dict_val_range_idx =
+                dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
+                    if dict_key < range.start() {
+                        Ordering::Less
+                    } else if dict_key >= range.end() {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Equal
+                    }
+                });
+            if let Ok(dict_val_range_idx) = dict_val_range_idx {
+                dict_val_range_cache[dict_key] = dict_val_range_idx as i32;
+            } else {
+                dict_val_range_cache[dict_key] = not_present;
+            }
+        }
 
-        if let Ok(dict_val_range_idx) = dict_val_range_idx {
-            let dict_val_range = &dict_value_transform_ranges[dict_val_range_idx];
+        let dict_val_range_idx = dict_val_range_cache[dict_key];
+        if dict_val_range_idx >= 0 {
+            let dict_val_range = &dict_value_transform_ranges[dict_val_range_idx as usize];
             dict_key_transform_ranges.push(KeyTransformRange {
                 range: Range { start, end },
                 idx: dict_val_range.idx,
@@ -4590,20 +4678,16 @@ mod test {
 
         arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
 
-        let transform1 =
-            AttributesTransform::default().with_rename(RenameTransform::new(
-                [("attr3".into(), "attr5".into())].into_iter().collect(),
-            ));
-        let transform2 =
-            AttributesTransform::default().with_rename(RenameTransform::new(
-                [("attr4".into(), "attr5".into())].into_iter().collect(),
-            ));
+        let transform1 = AttributesTransform::default().with_rename(RenameTransform::new(
+            [("attr3".into(), "attr5".into())].into_iter().collect(),
+        ));
+        let transform2 = AttributesTransform::default().with_rename(RenameTransform::new(
+            [("attr4".into(), "attr5".into())].into_iter().collect(),
+        ));
         let result1 = transform_attributes(&input, &transform1).expect("no error");
         arrow::util::pretty::print_batches(&[result1.clone()]).unwrap();
-        let result2 =
-            transform_attributes(&result1, &transform2).expect("no error");
+        let result2 = transform_attributes(&result1, &transform2).expect("no error");
         arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
-
     }
 }
 
