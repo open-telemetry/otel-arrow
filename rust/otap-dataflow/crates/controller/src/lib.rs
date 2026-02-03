@@ -413,7 +413,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Used in Validation test where shutdown signal is used to end pipeline groups and admin endpoint
     /// Starts the controller with the given engine configurations.
     /// ToDo [LQ] We need to minimize duplication of code here
-   pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
+    pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
         let EngineConfig {
             settings: engine_settings,
             pipeline_groups,

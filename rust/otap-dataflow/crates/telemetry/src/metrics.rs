@@ -14,7 +14,7 @@ use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality
 use crate::entity::EntityRegistry;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::collections::HashSet;
 use std::fmt::Debug;

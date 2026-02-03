@@ -16,7 +16,7 @@ has three pipelines:
 
 - traffic-gen -> Generate traffic to use for validation
 - suv -> System under validation the pipeline being validated
-- validate -> Validate the 
+- validate -> Validate the messages received from the suv
 
 The `traffic-gen` pipeline has a fan out processor that will
 send message via two exporters one that connects to the `suv`
@@ -33,13 +33,13 @@ configuration under the `validation_pipelines` directory.
 When defining your pipeline have the receiver listen to
 `127.0.0.1:4317` and exporter export to `http://127.0.0.1:4318`
 After adding your pipeline update the `pipeline_validation_configs.yaml`
-file. There are already some pipelines defined in the 
+file. There are already some pipelines defined in the
 `pipeline_validation_configs.yaml` file feel free to use
-these as a reference when making your additions. 
+these as a reference when making your additions.
 Below are what each required key is used for
 
 - name -> Validation test name for your pipeline
-- pipeline_config_path -> Path to your pipeline config 
+- pipeline_config_path -> Path to your pipeline config
 - loadgen_exporter_type -> What receiver type are you using (`otlp` or `otap`)
 - backend_receiver_type -> What exporter type are you using (`otlp` or `otap`)
 - transformative -> Does your pipeline modify or alter the data

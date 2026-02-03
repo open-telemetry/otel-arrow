@@ -5,7 +5,7 @@
 //! [`metrics::MetricSet`].
 
 use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Specialized iterator over attribute key-value pairs with performance optimizations.
 /// This iterator avoids heap allocations and can leverage unsafe optimizations when enabled.
