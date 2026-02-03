@@ -44,6 +44,7 @@ use std::{collections::HashMap, sync::OnceLock};
 pub mod error;
 pub mod exporter;
 pub mod extension;
+pub mod extensions;
 pub mod message;
 pub mod processor;
 pub mod receiver;

@@ -58,7 +58,7 @@ impl Parse for PipelineFactoryArgs {
 /// The individual factory types are imported internally by the macro.
 ///
 /// This generates:
-/// - Distributed slices for receiver, processor, and exporter factories (prefixed)
+/// - Distributed slices for receiver, processor, exporter, and extension factories (prefixed)
 /// - Proper initialization of the FACTORY_REGISTRY with lazy loading
 /// - Helper functions to access factory maps (prefixed)
 #[proc_macro_attribute]
@@ -75,6 +75,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
     let receiver_factories_name = quote::format_ident!("{}_RECEIVER_FACTORIES", prefix);
     let processor_factories_name = quote::format_ident!("{}_PROCESSOR_FACTORIES", prefix);
     let exporter_factories_name = quote::format_ident!("{}_EXPORTER_FACTORIES", prefix);
+    let extension_factories_name = quote::format_ident!("{}_EXTENSION_FACTORIES", prefix);
     let get_receiver_factory_map_name = quote::format_ident!(
         "get_{}_receiver_factory_map",
         prefix.to_string().to_lowercase()
@@ -85,6 +86,10 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
     );
     let get_exporter_factory_map_name = quote::format_ident!(
         "get_{}_exporter_factory_map",
+        prefix.to_string().to_lowercase()
+    );
+    let get_extension_factory_map_name = quote::format_ident!(
+        "get_{}_extension_factory_map",
         prefix.to_string().to_lowercase()
     );
 
@@ -101,14 +106,19 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
         #[::otap_df_engine::distributed_slice]
         pub static #exporter_factories_name: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
 
+        /// A slice of extension factories.
+        #[::otap_df_engine::distributed_slice]
+        pub static #extension_factories_name: [::otap_df_engine::ExtensionFactory<#pdata_type>] = [..];
+
         /// The factory registry instance.
         #registry_vis static #registry_name: std::sync::LazyLock<PipelineFactory<#pdata_type>> = std::sync::LazyLock::new(|| {
             // Reference build_registry to avoid unused import warning, even though we don't call it
             let _ = build_factory::<#pdata_type>;
-            PipelineFactory::new(
+            PipelineFactory::with_extensions(
                 &#receiver_factories_name,
                 &#processor_factories_name,
                 &#exporter_factories_name,
+                &#extension_factories_name,
             )
         });
 
@@ -125,6 +135,11 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
         /// Gets the exporter factory map, initializing it if necessary.
         pub fn #get_exporter_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
             #registry_name.get_exporter_factory_map()
+        }
+
+        /// Gets the extension factory map, initializing it if necessary.
+        pub fn #get_extension_factory_map_name() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExtensionFactory<#pdata_type>> {
+            #registry_name.get_extension_factory_map()
         }
     };
 

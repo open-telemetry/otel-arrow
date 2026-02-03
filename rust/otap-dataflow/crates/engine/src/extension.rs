@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
+use crate::extensions::registry::ExtensionBundle;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -43,6 +44,8 @@ pub enum ExtensionWrapper<PData> {
         runtime_config: ExtensionConfig,
         /// The extension instance.
         extension: Box<dyn local::Extension<PData>>,
+        /// Extension traits.
+        extension_traits: ExtensionBundle,
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -60,6 +63,8 @@ pub enum ExtensionWrapper<PData> {
         runtime_config: ExtensionConfig,
         /// The extension instance.
         extension: Box<dyn shared::Extension<PData>>,
+        /// Extension traits.
+        extension_traits: ExtensionBundle,
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -87,6 +92,7 @@ impl<PData> ExtensionWrapper<PData> {
     /// implementation).
     pub fn local<E>(
         extension: E,
+        extension_traits: ExtensionBundle,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExtensionConfig,
@@ -102,6 +108,7 @@ impl<PData> ExtensionWrapper<PData> {
             user_config,
             runtime_config: config.clone(),
             extension: Box::new(extension),
+            extension_traits,
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: LocalReceiver::mpsc(control_receiver),
             telemetry: None,
@@ -112,6 +119,7 @@ impl<PData> ExtensionWrapper<PData> {
     /// implementation).
     pub fn shared<E>(
         extension: E,
+        extension_traits: ExtensionBundle,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExtensionConfig,
@@ -127,6 +135,7 @@ impl<PData> ExtensionWrapper<PData> {
             user_config,
             runtime_config: config.clone(),
             extension: Box::new(extension),
+            extension_traits,
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: SharedReceiver::mpsc(control_receiver),
             telemetry: None,
@@ -140,6 +149,7 @@ impl<PData> ExtensionWrapper<PData> {
                 user_config,
                 runtime_config,
                 extension,
+                extension_traits,
                 control_sender,
                 control_receiver,
                 ..
@@ -148,6 +158,7 @@ impl<PData> ExtensionWrapper<PData> {
                 user_config,
                 runtime_config,
                 extension,
+                extension_traits,
                 control_sender,
                 control_receiver,
                 telemetry: Some(guard),
@@ -157,6 +168,7 @@ impl<PData> ExtensionWrapper<PData> {
                 user_config,
                 runtime_config,
                 extension,
+                extension_traits,
                 control_sender,
                 control_receiver,
                 ..
@@ -165,6 +177,7 @@ impl<PData> ExtensionWrapper<PData> {
                 user_config,
                 runtime_config,
                 extension,
+                extension_traits,
                 control_sender,
                 control_receiver,
                 telemetry: Some(guard),
@@ -193,6 +206,7 @@ impl<PData> ExtensionWrapper<PData> {
                 control_receiver,
                 user_config,
                 extension,
+                extension_traits,
                 telemetry,
                 ..
             } => {
@@ -212,6 +226,7 @@ impl<PData> ExtensionWrapper<PData> {
                     user_config,
                     runtime_config,
                     extension,
+                    extension_traits,
                     control_sender,
                     control_receiver,
                     telemetry,
@@ -224,6 +239,7 @@ impl<PData> ExtensionWrapper<PData> {
                 control_receiver,
                 user_config,
                 extension,
+                extension_traits,
                 telemetry,
                 ..
             } => {
@@ -243,6 +259,7 @@ impl<PData> ExtensionWrapper<PData> {
                     user_config,
                     runtime_config,
                     extension,
+                    extension_traits,
                     control_sender,
                     control_receiver,
                     telemetry,
@@ -346,6 +363,7 @@ mod tests {
     use crate::config::ExtensionConfig;
     use crate::control::NodeControlMsg;
     use crate::extension::{Error, ExtensionWrapper};
+    use crate::extensions::registry::ExtensionBundle;
     use crate::local::extension as local;
     use crate::message;
     use crate::message::Message;
@@ -418,7 +436,7 @@ mod tests {
         ));
         let config = ExtensionConfig::new("test_extension");
 
-        let wrapper = ExtensionWrapper::local(extension, node_id, user_config, &config);
+        let wrapper = ExtensionWrapper::local(extension, ExtensionBundle::new(), node_id, user_config, &config);
 
         assert!(!wrapper.is_shared());
     }
@@ -476,7 +494,7 @@ mod tests {
         ));
         let config = ExtensionConfig::new("test_extension");
 
-        let wrapper = ExtensionWrapper::shared(extension, node_id, user_config, &config);
+        let wrapper = ExtensionWrapper::shared(extension, ExtensionBundle::new(), node_id, user_config, &config);
 
         assert!(wrapper.is_shared());
     }

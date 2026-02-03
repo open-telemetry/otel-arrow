@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Experimental exporters
+//! Experimental exporters, processors, and extensions
 //!
-//! This module contains exporters that are not fully supported
+//! This module contains components that are not fully supported
 //! but are related to project goals mentioned
 //! in [OTel-Arrow Project Phases](../../../../../../docs/project-phases.md).
 
@@ -14,6 +14,10 @@ pub mod geneva_exporter;
 /// Azure Monitor Exporter for Azure Logs Ingestion API
 #[cfg(feature = "azure-monitor-exporter")]
 pub mod azure_monitor_exporter;
+
+/// Azure Identity Auth Extension for Azure authentication
+#[cfg(feature = "azure-identity-auth-extension")]
+pub mod azure_identity_auth_extension;
 
 /// Condense Attributes processor
 #[cfg(feature = "condense-attributes-processor")]
