@@ -755,18 +755,8 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
-    #[cfg(not(windows))]
-    use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    #[cfg(not(windows))]
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    #[cfg(not(windows))]
-    use otap_df_engine::message::{Receiver, Sender};
-    #[cfg(not(windows))]
-    use otap_df_engine::node::NodeWithPDataReceiver;
-    #[cfg(not(windows))]
-    use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
         test_node,
@@ -777,11 +767,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
-    #[cfg(not(windows))]
-    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    #[cfg(not(windows))]
-    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
     use std::pin::Pin;
@@ -791,6 +777,18 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+
+    // Imports only used by tests that are skipped on Windows
+    #[cfg(not(windows))]
+    use {
+        otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel},
+        otap_df_engine::local::message::{LocalReceiver, LocalSender},
+        otap_df_engine::message::{Receiver, Sender},
+        otap_df_engine::node::NodeWithPDataReceiver,
+        otap_df_engine::testing::create_not_send_channel,
+        otap_df_telemetry::metrics::MetricSetSnapshot,
+        otap_df_telemetry::reporter::MetricsReporter,
+    };
 
     /// Helper function to wait for and validate an Ack or Nack message with the expected node_id
     async fn wait_for_ack_or_nack(
