@@ -20,7 +20,8 @@ use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
 
 use crate::arrays::{
-    MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+    MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_required_array,
+    get_u8_array,
 };
 use crate::encode::record::array::{
     ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, Float64ArrayBuilder,
@@ -28,6 +29,7 @@ use crate::encode::record::array::{
 };
 use crate::error::{Error, Result};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
+use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
@@ -927,11 +929,22 @@ pub fn transform_attributes_with_stats(
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
-            // Materialize the parent ID column if it exists. Renames/replacements can change
-            // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
-            // even when no rows are deleted.
-            let should_materialize_parent_ids =
-                schema.column_with_name(consts::PARENT_ID).is_some();
+            let replace_bytes = if let Some(replace) = transform.rename.as_ref() {
+                &replace.replacement_bytes
+            } else {
+                &vec![]
+            };
+            let should_materialize_parent_ids = should_remove_transport_optimized_encoding(
+                &attrs_record_batch_cow,
+                replace_bytes.as_ref(),
+                &keys_transform_result.transform_ranges,
+            )?;
+
+            // // Materialize the parent ID column if it exists. Renames/replacements can change
+            // // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
+            // // even when no rows are deleted.
+            // let should_materialize_parent_ids =
+            //     schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
                 let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                 let schema = rb.schema();
@@ -1168,6 +1181,9 @@ pub fn transform_attributes(
 struct KeysTransformResult {
     new_keys: StringArray,
 
+    // TODO remove the others stuff this returns ...
+    transform_ranges: Vec<KeyTransformRange>,
+
     /// Ranges of of the additional columns which should be kept.
     ///
     /// This will be `None` if there are no ranges that have been deleted
@@ -1221,6 +1237,7 @@ fn transform_keys(
         // if no modifications are being made to the array, we can just return the original
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
+            transform_ranges: Vec::new(),
             keep_ranges: None,
             replaced_rows: 0,
             deleted_rows: 0,
@@ -1298,7 +1315,10 @@ fn transform_keys(
             // copy offsets for values that were not replaced, but add the offset adjustment
             offsets
                 .inner()
-                .slice(prev_range_index_end, transform_range.range.start - prev_range_index_end)
+                .slice(
+                    prev_range_index_end,
+                    transform_range.range.start - prev_range_index_end,
+                )
                 .into_iter()
                 .for_each(|offset| {
                     // safety: we've pre-allocated the new_offsets buffer with enough space for all the
@@ -1318,7 +1338,8 @@ fn transform_keys(
                         .as_ref()
                         .expect("replacement plan should be initialized")
                         .replacement_bytes[transform_range.idx];
-                    let mut offset = offsets[transform_range.range.start] + curr_total_offset_adjustment;
+                    let mut offset =
+                        offsets[transform_range.range.start] + curr_total_offset_adjustment;
                     for _ in transform_range.range.start..transform_range.range.end {
                         new_offsets.push(offset);
                         offset += replacement_bytes.len() as i32;
@@ -1330,7 +1351,8 @@ fn transform_keys(
                         .as_ref()
                         .expect("replacement plan should be initialized")
                         .replacement_byte_len_diffs[transform_range.idx];
-                    curr_total_offset_adjustment += val_len_diff * transform_range.range.len() as i32;
+                    curr_total_offset_adjustment +=
+                        val_len_diff * transform_range.range.len() as i32;
                 }
                 KeyTransformRangeType::Delete => {
                     // for deleted ranges we don't need to append any offsets to the buffer, so we
@@ -1414,6 +1436,8 @@ fn transform_keys(
 
     Ok(KeysTransformResult {
         new_keys,
+        // TODO - is into_owned free here?
+        transform_ranges: transform_ranges.into_owned(),
         keep_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
@@ -1432,6 +1456,8 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     // TODO - change to range?
     keep_ranges: Option<Vec<(usize, usize)>>,
 
+    // TODO fill this in
+    // transform_ranges: Vec<KeyTransformRange>,
     /// Exact number of rows that were deleted due to delete rules
     deleted_rows: usize,
     /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
@@ -1467,7 +1493,11 @@ where
             dict_values.offsets(),
             rename,
         )?;
-        for (start_idx, end_idx) in repl_plan.ranges.iter().map(|k| (k.range.start, k.range.end)) {
+        for (start_idx, end_idx) in repl_plan
+            .ranges
+            .iter()
+            .map(|k| (k.range.start, k.range.end))
+        {
             for i in start_idx..end_idx {
                 if let Some(slot) = value_index_renamed.get_mut(i) {
                     *slot = true;
@@ -1700,6 +1730,18 @@ struct KeyTransformRange {
     idx: usize,
 
     range_type: KeyTransformRangeType,
+}
+
+impl KeyTransformRange {
+    #[inline]
+    fn start(&self) -> usize {
+        self.range.start
+    }
+
+    #[inline]
+    fn end(&self) -> usize {
+        self.range.end
+    }
 }
 
 fn merge_transform_ranges<'a>(
@@ -2028,64 +2070,229 @@ fn take_null_buffer_ranges(
     })
 }
 
-fn remap_transport_encoded_parent_for_transform<'a, T: ArrowPrimitiveType>(
-    attr_record_batch: &'a RecordBatch,
+fn should_remove_transport_optimized_encoding(
+    attr_record_batch: &RecordBatch,
+    replacement_bytes: &[Vec<u8>],
     transform_ranges: &[KeyTransformRange],
-) -> Result<Cow<'a, RecordBatch>> {
+) -> Result<bool> {
+    let num_rows = attr_record_batch.num_rows();
+    let num_ranges = transform_ranges.len();
+
+    let key_column =
+        StringArrayAccessor::try_new_for_column(attr_record_batch, consts::ATTRIBUTE_KEY)?;
+    let val_columns = AnyValueArrays::try_from(attr_record_batch)?;
+
     for i in 0..transform_ranges.len() {
-        // let index_before: Option<usize> = {
-        //     let j = i;
-        //     while j != 0 {
-        //         let range_before = ranges[j - 1];
+        let curr_range = &transform_ranges[i];
 
-        //     }
-        // };
+        let prev_neighbour = (i > 0)
+            .then(|| {
+                find_previous_neighbour_post_transform(
+                    curr_range.start(),
+                    &transform_ranges[0..i - 1],
+                )
+            })
+            .flatten();
 
-        // let index_after: Option<usize> = {
-        //     todo!()
-        // };
+        let next_neighbour = (i < num_ranges - 1)
+            .then(|| {
+                find_next_neighbour_post_transform(
+                    curr_range.end() - 1,
+                    num_rows,
+                    &transform_ranges[i + 1..num_ranges],
+                )
+            })
+            .flatten();
 
-
-
-    }
-
-    todo!()
-}
-
-fn find_index_untransformed_index_before(
-    mut index: usize,
-    transform_ranges: &[KeyTransformRange]
-) -> Option<usize> {
-    // nothing can come before index 0
-    if index == 0 {
-        return None
-    }
-
-
-    for range in transform_ranges.iter().rev() {
-        if range.range.end != index {
-            return Some(index - 1)
-        }
-
-        // we found a range
-        match range.range_type {
+        match curr_range.range_type {
             KeyTransformRangeType::Replace => {
-                // TODO comment on why we can do this
-                // due to key validation, ranges can't have
-                // equal keys after transform lol
-                // comment on validation about this too
-                return None
+                if let Some(prev) = prev_neighbour.as_ref() {
+                    let replacement_joins_prev = are_neighbours_with_delta_encoded_parent_ids(
+                        &key_column,
+                        &val_columns,
+                        replacement_bytes,
+                        prev,
+                        &MaybeReplacedKey {
+                            index: curr_range.start(),
+                            replacement_idx: Some(curr_range.idx),
+                        },
+                    )?;
+                    if replacement_joins_prev {
+                        return Ok(true);
+                    }
+                }
+
+                if let Some(next) = next_neighbour.as_ref() {
+                    let replacement_joins_next = are_neighbours_with_delta_encoded_parent_ids(
+                        &key_column,
+                        &val_columns,
+                        replacement_bytes,
+                        &MaybeReplacedKey {
+                            index: curr_range.end() - 1,
+                            replacement_idx: Some(curr_range.idx),
+                        },
+                        next,
+                    )?;
+                    if replacement_joins_next {
+                        return Ok(true);
+                    }
+                }
             }
             KeyTransformRangeType::Delete => {
-                index = range.range.start;
-                if index == 0 {
-                    return None
+                if let Some(prev) = prev_neighbour.as_ref() {
+                    if let Some(next) = next_neighbour.as_ref() {
+                        let delete_joins = are_neighbours_with_delta_encoded_parent_ids(
+                            &key_column,
+                            &val_columns,
+                            replacement_bytes,
+                            prev,
+                            next,
+                        )?;
+                        if delete_joins {
+                            return Ok(true);
+                        }
+                    }
                 }
             }
         }
     }
 
-    Some(index - 1)
+    Ok(false)
+}
+
+#[derive(Debug, PartialEq)]
+struct MaybeReplacedKey {
+    index: usize,
+    replacement_idx: Option<usize>,
+}
+
+// TODO comments
+fn find_previous_neighbour_post_transform(
+    mut index: usize,
+    transform_ranges: &[KeyTransformRange],
+) -> Option<MaybeReplacedKey> {
+    // nothing can come before index 0
+    if index == 0 {
+        return None;
+    }
+
+    for range in transform_ranges.iter().rev() {
+        if range.range.end != index {
+            break;
+        }
+
+        match range.range_type {
+            KeyTransformRangeType::Replace => {
+                return Some(MaybeReplacedKey {
+                    index: index - 1,
+                    replacement_idx: Some(range.idx),
+                });
+            }
+            KeyTransformRangeType::Delete => {
+                index = range.range.start;
+                if index == 0 {
+                    return None;
+                }
+            }
+        }
+    }
+
+    Some(MaybeReplacedKey {
+        index: index - 1,
+        replacement_idx: None,
+    })
+}
+
+fn find_next_neighbour_post_transform(
+    mut index: usize,
+    len: usize,
+    transform_ranges: &[KeyTransformRange],
+) -> Option<MaybeReplacedKey> {
+    if index >= len - 1 {
+        return None;
+    }
+
+    for range in transform_ranges.iter() {
+        if range.range.start != index + 1 {
+            break;
+        }
+
+        match range.range_type {
+            KeyTransformRangeType::Replace => {
+                return Some(MaybeReplacedKey {
+                    index: index + 1,
+                    replacement_idx: Some(range.idx),
+                });
+            }
+            KeyTransformRangeType::Delete => {
+                index = range.range.end - 1;
+                if index >= len - 1 {
+                    return None;
+                }
+            }
+        }
+    }
+
+    Some(MaybeReplacedKey {
+        index: index + 1,
+        replacement_idx: None,
+    })
+}
+
+fn are_neighbours_with_delta_encoded_parent_ids(
+    key_column: &StringArrayAccessor<'_>,
+    val_columns: &AnyValueArrays<'_>,
+    replacement_bytes: &[Vec<u8>],
+    prev: &MaybeReplacedKey,
+    next: &MaybeReplacedKey,
+) -> Result<bool> {
+    // check that the candidates are indeed neighbours
+    if prev.index + 1 != next.index {
+        return Ok(false);
+    }
+
+    // check if the rows have the same type
+    let prev_type = AttributeValueType::try_from(val_columns.attr_type.value(prev.index))?;
+    let next_type = AttributeValueType::try_from(val_columns.attr_type.value(next.index))?;
+    if prev_type != next_type {
+        return Ok(false);
+    }
+
+    // check if the type actually supports delta encoding
+    if prev_type == AttributeValueType::Empty
+        || prev_type == AttributeValueType::Slice
+        || prev_type == AttributeValueType::Map
+    {
+        return Ok(false);
+    }
+
+    let prev_key = if let Some(replacement_idx) = prev.replacement_idx {
+        replacement_bytes.get(replacement_idx).map(|s| s.as_ref())
+    } else {
+        key_column.str_at(prev.index).map(|s| s.as_bytes())
+    };
+
+    let next_key = if let Some(replacement_idx) = next.replacement_idx {
+        replacement_bytes.get(replacement_idx).map(|s| s.as_ref())
+    } else {
+        key_column.str_at(next.index).map(|s| s.as_bytes())
+    };
+
+    match (prev_key, next_key) {
+        (Some(prev_key), Some(next_key)) => {
+            if prev_key != next_key {
+                return Ok(false)
+            }
+        },
+        _ => {
+            todo!() // invalid null keys
+        }
+    }
+
+    // TODO check the values
+
+    //
+    Ok(true)
 }
 
 /// Helper function for sorting to indices. Encapsulates the logic of choosing whether to use row
@@ -5583,5 +5790,433 @@ mod insert_tests {
         assert_eq!(wider_type(&DataType::Utf8, &DataType::Int64), None);
         let dict_int = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int64));
         assert_eq!(wider_type(&dict8, &dict_int), None); // Different value types
+    }
+
+    #[test]
+    fn test_find_previous_neighbour_post_transform() {
+        // test index 0
+        let result = find_previous_neighbour_post_transform(0, &[]);
+        assert_eq!(result, None);
+
+        // test no prev range
+        let result = find_previous_neighbour_post_transform(5, &[]);
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 4,
+                replacement_idx: None
+            })
+        );
+
+        // test prev range, not adjacent
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[KeyTransformRange {
+                range: Range { start: 2, end: 3 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Replace,
+            }],
+        );
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 4,
+                replacement_idx: None
+            })
+        );
+
+        // test prev range, adjacent to replace
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[KeyTransformRange {
+                range: Range { start: 2, end: 5 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Replace,
+            }],
+        );
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 4,
+                replacement_idx: Some(1)
+            })
+        );
+
+        // test prev range, adjacent to delete
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[KeyTransformRange {
+                range: Range { start: 2, end: 5 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            }],
+        );
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None
+            })
+        );
+
+        // test prev range, adjacent to delete, adjacent to replace
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[
+                KeyTransformRange {
+                    range: Range { start: 1, end: 2 },
+                    idx: 2,
+                    range_type: KeyTransformRangeType::Replace,
+                },
+                KeyTransformRange {
+                    range: Range { start: 2, end: 5 },
+                    idx: 1,
+                    range_type: KeyTransformRangeType::Delete,
+                },
+            ],
+        );
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 1,
+                replacement_idx: Some(2),
+            })
+        );
+
+        // test prev range, adjacent to delete, adjacent to start
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[KeyTransformRange {
+                range: Range { start: 0, end: 5 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            }],
+        );
+        assert_eq!(result, None);
+
+        // test prev range, adjacent to multiple deletes
+        let result = find_previous_neighbour_post_transform(
+            5,
+            &[
+                KeyTransformRange {
+                    range: Range { start: 2, end: 3 },
+                    idx: 1,
+                    range_type: KeyTransformRangeType::Delete,
+                },
+                KeyTransformRange {
+                    range: Range { start: 3, end: 4 },
+                    idx: 2,
+                    range_type: KeyTransformRangeType::Delete,
+                },
+                KeyTransformRange {
+                    range: Range { start: 4, end: 5 },
+                    idx: 3,
+                    range_type: KeyTransformRangeType::Delete,
+                },
+            ],
+        );
+        assert_eq!(
+            result,
+            Some(MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None
+            })
+        );
+    }
+
+    #[test]
+    fn test_are_neighbours_with_delta_encoded_parent_ids_simple_exclusions() {
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                // TODO - should this have test cases for dict encoded key?
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                // TODO should we have some tests cases for dict encoded values?
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["a", "a", "a"])),
+                Arc::new(StringArray::from_iter([Some("a"), Some("a"), None])),
+                Arc::new(Float64Array::from_iter([None, None, Some(1.0)])),
+            ],
+        )
+        .unwrap();
+        let key_col =
+            StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
+        let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
+        let replacement_bytes = vec![b"b".to_vec()];
+
+        // check returns false for neighbours that aren't adjacent
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &replacement_bytes,
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns false when neighbours don't have the same type
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &replacement_bytes,
+            // str type
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+            // float type
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_are_neighbours_with_delta_encoded_parent_ids_no_type_support() {
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Slice as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "b", "b", "c", "c",
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    None,
+                    Some(b"a"),
+                    Some(b"a"),
+                    Some(b"a"),
+                    Some(b"a"),
+                ])),
+            ],
+        )
+        .unwrap();
+        let key_col =
+            StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
+        let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
+        let replacement_bytes = vec![b"b".to_vec()];
+
+        // check it returns false when neighbours are type = Empty
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &replacement_bytes,
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns false when neighbours are type = Map
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &replacement_bytes,
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 3,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns false when neighbours are type = Slice
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &replacement_bytes,
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 3,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_are_neighbours_with_delta_encoded_parent_ids_key_logic() {
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["a", "b", "a"])),
+                Arc::new(StringArray::from_iter([Some("a"), Some("a"), None])),
+            ],
+        )
+        .unwrap();
+        let key_col =
+            StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
+        let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
+
+        // check returns false for neighbours with different keys that weren't replaced
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns true when next neighbour replaced to match prev
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"a".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: Some(0),
+            },
+        )
+        .unwrap();
+        assert!(result);
+
+        // check it returns false when next neighbour replaced, but doesn't match prev
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"c".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: Some(0),
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns true when next neighbour replaced to match prev
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"b".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: Some(0),
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(result);
+
+        // check it returns false when next neighbour replaced, but doesn't match prev
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"c".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: Some(0),
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // check it returns true when both neighbours replaced to same value
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"c".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: Some(0),
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: Some(0)
+            },
+        )
+        .unwrap();
+        assert!(result);
+
+        // check it returns false when both neighbours replaced to same value
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[b"c".to_vec(), b"d".to_vec()],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: Some(0),
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: Some(1)
+            },
+        )
+        .unwrap();
+        assert!(!result);
     }
 }
