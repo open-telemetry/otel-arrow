@@ -47,6 +47,6 @@ Below are what each required key is used for
 ## Future directions
 
 - Automatically trigger the validation process when a PR becomes "Ready for review".
-- Manually trigger the validation process when a comment containing `@validation` 
-  is added to a PR (strecht goal).
+- Manually trigger the validation process when a comment containing
+  `@validation` is added to a PR (stretch goal).
 - Extend the validation exporter to support more complex validation procedure.
