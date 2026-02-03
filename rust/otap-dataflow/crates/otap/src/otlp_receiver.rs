@@ -1702,7 +1702,7 @@ mod tests {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0, 0);
 
         // HTTP-only configuration - no gRPC!
         let config = test_config_http_only(http_listen);
