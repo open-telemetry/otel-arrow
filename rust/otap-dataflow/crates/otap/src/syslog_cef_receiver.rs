@@ -28,7 +28,15 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsServerConfig;
+#[cfg(feature = "experimental-tls")]
+use otap_df_telemetry::{otel_debug, otel_warn};
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -38,7 +46,8 @@ pub mod parser;
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
-const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
+/// Maximum time to wait before building an Arrow batch
+const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
@@ -59,6 +68,12 @@ struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages
     protocol: Protocol,
+    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
+    ///
+    /// When configured, TCP connections will require TLS. This is only applicable
+    /// when `protocol` is `tcp`. UDP does not support TLS.
+    #[cfg(feature = "experimental-tls")]
+    pub tls: Option<TlsServerConfig>,
 }
 
 impl Config {
@@ -68,6 +83,8 @@ impl Config {
         Self {
             listening_addr,
             protocol,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
         }
     }
 }
@@ -138,12 +155,39 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
+            .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
         match self.config.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+
+                // Build TLS acceptor if TLS is configured
+                #[cfg(feature = "experimental-tls")]
+                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                    .await
+                    .map_err(|e| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!("Failed to configure TLS: {}", e),
+                        source_detail: format_error_sources(&e),
+                    })?;
+
+                // Extract handshake timeout from TLS config (if present)
+                #[cfg(feature = "experimental-tls")]
+                let maybe_handshake_timeout = self
+                    .config
+                    .tls
+                    .as_ref()
+                    .and_then(|tls| tls.handshake_timeout);
+
+                #[cfg(feature = "experimental-tls")]
+                if maybe_tls_acceptor.is_some() {
+                    otel_info!(
+                        "receiver.tls_enabled",
+                        message = "TLS enabled for Syslog/CEF TCP receiver"
+                    );
+                }
 
                 loop {
                     tokio::select! {
@@ -173,7 +217,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
-                                Ok((socket, _peer_addr)) => {
+                                Ok((socket, peer_addr)) => {
                                     // Track active connections
                                     self.metrics.borrow_mut().tcp_connections_active.inc();
 
@@ -181,10 +225,52 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
 
+                                    // Clone TLS acceptor for the spawned task
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_acceptor = maybe_tls_acceptor.clone();
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_handshake_timeout = maybe_handshake_timeout;
+
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
+                                        // Perform TLS handshake if configured, creating a unified reader type
+                                        #[cfg(feature = "experimental-tls")]
+                                        let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                            // Use configured timeout or fall back to 10 seconds (the serde default)
+                                            let timeout = tls_handshake_timeout
+                                                .unwrap_or(Duration::from_secs(10));
+                                            match accept_tls_connection(socket, &acceptor, timeout).await {
+                                                Ok(tls_stream) => {
+                                                    otel_debug!(
+                                                        "tls.handshake.success",
+                                                        peer = %peer_addr,
+                                                        message = "TLS handshake completed"
+                                                    );
+                                                    Box::new(BufReader::new(tls_stream))
+                                                }
+                                                Err(e) => {
+                                                    otel_warn!(
+                                                        "tls.handshake.failed",
+                                                        peer = %peer_addr,
+                                                        error = %e,
+                                                        message = "TLS handshake failed, closing connection"
+                                                    );
+                                                    metrics.borrow_mut().tcp_connections_active.dec();
+                                                    metrics.borrow_mut().tls_handshake_failures.inc();
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            Box::new(BufReader::new(socket))
+                                        };
+
+                                        #[cfg(not(feature = "experimental-tls"))]
                                         let mut reader = BufReader::new(socket);
+
+                                        // Suppress unused variable warning when TLS is disabled
+                                        let _ = peer_addr;
+
                                         let mut line_bytes = Vec::new();
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -513,6 +599,11 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of active TCP connections
     #[metric(unit = "{conn}")]
     pub tcp_connections_active: UpDownCounter<u64>,
+
+    /// Number of TLS handshake failures
+    #[cfg(feature = "experimental-tls")]
+    #[metric(unit = "{error}")]
+    pub tls_handshake_failures: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -1155,6 +1246,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1248,6 +1340,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 

@@ -756,7 +756,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -880,7 +880,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -981,7 +981,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -1090,7 +1090,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -1239,7 +1239,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -1353,7 +1353,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
@@ -1551,7 +1551,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let processor = ProcessorWrapper::local(
             FilterProcessor::new(config, pipeline_ctx),
             test_node(test_runtime.config().name.clone()),
