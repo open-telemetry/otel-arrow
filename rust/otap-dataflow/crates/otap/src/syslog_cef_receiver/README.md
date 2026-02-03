@@ -1,6 +1,9 @@
 # Syslog and CEF Receiver
 
-A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424) and Common Event Format (CEF) security logs. The receiver automatically detects the message format and converts them into `OtapPdata` using the efficient Apache Arrow columnar format for downstream processing.
+A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
+and Common Event Format (CEF) security logs. The receiver automatically detects
+the message format and converts them into `OtapPdata` using the efficient
+Apache Arrow columnar format for downstream processing.
 
 ## Supported Formats
 
@@ -20,38 +23,44 @@ receivers:
   syslog_cef:
     listening_addr: "0.0.0.0:514"
     protocol: tcp  # or "udp"
-    
+
     # Optional: TLS configuration (TCP only, requires "experimental-tls" feature)
     tls:
       cert_file: "/path/to/server.crt"
       key_file: "/path/to/server.key"
-      ca_file: "/path/to/ca.crt"           # Optional: for client certificate verification
-      handshake_timeout: "10s"              # Optional: TLS handshake timeout (default: 10s)
+      ca_file: "/path/to/ca.crt"           # Optional: client cert verification
+      handshake_timeout: "10s"              # Optional: default 10s
 ```
 
 ### Configuration Options
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `listening_addr` | `string` | Yes | Socket address to listen on (e.g., `"0.0.0.0:514"`) |
+| `listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
 | `protocol` | `string` | Yes | Transport protocol: `tcp` or `udp` |
-| `tls` | `object` | No | TLS configuration for secure TCP connections (Syslog over TLS per RFC 5425) |
+| `tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
 
 ## Transport Protocols
 
 ### UDP
+
 - Connectionless, fire-and-forget delivery
-- Best for high-volume, low-latency scenarios where occasional message loss is acceptable
+- Best for high-volume, low-latency scenarios where occasional message loss is
+  acceptable
 - Each UDP datagram is treated as a single syslog message
 
 ### TCP
+
 - Connection-oriented, reliable delivery
 - Messages are delimited by newline characters (`\n`)
 - Supports multiple concurrent connections
 - Each connection is handled independently
 
 ### TCP with TLS (RFC 5425)
-When the `experimental-tls` feature is enabled, the receiver supports Syslog over TLS:
+
+When the `experimental-tls` feature is enabled, the receiver supports
+Syslog over TLS:
+
 - Encrypted transport for sensitive log data
 - Optional mutual TLS (mTLS) with client certificate verification
 - Configurable handshake timeout
@@ -60,30 +69,41 @@ When the `experimental-tls` feature is enabled, the receiver supports Syslog ove
 
 ### Automatic Format Detection
 
-The parser attempts to identify the message format using the following strategy (in order):
+The parser attempts to identify the message format using the following
+strategy (in order):
 
 1. **Pure CEF**: If the message starts with `CEF:`, parse as raw CEF
 2. **RFC 5424**: Attempt to parse as RFC 5424. This succeeds if the message has:
    - A valid priority header (e.g., `<34>`)
    - Followed by a numeric version (e.g., `1`)
    - If the message body contains `CEF:`, it's parsed as **CEF over RFC 5424**
-3. **RFC 3164 (fallback)**: If RFC 5424 parsing fails, attempt RFC 3164 parsing. This parser is lenient and will accept almost any input:
-   - Messages with valid priority (e.g., `<34>Oct 11 22:14:15 host ...`) are **fully parsed** — `body` is empty, all data in attributes
-   - Messages without priority or with malformed headers are **partially parsed** — `body` contains the original raw input
+3. **RFC 3164 (fallback)**: If RFC 5424 parsing fails, attempt RFC 3164
+   parsing. This parser is lenient and will accept almost any input:
+   - Messages with valid priority (e.g., `<34>Oct 11 22:14:15 host ...`) are
+     **fully parsed** -- `body` is empty, all data in attributes
+   - Messages without priority or with malformed headers are **partially
+     parsed** -- `body` contains the original raw input
    - If the content contains `CEF:`, it's parsed as **CEF over RFC 3164**
 
-> **Note:** Because RFC 3164 is a fallback parser, even arbitrary text like `"Hello World"` will be accepted. For such messages, the raw input is preserved in the `body` field to help identify devices sending non-standard data.
+> **Note:** Because RFC 3164 is a fallback parser, even arbitrary text like
+> `"Hello World"` will be accepted. For such messages, the raw input is
+> preserved in the `body` field to help identify devices sending non-standard
+> data.
 
 ### RFC 5424 Parsing
 
 RFC 5424 messages follow this structure:
-```
-<priority>version timestamp hostname app-name procid msgid [structured-data] message
+
+```text
+<priority>version timestamp hostname app-name procid msgid [structured-data] msg
 ```
 
 **Example Input:**
-```
-<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su 12345 ID47 [exampleSDID@32473 iut="3" eventSource="Application"] 'su root' failed for lonvick on /dev/pts/8
+
+```text
+<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su 12345 ID47
+[exampleSDID@32473 iut="3" eventSource="Application"]
+'su root' failed for lonvick on /dev/pts/8
 ```
 
 **Resulting LogRecord:**
@@ -105,18 +125,20 @@ RFC 5424 messages follow this structure:
 | `syslog.process_id` | `12345` |
 | `syslog.process_id_str` | `12345` |
 | `syslog.msg_id` | `ID47` |
-| `syslog.structured_data` | `[exampleSDID@32473 iut="3" eventSource="Application"]` |
+| `syslog.structured_data` | `[exampleSDID@32473 iut="3" ...]` |
 | `syslog.message` | `'su root' failed for lonvick on /dev/pts/8` |
 
 ### RFC 3164 Parsing
 
 RFC 3164 messages follow this structure:
-```
+
+```text
 <priority>timestamp hostname tag: content
 ```
 
 **Example Input:**
-```
+
+```text
 <34>Oct 11 22:14:15 mymachine su[1234]: 'su root' failed for lonvick
 ```
 
@@ -139,18 +161,22 @@ RFC 3164 messages follow this structure:
 | `syslog.process_id` | `1234` |
 | `syslog.content` | `'su root' failed for lonvick` |
 
-> **Note:** RFC 3164 timestamps don't include the year, so the receiver assumes the current year.
+> **Note:** RFC 3164 timestamps don't include the year, so the receiver
+> assumes the current year.
 
 ### CEF Parsing
 
 CEF messages follow this structure:
-```
-CEF:version|device_vendor|device_product|device_version|event_class_id|name|severity|extensions
+
+```text
+CEF:version|vendor|product|version|event_class_id|name|severity|extensions
 ```
 
 **Example Input:**
-```
-CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232
+
+```text
+CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|
+src=10.0.0.1 dst=2.1.2.2 spt=1232
 ```
 
 **Resulting LogRecord:**
@@ -177,11 +203,14 @@ CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 d
 
 ### CEF over Syslog
 
-When CEF is transported over syslog, both the syslog header and CEF content are parsed:
+When CEF is transported over syslog, both the syslog header and CEF content
+are parsed:
 
 **Example Input:**
-```
-<34>1 2003-10-11T22:14:15.003Z myhost app 5678 - - CEF:0|Security|IDS|1.0|100|Attack detected|8|src=10.0.0.1 dst=192.168.1.1 spt=12345
+
+```text
+<34>1 2003-10-11T22:14:15.003Z myhost app 5678 - -
+CEF:0|Security|IDS|1.0|100|Attack detected|8|src=10.0.0.1 dst=192.168.1.1
 ```
 
 **Resulting LogRecord:**
@@ -215,7 +244,8 @@ When CEF is transported over syslog, both the syslog header and CEF content are 
 
 ### Severity Mapping
 
-Syslog severity levels are mapped to OpenTelemetry severity numbers per the [OTel Logs Data Model](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.47.0/specification/logs/data-model-appendix.md#appendix-b-severitynumber-example-mappings):
+Syslog severity levels are mapped to OpenTelemetry severity numbers per the
+[OTel Logs Data Model][otel-severity]:
 
 | Syslog Severity | Syslog Name | OTel Severity Number | OTel Severity Text |
 |-----------------|-------------|----------------------|--------------------|
@@ -228,9 +258,12 @@ Syslog severity levels are mapped to OpenTelemetry severity numbers per the [OTe
 | 6 | Informational | 9 | INFO |
 | 7 | Debug | 5 | DEBUG |
 
+[otel-severity]: https://github.com/open-telemetry/opentelemetry-specification/blob/v1.47.0/specification/logs/data-model-appendix.md#appendix-b-severitynumber-example-mappings
+
 ### Handling Partially Parsed Messages
 
-For messages that cannot be fully parsed (e.g., missing priority header in RFC 3164):
+For messages that cannot be fully parsed (e.g., missing priority header in
+RFC 3164):
 
 - **Fully parsed**: `body` is empty; all data is in attributes
 - **Partially parsed**: `body` contains the original raw input for debugging
@@ -241,49 +274,58 @@ This helps identify devices sending malformed syslog data.
 
 ### Local Receiver Architecture
 
-This receiver is implemented as a **local receiver** (non-`Send`) and it runs on a single-threaded async runtime using `tokio::task::spawn_local`. This design choice provides:
+This receiver is implemented as a **local receiver** (non-`Send`) and it runs
+on a single-threaded async runtime using `tokio::task::spawn_local`.
+This design choice provides:
 
 - **Efficient memory access**: No synchronization overhead for shared state
-- **Simpler state management**: Metrics and buffers use `Rc<RefCell<...>>` instead of `Arc<Mutex<...>>`
+- **Simpler state management**: Metrics and buffers use `Rc<RefCell<...>>`
+  instead of `Arc<Mutex<...>>`
 - **Predictable performance**: No cross-thread coordination latency
 
-For TCP, each connection spawns a separate local task, allowing concurrent connection handling within the same thread.
+For TCP, each connection spawns a separate local task, allowing concurrent
+connection handling within the same thread.
 
 ### Batching Strategy
 
-To optimize throughput and reduce per-message overhead, the receiver batches messages into Apache Arrow record batches before sending downstream:
+To optimize throughput and reduce per-message overhead, the receiver batches
+messages into Apache Arrow record batches before sending downstream:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Batching Logic                           │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│   Messages arrive  ──►  ArrowRecordsBuilder  ──►  Batch     │
-│                              │                     sent     │
-│                              │                              │
-│   Flush conditions:          │                              │
-│   ├─ Size: 100 messages      ├──────────────────────────►   │
-│   └─ Time: 100ms timeout     │                              │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+```text
++-------------------------------------------------------------+
+|                    Batching Logic                           |
++-------------------------------------------------------------+
+|                                                             |
+|   Messages arrive  -->  ArrowRecordsBuilder  -->  Batch     |
+|                              |                     sent     |
+|                              |                              |
+|   Flush conditions:          |                              |
+|   +- Size: 100 messages      +-------------------------->   |
+|   +- Time: 100ms timeout     |                              |
+|                                                             |
++-------------------------------------------------------------+
 ```
 
 A batch is flushed when either:
+
 - **100 messages** have accumulated, or
 - **100ms** have elapsed since the last flush, or
 - The connection closes (TCP) or the receiver shuts down
 
 This batching strategy balances:
+
 - **Latency**: 100ms max delay for low-volume streams
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
 
 ### Arrow Columnar Format
 
-The receiver converts syslog messages directly into Apache Arrow columnar format, which provides:
+The receiver converts syslog messages directly into Apache Arrow columnar
+format, which provides:
 
 - **Efficient compression**: Columnar layout enables better compression ratios
-- **Zero-copy processing**: Downstream processors can operate on Arrow buffers directly
+- **Zero-copy processing**: Downstream processors can operate on Arrow buffers
+  directly
 - **Vectorized operations**: Enables SIMD-optimized batch processing
 
 ## Telemetry Metrics
@@ -292,12 +334,12 @@ The receiver exposes the following internal metrics:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `received_logs_total` | Counter | Total log records observed at socket before parsing |
-| `received_logs_forwarded` | Counter | Log records successfully sent downstream |
-| `received_logs_invalid` | Counter | Log records that failed to parse |
-| `received_logs_forward_failed` | Counter | Log records refused by downstream (backpressure) |
-| `tcp_connections_active` | UpDownCounter | Current number of active TCP connections |
-| `tls_handshake_failures` | Counter | Number of TLS handshake failures (TLS only) |
+| `received_logs_total` | Counter | Total logs observed at socket |
+| `received_logs_forwarded` | Counter | Logs successfully sent downstream |
+| `received_logs_invalid` | Counter | Logs that failed to parse |
+| `received_logs_forward_failed` | Counter | Logs refused by downstream |
+| `tcp_connections_active` | UpDownCounter | Active TCP connections |
+| `tls_handshake_failures` | Counter | TLS handshake failures (TLS only) |
 
 ## Example Pipeline Configuration
 
