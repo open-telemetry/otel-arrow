@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(missing_docs)]
+//! Benchmarks for adding and removing transport optimized encoding
 
 use std::hint::black_box;
 use std::io::{Read, Write};
@@ -124,10 +124,6 @@ fn read_logs_batch(batch_size: usize, with_nulls: bool) -> OtapArrowRecords {
     }
 
     otap_batch
-        .encode_transport_optimized()
-        .expect("can encode IDs");
-
-    otap_batch
 }
 
 fn create_bench_batch(num_attrs: usize) -> RecordBatch {
@@ -227,12 +223,48 @@ fn bench_materialize_parent_ids(c: &mut Criterion) {
 
     group.finish()
 }
+
+fn bench_encode_transport_optimized_ids(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode_transport_optimized");
+    for size in [127, 1536, 8096] {
+        gen_fake_logs_batch(size);
+        for with_nulls in [false, true] {
+            let otap_batch = read_logs_batch(size, with_nulls);
+
+            let bench_name = if with_nulls {
+                format!("encode_transport_optimized_ids_with_nulls/{}", size)
+            } else {
+                format!("encode_transport_optimized_ids_no_nulls/{}", size)
+            };
+
+            let _ = group.bench_with_input(
+                BenchmarkId::from_parameter(bench_name),
+                &otap_batch,
+                |b, input| {
+                    b.iter_batched(
+                        || input.clone(),
+                        |mut input| {
+                            input.encode_transport_optimized().expect("can encode IDs");
+                            black_box(input)
+                        },
+                        criterion::BatchSize::SmallInput,
+                    );
+                },
+            );
+        }
+    }
+}
+
 fn bench_decode_transport_optimized_ids(c: &mut Criterion) {
     let mut group = c.benchmark_group("decode_transport_optimized_ids");
     for size in [127, 1536, 8096] {
         gen_fake_logs_batch(size);
         for with_nulls in [false, true] {
-            let input = read_logs_batch(size, with_nulls);
+            let mut otap_batch = read_logs_batch(size, with_nulls);
+            // add transport optimized encoding - it will be removed in the benchmark loop
+            otap_batch
+                .encode_transport_optimized()
+                .expect("can encode IDs");
             let bench_name = if with_nulls {
                 format!("decode_transport_optimized_ids_with_nulls/{}", size)
             } else {
@@ -241,7 +273,7 @@ fn bench_decode_transport_optimized_ids(c: &mut Criterion) {
 
             let _ = group.bench_with_input(
                 BenchmarkId::from_parameter(bench_name),
-                &input,
+                &otap_batch,
                 |b, input| {
                     b.iter_batched(
                         || input.clone(),
@@ -263,7 +295,9 @@ mod benches {
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_materialize_parent_ids, bench_decode_transport_optimized_ids
+        targets = bench_materialize_parent_ids,
+            bench_decode_transport_optimized_ids,
+            bench_encode_transport_optimized_ids
     );
 }
 
