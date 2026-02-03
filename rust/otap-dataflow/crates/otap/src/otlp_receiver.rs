@@ -233,15 +233,23 @@ impl OTLPReceiver {
             });
         }
 
-        // Validate that gRPC and HTTP do not use the same listening address.
+        // Validate that gRPC and HTTP do not have conflicting listening addresses.
+        // Conflicts occur when:
+        // - Same port with either IP being unspecified (0.0.0.0 or ::), since unspecified binds all interfaces
+        // - Same port with identical specific IPs
+        // Different specific IPs on the same port are allowed (different network interfaces).
         if let (Some(grpc), Some(http)) = (&config.protocols.grpc, &config.protocols.http) {
-            if grpc.listening_addr == http.listening_addr {
-                return Err(otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "gRPC and HTTP protocols cannot use the same listening address ({})",
-                        grpc.listening_addr
-                    ),
-                });
+            if grpc.listening_addr.port() == http.listening_addr.port() {
+                let g_ip = grpc.listening_addr.ip();
+                let h_ip = http.listening_addr.ip();
+                if g_ip.is_unspecified() || h_ip.is_unspecified() || g_ip == h_ip {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "gRPC and HTTP protocols have conflicting listening addresses ({} and {})",
+                            grpc.listening_addr, http.listening_addr
+                        ),
+                    });
+                }
             }
         }
 
@@ -1207,14 +1215,51 @@ mod tests {
                 }
             }
         });
-        let result = OTLPReceiver::from_config(pipeline_ctx, &config_same_addr);
+        let result = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_same_addr);
         assert!(result.is_err());
         let err = result.err().expect("Expected error");
         assert!(
-            err.to_string()
-                .contains("cannot use the same listening address"),
-            "Expected error about duplicate listening address, got: {}",
+            err.to_string().contains("conflicting listening addresses"),
+            "Expected error about conflicting listening addresses, got: {}",
             err
+        );
+
+        // Test that unspecified IP (0.0.0.0) with same port as specific IP fails validation
+        let config_unspecified_conflict = json!({
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "0.0.0.0:4317"
+                },
+                "http": {
+                    "listening_addr": "127.0.0.1:4317"
+                }
+            }
+        });
+        let result = OTLPReceiver::from_config(pipeline_ctx.clone(), &config_unspecified_conflict);
+        assert!(result.is_err());
+        let err = result.err().expect("Expected error");
+        assert!(
+            err.to_string().contains("conflicting listening addresses"),
+            "Expected error about conflicting listening addresses, got: {}",
+            err
+        );
+
+        // Test that different specific IPs on the same port is allowed (different interfaces)
+        let config_different_ips_same_port = json!({
+            "protocols": {
+                "grpc": {
+                    "listening_addr": "192.168.1.1:4317"
+                },
+                "http": {
+                    "listening_addr": "10.0.0.1:4317"
+                }
+            }
+        });
+        let result = OTLPReceiver::from_config(pipeline_ctx, &config_different_ips_same_port);
+        assert!(
+            result.is_ok(),
+            "Different specific IPs on same port should be allowed, got: {:?}",
+            result.err()
         );
     }
 
