@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-//! Validation test module to validate the encoding/decoding process for otlp messages
+//! Validation test module to validate pipelines for otap/otlp messages
 
 use minijinja::{Environment, context};
 use otap_df_config::engine::EngineConfig;
@@ -39,7 +39,7 @@ pub const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
 /// Helps distinguish between the message types
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PlatformType {
+pub enum MessageType {
     /// otlp type
     Otlp,
     /// otap type
@@ -60,8 +60,8 @@ struct PipelineValidation {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TemplateVariables {
-    loadgen_exporter_type: PlatformType,
-    backend_receiver_type: PlatformType,
+    loadgen_exporter_type: MessageType,
+    backend_receiver_type: MessageType,
     #[serde(default)]
     transformative: bool,
 }

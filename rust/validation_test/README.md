@@ -1,13 +1,13 @@
 # Validation Tests
 
-The validation test validates a OTLP message after
+The validation test validates a OTLP or OTAP messages after
 experiencing various processes such as encoding/decoding
 or going through a pipeline.
 
 ## Encoding/Decoding Validation
 
 To validate whether encoding/decoding is working properly
-we comparing the input and output to check that they are equal
+we comparing the input and output to check that they are equivalent.
 
 ## Pipeline Validation
 
@@ -43,3 +43,8 @@ Below are what each required key is used for
 - loadgen_exporter_type -> What receiver type are you using (`otlp` or `otap`)
 - backend_receiver_type -> What exporter type are you using (`otlp` or `otap`)
 - transformative -> Does your pipeline modify or alter the data
+
+## Future directions
+- Automatically trigger the validation process when a PR becomes "Ready for review".
+- Manually trigger the validation process when a comment containing `@validation` is added to a PR (strecht goal).
+- Extend the validation exporter to support more complex validation procedure.
