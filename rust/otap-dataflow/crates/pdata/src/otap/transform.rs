@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, NullBufferBuilder,
-    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, DictionaryArray,
+    NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
@@ -28,6 +29,9 @@ use crate::encode::record::array::{
     Int64ArrayBuilder, StringArrayBuilder, dictionary::DictionaryOptions,
 };
 use crate::error::{Error, Result};
+use crate::otap::transform::transport_optimize::attributes::{
+    collect_bool_inverted, collect_partitions_for_range,
+};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::otlp::common::AnyValueArrays;
 use crate::schema::consts::{self, metadata};
@@ -983,7 +987,8 @@ pub fn transform_attributes_with_stats(
             (rb, stats)
         }
         DataType::Dictionary(k, _) => {
-            let (new_dict, keep_ranges, stats) = match *k.clone() {
+            // TODO - what we return here, does it need to be eagerly computed?
+            let (new_dict, keep_ranges, transform_ranges, stats) = match *k.clone() {
                 DataType::UInt8 => {
                     let dict_imm_result = transform_dictionary_keys(
                         attrs_record_batch
@@ -997,6 +1002,7 @@ pub fn transform_attributes_with_stats(
                     (
                         new_dict as ArrayRef,
                         dict_imm_result.keep_ranges,
+                        dict_imm_result.transform_ranges,
                         TransformStats {
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
@@ -1017,6 +1023,7 @@ pub fn transform_attributes_with_stats(
                     (
                         new_dict as ArrayRef,
                         dict_imm_result.keep_ranges,
+                        dict_imm_result.transform_ranges,
                         TransformStats {
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
@@ -1038,11 +1045,25 @@ pub fn transform_attributes_with_stats(
             let (attrs_record_batch, schema) = if keep_ranges.as_ref().map(Vec::len) == Some(0) {
                 (RecordBatch::new_empty(schema.clone()), schema.clone())
             } else {
-                // Materialize the parent ID column if it exists. Renames/replacements can change
-                // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
-                // even when no rows are deleted.
-                let should_materialize_parent_ids =
-                    schema.column_with_name(consts::PARENT_ID).is_some();
+                // // Materialize the parent ID column if it exists. Renames/replacements can change
+                // // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
+                // // even when no rows are deleted.
+                // let should_materialize_parent_ids =
+                //     schema.column_with_name(consts::PARENT_ID).is_some();
+                let replace_bytes = if let Some(replace) = transform.rename.as_ref() {
+                    &replace.replacement_bytes
+                } else {
+                    &vec![]
+                };
+                let should_materialize_parent_ids = if is_transport_optimized {
+                   should_remove_transport_optimized_encoding(
+                       &attrs_record_batch,
+                       replace_bytes,
+                       &transform_ranges
+                   )?
+                } else {
+                    false
+                };
                 if should_materialize_parent_ids {
                     let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                     let schema = rb.schema();
@@ -1461,8 +1482,8 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     // TODO - change to range?
     keep_ranges: Option<Vec<(usize, usize)>>,
 
-    // TODO fill this in
-    // transform_ranges: Vec<KeyTransformRange>,
+    transform_ranges: Vec<KeyTransformRange>,
+
     /// Exact number of rows that were deleted due to delete rules
     deleted_rows: usize,
     /// Exact number of rows whose key was renamed (only counts rows that remain after deletes)
@@ -1488,6 +1509,15 @@ where
         }
     })?;
     let dict_values_transform_result = transform_keys(dict_values, transform)?;
+
+    // TODO:
+    // - do we always need to calculate this?
+    // - now that we've calculated it, can we use it to compute some of the other stuff
+    //   that this function is computing more easily?
+    let dict_key_transform_ranges = dict_value_transform_ranges_to_key_ranges(
+        dict_arr,
+        &dict_values_transform_result.transform_ranges
+    );
 
     // Build a quick lookup of which dictionary value indices were renamed
     let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
@@ -1528,6 +1558,8 @@ where
             new_keys: new_dict,
             keep_ranges: None,
             deleted_rows: 0,
+
+            transform_ranges: dict_key_transform_ranges,
 
             // TODO - this is expensive to calculate if we don't need it
             renamed_rows: {
@@ -1662,6 +1694,7 @@ where
 
     for i in 0..dict_arr.len() {
         // if not valid, push a 0 into the dict keys values buffer
+        // TODO - attr keys should non-nullable, so I think we can remove this check?
         if !dict_keys_nulls
             .map(|nulls| nulls.is_valid(i))
             .unwrap_or(true)
@@ -1716,23 +1749,72 @@ where
     Ok(DictionaryKeysTransformResult {
         new_keys: new_dict,
         keep_ranges: Some(keep_ranges),
+        transform_ranges: dict_key_transform_ranges,
         deleted_rows: deleted_rows_count,
         renamed_rows: renamed_rows_count,
     })
 }
 
 fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
-    dict_keys: PrimitiveArray<K>,
-    dict_value_transform_ranges: &[KeyTransformRange]
+    attr_keys: &DictionaryArray<K>,
+    dict_value_transform_ranges: &[KeyTransformRange],
 ) -> Vec<KeyTransformRange> {
     // normally, this would only be called when the attributes values are transport optimize
     // encoded, which means it's sorted by attribute type & key, so the number of ranges
     // transformed in the dict values should be roughly equal to the number of ranges of dict keys,
     // unless the same key is used for values of different types. That's why we use calculate
-    // capacity like this:
+    // capacity like this
     let mut dict_key_transform_ranges = Vec::with_capacity(dict_value_transform_ranges.len());
 
-    // let
+    // partition the boundaries between equivalent keys
+    let dict_keys = attr_keys.keys().values();
+    let boundaries_len = dict_keys.len() - 1;
+    let prev = &dict_keys[0..boundaries_len];
+    let next = &dict_keys[1..boundaries_len + 1];
+    let mut partition_boundaries = Vec::new();
+    collect_bool_inverted(
+        boundaries_len,
+        |i| prev[i].is_eq(next[i]),
+        &mut partition_boundaries,
+    );
+
+    let mut find_and_maybe_push_key_range = |start: usize, end: usize| {
+        let dict_key = dict_keys[start].as_usize();
+        let dict_val_range_idx =
+            dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
+                if dict_key < range.start() {
+                    Ordering::Less
+                } else if dict_key >= range.end() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+
+        if let Ok(dict_val_range_idx) = dict_val_range_idx {
+            let dict_val_range = &dict_value_transform_ranges[dict_val_range_idx];
+            dict_key_transform_ranges.push(KeyTransformRange {
+                range: Range { start, end },
+                idx: dict_val_range.idx,
+                range_type: dict_val_range.range_type,
+            })
+        }
+    };
+
+    // iterate the partition boundaries, and for each one, check if it was transformed
+    let boundary_indices = BitIndexIterator::new(&partition_boundaries, 0, boundaries_len);
+    let mut current = 0;
+    for idx in boundary_indices {
+        let t = current;
+        current = idx + 1;
+        find_and_maybe_push_key_range(t, current);
+    }
+
+    // handle the last range
+    let last = boundaries_len + 1;
+    if current != last {
+        find_and_maybe_push_key_range(current, last);
+    }
 
     dict_key_transform_ranges
 }
@@ -4072,7 +4154,7 @@ mod test {
     }
 
     #[test]
-    fn test_handle_transport_encoded_parent_ids_dict_keys() {
+    fn test_handle_transp_TODO_fix_test_name() {
         // same test as above, but the keys are dict encoded
         let schema = Arc::new(Schema::new(vec![
             // note: absence of encoding metadata means we assume it's quasi-delta encoded
@@ -4146,7 +4228,7 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(result, expected);
+        pretty_assertions::assert_eq!(result, expected);
     }
 
     #[test]

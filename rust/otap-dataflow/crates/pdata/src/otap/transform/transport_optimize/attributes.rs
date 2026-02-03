@@ -1338,7 +1338,7 @@ impl AttrValuesSorter {
 /// Performance: Depending on the function that is passed, this can also be auto-vectorized.
 /// For example, a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use
 /// SIMD to do the comparisons
-fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
+pub(crate) fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
     result_buf.clear();
     result_buf.reserve(bit_util::ceil(len, 64) * 8);
 
@@ -1370,7 +1370,7 @@ fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mu
 /// Collect partitions of equivalent values in the given range of the source ID into the passed
 /// results Vec. The indices in the result ranges will be relative to the passed range, NOT to the
 /// indices of the passed source.
-fn collect_partitions_for_range(
+pub fn collect_partitions_for_range(
     range: &Range<usize>,
     source: &ArrayRef,
     result: &mut Vec<Range<usize>>,
