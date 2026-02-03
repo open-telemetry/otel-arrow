@@ -21,12 +21,12 @@ use otap_df_pdata::schema::consts;
 
 use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
 use crate::error::{Error, Result};
-use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
 use crate::pipeline::filter::optimize::AttrsFilterCombineOptimizerRule;
+use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
 use crate::pipeline::routing::RouteToPipelineStage;
+use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
 /// Converts an pipeline expression (AST) into a series of executable pipeline stages.
 ///
@@ -413,10 +413,7 @@ impl PipelinePlanner {
         Ok(pipeline_stages)
     }
 
-    fn plan_set(
-        &self,
-        set_expr: &SetTransformExpression,
-    ) -> Result<Vec<Box<dyn PipelineStage>>> {
+    fn plan_set(&self, set_expr: &SetTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
         let MutableValueExpression::Source(dest) = set_expr.get_destination() else {
             return Err(Error::NotYetSupportedError {
                 message: "set expression only supports source destinations".to_string(),
@@ -426,7 +423,10 @@ impl PipelinePlanner {
         let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
         let ColumnAccessor::Attributes(attrs_id, key) = dest_accessor else {
             return Err(Error::NotYetSupportedError {
-                message: format!("set expression not supported for destination {:?}", dest_accessor),
+                message: format!(
+                    "set expression not supported for destination {:?}",
+                    dest_accessor
+                ),
             });
         };
 
@@ -443,14 +443,15 @@ impl PipelinePlanner {
         let insert_transform = InsertTransform::new(entries);
         let transform = AttributesTransform::default().with_insert(insert_transform);
 
-        transform.validate().map_err(|e| Error::InvalidPipelineError {
-            cause: format!("invalid attribute insert transform: {e}"),
-            query_location: Some(set_expr.get_query_location().clone()),
-        })?;
+        transform
+            .validate()
+            .map_err(|e| Error::InvalidPipelineError {
+                cause: format!("invalid attribute insert transform: {e}"),
+                query_location: Some(set_expr.get_query_location().clone()),
+            })?;
 
         Ok(vec![Box::new(AttributeTransformPipelineStage::new(
-            attrs_id,
-            transform,
+            attrs_id, transform,
         ))])
     }
 

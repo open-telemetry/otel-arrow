@@ -531,11 +531,18 @@ mod test {
         )
         .await;
 
-        let res_attrs = &result.resource_logs[0].resource.as_ref().unwrap().attributes;
+        let res_attrs = &result.resource_logs[0]
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes;
         assert!(res_attrs.contains(&KeyValue::new("res_new", AnyValue::new_string("test"))));
 
-        let scope_attrs =
-            &result.resource_logs[0].scope_logs[0].scope.as_ref().unwrap().attributes;
+        let scope_attrs = &result.resource_logs[0].scope_logs[0]
+            .scope
+            .as_ref()
+            .unwrap()
+            .attributes;
         assert!(scope_attrs.contains(&KeyValue::new("scope_new", AnyValue::new_string("test"))));
     }
 
@@ -548,6 +555,4 @@ mod test {
     async fn test_insert_attributes_scopes_opl_parser() {
         test_insert_attributes_scopes::<OplParser>().await;
     }
-
-
 }
