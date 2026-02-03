@@ -552,7 +552,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                let _ = exporter_result.unwrap();
+                exporter_result.unwrap();
 
                 // check that the message was properly sent from the exporter
                 let metrics_received: OtapArrowRecords =
