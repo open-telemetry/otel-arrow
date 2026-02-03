@@ -14,8 +14,8 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
-use crate::extensions::registry::ExtensionBundle;
 use crate::extensions::ExtensionRegistry;
+use crate::extensions::registry::ExtensionBundle;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -54,6 +54,8 @@ pub enum ExtensionWrapper<PData> {
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
     /// An extension with a `Send` implementation.
     Shared {
@@ -74,6 +76,8 @@ pub enum ExtensionWrapper<PData> {
         control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
 }
 
@@ -115,6 +119,7 @@ impl<PData> ExtensionWrapper<PData> {
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: LocalReceiver::mpsc(control_receiver),
             telemetry: None,
+            extension_registry: None,
         }
     }
 
@@ -142,6 +147,19 @@ impl<PData> ExtensionWrapper<PData> {
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: SharedReceiver::mpsc(control_receiver),
             telemetry: None,
+            extension_registry: None,
+        }
+    }
+
+    /// Sets the extension registry for this extension.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        match self {
+            ExtensionWrapper::Local {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
+            ExtensionWrapper::Shared {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
         }
     }
 
@@ -155,6 +173,7 @@ impl<PData> ExtensionWrapper<PData> {
                 extension_traits,
                 control_sender,
                 control_receiver,
+                extension_registry,
                 ..
             } => ExtensionWrapper::Local {
                 node_id,
@@ -165,6 +184,7 @@ impl<PData> ExtensionWrapper<PData> {
                 control_sender,
                 control_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
             ExtensionWrapper::Shared {
                 node_id,
@@ -174,6 +194,7 @@ impl<PData> ExtensionWrapper<PData> {
                 extension_traits,
                 control_sender,
                 control_receiver,
+                extension_registry,
                 ..
             } => ExtensionWrapper::Shared {
                 node_id,
@@ -184,6 +205,7 @@ impl<PData> ExtensionWrapper<PData> {
                 control_sender,
                 control_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
         }
     }
@@ -211,7 +233,7 @@ impl<PData> ExtensionWrapper<PData> {
                 extension,
                 extension_traits,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -233,6 +255,7 @@ impl<PData> ExtensionWrapper<PData> {
                     control_sender,
                     control_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
             ExtensionWrapper::Shared {
@@ -244,7 +267,7 @@ impl<PData> ExtensionWrapper<PData> {
                 extension,
                 extension_traits,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -266,6 +289,7 @@ impl<PData> ExtensionWrapper<PData> {
                     control_sender,
                     control_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
         }
@@ -276,7 +300,6 @@ impl<PData> ExtensionWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -284,12 +307,15 @@ impl<PData> ExtensionWrapper<PData> {
                     node_id,
                     extension,
                     control_receiver,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler =
-                    local::EffectHandler::new(node_id, metrics_reporter, extension_registry);
+                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
@@ -307,12 +333,15 @@ impl<PData> ExtensionWrapper<PData> {
                     node_id,
                     extension,
                     control_receiver,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler =
-                    shared::EffectHandler::new(node_id, metrics_reporter, extension_registry);
+                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
@@ -457,7 +486,13 @@ mod tests {
         ));
         let config = ExtensionConfig::new("test_extension");
 
-        let wrapper = ExtensionWrapper::local(extension, ExtensionBundle::new(), node_id, user_config, &config);
+        let wrapper = ExtensionWrapper::local(
+            extension,
+            ExtensionBundle::new(),
+            node_id,
+            user_config,
+            &config,
+        );
 
         assert!(!wrapper.is_shared());
     }
@@ -515,7 +550,13 @@ mod tests {
         ));
         let config = ExtensionConfig::new("test_extension");
 
-        let wrapper = ExtensionWrapper::shared(extension, ExtensionBundle::new(), node_id, user_config, &config);
+        let wrapper = ExtensionWrapper::shared(
+            extension,
+            ExtensionBundle::new(),
+            node_id,
+            user_config,
+            &config,
+        );
 
         assert!(wrapper.is_shared());
     }

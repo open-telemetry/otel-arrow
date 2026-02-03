@@ -159,8 +159,7 @@ impl ExtensionBundle {
     where
         Arc<T>: Send + Sync,
     {
-        let _ = self.traits
-            .insert(TypeId::of::<Arc<T>>(), Box::new(value));
+        let _ = self.traits.insert(TypeId::of::<Arc<T>>(), Box::new(value));
     }
 
     /// Get a trait implementation from the bundle.
@@ -258,7 +257,10 @@ impl ExtensionRegistry {
     /// let token_provider: Arc<dyn TokenProvider> = registry
     ///     .get_trait::<dyn TokenProvider>("azure_auth")?;
     /// ```
-    pub fn get_trait<T: ExtensionTrait + ?Sized + 'static>(&self, name: &str) -> Result<Arc<T>, ExtensionError>
+    pub fn get_trait<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
     where
         Arc<T>: Send + Sync + Clone,
     {
@@ -269,10 +271,12 @@ impl ExtensionRegistry {
                 name: name.to_string(),
             })?;
 
-        bundle.get::<T>().ok_or_else(|| ExtensionError::TraitNotImplemented {
-            name: name.to_string(),
-            expected: std::any::type_name::<T>(),
-        })
+        bundle
+            .get::<T>()
+            .ok_or_else(|| ExtensionError::TraitNotImplemented {
+                name: name.to_string(),
+                expected: std::any::type_name::<T>(),
+            })
     }
 
     /// Get an extension bundle by name.

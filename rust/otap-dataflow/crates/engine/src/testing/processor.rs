@@ -269,12 +269,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let collector = self.metrics_system.collector();
         let metrics_collection_handle = self.rt.spawn(collector.run_collection_loop());
 
-        let extension_registry = crate::extensions::ExtensionRegistry::new();
         // The entire scenario is run to completion before the validation phase
         self.rt.block_on(async move {
             let mut runtime = self
                 .processor
-                .prepare_runtime(metrics_reporter, extension_registry)
+                .prepare_runtime(metrics_reporter)
                 .await
                 .expect("Failed to prepare runtime");
 

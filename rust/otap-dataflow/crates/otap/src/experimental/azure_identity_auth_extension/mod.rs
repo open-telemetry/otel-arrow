@@ -20,6 +20,7 @@ use otap_df_engine::ExtensionFactory;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::extension::ExtensionWrapper;
+use otap_df_engine::extensions::ExtensionBundle;
 use otap_df_engine::node::NodeId;
 use serde_json;
 use std::sync::Arc;
@@ -57,18 +58,21 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory<OtapPdata> = Extensio
         })?;
 
         // Validate the configuration
-        cfg.validate().map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
-            error: e.to_string(),
-        })?;
-
-        // Create the extension
-        let extension =
-            AzureIdentityAuthExtension::new(cfg).map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+        cfg.validate()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?;
 
+        // Create the extension
+        let extension = AzureIdentityAuthExtension::new(cfg).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+
         Ok(ExtensionWrapper::local(
             extension,
+            ExtensionBundle::new(),
             node,
             node_config,
             extension_config,
@@ -90,6 +94,9 @@ mod tests {
 
     #[test]
     fn test_factory_name_matches_urn() {
-        assert_eq!(AZURE_IDENTITY_AUTH_EXTENSION.name, AZURE_IDENTITY_AUTH_EXTENSION_URN);
+        assert_eq!(
+            AZURE_IDENTITY_AUTH_EXTENSION.name,
+            AZURE_IDENTITY_AUTH_EXTENSION_URN
+        );
     }
 }

@@ -8,20 +8,12 @@ use serde::Deserialize;
 use super::Error;
 
 /// Configuration for the Azure Identity Auth Extension.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Authentication configuration
     #[serde(default)]
     pub auth: AuthConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            auth: AuthConfig::default(),
-        }
-    }
 }
 
 impl Config {
@@ -105,7 +97,10 @@ mod tests {
 
     #[test]
     fn test_auth_method_display() {
-        assert_eq!(format!("{}", AuthMethod::ManagedIdentity), "managed_identity");
+        assert_eq!(
+            format!("{}", AuthMethod::ManagedIdentity),
+            "managed_identity"
+        );
         assert_eq!(format!("{}", AuthMethod::Development), "development");
     }
 

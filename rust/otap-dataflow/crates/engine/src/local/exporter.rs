@@ -36,8 +36,8 @@
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
-use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
 use crate::extensions::ExtensionTrait;
+use crate::extensions::registry::ExtensionError;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
@@ -104,13 +104,9 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
     /// reporter.
     #[must_use]
-    pub fn new(
-        node_id: NodeId,
-        metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
-    ) -> Self {
+    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id, metrics_reporter, extension_registry),
+            core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
         }
     }
@@ -119,6 +115,11 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
     }
 
     /// Gets an extension trait implementation by extension name.

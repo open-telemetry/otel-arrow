@@ -79,7 +79,9 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_config(&self, config: Value) -> Result<(), SendError<NodeControlMsg<PData>>> {
-        self.control_tx.send(NodeControlMsg::Config { config }).await
+        self.control_tx
+            .send(NodeControlMsg::Config { config })
+            .await
     }
 
     /// Sends a shutdown control message with a specified deadline.
@@ -109,7 +111,8 @@ impl<PData> TestContext<PData> {
         &self,
         duration: Duration,
     ) -> Result<(), SendError<NodeControlMsg<PData>>> {
-        self.send_shutdown(Instant::now() + duration, "test shutdown").await
+        self.send_shutdown(Instant::now() + duration, "test shutdown")
+            .await
     }
 }
 
@@ -165,6 +168,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
             control_sender: LocalSender::mpsc(control_tx.clone()),
             control_receiver: LocalReceiver::mpsc(control_rx),
             telemetry: None,
+            extension_registry: None,
         };
 
         let test_context = TestContext::new(Sender::Local(LocalSender::mpsc(control_tx)), counters);
@@ -195,8 +199,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
         ));
         let config = ExtensionConfig::new(name_owned);
 
-        let (control_tx, control_rx) =
-            tokio::sync::mpsc::channel::<NodeControlMsg<PData>>(32);
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel::<NodeControlMsg<PData>>(32);
 
         let wrapper = ExtensionWrapper::Shared {
             node_id,
@@ -207,6 +210,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
             control_sender: SharedSender::mpsc(control_tx.clone()),
             control_receiver: SharedReceiver::mpsc(control_rx),
             telemetry: None,
+            extension_registry: None,
         };
 
         let test_context =

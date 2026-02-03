@@ -537,7 +537,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Extension,
                         node_id,
                         channel_metrics_enabled,
-                        || self.create_extension(&base_ctx, node_id_for_create, node_config.clone()),
+                        || {
+                            self.create_extension(
+                                &base_ctx,
+                                node_id_for_create,
+                                node_config.clone(),
+                            )
+                        },
                     )?;
                     extensions.push(wrapper);
                 }
@@ -562,19 +568,26 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         }
         let extension_registry = registry_builder.build();
 
+        // Set extension registry on all wrappers
+        for receiver in &mut receivers {
+            receiver.set_extension_registry(extension_registry.clone());
+        }
+        for processor in &mut processors {
+            processor.set_extension_registry(extension_registry.clone());
+        }
+        for exporter in &mut exporters {
+            exporter.set_extension_registry(extension_registry.clone());
+        }
+        for extension in &mut extensions {
+            extension.set_extension_registry(extension_registry.clone());
+        }
+
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
             .expect("default_pdata_channel_size must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        let mut pipeline = RuntimePipeline::new(
-            config,
-            receivers,
-            processors,
-            exporters,
-            extensions,
-            nodes,
-            extension_registry,
-        );
+        let mut pipeline =
+            RuntimePipeline::new(config, receivers, processors, exporters, extensions, nodes);
         let wirings = edges
             .into_iter()
             .map(|hyper_edge| {
@@ -1488,7 +1501,9 @@ impl<PData> BuildState<PData> {
         match registration.node_type {
             NodeType::Processor | NodeType::Exporter => Ok(registration.node_id.clone()),
             // Receivers and extensions don't receive pdata
-            NodeType::Receiver | NodeType::Extension => Err(Error::UnknownNode { node: name.clone() }),
+            NodeType::Receiver | NodeType::Extension => {
+                Err(Error::UnknownNode { node: name.clone() })
+            }
         }
     }
 }

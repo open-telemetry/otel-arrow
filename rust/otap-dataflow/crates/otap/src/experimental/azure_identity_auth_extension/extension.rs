@@ -69,9 +69,7 @@ impl AzureIdentityAuthExtension {
                     );
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
-                    println!(
-                        "[AzureIdentityAuthExtension] Using system-assigned managed identity"
-                    );
+                    println!("[AzureIdentityAuthExtension] Using system-assigned managed identity");
                 }
 
                 Ok(ManagedIdentityCredential::new(Some(options))
@@ -153,18 +151,35 @@ impl AzureIdentityAuthExtension {
     }
 
     /// Returns the authentication method being used.
+    #[must_use]
     pub fn method(&self) -> &AuthMethod {
         &self.method
     }
 
     /// Returns the OAuth scope.
+    #[must_use]
     pub fn scope(&self) -> &str {
         &self.scope
     }
 
     /// Returns a clone of the credential for sharing with other components.
+    #[must_use]
     pub fn credential(&self) -> Arc<dyn TokenCredential> {
         self.credential.clone()
+    }
+}
+
+impl TokenProvider for AzureIdentityAuthExtension {
+    fn get_token(&self) -> BearerToken {
+        // Note: This is a synchronous trait method, so we block on the async token fetch.
+        let token = tokio::runtime::Handle::current()
+            .block_on(self.get_token())
+            .expect("Failed to get token");
+
+        BearerToken {
+            token: token.token.secret().to_string(),
+            expires_on: token.expires_on.unix_timestamp(),
+        }
     }
 }
 

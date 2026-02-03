@@ -63,6 +63,7 @@ impl std::fmt::Display for AuthErrorKind {
 
 impl Error {
     /// Creates a new credential creation error.
+    #[must_use]
     pub fn create_credential(method: AuthMethod, source: azure_core::error::Error) -> Self {
         Error::Auth {
             kind: AuthErrorKind::CreateCredential { method },
@@ -71,6 +72,7 @@ impl Error {
     }
 
     /// Creates a new token acquisition error.
+    #[must_use]
     pub fn token_acquisition(source: azure_core::error::Error) -> Self {
         Error::Auth {
             kind: AuthErrorKind::TokenAcquisition,
@@ -79,6 +81,7 @@ impl Error {
     }
 
     /// Creates a new token expired error.
+    #[must_use]
     pub fn token_expired() -> Self {
         Error::Auth {
             kind: AuthErrorKind::TokenExpired,

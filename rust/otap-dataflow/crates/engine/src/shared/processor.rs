@@ -34,7 +34,7 @@
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
-use crate::extensions::{ExtensionError, ExtensionRegistry, ExtensionTrait};
+use crate::extensions::{ExtensionError, ExtensionTrait};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedSender;
@@ -109,9 +109,8 @@ impl<PData> EffectHandler<PData> {
         msg_senders: HashMap<PortName, SharedSender<PData>>,
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id, metrics_reporter, extension_registry);
+        let core = EffectHandlerCore::new(node_id, metrics_reporter);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
@@ -133,6 +132,11 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn processor_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
     }
 
     /// Returns an extension trait implementation by name.
@@ -302,7 +306,6 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
-    use crate::extensions::ExtensionRegistry;
     use crate::shared::message::SharedSender;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
@@ -321,7 +324,6 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
-            ExtensionRegistry::new(),
         );
 
         // Should succeed when channel has capacity
@@ -342,7 +344,6 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
-            ExtensionRegistry::new(),
         );
 
         // First send should succeed
@@ -367,7 +368,7 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         // No default port specified with multiple ports = ambiguous
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -384,7 +385,7 @@ mod tests {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -400,7 +401,7 @@ mod tests {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -419,7 +420,7 @@ mod tests {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);

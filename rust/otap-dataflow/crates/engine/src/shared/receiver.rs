@@ -50,7 +50,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
-use crate::extensions::{ExtensionError, ExtensionRegistry, ExtensionTrait};
+use crate::extensions::{ExtensionError, ExtensionTrait};
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -116,9 +116,8 @@ impl<PData> EffectHandler<PData> {
         default_port: Option<PortName>,
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
     ) -> Self {
-        let mut core = EffectHandlerCore::new(node_id, metrics_reporter, extension_registry);
+        let mut core = EffectHandlerCore::new(node_id, metrics_reporter);
         core.set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_sender);
 
         // Determine and cache the default sender
@@ -141,6 +140,11 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn receiver_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
     }
 
     /// Returns an extension trait implementation by name.
@@ -301,7 +305,6 @@ mod tests {
     #![allow(missing_docs)]
     use super::*;
     use crate::control::pipeline_ctrl_msg_channel;
-    use crate::extensions::ExtensionRegistry;
     use crate::shared::message::SharedSender;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
@@ -322,7 +325,6 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
-            ExtensionRegistry::new(),
         );
 
         // Should succeed when channel has capacity
@@ -344,7 +346,6 @@ mod tests {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
-            ExtensionRegistry::new(),
         );
 
         // First send should succeed
@@ -368,7 +369,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -386,7 +387,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -403,7 +404,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -423,7 +424,7 @@ mod tests {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter, ExtensionRegistry::new());
+        let eh = EffectHandler::new(test_node("recv"), senders, None, ctrl_tx, metrics_reporter);
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);

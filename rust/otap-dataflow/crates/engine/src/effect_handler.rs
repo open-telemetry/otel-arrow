@@ -5,8 +5,8 @@
 
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
-use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
 use crate::extensions::ExtensionTrait;
+use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
@@ -29,21 +29,17 @@ pub(crate) struct EffectHandlerCore<PData> {
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
     /// Registry of extension traits for capability lookup.
-    pub(crate) extension_registry: ExtensionRegistry,
+    pub(crate) extension_registry: Option<ExtensionRegistry>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
     /// Creates a new EffectHandlerCore with node_id and a metrics reporter.
-    pub(crate) fn new(
-        node_id: NodeId,
-        metrics_reporter: MetricsReporter,
-        extension_registry: ExtensionRegistry,
-    ) -> Self {
+    pub(crate) fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
         Self {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
-            extension_registry,
+            extension_registry: None,
         }
     }
 
@@ -53,6 +49,11 @@ impl<PData> EffectHandlerCore<PData> {
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        self.extension_registry = Some(registry);
     }
 
     /// Returns the id of the node associated with this effect handler.
@@ -71,7 +72,8 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// # Errors
     ///
-    /// Returns `ExtensionError::NotFound` if no extension with that name exists.
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists or if the
+    /// extension registry has not been set.
     /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
     ///
     /// # Example
@@ -88,7 +90,12 @@ impl<PData> EffectHandlerCore<PData> {
     where
         Arc<T>: Send + Sync + Clone,
     {
-        self.extension_registry.get_trait::<T>(name)
+        match &self.extension_registry {
+            Some(registry) => registry.get_trait::<T>(name),
+            None => Err(ExtensionError::NotFound {
+                name: name.to_string(),
+            }),
+        }
     }
 
     /// Print an info message to stdout.

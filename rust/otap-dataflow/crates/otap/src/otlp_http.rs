@@ -903,14 +903,8 @@ mod tests {
         let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = EffectHandler::new(
-            test_node("http"),
-            senders,
-            None,
-            ctrl_tx,
-            metrics_reporter,
-            otap_df_engine::extensions::ExtensionRegistry::new(),
-        );
+        let effect_handler =
+            EffectHandler::new(test_node("http"), senders, None, ctrl_tx, metrics_reporter);
 
         let settings = HttpServerSettings {
             listening_addr: addr,

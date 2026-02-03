@@ -256,10 +256,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             .expect("Failed to set PData receiver");
         let metrics_reporter_start = self.metrics_reporter();
         let metrics_reporter_terminal = self.metrics_reporter();
-        let extension_registry = crate::extensions::ExtensionRegistry::new();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter_start, extension_registry)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
                 .await
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {
