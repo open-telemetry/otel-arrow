@@ -98,6 +98,7 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<(), Err
                 NodeKind::Receiver => "receiver",
                 NodeKind::Processor | NodeKind::ProcessorChain => "processor",
                 NodeKind::Exporter => "exporter",
+                NodeKind::Extension => "extension",
             };
             if last != expected_suffix {
                 return Err(Error::InvalidUserConfig {

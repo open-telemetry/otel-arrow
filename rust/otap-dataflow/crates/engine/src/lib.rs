@@ -430,6 +430,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut receivers = Vec::new();
         let mut processors = Vec::new();
         let mut exporters = Vec::new();
+        let mut extensions = Vec::new();
         let mut build_state = BuildState::new();
 
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -522,6 +523,23 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     )?;
                     exporters.push(wrapper);
                 }
+                otap_df_config::node::NodeKind::Extension => {
+                    let node_id = build_state.next_node_id(
+                        name.clone(),
+                        NodeType::Extension,
+                        PipeNode::new(extensions.len()),
+                    )?;
+                    let node_id_for_create = node_id.clone();
+                    let wrapper = self.build_node_wrapper(
+                        &mut build_state,
+                        &base_ctx,
+                        NodeType::Extension,
+                        node_id,
+                        channel_metrics_enabled,
+                        || self.create_extension(&base_ctx, node_id_for_create, node_config.clone()),
+                    )?;
+                    extensions.push(wrapper);
+                }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
                     return Err(Error::UnsupportedNodeKind {
@@ -537,8 +555,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
             .expect("default_pdata_channel_size must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        // Extensions don't participate in pdata processing, so we pass an empty vec for now
-        let extensions = Vec::new();
         let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, extensions, nodes);
         let wirings = edges
             .into_iter()
@@ -1233,6 +1249,55 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         Ok(exporter)
+    }
+
+    /// Creates an extension node and adds it to the list of runtime nodes.
+    fn create_extension(
+        &self,
+        pipeline_ctx: &PipelineContext,
+        node_id: NodeId,
+        node_config: Arc<NodeUserConfig>,
+    ) -> Result<ExtensionWrapper<PData>, Error> {
+        let pipeline_group_id = pipeline_ctx.pipeline_group_id();
+        let pipeline_id = pipeline_ctx.pipeline_id();
+        let core_id = pipeline_ctx.core_id();
+        let name = node_id.name.clone();
+
+        otel_debug!(
+            "extension.create.start",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
+        let factory = self
+            .get_extension_factory_map()
+            .get(node_config.plugin_urn.as_ref())
+            .ok_or_else(|| Error::UnknownExtension {
+                plugin_urn: node_config.plugin_urn.clone(),
+            })?;
+        let extension_config = ExtensionConfig::new(name.clone());
+        let create = factory.create;
+
+        let node_id_for_create = node_id.clone();
+        let extension = create(
+            (*pipeline_ctx).clone(),
+            node_id_for_create,
+            node_config,
+            &extension_config,
+        )
+        .map_err(|e| Error::ConfigError(Box::new(e)))?;
+
+        otel_debug!(
+            "extension.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
+            pipeline_id = pipeline_id.as_ref(),
+            core_id = core_id,
+            node_id = name.as_ref(),
+        );
+
+        Ok(extension)
     }
 }
 
