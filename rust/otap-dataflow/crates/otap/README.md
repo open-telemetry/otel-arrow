@@ -21,6 +21,9 @@ and exporters supporting natively the OTAP Pdata.
   specified size or timeout.
 - Debug Processor: A processor to log incoming data for debugging
   purposes.
+- Durable Buffer: A processor providing crash-resilient buffering via Quiver's
+  write-ahead log and segment storage. See
+  [durable_buffer_processor](src/durable_buffer_processor/) for details.
 - Retry Processor (WIP): A processor to retry sending data on failure.
 - Signal Type Router: A processor to route data based on signal type
   (traces, metrics, logs) to different downstream nodes.

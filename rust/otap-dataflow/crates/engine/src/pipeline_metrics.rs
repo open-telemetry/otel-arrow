@@ -792,7 +792,7 @@ mod jemalloc_tests {
     fn pipeline_metrics_monitor_black_box_updates_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),
@@ -863,7 +863,7 @@ mod non_jemalloc_tests {
     fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),

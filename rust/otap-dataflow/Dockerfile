@@ -28,8 +28,8 @@ COPY . /build/rust/dataflow/.
 ARG RUSTFLAGS="-C target-cpu=native"
 ENV RUSTFLAGS=${RUSTFLAGS}
 
-# These are used to enable features and are passed to carg's --features argument
-# e.g. --build-arg FEATURES="azure,quiver-persistence"
+# These are used to enable features and are passed to cargo's --features argument
+# e.g. --build-arg FEATURES="azure"
 ARG FEATURES
 ENV FEATURES=${FEATURES}
 
