@@ -1,0 +1,10 @@
+# Idle State Performance Test - 2 Cores
+# Measures baseline resource consumption with no active telemetry traffic on 2 cores
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "2 Cores"
+    core_range: "0-1"
+    allocated_cores: 2
+    port: 8088
+    result_subdir: "2cores"

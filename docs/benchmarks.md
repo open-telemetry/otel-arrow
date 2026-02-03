@@ -92,10 +92,20 @@ higher throughput.
 
 **URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/>
 
-Measures resource consumption in idle state with two variations:
+Measures resource consumption in idle state across multiple core configurations
+(1, 2, 4, 8, 16, 32 cores) to validate the linear memory scaling model:
 
-- Single core configuration
-- All-cores configuration (128 cores)
+```
+Memory (MiB) = C + N × R
+```
+
+Where:
+- **C** = Constant overhead (shared infrastructure)
+- **N** = Number of cores
+- **R** = Per-core memory overhead
+
+This validates the share-nothing, thread-per-core architecture where each
+additional core adds a predictable amount of memory overhead.
 
 #### 9. Binary Size
 
