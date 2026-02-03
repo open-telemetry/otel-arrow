@@ -3,6 +3,9 @@
 The fan-out processor clones incoming PData to multiple downstream destinations
 with configurable delivery modes, ack policies, and fallback routing.
 
+Fallback settings on a per-port basis supports configuring alternative
+destinations after failures, supporting a broad range of failover policies.
+
 ## Configuration
 
 ```yaml
