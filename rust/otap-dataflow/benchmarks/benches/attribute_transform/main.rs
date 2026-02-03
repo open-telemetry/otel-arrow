@@ -4,8 +4,7 @@
 //! Benchmarks for functions that transform attributes
 
 use arrow::array::{
-    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder, UInt8Builder,
-    UInt16Array, UInt16Builder,
+    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder, StringDictionaryBuilder, UInt8Builder, UInt16Array, UInt16Builder
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -20,7 +19,7 @@ use std::sync::Arc;
 use otap_df_pdata::otap::transform::{
     AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
 };
-use otap_df_pdata::schema::consts;
+use otap_df_pdata::schema::{FieldExt, consts};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -298,7 +297,7 @@ fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool)
     let mut parent_id_builder = UInt16Builder::with_capacity(num_rows);
     let mut type_builder = UInt8Builder::with_capacity(num_rows);
     let mut keys_builder = StringBuilder::new();
-    let mut values_builder = StringBuilder::new();
+    let mut values_builder = StringDictionaryBuilder::<UInt16Type>::new();
 
     // generate a batch with 8 different attr keys, 4 attrs per parent this is a bit arbitrary,
     // but it should allow us to create something that the renaming will break delta encoding
@@ -324,10 +323,15 @@ fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool)
     };
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_encoding(consts::metadata::encodings::PLAIN),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_KEY, key_array.data_type().clone(), false),
-        Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        // TODO this failing - need convert to dict & also fix bug
+        Field::new(
+            consts::ATTRIBUTE_STR,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        ),
     ]));
 
     let batch = RecordBatch::try_new(
@@ -355,7 +359,7 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
     for dict_encoded_keys in [false, true] {
         for num_rows in [128, 1536, 8092] {
             let benchmark_id_param =
-                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys}");
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},needs_decode=true");
             let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
 
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
@@ -363,11 +367,42 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
                     || {
                         let transform1 =
                             AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("attr3".into(), "attr5".into())].into_iter().collect(),
+                                [("key_1".into(), "key_3".into())].into_iter().collect(),
                             ));
                         let transform2 =
                             AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("attr4".into(), "attr5".into())].into_iter().collect(),
+                                [("key_2".into(), "key_3".into())].into_iter().collect(),
+                            ));
+                        (input, transform1, transform2)
+                    },
+                    |(input, transform1, transform2)| {
+                        let result1 = transform_attributes(input, &transform1).expect("no error");
+                        let result2 =
+                            transform_attributes(&result1, &transform2).expect("no error");
+                        black_box(result2)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8092] {
+            let benchmark_id_param =
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},needs_decode=false");
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
+
+            let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
+                b.iter_batched(
+                    || {
+                        let transform1 =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_0".into(), "key_3".into())].into_iter().collect(),
+                            ));
+                        let transform2 =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_2".into(), "key_4".into())].into_iter().collect(),
                             ));
                         (input, transform1, transform2)
                     },

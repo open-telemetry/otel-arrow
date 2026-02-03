@@ -871,7 +871,10 @@ impl SortedValuesColumnBuilder {
                 // safety: if this is the datatype, we'll have initialized offsets in constructor
                 let offsets_buffer = self.offsets.expect("offsets not None");
                 let offsets_buffer = offsets_buffer.into();
-                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
+                let sb = ScalarBuffer::new(offsets_buffer, 0, len + 1);
+                println!("offsets_buffer = {:?}", sb.to_vec());
+
+                let offsets = OffsetBuffer::new(sb);
                 Ok(Arc::new(StringArray::new(offsets, self.data.into(), nulls)))
             }
 

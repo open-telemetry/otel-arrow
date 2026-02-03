@@ -1056,11 +1056,11 @@ pub fn transform_attributes_with_stats(
                     &vec![]
                 };
                 let should_materialize_parent_ids = if is_transport_optimized {
-                   should_remove_transport_optimized_encoding(
-                       &attrs_record_batch,
-                       replace_bytes,
-                       &transform_ranges
-                   )?
+                    should_remove_transport_optimized_encoding(
+                        &attrs_record_batch,
+                        replace_bytes,
+                        &transform_ranges,
+                    )?
                 } else {
                     false
                 };
@@ -1516,7 +1516,7 @@ where
     //   that this function is computing more easily?
     let dict_key_transform_ranges = dict_value_transform_ranges_to_key_ranges(
         dict_arr,
-        &dict_values_transform_result.transform_ranges
+        &dict_values_transform_result.transform_ranges,
     );
 
     // Build a quick lookup of which dictionary value indices were renamed
@@ -2486,8 +2486,9 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
-        UInt8DictionaryArray, UInt16Array, UInt32Array,
+        BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StringBuilder,
+        StringDictionaryBuilder, UInt8Array, UInt8Builder, UInt8DictionaryArray, UInt16Array,
+        UInt16Builder, UInt32Array,
     };
     use arrow::datatypes::{
         ArrowDictionaryKeyType, DataType, Field, Schema, UInt8Type, UInt16Type,
@@ -2497,6 +2498,7 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
+    use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
@@ -4515,6 +4517,93 @@ mod test {
 
         let plain = transform_attributes(&input, &tx).unwrap();
         assert_eq!(with_stats, plain);
+    }
+
+    #[test]
+    fn test_albert_benchmark_replica() {
+        // TODO remove this
+        fn gen_transport_optimized_bench_batch(
+            num_rows: usize,
+            dict_encoded_keys: bool,
+        ) -> RecordBatch {
+            let mut parent_id_builder = UInt16Builder::with_capacity(num_rows);
+            let mut type_builder = UInt8Builder::with_capacity(num_rows);
+            let mut keys_builder = StringBuilder::new();
+            let mut values_builder = StringDictionaryBuilder::<UInt16Type>::new();
+
+            // generate a batch with 8 different attr keys, 4 attrs per parent this is a bit arbitrary,
+            // but it should allow us to create something that the renaming will break delta encoding
+            // if not handled correctly, which triggers the code path we're of which trying to measure
+            // the overhead
+            for i in 0..num_rows {
+                parent_id_builder.append_value(i as u16 / 4);
+                type_builder.append_value(AttributeValueType::Str as u8);
+                keys_builder.append_value(format!("key_{}", i % 4));
+                values_builder.append_value("val");
+            }
+
+            let key_array: ArrayRef = if dict_encoded_keys {
+                let keys_arr = keys_builder.finish();
+                let keys_arr_dict = cast(
+                    &keys_arr,
+                    &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                )
+                .expect("can cast to dict");
+                Arc::new(keys_arr_dict)
+            } else {
+                Arc::new(keys_builder.finish())
+            };
+
+            let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(metadata::encodings::PLAIN),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, key_array.data_type().clone(), false),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ]));
+
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(parent_id_builder.finish()),
+                    Arc::new(type_builder.finish()),
+                    key_array,
+                    Arc::new(values_builder.finish()),
+                ],
+            )
+            .expect("record batch OK");
+
+            let (result, _) = apply_transport_optimized_encodings(
+                &crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
+                &batch,
+            )
+            .expect("transport optimize encoding apply");
+
+            result
+        }
+
+        let input = gen_transport_optimized_bench_batch(128, false);
+
+        arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
+
+        let transform1 =
+            AttributesTransform::default().with_rename(RenameTransform::new(
+                [("attr3".into(), "attr5".into())].into_iter().collect(),
+            ));
+        let transform2 =
+            AttributesTransform::default().with_rename(RenameTransform::new(
+                [("attr4".into(), "attr5".into())].into_iter().collect(),
+            ));
+        let result1 = transform_attributes(&input, &transform1).expect("no error");
+        arrow::util::pretty::print_batches(&[result1.clone()]).unwrap();
+        let result2 =
+            transform_attributes(&result1, &transform2).expect("no error");
+        arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
+
     }
 }
 
