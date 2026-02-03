@@ -342,7 +342,7 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry.clone());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 0);
+            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 1, 0);
 
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard =

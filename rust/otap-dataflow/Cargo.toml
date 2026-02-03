@@ -34,7 +34,6 @@ otap-df-config.workspace = true
 otap-df-controller.workspace = true
 otap-df-otap.workspace = true
 thiserror.workspace = true
-quiver = { workspace = true, optional = true }
 serde_json.workspace = true
 clap.workspace = true
 mimalloc = { workspace = true, optional = true }
@@ -180,7 +179,7 @@ weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git",
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 zip = "=4.2.0"
-byte-unit = "5.2.0"
+byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
 # Recordset KQL OTLP query_engine Processor
@@ -204,8 +203,6 @@ azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
-# Experimental persistence prototype (opt-in)
-quiver-persistence = ["quiver"]
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
 # Experimental exporters (opt-in)

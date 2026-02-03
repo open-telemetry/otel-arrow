@@ -214,7 +214,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx
-            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)
     }
 
