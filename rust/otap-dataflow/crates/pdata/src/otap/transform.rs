@@ -2281,17 +2281,60 @@ fn are_neighbours_with_delta_encoded_parent_ids(
     match (prev_key, next_key) {
         (Some(prev_key), Some(next_key)) => {
             if prev_key != next_key {
-                return Ok(false)
+                return Ok(false);
             }
-        },
+        }
         _ => {
             todo!() // invalid null keys
         }
     }
 
-    // TODO check the values
-
-    //
+    // check if the values match
+    match prev_type {
+        AttributeValueType::Bool => {
+            let bool_col = val_columns.attr_bool;
+            let prev_val = bool_col.map(|b| b.value_at(prev.index)).flatten();
+            let next_val = bool_col.map(|b| b.value_at(next.index)).flatten();
+            if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
+                return Ok(false);
+            }
+        }
+        AttributeValueType::Bytes => {
+            let bytes_col = val_columns.attr_bytes.as_ref();
+            let prev_val = bytes_col.map(|b| b.value_at(prev.index)).flatten();
+            let next_val = bytes_col.map(|b| b.value_at(next.index)).flatten();
+            if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
+                return Ok(false);
+            }
+        }
+        AttributeValueType::Double => {
+            let float_col = val_columns.attr_double;
+            let prev_val = float_col.map(|b| b.value_at(prev.index)).flatten();
+            let next_val = float_col.map(|b| b.value_at(next.index)).flatten();
+            if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
+                return Ok(false);
+            }
+        }
+        AttributeValueType::Str => {
+            let str_col = val_columns.attr_str.as_ref();
+            let prev_val = str_col.map(|b| b.value_at(prev.index)).flatten();
+            let next_val = str_col.map(|b| b.value_at(next.index)).flatten();
+            if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
+                return Ok(false);
+            }
+        }
+        AttributeValueType::Int => {
+            let int_col = val_columns.attr_int.as_ref();
+            let prev_val = int_col.map(|b| b.value_at(prev.index)).flatten();
+            let next_val = int_col.map(|b| b.value_at(next.index)).flatten();
+            if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
+                return Ok(false);
+            }
+        }
+        _ => {
+            unreachable!("TODO")
+        }
+    }
     Ok(true)
 }
 
@@ -5792,6 +5835,8 @@ mod insert_tests {
         assert_eq!(wider_type(&dict8, &dict_int), None); // Different value types
     }
 
+    // TODO -- all the types from here down need to be moved into the previous test module
+
     #[test]
     fn test_find_previous_neighbour_post_transform() {
         // test index 0
@@ -6179,7 +6224,7 @@ mod insert_tests {
             },
             &MaybeReplacedKey {
                 index: 1,
-                replacement_idx: None
+                replacement_idx: None,
             },
         )
         .unwrap();
@@ -6196,7 +6241,7 @@ mod insert_tests {
             },
             &MaybeReplacedKey {
                 index: 1,
-                replacement_idx: Some(0)
+                replacement_idx: Some(0),
             },
         )
         .unwrap();
@@ -6213,10 +6258,193 @@ mod insert_tests {
             },
             &MaybeReplacedKey {
                 index: 1,
-                replacement_idx: Some(1)
+                replacement_idx: Some(1),
             },
         )
         .unwrap();
         assert!(!result);
+    }
+
+    #[test]
+    fn test_are_neighbours_with_delta_encoded_parent_ids_non_null_values_logic() {
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+                // TODO need add bytes
+                // Field::new(consts::ATTRIBUTE_BYTES, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(std::iter::repeat_n("a", 12))),
+                Arc::new(StringArray::from_iter([
+                    Some("a"),
+                    Some("a"),
+                    Some("b"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(Int64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    Some(1),
+                    Some(1),
+                    Some(2),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(Float64Array::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(1.0),
+                    Some(1.0),
+                    Some(2.0),
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BooleanArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(true),
+                    Some(true),
+                    Some(false),
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let key_col =
+            StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
+        let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
+
+        // assert adjacent non-null strings will evaluate equality correctly
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 0, replacement_idx: None },
+            &MaybeReplacedKey { index: 1, replacement_idx: None }
+        ).unwrap();
+        assert!(result);
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 1, replacement_idx: None },
+            &MaybeReplacedKey { index: 2, replacement_idx: None }
+        ).unwrap();
+        assert!(!result);
+
+        // assert adjacent non-null ints will evaluate equality correctly
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 3, replacement_idx: None },
+            &MaybeReplacedKey { index: 4, replacement_idx: None }
+        ).unwrap();
+        assert!(result);
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 4, replacement_idx: None },
+            &MaybeReplacedKey { index: 5, replacement_idx: None }
+        ).unwrap();
+        assert!(!result);
+
+        // assert adjacent non-null floats will evaluate equality correctly
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 6, replacement_idx: None },
+            &MaybeReplacedKey { index: 7, replacement_idx: None }
+        ).unwrap();
+        assert!(result);
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 7, replacement_idx: None },
+            &MaybeReplacedKey { index: 8, replacement_idx: None }
+        ).unwrap();
+        assert!(!result);
+
+
+        // assert adjacent non-null floats will evaluate equality correctly
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 9, replacement_idx: None },
+            &MaybeReplacedKey { index: 10, replacement_idx: None }
+        ).unwrap();
+        assert!(result);
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey { index: 10, replacement_idx: None },
+            &MaybeReplacedKey { index: 11, replacement_idx: None }
+        ).unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_are_neighbours_with_delta_encoded_parent_ids_null_values_logic() {
+        todo!()
+    }
+
+    #[test]
+    fn test_should_remove_transport_optimized_encoding() {
+        // - rename joins left
+        // - rename joins right
+        // - delete joins
+        // - rename doesn't join
+        // - delete doesn't join
+
+        todo!()
     }
 }
