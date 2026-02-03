@@ -595,6 +595,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -622,6 +623,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -651,6 +653,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -683,6 +686,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -711,6 +715,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -739,6 +744,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -770,6 +776,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -797,6 +804,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -826,6 +834,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -854,6 +863,7 @@ mod test {
             senders,
             Some("out".into()),
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -882,6 +892,7 @@ mod test {
             senders,
             None,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -913,6 +924,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -942,6 +954,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -973,6 +986,7 @@ mod test {
             None,
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();
@@ -1003,6 +1017,7 @@ mod test {
             Some("out".into()),
             ctrl_tx,
             metrics_reporter,
+            otap_df_engine::extensions::ExtensionRegistry::new(),
         );
 
         let pdata = create_test_pdata();

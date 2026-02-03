@@ -843,7 +843,7 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter).await;
+            _ = exporter.start(pipeline_ctrl_msg_tx, metrics_reporter, otap_df_engine::extensions::ExtensionRegistry::new()).await;
             Ok(())
         }
 

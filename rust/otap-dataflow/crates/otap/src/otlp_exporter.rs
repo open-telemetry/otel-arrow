@@ -1094,7 +1094,7 @@ mod tests {
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
             exporter
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, otap_df_engine::extensions::ExtensionRegistry::new())
                 .await
                 .map(|_| ())
         }
