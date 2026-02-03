@@ -755,12 +755,17 @@ mod tests {
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
+    #[cfg(not(windows))]
     use otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel};
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
+    #[cfg(not(windows))]
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+    #[cfg(not(windows))]
     use otap_df_engine::message::{Receiver, Sender};
+    #[cfg(not(windows))]
     use otap_df_engine::node::NodeWithPDataReceiver;
+    #[cfg(not(windows))]
     use otap_df_engine::testing::create_not_send_channel;
     use otap_df_engine::testing::{
         exporter::{TestContext, TestRuntime},
@@ -772,8 +777,10 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use otap_df_pdata::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
+    #[cfg(not(windows))]
     use otap_df_telemetry::metrics::MetricSetSnapshot;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    #[cfg(not(windows))]
     use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use std::net::SocketAddr;
