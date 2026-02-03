@@ -13,7 +13,7 @@ processor:
   urn: urn:otel:fanout:processor
   config:
     mode: parallel          # or "sequential"
-    await_ack: primary      # or "all" or "none"
+    await_ack: all          # or "primary" or "none"
     timeout_check_interval: 200ms
     max_inflight: 10000     # maximum in-flight messages (0 = unlimited)
     destinations:
@@ -278,8 +278,8 @@ Cloning is cheap for both data formats:
 
 | Format | Storage | Clone Cost |
 |--------|---------|------------|
-| OTLP (OtlpProtoBytes) | `bytes::Bytes` | O(1) refcount bump |
-| OTAP (OtapArrowRecords) | `Arc` per column | O(columns) refcount bumps |
+| OTLP (OtlpProtoBytes) | `bytes::Bytes` | O(1) refcount increment |
+| OTAP (OtapArrowRecords) | `Arc` per column | O(columns) refcount increments |
 
 No telemetry data is deep-copied during fan-out. Only reference counts are
 incremented.
