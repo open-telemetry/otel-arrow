@@ -277,11 +277,12 @@ impl<PData: Debug + 'static> TestPhase<PData> {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let final_metrics_reporter = metrics_reporter.clone();
+        let extension_registry = crate::extensions::ExtensionRegistry::new();
 
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             let terminal_state = self
                 .receiver
-                .start(pipeline_ctrl_msg_tx, metrics_reporter)
+                .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
                 .expect("Receiver event loop failed");
 

@@ -27,6 +27,8 @@
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
+use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
+use crate::extensions::ExtensionTrait;
 use crate::message::MessageChannel;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
@@ -35,6 +37,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A trait for extensions (!Send definition).
@@ -84,9 +87,13 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given extension node id and metrics
     /// reporter.
     #[must_use]
-    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
+    ) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id, metrics_reporter),
+            core: EffectHandlerCore::new(node_id, metrics_reporter, extension_registry),
             _pd: PhantomData,
         }
     }
@@ -95,6 +102,28 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn extension_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Gets an extension trait implementation by extension name.
+    ///
+    /// This allows extensions to look up capabilities provided by other extensions.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists.
+    /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Print an info message to stdout.

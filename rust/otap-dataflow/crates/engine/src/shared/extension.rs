@@ -26,6 +26,7 @@
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
+use crate::extensions::{ExtensionError, ExtensionRegistry, ExtensionTrait};
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
@@ -37,6 +38,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{Sleep, sleep_until};
 
@@ -180,9 +182,13 @@ impl<PData> EffectHandler<PData> {
     /// Creates a new shared (Send) `EffectHandler` with the given extension node id and metrics
     /// reporter.
     #[must_use]
-    pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
+    pub fn new(
+        node_id: NodeId,
+        metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
+    ) -> Self {
         EffectHandler {
-            core: EffectHandlerCore::new(node_id, metrics_reporter),
+            core: EffectHandlerCore::new(node_id, metrics_reporter, extension_registry),
             _pd: PhantomData,
         }
     }
@@ -191,6 +197,21 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn extension_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Returns an extension trait implementation by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtensionError`] if the extension is not found or doesn't implement the trait.
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Print an info message to stdout.

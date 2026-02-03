@@ -313,6 +313,43 @@ impl std::fmt::Debug for ExtensionRegistry {
     }
 }
 
+/// Builder for constructing an [`ExtensionRegistry`].
+///
+/// Use this to register extension bundles before creating the immutable registry.
+///
+/// # Example
+///
+/// ```ignore
+/// let mut builder = ExtensionRegistryBuilder::new();
+/// builder.register("my_extension".to_string(), bundle);
+/// let registry = builder.build();
+/// ```
+#[derive(Default)]
+pub struct ExtensionRegistryBuilder {
+    extensions: HashMap<String, ExtensionBundle>,
+}
+
+impl ExtensionRegistryBuilder {
+    /// Create a new empty builder.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            extensions: HashMap::new(),
+        }
+    }
+
+    /// Register an extension bundle with a name.
+    pub fn register(&mut self, name: String, bundle: ExtensionBundle) {
+        let _ = self.extensions.insert(name, bundle);
+    }
+
+    /// Build the immutable registry.
+    #[must_use]
+    pub fn build(self) -> ExtensionRegistry {
+        ExtensionRegistry::from_map(self.extensions)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

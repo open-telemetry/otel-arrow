@@ -35,6 +35,8 @@
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
+use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
+use crate::extensions::ExtensionTrait;
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -43,6 +45,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -107,8 +110,9 @@ impl<PData> EffectHandler<PData> {
         msg_senders: HashMap<PortName, Sender<PData>>,
         default_port: Option<PortName>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Self {
-        let core = EffectHandlerCore::new(node_id, metrics_reporter);
+        let core = EffectHandlerCore::new(node_id, metrics_reporter, extension_registry);
 
         // Determine and cache the default sender
         let default_sender = if let Some(ref port) = default_port {
@@ -130,6 +134,28 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn processor_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Gets an extension trait implementation by extension name.
+    ///
+    /// This allows processors to look up capabilities provided by extensions.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists.
+    /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Returns the list of connected out ports for this processor.
@@ -293,6 +319,7 @@ impl<PData> EffectHandler<PData> {
 mod tests {
     #![allow(missing_docs)]
     use super::*;
+    use crate::extensions::ExtensionRegistry;
     use crate::local::message::LocalSender;
     use crate::testing::test_node;
     use otap_df_channel::error::SendError;
@@ -315,7 +342,7 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
         eh.send_message_to("b", 42).await.unwrap();
 
         // Ensure only 'b' received
@@ -334,7 +361,7 @@ mod tests {
         let _ = senders.insert("only".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         eh.send_message(7).await.unwrap();
         assert_eq!(rx.recv().await.unwrap(), 7);
@@ -355,6 +382,7 @@ mod tests {
             senders,
             Some("a".into()),
             metrics_reporter,
+            ExtensionRegistry::new(),
         );
 
         eh.send_message(11).await.unwrap();
@@ -377,7 +405,7 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         let res = eh.send_message(5).await;
         assert!(res.is_err());
@@ -405,7 +433,7 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         let ports: HashSet<_> = eh.connected_ports().into_iter().collect();
         let expected: HashSet<_> = [Cow::from("a"), Cow::from("b")].into_iter().collect();
@@ -424,6 +452,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            ExtensionRegistry::new(),
         );
 
         // Should succeed when channel has capacity
@@ -444,6 +473,7 @@ mod tests {
             senders,
             Some("out".into()),
             metrics_reporter,
+            ExtensionRegistry::new(),
         );
 
         // First send should succeed
@@ -468,7 +498,7 @@ mod tests {
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         // No default port specified with multiple ports = ambiguous
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         // Should return configuration error when no default sender
         let result = eh.try_send_message(99);
@@ -485,7 +515,7 @@ mod tests {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         // Should succeed when sending to a specific port
         assert!(eh.try_send_message_to("b", 42).is_ok());
@@ -501,7 +531,7 @@ mod tests {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         // First send should succeed
         assert!(eh.try_send_message_to("out", 1).is_ok());
@@ -520,7 +550,7 @@ mod tests {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter);
+        let eh = EffectHandler::new(test_node("proc"), senders, None, metrics_reporter, ExtensionRegistry::new());
 
         // Should return error for unknown port
         let result = eh.try_send_message_to("unknown", 99);

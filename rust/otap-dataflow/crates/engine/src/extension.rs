@@ -15,6 +15,7 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
 use crate::extensions::registry::ExtensionBundle;
+use crate::extensions::ExtensionRegistry;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -44,8 +45,9 @@ pub enum ExtensionWrapper<PData> {
         runtime_config: ExtensionConfig,
         /// The extension instance.
         extension: Box<dyn local::Extension<PData>>,
-        /// Extension traits.
-        extension_traits: ExtensionBundle,
+        /// Extension traits that this extension provides.
+        /// Taken during pipeline initialization to build the central registry.
+        extension_traits: Option<ExtensionBundle>,
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -63,8 +65,9 @@ pub enum ExtensionWrapper<PData> {
         runtime_config: ExtensionConfig,
         /// The extension instance.
         extension: Box<dyn shared::Extension<PData>>,
-        /// Extension traits.
-        extension_traits: ExtensionBundle,
+        /// Extension traits that this extension provides.
+        /// Taken during pipeline initialization to build the central registry.
+        extension_traits: Option<ExtensionBundle>,
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -108,7 +111,7 @@ impl<PData> ExtensionWrapper<PData> {
             user_config,
             runtime_config: config.clone(),
             extension: Box::new(extension),
-            extension_traits,
+            extension_traits: Some(extension_traits),
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: LocalReceiver::mpsc(control_receiver),
             telemetry: None,
@@ -135,7 +138,7 @@ impl<PData> ExtensionWrapper<PData> {
             user_config,
             runtime_config: config.clone(),
             extension: Box::new(extension),
-            extension_traits,
+            extension_traits: Some(extension_traits),
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: SharedReceiver::mpsc(control_receiver),
             telemetry: None,
@@ -273,6 +276,7 @@ impl<PData> ExtensionWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -284,7 +288,8 @@ impl<PData> ExtensionWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    local::EffectHandler::new(node_id, metrics_reporter, extension_registry);
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
@@ -306,13 +311,29 @@ impl<PData> ExtensionWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    shared::EffectHandler::new(node_id, metrics_reporter, extension_registry);
                 effect_handler
                     .core
                     .set_pipeline_ctrl_msg_sender(pipeline_ctrl_msg_tx);
                 let message_channel = shared::MessageChannel::new(control_receiver);
                 extension.start(message_channel, effect_handler).await
             }
+        }
+    }
+
+    /// Takes the extension traits bundle from this wrapper, leaving `None` in its place.
+    ///
+    /// This is called during pipeline initialization to collect all extension traits
+    /// into the central registry.
+    pub fn take_extension_traits(&mut self) -> Option<ExtensionBundle> {
+        match self {
+            ExtensionWrapper::Local {
+                extension_traits, ..
+            } => extension_traits.take(),
+            ExtensionWrapper::Shared {
+                extension_traits, ..
+            } => extension_traits.take(),
         }
     }
 }

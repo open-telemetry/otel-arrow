@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
@@ -302,6 +303,7 @@ impl<PData> ProcessorWrapper<PData> {
     pub async fn prepare_runtime(
         self,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<ProcessorWrapperRuntime<PData>, Error> {
         match self {
             ProcessorWrapper::Local {
@@ -328,6 +330,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    extension_registry,
                 );
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
@@ -359,6 +362,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     default_port,
                     metrics_reporter,
+                    extension_registry,
                 );
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
@@ -374,8 +378,11 @@ impl<PData> ProcessorWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<(), Error> {
-        let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
+        let runtime = self
+            .prepare_runtime(metrics_reporter.clone(), extension_registry)
+            .await?;
 
         match runtime {
             ProcessorWrapperRuntime::Local {

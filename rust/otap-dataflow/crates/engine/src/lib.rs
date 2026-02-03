@@ -552,11 +552,29 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let edges = collect_hyper_edges_runtime(&receivers, &processors);
 
+        // Build extension registry from extension traits
+        let mut registry_builder = extensions::ExtensionRegistryBuilder::new();
+        for extension in &mut extensions {
+            let name = extension.node_id().name.to_string();
+            if let Some(bundle) = extension.take_extension_traits() {
+                registry_builder.register(name, bundle);
+            }
+        }
+        let extension_registry = registry_builder.build();
+
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
             .expect("default_pdata_channel_size must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, extensions, nodes);
+        let mut pipeline = RuntimePipeline::new(
+            config,
+            receivers,
+            processors,
+            exporters,
+            extensions,
+            nodes,
+            extension_registry,
+        );
         let wirings = edges
             .into_iter()
             .map(|hyper_edge| {

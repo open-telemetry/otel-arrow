@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -270,6 +271,7 @@ impl<PData> ExporterWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -282,7 +284,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    local::EffectHandler::new(node_id, metrics_reporter, extension_registry);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -306,7 +309,8 @@ impl<PData> ExporterWrapper<PData> {
                 },
                 metrics_reporter,
             ) => {
-                let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                let mut effect_handler =
+                    shared::EffectHandler::new(node_id, metrics_reporter, extension_registry);
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

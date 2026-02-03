@@ -19,6 +19,9 @@
 
 pub mod registry;
 
+// Re-export commonly used types
+pub use registry::{ExtensionBundle, ExtensionError, ExtensionRegistry, ExtensionRegistryBuilder};
+
 /// Extension traits that components can implement to expose capabilities.
 pub mod token_provider;
 

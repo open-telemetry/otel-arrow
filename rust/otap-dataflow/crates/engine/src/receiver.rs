@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -286,6 +287,7 @@ impl<PData> ReceiverWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
+        extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         match (self, metrics_reporter) {
             (
@@ -317,6 +319,7 @@ impl<PData> ReceiverWrapper<PData> {
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
+                    extension_registry,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
@@ -349,6 +352,7 @@ impl<PData> ReceiverWrapper<PData> {
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
+                    extension_registry,
                 );
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
