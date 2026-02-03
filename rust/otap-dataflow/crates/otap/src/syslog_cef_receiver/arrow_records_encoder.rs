@@ -3209,4 +3209,79 @@ mod tests {
             "Body should be None for fully parsed CEF message"
         );
     }
+
+    /// Test RFC 5424 proc_id handling for both numeric and non-numeric values.
+    /// Per RFC 5424, PROCID = 1*128PRINTUSASCII (any printable ASCII, not just numeric).
+    /// - Non-numeric proc_id: only `syslog.process_id_str` should be present
+    /// - Numeric proc_id: both `syslog.process_id_str` and `syslog.process_id` should be present
+    #[test]
+    fn test_rfc5424_non_numeric_proc_id() {
+        let mut builder = ArrowRecordsBuilder::new();
+
+        // Message 1: RFC 5424 with non-numeric proc_id "worker-1"
+        let msg1 = "<34>1 2024-01-15T10:30:45.123Z host1 app1 worker-1 ID1 - Message with non-numeric proc_id";
+        // Message 2: RFC 5424 with numeric proc_id "1234"
+        let msg2 =
+            "<165>1 2024-01-15T10:31:00.456Z host2 app2 1234 ID2 - Message with numeric proc_id";
+
+        let messages = vec![msg1, msg2];
+
+        for msg in &messages {
+            let parsed = parse(msg.as_bytes()).unwrap();
+            builder.append_syslog(parsed);
+        }
+
+        let arrow_records = builder.build().unwrap();
+
+        // Convert to OTLP for easier attribute inspection
+        let export_request = otap_logs_to_otlp(arrow_records);
+
+        assert_eq!(export_request.resource_logs.len(), 1);
+        let scope_logs = &export_request.resource_logs[0].scope_logs[0];
+        assert_eq!(scope_logs.log_records.len(), 2);
+
+        // Helper to find attribute by key
+        fn find_attr<'a>(
+            attrs: &'a [otap_df_pdata::proto::opentelemetry::common::v1::KeyValue],
+            key: &str,
+        ) -> Option<&'a Value> {
+            attrs
+                .iter()
+                .find(|kv| kv.key == key)
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| v.value.as_ref())
+        }
+
+        // Log 1: Non-numeric proc_id "worker-1"
+        let log1 = &scope_logs.log_records[0];
+
+        // Should have process_id_str with original string value
+        assert_eq!(
+            find_attr(&log1.attributes, "syslog.process_id_str"),
+            Some(&Value::StringValue("worker-1".to_string())),
+            "Non-numeric proc_id should be stored in process_id_str as string"
+        );
+        // Should NOT have process_id (integer) since it's not parseable
+        assert_eq!(
+            find_attr(&log1.attributes, "syslog.process_id"),
+            None,
+            "Non-numeric proc_id should NOT have process_id (integer) attribute"
+        );
+
+        // Log 2: Numeric proc_id "1234"
+        let log2 = &scope_logs.log_records[1];
+
+        // Should have process_id_str with original string value
+        assert_eq!(
+            find_attr(&log2.attributes, "syslog.process_id_str"),
+            Some(&Value::StringValue("1234".to_string())),
+            "Numeric proc_id should be stored in process_id_str as string"
+        );
+        // Should also have process_id as integer since it's parseable
+        assert_eq!(
+            find_attr(&log2.attributes, "syslog.process_id"),
+            Some(&Value::IntValue(1234)),
+            "Numeric proc_id should have process_id as integer"
+        );
+    }
 }
