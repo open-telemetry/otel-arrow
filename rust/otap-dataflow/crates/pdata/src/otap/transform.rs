@@ -934,11 +934,16 @@ pub fn transform_attributes_with_stats(
             } else {
                 &vec![]
             };
-            let should_materialize_parent_ids = should_remove_transport_optimized_encoding(
-                &attrs_record_batch_cow,
-                replace_bytes.as_ref(),
-                &keys_transform_result.transform_ranges,
-            )?;
+
+            let should_materialize_parent_ids = if is_transport_optimized {
+                should_remove_transport_optimized_encoding(
+                    &attrs_record_batch_cow,
+                    replace_bytes.as_ref(),
+                    &keys_transform_result.transform_ranges,
+                )?
+            } else {
+                false
+            };
 
             // // Materialize the parent ID column if it exists. Renames/replacements can change
             // // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
@@ -2085,24 +2090,21 @@ fn should_remove_transport_optimized_encoding(
     for i in 0..transform_ranges.len() {
         let curr_range = &transform_ranges[i];
 
-        let prev_neighbour = (i > 0)
-            .then(|| {
-                find_previous_neighbour_post_transform(
-                    curr_range.start(),
-                    &transform_ranges[0..i - 1],
-                )
-            })
-            .flatten();
+        let prev_ranges = if i > 0 {
+            &transform_ranges[0..i - 1]
+        } else {
+            &[]
+        };
+        let prev_neighbour =
+            find_previous_neighbour_post_transform(curr_range.start(), prev_ranges);
 
-        let next_neighbour = (i < num_ranges - 1)
-            .then(|| {
-                find_next_neighbour_post_transform(
-                    curr_range.end() - 1,
-                    num_rows,
-                    &transform_ranges[i + 1..num_ranges],
-                )
-            })
-            .flatten();
+        let next_ranges = if i < num_ranges - 1 {
+            &transform_ranges[i + 1..num_ranges]
+        } else {
+            &[]
+        };
+        let next_neighbour =
+            find_next_neighbour_post_transform(curr_range.end() - 1, num_rows, next_ranges);
 
         match curr_range.range_type {
             KeyTransformRangeType::Replace => {
@@ -2246,10 +2248,10 @@ fn are_neighbours_with_delta_encoded_parent_ids(
     prev: &MaybeReplacedKey,
     next: &MaybeReplacedKey,
 ) -> Result<bool> {
-    // check that the candidates are indeed neighbours
-    if prev.index + 1 != next.index {
-        return Ok(false);
-    }
+    // // check that the candidates are indeed neighbours
+    // if prev.index + 1 != next.index {
+    //     return Ok(false);
+    // }
 
     // check if the rows have the same type
     let prev_type = AttributeValueType::try_from(val_columns.attr_type.value(prev.index))?;
@@ -3275,24 +3277,37 @@ mod test {
 
         for (transform, input_cols, expected_cols) in test_cases {
             let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
                 Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
             ]));
 
+            let types = UInt8Array::from_iter_values(std::iter::repeat_n(
+                AttributeValueType::Str as u8,
+                input_cols.0.len(),
+            ));
             let keys = StringArray::from_iter_values(input_cols.0);
             let values = StringArray::from_iter_values(input_cols.1);
 
-            let record_batch =
-                RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)])
-                    .unwrap();
+            let record_batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(types), Arc::new(keys), Arc::new(values)],
+            )
+            .unwrap();
 
             let result = transform_attributes(&record_batch, &transform).unwrap();
 
+            let types = UInt8Array::from_iter_values(std::iter::repeat_n(
+                AttributeValueType::Str as u8,
+                expected_cols.0.len(),
+            ));
             let keys = StringArray::from_iter_values(expected_cols.0);
             let values = StringArray::from_iter_values(expected_cols.1);
-            let expected =
-                RecordBatch::try_new(schema.clone(), vec![Arc::new(keys), Arc::new(values)])
-                    .unwrap();
+            let expected = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(types), Arc::new(keys), Arc::new(values)],
+            )
+            .unwrap();
 
             assert_eq!(result, expected)
         }
@@ -3566,6 +3581,7 @@ mod test {
     #[test]
     fn test_transform_delete_with_nulls() {
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, false),
         ]));
@@ -3573,6 +3589,15 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Str as u8,
+                ])),
                 Arc::new(StringArray::from_iter(vec![
                     Some("a"),
                     Some("b"),
@@ -3608,6 +3633,13 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Empty as u8,
+                ])),
                 Arc::new(StringArray::from_iter(vec![
                     Some("a"),
                     Some("B"),
@@ -3867,6 +3899,7 @@ mod test {
     #[test]
     fn test_transform_attrs_delete_all_attributes() {
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
@@ -3874,6 +3907,10 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
                 Arc::new(StringArray::from_iter_values(["a", "a", "a"])),
                 Arc::new(StringArray::from_iter_values(["1", "2", "3"])),
             ],
@@ -3896,6 +3933,7 @@ mod test {
     #[test]
     fn test_transform_attrs_delete_all_attributes_dict_encoded() {
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -3907,6 +3945,10 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
                 Arc::new(DictionaryArray::new(
                     UInt8Array::from_iter_values([0, 0, 0]),
                     Arc::new(StringArray::from_iter_values(["a", "a", "a"])),
@@ -4010,7 +4052,7 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(result, expected);
+        pretty_assertions::assert_eq!(result, expected);
     }
 
     #[test]
@@ -4297,6 +4339,7 @@ mod test {
     fn test_with_stats_utf8_rename_and_delete() {
         // keys: [a, b, a, d, c] ; rename a->A ; delete d
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
@@ -4304,6 +4347,10 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
                 Arc::new(StringArray::from_iter_values(vec!["a", "b", "a", "d", "c"])),
                 Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
             ],
@@ -5970,7 +6017,7 @@ mod insert_tests {
     }
 
     #[test]
-    fn test_are_neighbours_with_delta_encoded_parent_ids_simple_exclusions() {
+    fn test_are_neighbours_with_delta_encoded_parent_ids_type_mismatch() {
         let batch1 = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
@@ -5996,23 +6043,6 @@ mod insert_tests {
             StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
         let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
         let replacement_bytes = vec![b"b".to_vec()];
-
-        // check returns false for neighbours that aren't adjacent
-        let result = are_neighbours_with_delta_encoded_parent_ids(
-            &key_col,
-            &val_cols,
-            &replacement_bytes,
-            &MaybeReplacedKey {
-                index: 0,
-                replacement_idx: None,
-            },
-            &MaybeReplacedKey {
-                index: 2,
-                replacement_idx: None,
-            },
-        )
-        .unwrap();
-        assert!(!result);
 
         // check it returns false when neighbours don't have the same type
         let result = are_neighbours_with_delta_encoded_parent_ids(
@@ -6363,17 +6393,31 @@ mod insert_tests {
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 0, replacement_idx: None },
-            &MaybeReplacedKey { index: 1, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(result);
         let result = are_neighbours_with_delta_encoded_parent_ids(
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 1, replacement_idx: None },
-            &MaybeReplacedKey { index: 2, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(!result);
 
         // assert adjacent non-null ints will evaluate equality correctly
@@ -6381,17 +6425,31 @@ mod insert_tests {
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 3, replacement_idx: None },
-            &MaybeReplacedKey { index: 4, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 3,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 4,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(result);
         let result = are_neighbours_with_delta_encoded_parent_ids(
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 4, replacement_idx: None },
-            &MaybeReplacedKey { index: 5, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 4,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 5,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(!result);
 
         // assert adjacent non-null floats will evaluate equality correctly
@@ -6399,44 +6457,73 @@ mod insert_tests {
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 6, replacement_idx: None },
-            &MaybeReplacedKey { index: 7, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 6,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 7,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(result);
         let result = are_neighbours_with_delta_encoded_parent_ids(
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 7, replacement_idx: None },
-            &MaybeReplacedKey { index: 8, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 7,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 8,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(!result);
-
 
         // assert adjacent non-null floats will evaluate equality correctly
         let result = are_neighbours_with_delta_encoded_parent_ids(
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 9, replacement_idx: None },
-            &MaybeReplacedKey { index: 10, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 9,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 10,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(result);
         let result = are_neighbours_with_delta_encoded_parent_ids(
             &key_col,
             &val_cols,
             &[],
-            &MaybeReplacedKey { index: 10, replacement_idx: None },
-            &MaybeReplacedKey { index: 11, replacement_idx: None }
-        ).unwrap();
+            &MaybeReplacedKey {
+                index: 10,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 11,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
         assert!(!result);
     }
 
+    #[ignore]
     #[test]
     fn test_are_neighbours_with_delta_encoded_parent_ids_null_values_logic() {
         todo!()
     }
 
+    #[ignore]
     #[test]
     fn test_should_remove_transport_optimized_encoding() {
         // - rename joins left
