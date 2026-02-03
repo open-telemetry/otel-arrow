@@ -959,7 +959,7 @@ mod tests {
         let controller_ctx =
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(
             pipeline_ctx.register_metrics::<crate::otlp_receiver::OtlpReceiverMetrics>(),
         ));
