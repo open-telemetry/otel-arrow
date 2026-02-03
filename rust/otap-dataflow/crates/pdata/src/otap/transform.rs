@@ -1721,6 +1721,22 @@ where
     })
 }
 
+fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
+    dict_keys: PrimitiveArray<K>,
+    dict_value_transform_ranges: &[KeyTransformRange]
+) -> Vec<KeyTransformRange> {
+    // normally, this would only be called when the attributes values are transport optimize
+    // encoded, which means it's sorted by attribute type & key, so the number of ranges
+    // transformed in the dict values should be roughly equal to the number of ranges of dict keys,
+    // unless the same key is used for values of different types. That's why we use calculate
+    // capacity like this:
+    let mut dict_key_transform_ranges = Vec::with_capacity(dict_value_transform_ranges.len());
+
+    // let
+
+    dict_key_transform_ranges
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum KeyTransformRangeType {
     Replace,
