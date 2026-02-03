@@ -95,11 +95,12 @@ higher throughput.
 Measures resource consumption in idle state across multiple core configurations
 (1, 2, 4, 8, 16, 32 cores) to validate the linear memory scaling model:
 
-```
-Memory (MiB) = C + N × R
+```txt
+Memory (MiB) = C + N * R
 ```
 
 Where:
+
 - **C** = Constant overhead (shared infrastructure)
 - **N** = Number of cores
 - **R** = Per-core memory overhead
