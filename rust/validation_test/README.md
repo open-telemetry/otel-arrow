@@ -45,6 +45,8 @@ Below are what each required key is used for
 - transformative -> Does your pipeline modify or alter the data
 
 ## Future directions
+
 - Automatically trigger the validation process when a PR becomes "Ready for review".
-- Manually trigger the validation process when a comment containing `@validation` is added to a PR (strecht goal).
+- Manually trigger the validation process when a comment containing `@validation` 
+  is added to a PR (strecht goal).
 - Extend the validation exporter to support more complex validation procedure.
