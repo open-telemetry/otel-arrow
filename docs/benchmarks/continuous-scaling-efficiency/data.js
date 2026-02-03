@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770137250822,
+  "lastUpdate": 1770151058844,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2818,6 +2818,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7479,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "66651184+utpilla@users.noreply.github.com",
+            "name": "Utkarsh Umesan Pillai",
+            "username": "utpilla"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "873c41457c4190c8b2c72f9f7c42cfde272d3665",
+          "message": "[otap-df-otap] Update Syslog CEF Receiver to skip body for successfully parsed messages (#1940)\n\n# Change Summary\n\n- This PR optimizes storage by not duplicating data in the log body when\nmessages are fully parsed. For successfully parsed messages, body is now\nnull instead of containing the original input.\n- Fix process id handling for [RFC\n5424](https://www.rfc-editor.org/rfc/rfc5424) to comply with the\nspecification. As per RFC 5424, `PROCID = 1*128PRINTUSASCII` - It can be\nany printable ASCII string, not just numeric. Previously, non-numeric\nvalues were silently converted to 0 and lost. Now we store:\n\n- `syslog.process_id_str` (string) - always present when `proc_id`\nexists, contains the original value\n- `syslog.process_id` (integer) - only present if the value is parseable\nas an integer\n\nRFC 3164 behavior is unchanged (`proc_id` is conventionally numeric in\nthat format).\n\n## What issue does this PR close?\n\nRelated to #1149 \n\n## How are these changes tested?\n\nAdded tests for mixed fully-parsed and partially-parsed messages to\nverify:\n\n- Body is null for fully parsed messages\n- Body contains original input for partially parsed messages\n\nAdded a test for RFC 5424 proc_id parsing as well to ensure that\n`process_id_str` is always logged and `process_id` is only logged when\nit can be parsed into an integer.\n\n## Are there any user-facing changes?\n\nYes, users would now see `syslog.process_id_str` attribute always being\nlogged for valid RFC5424 messages.",
+          "timestamp": "2026-02-03T19:34:23Z",
+          "tree_id": "ff06bfdd339ba8624aa9257e5f54bf8d35ee21e2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/873c41457c4190c8b2c72f9f7c42cfde272d3665"
+        },
+        "date": 1770151058329,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8967,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8396,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.7747,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.477,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.747,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
