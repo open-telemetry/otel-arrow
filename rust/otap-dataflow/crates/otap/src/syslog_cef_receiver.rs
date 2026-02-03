@@ -7,13 +7,13 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
@@ -28,7 +28,15 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsServerConfig;
+#[cfg(feature = "experimental-tls")]
+use otap_df_telemetry::{otel_debug, otel_warn};
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -38,7 +46,8 @@ pub mod parser;
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
-const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
+/// Maximum time to wait before building an Arrow batch
+const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
 
 /// Protocol type for the receiver
@@ -59,6 +68,12 @@ struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages
     protocol: Protocol,
+    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
+    ///
+    /// When configured, TCP connections will require TLS. This is only applicable
+    /// when `protocol` is `tcp`. UDP does not support TLS.
+    #[cfg(feature = "experimental-tls")]
+    pub tls: Option<TlsServerConfig>,
 }
 
 impl Config {
@@ -68,6 +83,8 @@ impl Config {
         Self {
             listening_addr,
             protocol,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
         }
     }
 }
@@ -138,12 +155,39 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
+            .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
         match self.config.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+
+                // Build TLS acceptor if TLS is configured
+                #[cfg(feature = "experimental-tls")]
+                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                    .await
+                    .map_err(|e| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!("Failed to configure TLS: {}", e),
+                        source_detail: format_error_sources(&e),
+                    })?;
+
+                // Extract handshake timeout from TLS config (if present)
+                #[cfg(feature = "experimental-tls")]
+                let maybe_handshake_timeout = self
+                    .config
+                    .tls
+                    .as_ref()
+                    .and_then(|tls| tls.handshake_timeout);
+
+                #[cfg(feature = "experimental-tls")]
+                if maybe_tls_acceptor.is_some() {
+                    otel_info!(
+                        "receiver.tls_enabled",
+                        message = "TLS enabled for Syslog/CEF TCP receiver"
+                    );
+                }
 
                 loop {
                     tokio::select! {
@@ -173,7 +217,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
-                                Ok((socket, _peer_addr)) => {
+                                Ok((socket, peer_addr)) => {
                                     // Track active connections
                                     self.metrics.borrow_mut().tcp_connections_active.inc();
 
@@ -181,10 +225,52 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
 
+                                    // Clone TLS acceptor for the spawned task
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_acceptor = maybe_tls_acceptor.clone();
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_handshake_timeout = maybe_handshake_timeout;
+
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
+                                        // Perform TLS handshake if configured, creating a unified reader type
+                                        #[cfg(feature = "experimental-tls")]
+                                        let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                            // Use configured timeout or fall back to 10 seconds (the serde default)
+                                            let timeout = tls_handshake_timeout
+                                                .unwrap_or(Duration::from_secs(10));
+                                            match accept_tls_connection(socket, &acceptor, timeout).await {
+                                                Ok(tls_stream) => {
+                                                    otel_debug!(
+                                                        "tls.handshake.success",
+                                                        peer = %peer_addr,
+                                                        message = "TLS handshake completed"
+                                                    );
+                                                    Box::new(BufReader::new(tls_stream))
+                                                }
+                                                Err(e) => {
+                                                    otel_warn!(
+                                                        "tls.handshake.failed",
+                                                        peer = %peer_addr,
+                                                        error = %e,
+                                                        message = "TLS handshake failed, closing connection"
+                                                    );
+                                                    metrics.borrow_mut().tcp_connections_active.dec();
+                                                    metrics.borrow_mut().tls_handshake_failures.inc();
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            Box::new(BufReader::new(socket))
+                                        };
+
+                                        #[cfg(not(feature = "experimental-tls"))]
                                         let mut reader = BufReader::new(socket);
+
+                                        // Suppress unused variable warning when TLS is disabled
+                                        let _ = peer_addr;
+
                                         let mut line_bytes = Vec::new();
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -230,7 +316,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -291,7 +377,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -306,7 +392,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -334,7 +420,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                         {
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -427,7 +513,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                         {
                                             let mut m = self.metrics.borrow_mut();
                                             match &res {
@@ -466,7 +552,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                 {
                                     let mut m = self.metrics.borrow_mut();
                                     match &res {
@@ -513,6 +599,11 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of active TCP connections
     #[metric(unit = "{conn}")]
     pub tcp_connections_active: UpDownCounter<u64>,
+
+    /// Number of TLS handshake failures
+    #[cfg(feature = "experimental-tls")]
+    #[metric(unit = "{error}")]
+    pub tls_handshake_failures: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -1136,6 +1227,7 @@ mod telemetry_tests {
     use super::*;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
+    use otap_df_engine::message::Sender;
     use otap_df_engine::testing::{setup_test_runtime, test_node};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1172,7 +1264,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(out_tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1264,7 +1356,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
