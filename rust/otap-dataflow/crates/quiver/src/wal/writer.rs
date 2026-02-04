@@ -1145,8 +1145,12 @@ impl WalCoordinator {
                     last_valid_offset = position_in_file + header_size;
                     boundaries.push(last_valid_offset);
                 }
-                Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
-                    // Partial or corrupted entry - stop here
+                Err(WalError::UnexpectedEof(_))
+                | Err(WalError::InvalidEntry(_))
+                | Err(WalError::CrcMismatch { .. }) => {
+                    // Partial or corrupted entry - stop scanning here.
+                    // This handles crash recovery (UnexpectedEof) and corruption
+                    // (InvalidEntry, CrcMismatch) by using entries before the damage.
                     break;
                 }
                 Err(err) => return Err(err),
