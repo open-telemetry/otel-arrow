@@ -1591,112 +1591,26 @@ where
         });
     }
 
-    // safety: we've checked in the if statement above whether this is None, and if so have
-    // already returned early.
-    let dict_values_keep_ranges = dict_values_transform_result
-        .keep_ranges
-        .expect("can unwrap keep ranges");
-
-    // Since we didn't return early, we'll need to adjust the the current keys that have
-    // not been deleted to align with the offsets in the new values array.
-
-    // first, find the ranges we need to keep for the dictionary keys. This will allow us
-    // to know how much space to allocate for the new keys array, and will also give us the
-    // ranges we'll need to keep in all other rows in the record batch
-    // let mut keep_ranges: Vec<(usize, usize)> = vec![];
-    // let mut curr_range_start = None;
-
-
-
-
-    // // // we're also going to keep this as a quick lookup for each dictionary key of whether it was
-    // // // kept and if so which contiguous range of kept dictionary values the key points to. This will
-    // // // allow us to build the new dictionary keys array very quickly, because we know how many
-    // // // dictionary values were deleted prior to this range.
-    // // let uninitialized = -2;
-
-    let val_keep_ranges = to_keep_ranges(dict_values.len(), &dict_values_transform_result.transform_ranges);
-    // println!("dict vals = {:?}", dict_values);
-    // println!("val keep ranges = {:?}", val_keep_ranges);
+    // create quick lookup for each dictionary key of whether it was kept and if so which
+    // contiguous range of kept dictionary values the key points to. This will allow us to build
+    // the new dictionary keys array very quickly, because we know how many dictionary values were
+    // deleted prior to this range.
+    let dict_values_keep_ranges = to_keep_ranges(dict_values.len(), &dict_values_transform_result.transform_ranges);
     let mut dict_key_kept_in_values_range: Vec<Option<usize>> = vec![None; dict_values.len()];
-    for (range_idx, range) in val_keep_ranges.iter().enumerate() {
+    for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
         for i in range.start..range.end {
             dict_key_kept_in_values_range[i] = Some(range_idx);
         }
     }
 
-    // // Pull out the dict's keys null buffer. We'll be accessing this often so keeping it here
-    // // avoids having to access it repeatedly on the hot paths below
-    // let dict_keys_nulls = dict_keys.nulls();
-
-    // for i in 0..dict_arr.len() {
-    //     if dict_keys_nulls
-    //         .map(|nulls| nulls.is_valid(i))
-    //         .unwrap_or(true)
-    //     {
-    //         let dict_key: usize = dict_keys.value(i).as_usize();
-
-    //         // determine if this dict key points to a dictionary value that was kept or deleted
-    //         let mut kept = false;
-    //         let kept_in_range = dict_key_kept_in_values_range[dict_key];
-    //         if kept_in_range >= 0 {
-    //             kept = true;
-    //         } else if kept_in_range == not_kept {
-    //             kept = false;
-    //         } else {
-    //             // need to iterate the ranges of dictionary values being kept
-    //             for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
-    //                 if range.0 > dict_key {
-    //                     // the ranges are sorted, so we know that if this range is after the dict key
-    //                     // which we're searching for there's no need to continue iterating
-    //                     break;
-    //                 }
-
-    //                 // check if dict key points to a value in a range that is kept
-    //                 if dict_key >= range.0 && dict_key < range.1 {
-    //                     dict_key_kept_in_values_range[dict_key] = range_idx as i32;
-    //                     kept = true;
-    //                     break;
-    //                 }
-    //             }
-
-    //             if !kept {
-    //                 dict_key_kept_in_values_range[dict_key] = not_kept;
-    //             }
-    //         }
-
-    //         // if this dictionary key points to a deleted value (kept = false), close the range of
-    //         // rows we'll keep in the attributes record batch
-    //         if !kept {
-    //             if let Some(s) = curr_range_start.take() {
-    //                 keep_ranges.push((s, i));
-    //             }
-    //             continue;
-    //         }
-    //     }
-
-    //     // if here, we're keeping the row at this index in the attributes record batch
-    //     if curr_range_start.is_none() {
-    //         curr_range_start = Some(i)
-    //     }
-    // }
-
-    // // add final range
-    // if let Some(s) = curr_range_start {
-    //     keep_ranges.push((s, dict_arr.len()));
-    // }
-
     // Build the new dictionary keys.
-    //
-    // For each range of dictionary values that have been deleted, we need to adjust dict keys
-    // pointing to values after these arrays down by the size of the deleted ranges.
-    // let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let key_keep_ranges = to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges);
-    // println!("key keep ranges = {:?}", key_keep_ranges);
     let count_kept_values = key_keep_ranges.iter().map(Range::len).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
 
+    // For each range of dictionary values that have been deleted, we need to adjust dict keys
+    // pointing to values after these arrays down by the size of the deleted ranges.
     // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
     let mut total_dict_key_offsets = 0;
@@ -1715,7 +1629,6 @@ where
         let kept_in_dict_values_range_idx = dict_key_kept_in_values_range
             .get(dict_key)
             .expect("dict keys values range lookup not properly initialized");
-        // if *kept_in_dict_values_range_idx >= 0 {
         if let Some(kept_in_dict_values_range_idx) = kept_in_dict_values_range_idx {
             let new_dict_key =
                 dict_key - dict_key_adjustments[*kept_in_dict_values_range_idx];
