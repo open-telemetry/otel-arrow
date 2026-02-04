@@ -373,7 +373,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok());
+                exporter_result.unwrap();
 
                 telemetry_registry_handle.visit_current_metrics(
                     |_metrics_descriptor, _attrs, _metric_values| {

@@ -1,0 +1,10 @@
+# Idle State Performance Test - 4 Cores
+# Measures baseline resource consumption with no active telemetry traffic on 4 cores
+from_template:
+  path: test_suites/integration/continuous/idle-state-template.yaml.j2
+  variables:
+    core_label: "4 Cores"
+    core_range: "0-3"
+    allocated_cores: 4
+    port: 8089
+    result_subdir: "4cores"

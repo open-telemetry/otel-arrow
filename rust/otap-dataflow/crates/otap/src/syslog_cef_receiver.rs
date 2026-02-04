@@ -61,7 +61,7 @@ enum Protocol {
     Udp,
 }
 
-/// config for a syslog cef receiver
+/// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -142,7 +142,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
-        mut self: Box<Self>,
+        self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
@@ -524,7 +524,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Do not propagate downstream send errors; keep running
                                         // so that telemetry can still be collected (tests expect refused
                                         // to be counted and reported). We already incremented
-                                        // `received_logs_refused` above.
+                                        // `received_logs_forward_failed` above.
                                         if res.is_err() {
                                             // swallow error
                                         }
