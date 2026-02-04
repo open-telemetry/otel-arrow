@@ -3924,4 +3924,5 @@ mod tests {
                 bundles_ingested
             );
         }
-    }}
+    }
+}
