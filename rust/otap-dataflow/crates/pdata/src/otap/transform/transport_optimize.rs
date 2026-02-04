@@ -42,7 +42,7 @@ use crate::{
     schema::{FieldExt, consts, get_field_metadata},
 };
 
-pub(crate) mod attributes;
+mod attributes;
 
 /// identifier for column encoding
 #[derive(Clone, Copy)]
