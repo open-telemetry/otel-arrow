@@ -82,8 +82,8 @@ impl InternalCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::service::telemetry::logs::LogsConfig;
     use otap_df_config::pipeline::service::telemetry::metrics::MetricsConfig;
+    use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
