@@ -513,10 +513,7 @@ impl WalConsumerCursor {
     /// `increment(bundle)`, but clearer when you only need to track a
     /// single entry.
     pub fn after(bundle: &WalRecordBundle) -> Self {
-        Self {
-            safe_offset: bundle.next_offset,
-            safe_sequence: bundle.sequence,
-        }
+        Self::from_offset(&bundle.offset)
     }
 
     /// Creates a cursor from a `WalOffset` returned by the writer.
