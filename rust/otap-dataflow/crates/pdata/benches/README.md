@@ -32,11 +32,3 @@ The following results compare the performance of the new `concatenate` implement
 | 100 inputs | 497.11 µs | 1,736.3 µs | **3.49x** |
 | 1000 inputs | 11.60 ms | 37.88 ms | **3.27x** |
 
-### Summary
-
-The new `concatenate` implementation consistently outperforms the old `generic_schemaless_concatenate` implementation by approximately **3.5x across all tested scenarios**. The performance improvement is consistent regardless of:
-- Number of input batches (10 to 1000)
-- Points per metric (5 to 50)
-- Metric type complexity (single vs mixed types)
-
-This demonstrates that the new implementation provides significant performance benefits for all common concatenation workloads.
