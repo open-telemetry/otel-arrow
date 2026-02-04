@@ -5,7 +5,7 @@
 
 use arrow::array::{
     ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder,
-    StringDictionaryBuilder, UInt8Builder, UInt16Array, UInt16Builder,
+    StringDictionaryBuilder, UInt8Builder, UInt16Builder,
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};

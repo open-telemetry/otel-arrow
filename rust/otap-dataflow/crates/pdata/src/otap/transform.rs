@@ -8,10 +8,10 @@ use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BooleanArray, DictionaryArray,
-    NullBufferBuilder, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
+    PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
 };
-use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
 use arrow::compute::{SortColumn, and, cast, concat, not};
 use arrow::datatypes::{
@@ -890,7 +890,7 @@ pub fn transform_attributes_impl(
     transform.validate()?;
 
     let schema = attrs_record_batch.schema();
-    let key_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+    let key_column = get_required_array(attrs_record_batch, consts::ATTRIBUTE_KEY)?;
     // safety: the call `get_required_array` above would return error if the field wasn't present
     let (key_column_idx, _) = schema
         .fields()
@@ -902,7 +902,7 @@ pub fn transform_attributes_impl(
     // if there are nulls
     if key_column.null_count() > 0 {
         return Err(Error::UnexpectedRecordBatchState {
-            reason: format!("expected attribute keys column to be non-nullable"),
+            reason: "expected attribute keys column to be non-nullable".into(),
         });
     }
 
@@ -1073,7 +1073,7 @@ pub fn transform_attributes_impl(
                 };
                 let should_materialize_parent_ids = if is_transport_optimized {
                     should_remove_transport_optimized_encoding(
-                        &attrs_record_batch,
+                        attrs_record_batch,
                         replace_bytes,
                         &transform_ranges,
                     )?
@@ -1583,8 +1583,14 @@ where
     // deleted prior to this range.
     let mut dict_key_kept_in_values_range: Vec<Option<usize>> = vec![None; dict_values.len()];
     for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
-        for i in range.start..range.end {
-            dict_key_kept_in_values_range[i] = Some(range_idx);
+        // for i in range.start..range.end {
+        for k in dict_key_kept_in_values_range
+            .iter_mut()
+            .take(range.end)
+            .skip(range.start)
+        {
+            // dict_key_kept_in_values_range[i] = Some(range_idx);
+            *k = Some(range_idx)
         }
     }
 
@@ -1659,7 +1665,7 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     attr_keys: &DictionaryArray<K>,
     dict_value_transform_ranges: &[KeyTransformRange],
 ) -> Vec<KeyTransformRange> {
-    if attr_keys.len() == 0 || dict_value_transform_ranges.len() == 0 {
+    if attr_keys.is_empty() || dict_value_transform_ranges.is_empty() {
         return Vec::new();
     }
 
@@ -2468,40 +2474,40 @@ fn are_neighbours_with_delta_encoded_parent_ids(
     match prev_type {
         AttributeValueType::Bool => {
             let bool_col = val_columns.attr_bool;
-            let prev_val = bool_col.map(|b| b.value_at(prev.index)).flatten();
-            let next_val = bool_col.map(|b| b.value_at(next.index)).flatten();
+            let prev_val = bool_col.and_then(|b| b.value_at(prev.index));
+            let next_val = bool_col.and_then(|b| b.value_at(next.index));
             if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
                 return Ok(false);
             }
         }
         AttributeValueType::Bytes => {
             let bytes_col = val_columns.attr_bytes.as_ref();
-            let prev_val = bytes_col.map(|b| b.value_at(prev.index)).flatten();
-            let next_val = bytes_col.map(|b| b.value_at(next.index)).flatten();
+            let prev_val = bytes_col.and_then(|b| b.value_at(prev.index));
+            let next_val = bytes_col.and_then(|b| b.value_at(next.index));
             if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
                 return Ok(false);
             }
         }
         AttributeValueType::Double => {
             let float_col = val_columns.attr_double;
-            let prev_val = float_col.map(|b| b.value_at(prev.index)).flatten();
-            let next_val = float_col.map(|b| b.value_at(next.index)).flatten();
+            let prev_val = float_col.and_then(|b| b.value_at(prev.index));
+            let next_val = float_col.and_then(|b| b.value_at(next.index));
             if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
                 return Ok(false);
             }
         }
         AttributeValueType::Str => {
             let str_col = val_columns.attr_str.as_ref();
-            let prev_val = str_col.map(|b| b.value_at(prev.index)).flatten();
-            let next_val = str_col.map(|b| b.value_at(next.index)).flatten();
+            let prev_val = str_col.and_then(|b| b.value_at(prev.index));
+            let next_val = str_col.and_then(|b| b.value_at(next.index));
             if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
                 return Ok(false);
             }
         }
         AttributeValueType::Int => {
             let int_col = val_columns.attr_int.as_ref();
-            let prev_val = int_col.map(|b| b.value_at(prev.index)).flatten();
-            let next_val = int_col.map(|b| b.value_at(next.index)).flatten();
+            let prev_val = int_col.and_then(|b| b.value_at(prev.index));
+            let next_val = int_col.and_then(|b| b.value_at(next.index));
             if prev_val.is_none() || next_val.is_none() || prev_val != next_val {
                 return Ok(false);
             }
@@ -2561,10 +2567,10 @@ mod test {
     use super::*;
 
     use arrow::array::{
-        BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, StringBuilder,
-        StringDictionaryBuilder, UInt8Array, UInt8Builder, UInt8DictionaryArray, UInt16Array,
-        UInt16Builder, UInt32Array,
+        BinaryArray, FixedSizeBinaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
+        UInt8DictionaryArray, UInt16Array, UInt32Array,
     };
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::{
         ArrowDictionaryKeyType, DataType, Field, Schema, UInt8Type, UInt16Type,
     };
@@ -2573,7 +2579,6 @@ mod test {
 
     use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
-    use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
     use crate::schema::{FieldExt, get_field_metadata};
     use arrow::array::{DictionaryArray, PrimitiveArray};
 
