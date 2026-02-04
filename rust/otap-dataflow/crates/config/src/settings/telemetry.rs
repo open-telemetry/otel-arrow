@@ -3,8 +3,13 @@
 
 //! Pipeline-internal telemetry settings.
 //!
-//! This module contains configuration for pipeline runtime metrics capture,
-//! which is distinct from `service.telemetry` that configures OTel SDK exporting.
+//! This module contains configuration for internal logging and metrics.
+//!
+//! Note these types are for engine-specific internal telemetry configuration.
+//!
+//! The settings in service::telemetry are OpenTelemetry-SDK specific, the path
+//! taken from the Collector's configuration model (which has a service::pipelines
+//! nearby), and based on the OpenTelemetry decolarative configuration model.
 
 pub mod logs;
 

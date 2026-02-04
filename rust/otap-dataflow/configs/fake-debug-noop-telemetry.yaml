@@ -5,12 +5,6 @@ settings:
   telemetry:
     logs:
       level: "info"
-      processors:
-        - batch:
-            exporter:
-              otlp:
-                protocol: "grpc/protobuf"
-                endpoint: "http://127.0.0.1:43480"
 
 nodes:
   receiver:
