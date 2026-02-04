@@ -20,7 +20,7 @@ use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
 
-use super::cursor_sidecar::{CursorSidecar, CURSOR_SIDECAR_FILENAME};
+use super::cursor_sidecar::{CURSOR_SIDECAR_FILENAME, CursorSidecar};
 use super::header::WalHeader;
 use super::reader::test_support::{self, ReadFailure};
 use super::writer::FlushPolicy;
@@ -680,7 +680,10 @@ async fn wal_writer_persists_consumer_cursor_sidecar() {
     writer.persist_cursor(&cursor).await.expect("record cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().expect("dir").join(CURSOR_SIDECAR_FILENAME);
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join(CURSOR_SIDECAR_FILENAME);
     let state = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(state.wal_position, offset.next_offset);
 }
@@ -885,7 +888,10 @@ async fn wal_writer_ignores_invalid_cursor_sidecar() {
         .expect("writer");
     }
 
-    let sidecar_path = wal_path.parent().expect("dir").join(CURSOR_SIDECAR_FILENAME);
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join(CURSOR_SIDECAR_FILENAME);
     // Write a truncated sidecar file (shorter than minimum length)
     std::fs::write(&sidecar_path, vec![0u8; 8]).expect("write corrupt");
 

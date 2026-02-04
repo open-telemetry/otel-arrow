@@ -1127,7 +1127,7 @@ mod tests {
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
     use crate::subscriber::SubscriberId;
-    use crate::wal::{WalReader, CURSOR_SIDECAR_FILENAME};
+    use crate::wal::{CURSOR_SIDECAR_FILENAME, WalReader};
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
