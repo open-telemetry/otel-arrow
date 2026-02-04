@@ -394,13 +394,16 @@ pub struct TokioRuntimeMetrics {
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
+    #[cfg(not(windows))]
     jemalloc_supported: bool,
 
     #[cfg(not(windows))]
     allocated: Option<ThreadLocal<u64>>,
     #[cfg(not(windows))]
     deallocated: Option<ThreadLocal<u64>>,
+    #[cfg(not(windows))]
     last_allocated: u64,
+    #[cfg(not(windows))]
     last_deallocated: u64,
 
     rusage_thread_supported: bool,
@@ -450,9 +453,6 @@ impl PipelineMetricsMonitor {
             }
         };
 
-        #[cfg(windows)]
-        let (jemalloc_supported, last_allocated, last_deallocated) = (false, 0, 0);
-
         let rusage_thread_supported = Self::init_rusage_baseline();
         let tokio_rt = tokio::runtime::Handle::try_current()
             .ok()
@@ -468,12 +468,15 @@ impl PipelineMetricsMonitor {
 
         Self {
             start_time: now,
+            #[cfg(not(windows))]
             jemalloc_supported,
             #[cfg(not(windows))]
             allocated,
             #[cfg(not(windows))]
             deallocated,
+            #[cfg(not(windows))]
             last_allocated,
+            #[cfg(not(windows))]
             last_deallocated,
             rusage_thread_supported,
             wall_start: now,
@@ -496,6 +499,7 @@ impl PipelineMetricsMonitor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Used by jemalloc_tests on non-Windows platforms
     pub fn update_metrics(&mut self) {
         self.update_tokio_metrics();
         self.update_pipeline_metrics();
