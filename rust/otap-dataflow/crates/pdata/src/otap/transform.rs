@@ -2157,6 +2157,23 @@ where
     concat(&borrowed_slices).map_err(|e| Error::WriteRecordBatch { source: e })
 }
 
+/// Determines if the sequence of transformations specified in `transform_ranges` argument would
+/// cause invalid sequences of parent_id column in the transport optimized encoding, in which case
+/// this function will return `true`, meaning the transport encoding should be removed.
+///
+/// This could happen if, by some transformation, logical sequences of equivalent type/key/value
+/// which were not adjacent before the transformation become adjacent. Consider the following
+/// examples ("str" represents the string value column. Assume all attribute types are string):
+///
+/// key | str |  parent_id
+/// --- | --- | ---------
+///  A  |  1  |  0
+///  B  |  1  |  1    <-- if key "B" were renamed to "A"
+///  ...
+///  A  |  1  |  0
+///  B  |  1  |  1    <--- if key "B" were deleted
+///  A  |  1  |  0
+///
 fn should_remove_transport_optimized_encoding(
     attr_record_batch: &RecordBatch,
     replacement_bytes: &[Vec<u8>],
@@ -2250,7 +2267,31 @@ struct MaybeReplacedKey {
     replacement_idx: Option<usize>,
 }
 
-// TODO comments
+/// Finds the index of the previous neighboring row after applying the specified transformations.
+///
+/// This function walks backwards from the given `index` to find what the previous neighbour
+/// would be after the transformations in `transform_ranges` are applied. It accounts for:
+/// - **Delete ranges**: Skips over deleted rows to find the actual previous neighbour
+/// - **Replace ranges**: Returns the previous index with its replacement information
+///
+/// # Arguments
+///
+/// * `index` - The starting index to search backwards from
+/// * `transform_ranges` - Transform ranges that end exactly at `index` (must be sorted by end position)
+///
+/// # Returns
+///
+/// * `None` if there is no previous neighbour (e.g., `index` is 0, or all preceding rows are deleted)
+/// * `Some(MaybeReplacedKey)` with:
+///   - `index`: The row index of the previous neighbour
+///   - `replacement_idx`: `Some(idx)` if that row has a replacement, `None` otherwise
+///
+/// # Example Logic
+///
+/// Given rows `[A, B, C, D]` with index 3 (D):
+/// - If B-C are deleted: returns A at index 0
+/// - If C is replaced: returns C at index 2 with replacement info
+/// - No transforms: returns C at index 2 without replacement info
 fn find_previous_neighbour_post_transform(
     mut index: usize,
     transform_ranges: &[KeyTransformRange],
@@ -2287,6 +2328,32 @@ fn find_previous_neighbour_post_transform(
     })
 }
 
+/// Finds the index of the next neighboring row after applying the specified transformations.
+///
+/// This function walks forwards from the given `index` to find what the next neighbour
+/// would be after the transformations in `transform_ranges` are applied. It accounts for:
+/// - **Delete ranges**: Skips over deleted rows to find the actual next neighbor
+/// - **Replace ranges**: Returns the next index with its replacement information
+///
+/// # Arguments
+///
+/// * `index` - The starting index to search forwards from
+/// * `len` - The total number of rows in the array
+/// * `transform_ranges` - Transform ranges that start exactly at `index + 1` (must be sorted by start position)
+///
+/// # Returns
+///
+/// * `None` if there is no next neighbor (e.g., `index` is the last row, or all following rows are deleted)
+/// * `Some(MaybeReplacedKey)` with:
+///   - `index`: The row index of the next neighbor
+///   - `replacement_idx`: `Some(idx)` if that row has a replacement, `None` otherwise
+///
+/// # Example Logic
+///
+/// Given rows `[A, B, C, D]` with index 0 (A):
+/// - If B-C are deleted: returns D at index 3
+/// - If B is replaced: returns B at index 1 with replacement info
+/// - No transforms: returns B at index 1 without replacement info
 fn find_next_neighbour_post_transform(
     mut index: usize,
     len: usize,
@@ -2322,7 +2389,36 @@ fn find_next_neighbour_post_transform(
         replacement_idx: None,
     })
 }
-
+/// Determines if two rows would be considered neighbours for delta-encoded parent IDs.
+///
+/// In transport-optimized encoding, consecutive rows with the same key, value, and type can have
+/// delta-encoded parent IDs (where parent_id increments by 1). This function checks if two rows
+/// (potentially after replacements) would meet these criteria and thus could be delta-encoded together.
+///
+/// This is used to detect when transformations would create problematic delta encoding sequences
+/// that weren't present in the original data, which would require removing the transport optimization.
+///
+/// # Arguments
+///
+/// * `key_column` - Accessor for the attribute key column
+/// * `val_columns` - Accessor for all attribute value columns (str, int, double, bool, bytes, etc.)
+/// * `replacement_bytes` - Array of replacement key values for Replace transformations
+/// * `prev` - The previous row, potentially with a replacement key
+/// * `next` - The next row, potentially with a replacement key
+///
+/// # Returns
+///
+/// * `Ok(true)` if the rows have the same type, key, and value (accounting for replacements), meaning
+///   they could be delta-encoded neighbours
+/// * `Ok(false)` if the rows differ in type, key, or value, or if the type doesn't support delta encoding
+/// * `Err(...)` if there's an error accessing the data
+///
+/// # Example Logic
+///
+/// Given rows with keys ["A", "B"] and values ["v1", "v1"]:
+/// - If B is replaced with "A": returns `true` (same key+value after replacement)
+/// - If they have different values: returns `false` (can't be delta-encoded)
+/// - If they have different types: returns `false` (can't be delta-encoded)
 fn are_neighbours_with_delta_encoded_parent_ids(
     key_column: &StringArrayAccessor<'_>,
     val_columns: &AnyValueArrays<'_>,
@@ -5904,7 +6000,7 @@ mod test {
     }
 
     #[test]
-    fn test_should_remove_encoding_delete_joins_neighbors() {
+    fn test_should_remove_encoding_delete_joins_neighbours() {
         // Keys: [k1, k2, k1] with values [v1, v2, v1] and parent_ids [1, 2, 3]
         // Delete k2 at position 1
         // After delete: [k1, k1] with values [v1, v1] and parent_ids [1, 3]
@@ -5950,7 +6046,7 @@ mod test {
             &transform_ranges,
         )
         .unwrap();
-        assert!(result, "Delete that joins neighbors should return true");
+        assert!(result, "Delete that joins neighbours should return true");
     }
 
     #[test]
@@ -6037,7 +6133,7 @@ mod test {
         .unwrap();
         assert!(
             !result,
-            "Delete that doesn't join neighbors should return false"
+            "Delete that doesn't join neighbours should return false"
         );
     }
 
