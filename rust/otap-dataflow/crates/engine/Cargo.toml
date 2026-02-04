@@ -28,7 +28,6 @@ otap-df-telemetry-macros = { path = "../telemetry-macros" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
-log = { workspace = true }
 tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
@@ -36,6 +35,7 @@ futures = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }
+bytes = { workspace = true }
 smallvec = { workspace = true }
 socket2 = { workspace = true }
 uuid = { workspace = true }

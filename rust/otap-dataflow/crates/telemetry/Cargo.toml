@@ -35,6 +35,7 @@ parking_lot = { workspace = true }
 prometheus = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
+smallvec = { workspace = true }
 tonic = { workspace = true, optional = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

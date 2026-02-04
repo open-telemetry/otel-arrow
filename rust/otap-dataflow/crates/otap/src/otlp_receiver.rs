@@ -30,6 +30,8 @@ use otap_df_config::tls::TlsServerConfig;
 use crate::otap_grpc::common;
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::server_settings::GrpcServerSettings;
+use crate::otlp_http::HttpServerSettings;
+use crate::shared_concurrency::SharedConcurrencyLayer;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -53,8 +55,11 @@ use std::ops::Add;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::util::Either;
 
 /// URN for the OTLP Receiver
 pub const OTLP_RECEIVER_URN: &str = "urn:otel:otlp:receiver";
@@ -69,6 +74,13 @@ pub struct Config {
     /// Shared gRPC server settings reused across gRPC-based receivers.
     #[serde(flatten)]
     pub grpc: GrpcServerSettings,
+
+    /// Optional OTLP/HTTP server settings.
+    ///
+    /// When configured, the receiver will start an additional HTTP server implementing
+    /// `POST /v1/logs`, `POST /v1/metrics`, and `POST /v1/traces`.
+    #[serde(default)]
+    pub http: Option<HttpServerSettings>,
 
     /// TLS configuration
     #[cfg(feature = "experimental-tls")]
@@ -139,7 +151,14 @@ impl OTLPReceiver {
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
+        // Set both protocols to downstream_capacity.
+        // When HTTP is enabled, they'll share a single semaphore pool,
+        // so the true ceiling is downstream_capacity (not 2x).
+        // When HTTP is disabled, only gRPC uses the capacity.
         common::tune_max_concurrent_requests(&mut self.config.grpc, downstream_capacity);
+        if let Some(http) = self.config.http.as_mut() {
+            crate::otlp_http::tune_max_concurrent_requests(http, downstream_capacity);
+        }
     }
 
     fn build_signal_services(
@@ -152,18 +171,50 @@ impl OTLPReceiver {
         TraceServiceServer,
         AckRegistry,
     ) {
-        let logs_server =
-            LogsServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
-        let metrics_server =
-            MetricsServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
-        let traces_server =
-            TraceServiceServer::new(effect_handler.clone(), settings, self.metrics.clone());
+        let http_wait = self
+            .config
+            .http
+            .as_ref()
+            .is_some_and(|http| http.wait_for_result);
+        let grpc_wait = settings.wait_for_result;
+        let wait_for_result_any = grpc_wait || http_wait;
 
-        let ack_registry = AckRegistry::new(
-            logs_server.common.state(),
-            metrics_server.common.state(),
-            traces_server.common.state(),
+        // When HTTP is enabled it always shares the same semaphore pool as gRPC.
+        // That means the maximum number of concurrent wait-for-result subscriptions that can be
+        // active across BOTH protocols is bounded by the shared semaphore capacity.
+        let shared_ack_slot_capacity = if wait_for_result_any {
+            settings.max_concurrent_requests.max(1)
+        } else {
+            0
+        };
+
+        let logs_slot = wait_for_result_any
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
+        let metrics_slot = wait_for_result_any
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
+        let traces_slot = wait_for_result_any
+            .then(|| crate::otap_grpc::otlp::server_new::AckSlot::new(shared_ack_slot_capacity));
+
+        let logs_server = LogsServiceServer::new(
+            effect_handler.clone(),
+            settings,
+            self.metrics.clone(),
+            grpc_wait.then(|| logs_slot.clone()).flatten(),
         );
+        let metrics_server = MetricsServiceServer::new(
+            effect_handler.clone(),
+            settings,
+            self.metrics.clone(),
+            grpc_wait.then(|| metrics_slot.clone()).flatten(),
+        );
+        let traces_server = TraceServiceServer::new(
+            effect_handler.clone(),
+            settings,
+            self.metrics.clone(),
+            grpc_wait.then(|| traces_slot.clone()).flatten(),
+        );
+
+        let ack_registry = AckRegistry::new(logs_slot, metrics_slot, traces_slot);
 
         (logs_server, metrics_server, traces_server, ack_registry)
     }
@@ -305,21 +356,33 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         let (logs_server, metrics_server, traces_server, ack_registry) =
             self.build_signal_services(&effect_handler, &settings);
         let max_concurrent_requests = config.max_concurrent_requests.max(1);
-        let server = {
-            let global_limit = GlobalConcurrencyLimitLayer::new(max_concurrent_requests);
-            let mut builder =
-                common::apply_server_tuning(Server::builder(), config).layer(global_limit);
 
-            // Apply timeout if configured
-            if let Some(timeout) = config.timeout {
-                builder = builder.timeout(timeout);
-            }
-
-            builder
-                .add_service(logs_server)
-                .add_service(metrics_server)
-                .add_service(traces_server)
+        // Build gRPC server concurrency strategy based on HTTP being enabled:
+        // - If HTTP is enabled, use a shared semaphore so both protocols draw from the same pool.
+        // - If HTTP is disabled, preserve prior gRPC-only behavior (GlobalConcurrencyLimitLayer).
+        let (limit_layer, shared_semaphore) = if self.config.http.is_some() {
+            let shared = Arc::new(Semaphore::new(max_concurrent_requests));
+            (
+                Either::Left(SharedConcurrencyLayer::new(shared.clone())),
+                Some(shared),
+            )
+        } else {
+            (
+                Either::Right(GlobalConcurrencyLimitLayer::new(max_concurrent_requests)),
+                None,
+            )
         };
+
+        let mut server = common::apply_server_tuning(Server::builder(), config).layer(limit_layer);
+
+        if let Some(timeout) = config.timeout {
+            server = server.timeout(timeout);
+        }
+
+        let server = server
+            .add_service(logs_server)
+            .add_service(metrics_server)
+            .add_service(traces_server);
 
         #[cfg(feature = "experimental-tls")]
         let maybe_tls_acceptor =
@@ -361,6 +424,27 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
             }
         };
 
+        let http_enabled = self.config.http.is_some();
+        let http_shutdown = CancellationToken::new();
+        let mut http_task: Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>> =
+            if let Some(http) = self.config.http.clone() {
+                // Pass the shared semaphore to HTTP server so both protocols
+                // draw from the same concurrency pool
+                Box::pin(crate::otlp_http::serve(
+                    effect_handler.clone(),
+                    http,
+                    ack_registry.clone(),
+                    self.metrics.clone(),
+                    shared_semaphore,
+                    http_shutdown.clone(),
+                ))
+            } else {
+                Box::pin(std::future::pending())
+            };
+
+        let mut http_task_done = false;
+        let terminal_state: TerminalState;
+
         loop {
             tokio::select! {
                 biased;
@@ -372,7 +456,9 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                                 .handle_control_message(msg, &ack_registry, &mut telemetry_cancel_handle)
                                 .await?
                             {
-                                return Ok(terminal);
+                                http_shutdown.cancel();
+                                terminal_state = terminal;
+                                break;
                             }
                         }
                         Err(e) => {
@@ -393,15 +479,43 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                         self.metrics.lock().transport_errors.inc();
                         return Err(self.map_transport_error(&effect_handler, error));
                     }
+                    terminal_state = TerminalState::new(
+                        Instant::now().add(Duration::from_secs(1)),
+                        [self.metrics.lock().snapshot()],
+                    );
+                    http_shutdown.cancel();
+                    break;
+                }
+
+                // HTTP serving loop; exits on IO error.
+                result = &mut http_task => {
+                    if let Some(handle) = telemetry_cancel_handle.take() {
+                        _ = handle.cancel().await;
+                    }
+                    if let Err(error) = result {
+                        self.metrics.lock().transport_errors.inc();
+                        return Err(self.map_transport_error(&effect_handler, error));
+                    }
+                    http_task_done = true;
+                    terminal_state = TerminalState::new(
+                        Instant::now().add(Duration::from_secs(1)),
+                        [self.metrics.lock().snapshot()],
+                    );
                     break;
                 }
             }
         }
 
-        Ok(TerminalState::new(
-            Instant::now().add(Duration::from_secs(1)),
-            [self.metrics.lock().snapshot()],
-        ))
+        http_shutdown.cancel();
+
+        if http_enabled && !http_task_done {
+            if let Err(error) = http_task.await {
+                self.metrics.lock().transport_errors.inc();
+                return Err(self.map_transport_error(&effect_handler, error));
+            }
+        }
+
+        Ok(terminal_state)
     }
 }
 
@@ -444,6 +558,15 @@ mod tests {
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
+    use bytes::Bytes;
+    use http_body_util::BodyExt;
+    use http_body_util::Full;
+    use hyper::Method;
+    use hyper::client::conn::http1;
+    use hyper::header::{CONTENT_ENCODING, CONTENT_TYPE, HOST};
+    use hyper_util::rt::TokioIo;
+    use tokio::net::TcpStream;
+
     fn test_config(addr: SocketAddr) -> Config {
         let grpc = GrpcServerSettings {
             listening_addr: addr,
@@ -453,9 +576,71 @@ mod tests {
         };
         Config {
             grpc,
+            http: None,
             #[cfg(feature = "experimental-tls")]
             tls: None,
         }
+    }
+
+    async fn post_otlp_http_with_encoding(
+        addr: SocketAddr,
+        path: &'static str,
+        body: Vec<u8>,
+        content_encoding: Option<&'static str>,
+    ) -> Result<(http::StatusCode, Bytes), Box<dyn std::error::Error + Send + Sync>> {
+        let stream = TcpStream::connect(addr).await?;
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await?;
+        _ = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let mut builder = http::Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, "application/x-protobuf");
+
+        if let Some(encoding) = content_encoding {
+            builder = builder.header(CONTENT_ENCODING, encoding);
+        }
+
+        let req = builder.body(Full::new(Bytes::from(body)))?;
+
+        let resp = sender.send_request(req).await?;
+        let status = resp.status();
+        let body = resp.into_body().collect().await?.to_bytes();
+        Ok((status, body))
+    }
+
+    async fn post_otlp_http(
+        addr: SocketAddr,
+        path: &'static str,
+        body: Vec<u8>,
+    ) -> Result<(http::StatusCode, Bytes), Box<dyn std::error::Error + Send + Sync>> {
+        post_otlp_http_with_encoding(addr, path, body, None).await
+    }
+
+    async fn send_http_request(
+        addr: SocketAddr,
+        method: Method,
+        path: &'static str,
+    ) -> Result<(http::StatusCode, Bytes), Box<dyn std::error::Error + Send + Sync>> {
+        let stream = TcpStream::connect(addr).await?;
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await?;
+        _ = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let req = http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header(HOST, "localhost")
+            .body(Full::new(Bytes::new()))?;
+
+        let resp = sender.send_request(req).await?;
+        let status = resp.status();
+        let body = resp.into_body().collect().await?.to_bytes();
+        Ok((status, body))
     }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
@@ -535,7 +720,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let config_with_max_concurrent_requests = json!({
             "listening_addr": "127.0.0.1:4317",
@@ -713,7 +898,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         // Defaults clamp to downstream capacity.
         let config_default = json!({
@@ -916,7 +1101,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
@@ -937,6 +1122,765 @@ mod tests {
     }
 
     #[test]
+    fn test_otlp_http_receiver_ack() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1000,
+            wait_for_result: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::OK);
+
+                let mut expected = Vec::new();
+                ExportLogsServiceResponse::default()
+                    .encode(&mut expected)
+                    .unwrap();
+                assert_eq!(body.as_ref(), expected.as_slice());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                let logs_proto: OtlpProtoBytes = logs_pdata
+                    .clone()
+                    .payload()
+                    .try_into()
+                    .expect("can convert to OtlpProtoBytes");
+                assert!(matches!(logs_proto, OtlpProtoBytes::ExportLogsRequest(_)));
+
+                let expected = create_logs_service_request();
+                let mut expected_bytes = Vec::new();
+                expected.encode(&mut expected_bytes).unwrap();
+                assert_eq!(&expected_bytes, logs_proto.as_bytes());
+
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_oversized_identity_body() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request_bytes = vec![0u8; 2048];
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::BAD_REQUEST);
+                assert!(!body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_oversized_gzip_body() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                use flate2::Compression;
+                use flate2::write::GzEncoder;
+                use std::io::Write;
+
+                let decoded = vec![0u8; 2048];
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&decoded).unwrap();
+                let compressed = encoder.finish().unwrap();
+
+                let (status, body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", compressed, Some("gzip"))
+                        .await
+                        .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::BAD_REQUEST);
+                assert!(!body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_otlp_http_accepts_gzip_body_exactly_at_limit() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: true,
+            max_request_body_size: 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                use flate2::Compression;
+                use flate2::write::GzEncoder;
+                use std::io::Write;
+
+                // Create payload that decompresses to EXACTLY the limit (1024 bytes)
+                let decoded = vec![0u8; 1024];
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&decoded).unwrap();
+                let compressed = encoder.finish().unwrap();
+
+                let (status, _body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", compressed, Some("gzip"))
+                        .await
+                        .expect("http request should succeed");
+
+                // Should be accepted (not 413)
+                assert_eq!(status, http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_invalid_gzip_body_with_400() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Not valid gzip bytes.
+                let body = vec![0xde, 0xad, 0xbe, 0xef];
+                let (status, resp_body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", body, Some("gzip"))
+                        .await
+                        .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::BAD_REQUEST);
+                assert!(!resp_body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_invalid_deflate_body_with_400() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Not valid zlib/deflate bytes.
+                let body = vec![0x00, 0x00, 0x00, 0x00];
+                let (status, resp_body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", body, Some("deflate"))
+                        .await
+                        .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::BAD_REQUEST);
+                assert!(!resp_body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_otlp_http_timeout_late_ack_and_recovery() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1,
+            wait_for_result: true,
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                // First request: no timely ACK -> should time out.
+                let (status1, body1) =
+                    post_otlp_http(http_listen, "/v1/logs", request_bytes.clone())
+                        .await
+                        .expect("http request should succeed");
+                assert_eq!(status1, http::StatusCode::SERVICE_UNAVAILABLE);
+                assert!(!body1.is_empty());
+
+                // Wait long enough for the validation side to send a late ACK and for the
+                // request future to have been dropped (SlotGuard cancel).
+                tokio::time::sleep(Duration::from_millis(350)).await;
+
+                // Second request: should succeed, proving capacity/slot recovery.
+                let (status2, _body2) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+                assert_eq!(status2, http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                // Receive first pdata and intentionally ACK it late.
+                let pdata1 = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for first message")
+                    .expect("No first message received");
+
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata1))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send late Ack");
+                }
+
+                // Receive second pdata and ACK promptly so the HTTP caller succeeds.
+                let pdata2 = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for second message")
+                    .expect("No second message received");
+
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata2))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_otlp_http_accepts_zstd_body() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: true,
+            max_request_body_size: 1024 * 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let compressed = zstd::stream::encode_all(request_bytes.as_slice(), 0).unwrap();
+                let (status, _body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", compressed, Some("zstd"))
+                        .await
+                        .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_invalid_zstd_body_with_400() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Not valid zstd bytes.
+                let body = vec![0xde, 0xad, 0xbe, 0xef];
+                let (status, resp_body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", body, Some("zstd"))
+                        .await
+                        .expect("http request should succeed");
+
+                assert_eq!(status, http::StatusCode::BAD_REQUEST);
+                assert!(!resp_body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_otlp_http_rejects_compressed_when_disabled() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            max_request_body_size: 1024 * 1024,
+            accept_compressed_requests: false, // Explicitly disable compression
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                use flate2::Compression;
+                use flate2::write::GzEncoder;
+                use std::io::Write;
+
+                // Create valid gzip compressed data
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(&request_bytes).unwrap();
+                let compressed = encoder.finish().unwrap();
+
+                // Send compressed request when compression is disabled
+                let (status, body) =
+                    post_otlp_http_with_encoding(http_listen, "/v1/logs", compressed, Some("gzip"))
+                        .await
+                        .expect("http request should succeed");
+
+                // Should reject with 415 Unsupported Media Type
+                assert_eq!(status, http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+                assert!(body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
     fn test_otlp_receiver_nack() {
         let test_runtime = TestRuntime::new();
 
@@ -950,7 +1894,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
@@ -1007,5 +1951,607 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
+    }
+
+    #[test]
+    fn test_otlp_http_receiver_nack() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: true, // Enable wait_for_result to test NACK path
+            max_request_body_size: 1024 * 1024,
+            accept_compressed_requests: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let nack_scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                // Send HTTP request
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("http request should succeed");
+
+                // Should receive 503 Service Unavailable with NACK reason
+                assert_eq!(status, http::StatusCode::SERVICE_UNAVAILABLE);
+                assert!(!body.is_empty(), "Response body should contain NACK reason");
+
+                // Decode the RpcStatus response
+                let rpc_status = crate::otlp_http::RpcStatus::decode(body.as_ref())
+                    .expect("Should decode RpcStatus");
+
+                // Verify the NACK reason is included
+                assert_eq!(rpc_status.code, 14); // gRPC UNAVAILABLE code
+                assert!(
+                    rpc_status.message.contains("Test nack reason"),
+                    "Response should contain nack reason, got: {}",
+                    rpc_status.message
+                );
+                assert!(
+                    rpc_status.message.contains("Pipeline processing failed"),
+                    "Response should contain error prefix, got: {}",
+                    rpc_status.message
+                );
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let nack_validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                // Receive the logs pdata, create Nack message and send it back
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                let nack = NackMsg::new("Test nack reason", logs_pdata);
+                if let Some((_node_id, nack)) = crate::pdata::Context::next_nack(nack) {
+                    ctx.send_control_msg(NodeControlMsg::Nack(nack))
+                        .await
+                        .expect("Failed to send Nack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(nack_scenario)
+            .run_validation_concurrent(nack_validation);
+    }
+
+    #[test]
+    fn test_http_rejects_non_protobuf_content_type() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1000,
+            wait_for_result: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                // Send with JSON content type
+                let stream = TcpStream::connect(http_listen).await.unwrap();
+                let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+                _ = tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+
+                let req = http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/logs")
+                    .header(HOST, "localhost")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Full::new(Bytes::from(request_bytes)))
+                    .unwrap();
+
+                let resp = sender.send_request(req).await.unwrap();
+                assert_eq!(resp.status(), http::StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        // No validation needed - request rejected at HTTP layer before reaching the pipeline
+        let validation = |mut _ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {}) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_http_accepts_protobuf_with_charset() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1000,
+            wait_for_result: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                // Send with UTF-8 charset suffix
+                let stream = TcpStream::connect(http_listen).await.unwrap();
+                let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+                _ = tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+
+                let req = http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/logs")
+                    .header(HOST, "localhost")
+                    .header(CONTENT_TYPE, "application/x-protobuf; charset=utf-8")
+                    .body(Full::new(Bytes::from(request_bytes)))
+                    .unwrap();
+
+                let resp = sender.send_request(req).await.unwrap();
+                assert_eq!(resp.status(), http::StatusCode::OK);
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for logs message")
+                    .expect("No logs message received");
+
+                if let Some((_node_id, ack)) =
+                    crate::pdata::Context::next_ack(AckMsg::new(logs_pdata))
+                {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_http_unknown_path_returns_404_even_for_get() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let (status, body) = send_http_request(http_listen, Method::GET, "/v1/unknown")
+                    .await
+                    .expect("http request should succeed");
+                assert_eq!(status, http::StatusCode::NOT_FOUND);
+                assert!(body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_http_known_path_returns_405_for_get() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 16,
+            wait_for_result: false,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let (status, body) = send_http_request(http_listen, Method::GET, "/v1/logs")
+                    .await
+                    .expect("http request should succeed");
+                assert_eq!(status, http::StatusCode::METHOD_NOT_ALLOWED);
+                assert!(body.is_empty());
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
+    #[test]
+    fn test_mixed_protocol_concurrent_traffic() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        // Enable wait_for_result for both
+        config.grpc.wait_for_result = true;
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1000,
+            wait_for_result: true,
+            ..Default::default()
+        });
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut handles = Vec::new();
+
+                // Launch 5 gRPC requests
+                for _ in 0..5 {
+                    let endpoint = grpc_endpoint.clone();
+                    handles.push(tokio::spawn(async move {
+                        let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+                        let result = client.export(create_logs_service_request()).await;
+                        assert!(result.is_ok(), "gRPC request failed");
+                    }));
+                }
+
+                // Launch 5 HTTP requests
+                for _ in 0..5 {
+                    let addr = http_listen;
+                    handles.push(tokio::spawn(async move {
+                        let request = create_logs_service_request();
+                        let mut request_bytes = Vec::new();
+                        request.encode(&mut request_bytes).unwrap();
+                        let (status, _) = post_otlp_http(addr, "/v1/logs", request_bytes)
+                            .await
+                            .unwrap();
+                        assert_eq!(status, http::StatusCode::OK, "HTTP request failed");
+                    }));
+                }
+
+                // Wait for all requests to complete
+                for handle in handles {
+                    handle.await.unwrap();
+                }
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        // We expect 10 requests total
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                for _ in 0..10 {
+                    let pdata = timeout(Duration::from_secs(5), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
+
+                    // Ack everything so the clients unblock and succeed
+                    if let Some((_node_id, ack)) =
+                        crate::pdata::Context::next_ack(AckMsg::new(pdata))
+                    {
+                        ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                            .await
+                            .expect("Failed to send Ack");
+                    }
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
+    }
+
+    #[test]
+    fn test_shared_concurrency_across_grpc_and_http() {
+        let test_runtime = TestRuntime::new();
+
+        let addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{addr}:{grpc_port}");
+        let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
+
+        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut config = test_config(grpc_listen);
+        config.grpc.max_concurrent_requests = 1;
+        config.grpc.wait_for_result = true;
+        config.http = Some(HttpServerSettings {
+            listening_addr: http_listen,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            timeout: Some(Duration::from_millis(200)),
+            ..Default::default()
+        });
+
+        // Coordinate between scenario and validation so we only fire the HTTP request once the
+        // gRPC request has definitely reached the receiver (and therefore acquired the shared
+        // permit).
+        let grpc_started = Arc::new(tokio::sync::Notify::new());
+        let grpc_started_scenario = grpc_started.clone();
+        let grpc_started_validation = grpc_started.clone();
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config,
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let grpc_started = grpc_started_scenario.clone();
+
+                // Start one gRPC request that will hold the single shared permit.
+                let endpoint = grpc_endpoint.clone();
+                let grpc_handle = tokio::spawn(async move {
+                    let mut client = LogsServiceClient::connect(endpoint).await.unwrap();
+                    client.export(create_logs_service_request()).await
+                });
+
+                // Wait until the validation side observes the gRPC request.
+                timeout(Duration::from_secs(3), grpc_started.notified())
+                    .await
+                    .expect("Timed out waiting for gRPC to start");
+
+                // While gRPC is in-flight, HTTP should be unable to acquire a permit and should
+                // return 503 (permit acquisition timeout).
+                let request = create_logs_service_request();
+                let mut request_bytes = Vec::new();
+                request.encode(&mut request_bytes).unwrap();
+
+                let (status, _body) = post_otlp_http(http_listen, "/v1/logs", request_bytes)
+                    .await
+                    .expect("HTTP request should return a response");
+
+                assert_eq!(
+                    status,
+                    http::StatusCode::SERVICE_UNAVAILABLE,
+                    "HTTP should be rejected while gRPC holds the shared permit"
+                );
+
+                // The validation side will ACK the gRPC request; it should then complete.
+                let grpc_result = grpc_handle.await.unwrap();
+                assert!(grpc_result.is_ok(), "gRPC request should succeed after ACK");
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+            Box::pin(async move {
+                let grpc_started = grpc_started_validation.clone();
+                let pdata = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for gRPC message")
+                    .expect("No gRPC message received");
+
+                grpc_started.notify_one();
+
+                // Hold the request long enough for the HTTP request to observe permit contention.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                if let Some((_node_id, ack)) = crate::pdata::Context::next_ack(AckMsg::new(pdata)) {
+                    ctx.send_control_msg(NodeControlMsg::Ack(ack))
+                        .await
+                        .expect("Failed to send Ack");
+                }
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario)
+            .run_validation_concurrent(validation);
     }
 }

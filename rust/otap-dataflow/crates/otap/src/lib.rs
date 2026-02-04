@@ -88,11 +88,22 @@ pub mod compression;
 
 pub mod metrics;
 
+pub(crate) mod socket_options;
+
+/// Shared concurrency limiting across protocol servers
+pub(crate) mod shared_concurrency;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 
+/// OTLP/HTTP receiver support.
+pub mod otlp_http;
+
 /// Cloud specific auth utilities
 pub mod cloud_auth;
+
+/// Internal telemetry receiver
+pub mod internal_telemetry_receiver;
 
 /// Object storage utilities including integrations for different cloud
 /// providers
@@ -100,6 +111,12 @@ pub mod object_store;
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
+
+/// Console exporter similar using built-in OTLP-bytes formatting.
+pub mod console_exporter;
+
+/// Durable buffer processor for crash-resilient buffering via Quiver
+pub mod durable_buffer_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

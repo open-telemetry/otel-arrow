@@ -55,7 +55,16 @@ impl ArrowRecordsBuilder {
         self.logs
             .append_severity_text(Some(severity_text.as_bytes()));
 
-        self.logs.body.append_str(syslog_message.input().as_bytes());
+        // Only set body for messages that weren't fully parsed.
+        // For fully parsed messages, all data is captured in attributes,
+        // so we skip the body entirely to avoid duplication.
+        // For partially parsed messages, the original input is preserved
+        // to help users identify devices sending malformed data.
+        if syslog_message.is_fully_parsed() {
+            self.logs.body.append_null();
+        } else {
+            self.logs.body.append_str(syslog_message.input());
+        }
 
         let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
 
@@ -227,24 +236,13 @@ mod tests {
             assert!(column_names.contains(&"observed_time_unix_nano"));
             assert!(column_names.contains(&"severity_number"));
             assert!(column_names.contains(&"severity_text"));
-            assert!(column_names.contains(&"body"));
+            // Note: body column is not present when all messages are fully parsed
+            // (all data is in attributes, no need for body)
+            assert!(!column_names.contains(&"body"));
 
             // Get specific columns for detailed validation
             use arrow::array::*;
             use arrow::datatypes::{UInt8Type, UInt16Type};
-
-            // Check body column (it's a struct, so we need to access it differently)
-            let body_column = logs_batch
-                .column_by_name("body")
-                .expect("Body column should exist");
-            let body_struct = body_column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Body should be StructArray");
-
-            // The body struct should contain the syslog message in a string field
-            // For now, let's just verify the structure exists
-            assert_eq!(body_struct.len(), 3);
 
             // Check severity_number column (it's a dictionary array)
             let severity_num_column = logs_batch
@@ -562,6 +560,10 @@ mod tests {
                     Some(&AttributeValue::Integer(1234))
                 );
                 assert_eq!(
+                    log2_attrs.get("syslog.process_id_str"),
+                    Some(&AttributeValue::String("1234".to_string()))
+                );
+                assert_eq!(
                     log2_attrs.get("syslog.msg_id"),
                     Some(&AttributeValue::String("ID123".to_string()))
                 );
@@ -573,11 +575,11 @@ mod tests {
                     ))
                 );
 
-                // Check that we have exactly the expected number of attributes (9 for complete RFC5424)
+                // Check that we have exactly the expected number of attributes (10 for complete RFC5424 with numeric proc_id)
                 assert_eq!(
                     log2_attrs.len(),
-                    9,
-                    "Log 2 should have exactly 9 attributes, got {}",
+                    10,
+                    "Log 2 should have exactly 10 attributes, got {}",
                     log2_attrs.len()
                 );
 
@@ -685,18 +687,8 @@ mod tests {
             use arrow::array::*;
             use arrow::datatypes::{UInt8Type, UInt16Type};
 
-            // Check body column (it's a struct, so we need to access it differently)
-            let body_column = logs_batch
-                .column_by_name("body")
-                .expect("Body column should exist");
-            let body_struct = body_column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Body should be StructArray");
-
-            // The body struct should contain the syslog message in a string field
-            // For now, let's just verify the structure exists
-            assert_eq!(body_struct.len(), 3);
+            // Note: body column is not present when all messages are fully parsed
+            // (all data is in attributes, no need for body)
 
             // Check severity_number column (it's a dictionary array)
             let severity_num_column = logs_batch
@@ -1157,56 +1149,12 @@ mod tests {
             use arrow::array::*;
             use arrow::datatypes::{UInt8Type, UInt16Type};
 
-            // Check body column (should contain the original CEF messages)
-            let body_column = logs_batch
-                .column_by_name("body")
-                .expect("Body column should exist");
-
-            // Body is actually a StructArray, extract the 'str' field
-            let body_struct = body_column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Body should be StructArray");
-            let body_column_str = body_struct
-                .column_by_name("str")
-                .expect("Body struct should have str field");
-
-            // The str field is a Dictionary(UInt16, Utf8), need to handle accordingly
-            if let Some(dict_array) = body_column_str
-                .as_any()
-                .downcast_ref::<DictionaryArray<UInt16Type>>()
-            {
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                assert_eq!(dict_array.len(), 3);
-
-                // Check each CEF message value
-                for i in 0..3 {
-                    let dict_index = dict_array.key(i).unwrap();
-                    let value = values.value(dict_index);
-                    match i {
-                        0 => assert_eq!(
-                            value,
-                            "CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232"
-                        ),
-                        1 => assert_eq!(
-                            value,
-                            "CEF:1|ArcSight|ArcSight|2.4.1|400|Successful Login|3|"
-                        ),
-                        2 => assert_eq!(
-                            value,
-                            "CEF:0|Vendor|Product|1.2.3|SignatureID|Event Name|5|deviceExternalId=12345 sourceAddress=192.168.1.100"
-                        ),
-                        _ => panic!("Unexpected index"),
-                    }
-                }
-            } else {
-                panic!("Expected str field to be a dictionary array");
-            }
+            // Note: body column is not present when all messages are fully parsed
+            // (all data is in attributes, no need for body)
+            assert!(
+                logs_batch.column_by_name("body").is_none(),
+                "Body column should not exist for fully parsed CEF messages"
+            );
 
             // CEF doesn't have severity_number, only severity_text
             // Check severity_text column
@@ -1619,19 +1567,12 @@ mod tests {
             use arrow::array::*;
             use arrow::datatypes::{UInt8Type, UInt16Type};
 
-            // Check body column (should contain the original messages)
-            let body_column = logs_batch
-                .column_by_name("body")
-                .expect("Body column should exist");
-
-            // Body is actually a StructArray, just verify it exists and has correct length
-            let body_struct = body_column
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("Body should be StructArray");
-            assert_eq!(body_struct.len(), 3);
-
-            // Skip detailed body content validation for mixed format since it's complex
+            // Note: body column is not present when all messages are fully parsed
+            // (all data is in attributes, no need for body)
+            assert!(
+                logs_batch.column_by_name("body").is_none(),
+                "Body column should not exist for fully parsed messages"
+            );
 
             // Check severity_number column (mixed formats may not all have this)
             if let Some(severity_num_column) = logs_batch.column_by_name("severity_number") {
@@ -1773,7 +1714,8 @@ mod tests {
 
             assert!(column_names.contains(&"time_unix_nano"));
             assert!(column_names.contains(&"severity_text"));
-            assert!(column_names.contains(&"body"));
+            // Note: body column is not present when all messages are fully parsed
+            assert!(!column_names.contains(&"body"));
             // Note: severity_number, flags, trace_id, span_id may not exist in mixed format due to CEF
 
             // Check attributes record batch using Arrow APIs directly (mixed formats)
@@ -1933,6 +1875,10 @@ mod tests {
                     Some(&AttributeValue::Integer(1234))
                 );
                 assert_eq!(
+                    log1_attrs.get("syslog.process_id_str"),
+                    Some(&AttributeValue::String("1234".to_string()))
+                );
+                assert_eq!(
                     log1_attrs.get("syslog.msg_id"),
                     Some(&AttributeValue::String("ID123".to_string()))
                 );
@@ -1949,11 +1895,11 @@ mod tests {
                     ))
                 );
 
-                // Check that we have exactly the expected number of attributes for RFC5424 (9)
+                // Check that we have exactly the expected number of attributes for RFC5424 (10 with numeric proc_id)
                 assert_eq!(
                     log1_attrs.len(),
-                    9,
-                    "Log 1 should have exactly 9 attributes, got {}",
+                    10,
+                    "Log 1 should have exactly 10 attributes, got {}",
                     log1_attrs.len()
                 );
 
@@ -2117,10 +2063,11 @@ mod tests {
 
         // Verify first log record
         let log1 = &scope_logs.log_records[0];
-        assert_eq!(log1.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8".to_string()
-                   ));
+        // Body should be None for fully parsed messages - all data is in attributes
+        assert!(
+            log1.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // Priority = Facility * 8 + Severity
         // Priority 34: 4 (mail system) * 8 + 2 (critical)
@@ -2143,10 +2090,11 @@ mod tests {
 
         // Verify second log record with structured data
         let log2 = &scope_logs.log_records[1];
-        assert_eq!(log2.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully".to_string()
-                   ));
+        // Body should be None for fully parsed messages - all data is in attributes
+        assert!(
+            log2.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // Priority = Facility * 8 + Severity
         // Priority 165: 20 (local use 4) * 8 + 5 (notice)
@@ -2233,6 +2181,10 @@ mod tests {
             log2_attrs.get("syslog.process_id"),
             Some(&"1234".to_string())
         );
+        assert_eq!(
+            log2_attrs.get("syslog.process_id_str"),
+            Some(&"1234".to_string())
+        );
         assert_eq!(log2_attrs.get("syslog.msg_id"), Some(&"ID123".to_string()));
         assert_eq!(
             log2_attrs.get("syslog.structured_data"),
@@ -2246,15 +2198,16 @@ mod tests {
             Some(&"Application started successfully".to_string())
         );
 
-        // Ensure no unexpected attributes are present (exactly 9 attributes expected)
-        assert_eq!(log2.attributes.len(), 9);
+        // Ensure no unexpected attributes are present (exactly 10 attributes expected with numeric proc_id)
+        assert_eq!(log2.attributes.len(), 10);
 
         // Verify third log record
         let log3 = &scope_logs.log_records[2];
-        assert_eq!(log3.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "<14>1 2024-01-15T10:32:15.789Z server01.example.com kernel - - - Kernel panic - not syncing: VFS".to_string()
-                   ));
+        // Body should be None for fully parsed messages - all data is in attributes
+        assert!(
+            log3.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         let log3_attrs: std::collections::HashMap<String, String> = log3
             .attributes
@@ -2358,12 +2311,11 @@ mod tests {
 
         // Verify first log record
         let log1 = &scope_logs.log_records[0];
-        assert_eq!(
-            log1.body.as_ref().unwrap().value.as_ref().unwrap(),
-            &Value::StringValue(
-                "<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8"
-                    .to_string()
-            )
+        // Body should be None for fully parsed messages (RFC 3164 with valid priority)
+        // All data is captured in attributes instead
+        assert!(
+            log1.body.is_none(),
+            "Body should be None for fully parsed messages"
         );
 
         // Priority = Facility * 8 + Severity
@@ -2396,12 +2348,11 @@ mod tests {
 
         // Verify second log record
         let log2 = &scope_logs.log_records[1];
-        assert_eq!(
-            log2.body.as_ref().unwrap().value.as_ref().unwrap(),
-            &Value::StringValue(
-                "<165>Feb  5 17:32:18 hostname app[1234]: Application started successfully"
-                    .to_string()
-            )
+        // Body should be None for fully parsed messages (RFC 3164 with valid priority)
+        // All data is captured in attributes instead
+        assert!(
+            log2.body.is_none(),
+            "Body should be None for fully parsed messages"
         );
 
         // Priority = Facility * 8 + Severity
@@ -2503,11 +2454,11 @@ mod tests {
 
         // Verify third log record
         let log3 = &scope_logs.log_records[2];
-        assert_eq!(
-            log3.body.as_ref().unwrap().value.as_ref().unwrap(),
-            &Value::StringValue(
-                "<14>Jan 15 10:30:45 server01 kernel: Kernel panic - not syncing: VFS".to_string()
-            )
+        // Body should be None for fully parsed messages (RFC 3164 with valid priority)
+        // All data is captured in attributes instead
+        assert!(
+            log3.body.is_none(),
+            "Body should be None for fully parsed messages"
         );
 
         // Priority = Facility * 8 + Severity
@@ -2624,10 +2575,11 @@ mod tests {
 
         // Verify first CEF log record (with extensions)
         let log1 = &scope_logs.log_records[0];
-        assert_eq!(log1.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232".to_string()
-                   ));
+        // Body should be None for fully parsed CEF messages - all data is in attributes
+        assert!(
+            log1.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // CEF does not map to OpenTelemetry severity - should be default values
         assert_eq!(log1.severity_number, 0);
@@ -2693,11 +2645,10 @@ mod tests {
 
         // Verify second CEF log record (no extensions)
         let log2 = &scope_logs.log_records[1];
-        assert_eq!(
-            log2.body.as_ref().unwrap().value.as_ref().unwrap(),
-            &Value::StringValue(
-                "CEF:1|ArcSight|ArcSight|2.4.1|400|Successful Login|3|".to_string()
-            )
+        // Body should be None for fully parsed CEF messages - all data is in attributes
+        assert!(
+            log2.body.is_none(),
+            "Body should be None for fully parsed messages"
         );
 
         // CEF does not map to OpenTelemetry severity - should be default values
@@ -2759,10 +2710,11 @@ mod tests {
 
         // Verify third CEF log record (complex extensions)
         let log3 = &scope_logs.log_records[2];
-        assert_eq!(log3.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "CEF:0|Vendor|Product|1.2.3|SignatureID|Event Name|5|deviceExternalId=12345 sourceAddress=192.168.1.100 destinationAddress=10.0.0.50 sourcePort=12345 destinationPort=80 protocol=TCP requestURL=http://example.com/path requestMethod=GET cs1=value1 cs2=value2".to_string()
-                   ));
+        // Body should be None for fully parsed CEF messages - all data is in attributes
+        assert!(
+            log3.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // CEF does not map to OpenTelemetry severity - should be default values
         assert_eq!(log3.severity_number, 0);
@@ -2893,10 +2845,11 @@ mod tests {
 
         // Verify first log record (RFC5424)
         let log1 = &scope_logs.log_records[0];
-        assert_eq!(log1.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully".to_string()
-                   ));
+        // Body should be None for fully parsed messages - all data is in attributes
+        assert!(
+            log1.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // Priority = Facility * 8 + Severity
         // Priority 165: 20 (local use 4) * 8 + 5 (notice)
@@ -2950,6 +2903,10 @@ mod tests {
             log1_attrs.get("syslog.process_id"),
             Some(&"1234".to_string())
         );
+        assert_eq!(
+            log1_attrs.get("syslog.process_id_str"),
+            Some(&"1234".to_string())
+        );
         assert_eq!(log1_attrs.get("syslog.msg_id"), Some(&"ID123".to_string()));
         assert_eq!(
             log1_attrs.get("syslog.structured_data"),
@@ -2963,17 +2920,16 @@ mod tests {
             Some(&"Application started successfully".to_string())
         );
 
-        // Ensure no unexpected attributes are present for RFC5424 (exactly 9 attributes expected)
-        assert_eq!(log1.attributes.len(), 9);
+        // Ensure no unexpected attributes are present for RFC5424 (exactly 10 attributes expected with numeric proc_id)
+        assert_eq!(log1.attributes.len(), 10);
 
         // Verify second log record (RFC3164)
         let log2 = &scope_logs.log_records[1];
-        assert_eq!(
-            log2.body.as_ref().unwrap().value.as_ref().unwrap(),
-            &Value::StringValue(
-                "<34>Oct 11 22:14:15 mymachine su: 'su root' failed for lonvick on /dev/pts/8"
-                    .to_string()
-            )
+        // Body should be None for fully parsed messages (RFC 3164 with valid priority)
+        // All data is captured in attributes instead
+        assert!(
+            log2.body.is_none(),
+            "Body should be None for fully parsed messages"
         );
 
         // Priority = Facility * 8 + Severity
@@ -3039,10 +2995,11 @@ mod tests {
 
         // Verify third log record (CEF)
         let log3 = &scope_logs.log_records[2];
-        assert_eq!(log3.body.as_ref().unwrap().value.as_ref().unwrap(),
-                   &Value::StringValue(
-                       "CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232".to_string()
-                   ));
+        // Body should be None for fully parsed CEF messages - all data is in attributes
+        assert!(
+            log3.body.is_none(),
+            "Body should be None for fully parsed messages"
+        );
 
         // CEF does not map to OpenTelemetry severity - should be default values
         assert_eq!(log3.severity_number, 0);
@@ -3104,5 +3061,227 @@ mod tests {
 
         // Ensure no unexpected attributes are present for CEF (7 core + 3 extensions = 10 attributes expected)
         assert_eq!(log3.attributes.len(), 10);
+    }
+
+    /// Test that verifies body handling for mixed fully-parsed and partially-parsed messages.
+    /// - Fully parsed messages should have body = None (null)
+    /// - Partially parsed messages should have body = original input string
+    #[test]
+    fn test_body_for_partially_parsed_messages() {
+        use arrow::array::*;
+        use arrow::datatypes::UInt16Type;
+
+        let mut builder = ArrowRecordsBuilder::new();
+
+        // Message 1: RFC 5424 with valid priority - fully parsed (body should be null)
+        let msg1 = "<34>1 2024-01-15T10:30:45.123Z host1 app1 - - - Fully parsed message";
+        // Message 2: RFC 3164 WITHOUT priority - NOT fully parsed (body should contain original input)
+        let msg2 = "Oct 11 22:14:15 host2 tag2: Partially parsed message without priority";
+        // Message 3: RFC 3164 with valid priority - fully parsed (body should be null)
+        let msg3 = "<165>Feb  5 17:32:18 host3 tag3: Another fully parsed message";
+
+        let messages = vec![msg1, msg2, msg3];
+
+        for msg in &messages {
+            let parsed = parse(msg.as_bytes()).unwrap();
+            builder.append_syslog(parsed);
+        }
+
+        let arrow_records = builder.build().unwrap();
+
+        // Extract the logs record batch
+        if let OtapArrowRecords::Logs(_logs) = &arrow_records {
+            let logs_batch = arrow_records
+                .get(ArrowPayloadType::Logs)
+                .expect("Logs record batch should be present");
+
+            assert_eq!(logs_batch.num_rows(), 3);
+
+            // Body column SHOULD exist because at least one message is not fully parsed
+            let body_column = logs_batch
+                .column_by_name("body")
+                .expect("Body column should exist when there are partially parsed messages");
+
+            let body_struct = body_column
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("Body should be StructArray");
+
+            // Get the 'str' field from the body struct
+            let str_field = body_struct
+                .column_by_name("str")
+                .expect("Body struct should have 'str' field");
+
+            let str_dict = str_field
+                .as_any()
+                .downcast_ref::<DictionaryArray<UInt16Type>>()
+                .expect("str field should be DictionaryArray");
+
+            let str_values = str_dict
+                .values()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("Dictionary values should be StringArray");
+
+            // Check each row's body value
+            // Row 0 (msg1): Fully parsed RFC 5424 - body should be null
+            assert!(
+                body_struct.is_null(0),
+                "Body should be null for fully parsed RFC 5424 message"
+            );
+
+            // Row 1 (msg2): NOT fully parsed (no priority) - body should contain original input
+            assert!(
+                !body_struct.is_null(1),
+                "Body should NOT be null for partially parsed message"
+            );
+            let key1 = str_dict.key(1).expect("Key should exist for row 1");
+            let body1 = str_values.value(key1);
+            assert_eq!(
+                body1, msg2,
+                "Body should contain original input for partially parsed message"
+            );
+
+            // Row 2 (msg3): Fully parsed RFC 3164 with priority - body should be null
+            assert!(
+                body_struct.is_null(2),
+                "Body should be null for fully parsed RFC 3164 message"
+            );
+        } else {
+            panic!("Expected OtapArrowRecords::Logs variant");
+        }
+    }
+
+    /// Test OTLP conversion for mixed fully-parsed and partially-parsed messages.
+    #[test]
+    fn test_otlp_body_for_partially_parsed_messages() {
+        let mut builder = ArrowRecordsBuilder::new();
+
+        // Message 1: RFC 5424 - fully parsed
+        let msg1 = "<34>1 2024-01-15T10:30:45.123Z host1 app1 - - - Fully parsed";
+        // Message 2: RFC 3164 without priority - NOT fully parsed
+        let msg2 = "Oct 11 22:14:15 host2 tag2: Not fully parsed";
+        // Message 3: CEF - fully parsed
+        let msg3 = "CEF:0|Vendor|Product|1.0|100|Test Event|5|src=10.0.0.1";
+
+        let messages = vec![msg1, msg2, msg3];
+
+        for msg in &messages {
+            let parsed = parse(msg.as_bytes()).unwrap();
+            builder.append_syslog(parsed);
+        }
+
+        let arrow_records = builder.build().unwrap();
+
+        // Convert to OTLP
+        let export_request = otap_logs_to_otlp(arrow_records);
+
+        assert_eq!(export_request.resource_logs.len(), 1);
+        let resource_logs = &export_request.resource_logs[0];
+        assert_eq!(resource_logs.scope_logs.len(), 1);
+        let scope_logs = &resource_logs.scope_logs[0];
+        assert_eq!(scope_logs.log_records.len(), 3);
+
+        // Log 1 (RFC 5424): Fully parsed - body should be None
+        let log1 = &scope_logs.log_records[0];
+        assert!(
+            log1.body.is_none(),
+            "Body should be None for fully parsed RFC 5424 message"
+        );
+
+        // Log 2 (RFC 3164 without priority): NOT fully parsed - body should contain original input
+        let log2 = &scope_logs.log_records[1];
+        assert!(
+            log2.body.is_some(),
+            "Body should be Some for partially parsed message"
+        );
+        let body2_value = log2.body.as_ref().unwrap().value.as_ref().unwrap();
+        assert_eq!(
+            body2_value,
+            &Value::StringValue(msg2.to_string()),
+            "Body should contain original input for partially parsed message"
+        );
+
+        // Log 3 (CEF): Fully parsed - body should be None
+        let log3 = &scope_logs.log_records[2];
+        assert!(
+            log3.body.is_none(),
+            "Body should be None for fully parsed CEF message"
+        );
+    }
+
+    /// Test RFC 5424 proc_id handling for both numeric and non-numeric values.
+    /// Per RFC 5424, PROCID = 1*128PRINTUSASCII (any printable ASCII, not just numeric).
+    /// - Non-numeric proc_id: only `syslog.process_id_str` should be present
+    /// - Numeric proc_id: both `syslog.process_id_str` and `syslog.process_id` should be present
+    #[test]
+    fn test_rfc5424_non_numeric_proc_id() {
+        let mut builder = ArrowRecordsBuilder::new();
+
+        // Message 1: RFC 5424 with non-numeric proc_id "worker-1"
+        let msg1 = "<34>1 2024-01-15T10:30:45.123Z host1 app1 worker-1 ID1 - Message with non-numeric proc_id";
+        // Message 2: RFC 5424 with numeric proc_id "1234"
+        let msg2 =
+            "<165>1 2024-01-15T10:31:00.456Z host2 app2 1234 ID2 - Message with numeric proc_id";
+
+        let messages = vec![msg1, msg2];
+
+        for msg in &messages {
+            let parsed = parse(msg.as_bytes()).unwrap();
+            builder.append_syslog(parsed);
+        }
+
+        let arrow_records = builder.build().unwrap();
+
+        // Convert to OTLP for easier attribute inspection
+        let export_request = otap_logs_to_otlp(arrow_records);
+
+        assert_eq!(export_request.resource_logs.len(), 1);
+        let scope_logs = &export_request.resource_logs[0].scope_logs[0];
+        assert_eq!(scope_logs.log_records.len(), 2);
+
+        // Helper to find attribute by key
+        fn find_attr<'a>(
+            attrs: &'a [otap_df_pdata::proto::opentelemetry::common::v1::KeyValue],
+            key: &str,
+        ) -> Option<&'a Value> {
+            attrs
+                .iter()
+                .find(|kv| kv.key == key)
+                .and_then(|kv| kv.value.as_ref())
+                .and_then(|v| v.value.as_ref())
+        }
+
+        // Log 1: Non-numeric proc_id "worker-1"
+        let log1 = &scope_logs.log_records[0];
+
+        // Should have process_id_str with original string value
+        assert_eq!(
+            find_attr(&log1.attributes, "syslog.process_id_str"),
+            Some(&Value::StringValue("worker-1".to_string())),
+            "Non-numeric proc_id should be stored in process_id_str as string"
+        );
+        // Should NOT have process_id (integer) since it's not parseable
+        assert_eq!(
+            find_attr(&log1.attributes, "syslog.process_id"),
+            None,
+            "Non-numeric proc_id should NOT have process_id (integer) attribute"
+        );
+
+        // Log 2: Numeric proc_id "1234"
+        let log2 = &scope_logs.log_records[1];
+
+        // Should have process_id_str with original string value
+        assert_eq!(
+            find_attr(&log2.attributes, "syslog.process_id_str"),
+            Some(&Value::StringValue("1234".to_string())),
+            "Numeric proc_id should be stored in process_id_str as string"
+        );
+        // Should also have process_id as integer since it's parseable
+        assert_eq!(
+            find_attr(&log2.attributes, "syslog.process_id"),
+            Some(&Value::IntValue(1234)),
+            "Numeric proc_id should have process_id as integer"
+        );
     }
 }

@@ -394,13 +394,16 @@ pub struct TokioRuntimeMetrics {
 pub(crate) struct PipelineMetricsMonitor {
     start_time: Instant,
 
+    #[cfg(not(windows))]
     jemalloc_supported: bool,
 
     #[cfg(not(windows))]
     allocated: Option<ThreadLocal<u64>>,
     #[cfg(not(windows))]
     deallocated: Option<ThreadLocal<u64>>,
+    #[cfg(not(windows))]
     last_allocated: u64,
+    #[cfg(not(windows))]
     last_deallocated: u64,
 
     rusage_thread_supported: bool,
@@ -450,9 +453,6 @@ impl PipelineMetricsMonitor {
             }
         };
 
-        #[cfg(windows)]
-        let (jemalloc_supported, last_allocated, last_deallocated) = (false, 0, 0);
-
         let rusage_thread_supported = Self::init_rusage_baseline();
         let tokio_rt = tokio::runtime::Handle::try_current()
             .ok()
@@ -468,12 +468,15 @@ impl PipelineMetricsMonitor {
 
         Self {
             start_time: now,
+            #[cfg(not(windows))]
             jemalloc_supported,
             #[cfg(not(windows))]
             allocated,
             #[cfg(not(windows))]
             deallocated,
+            #[cfg(not(windows))]
             last_allocated,
+            #[cfg(not(windows))]
             last_deallocated,
             rusage_thread_supported,
             wall_start: now,
@@ -496,6 +499,7 @@ impl PipelineMetricsMonitor {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Used by jemalloc_tests on non-Windows platforms
     pub fn update_metrics(&mut self) {
         self.update_tokio_metrics();
         self.update_pipeline_metrics();
@@ -754,7 +758,11 @@ impl PipelineMetricsMonitor {
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
-    fn update_rusage_metrics(&mut self) {}
+    fn update_rusage_metrics(&mut self) {
+        // Field exists but rusage metrics are not supported on this platform.
+        // Silence unused field warning by reading here and setting to _.
+        let _ = self.rusage_thread_supported;
+    }
 }
 
 impl Drop for PipelineMetricsMonitor {
@@ -788,7 +796,7 @@ mod jemalloc_tests {
     fn pipeline_metrics_monitor_black_box_updates_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),
@@ -859,7 +867,7 @@ mod non_jemalloc_tests {
     fn pipeline_metrics_monitor_does_not_update_memory_without_jemalloc() {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller = ControllerContext::new(telemetry_registry);
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard = crate::entity_context::set_pipeline_entity_key(
             pipeline_ctx.metrics_registry(),

@@ -169,7 +169,7 @@ pub(crate) struct PipelineContext {
 /// Creates all the pipelines declared in the configuration file.
 pub(crate) async fn create_pipelines<Msg>(
     pipeline_context: PipelineContext,
-    observer: Option<Box<(dyn AsyncObserver + Send + Sync)>>,
+    observer: Option<Box<dyn AsyncObserver + Send + Sync>>,
     config: Config<Msg>,
     engine_controller: EngineController,
     singleton_manager: SingletonManager<Msg>,

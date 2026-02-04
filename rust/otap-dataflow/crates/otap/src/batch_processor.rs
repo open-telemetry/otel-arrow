@@ -37,6 +37,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -951,7 +952,7 @@ where
                     &mut pdata,
                 );
             }
-            effect.send_message(pdata).await?;
+            effect.send_message_with_source_node(pdata).await?;
         }
 
         Ok(())
@@ -1366,6 +1367,7 @@ mod tests {
             PipelineGroupId::from("test_group".to_string()),
             PipelineId::from("test_pipeline".to_string()),
             0,
+            1, // num_cores
             0,
         );
         (pipeline_ctx, telemetry_registry)
@@ -1385,7 +1387,7 @@ mod tests {
 
         // Create processor using TestRuntime's registry
         let controller = ControllerContext::new(telemetry_registry.clone());
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;

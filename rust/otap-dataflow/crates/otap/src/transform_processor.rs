@@ -21,10 +21,11 @@ use data_engine_kql_parser::{KqlParser, Parser};
 use linkme::distributed_slice;
 use otap_df_config::{SignalType, error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{
-    ProcessorFactory,
+    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
+    ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
     context::PipelineContext,
-    control::NodeControlMsg,
+    control::{AckMsg, NackMsg, NodeControlMsg},
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -36,17 +37,21 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_query_engine::pipeline::{Pipeline, routing::RouterExtType, state::ExecutionState};
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
+use slotmap::Key as _;
 
 use crate::{
     OTAP_PROCESSOR_FACTORIES,
+    accessory::slots::Key,
     pdata::{Context, OtapPdata},
     transform_processor::routing::RouterImpl,
 };
 
 use self::config::{Config, Query};
+use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
+mod context;
 mod metrics;
 mod routing;
 
@@ -58,6 +63,7 @@ pub struct TransformProcessor {
     pipeline: Pipeline,
     execution_state: ExecutionState,
     signal_scope: SignalScope,
+    contexts: Contexts,
     metrics: MetricSet<Metrics>,
 }
 
@@ -127,6 +133,7 @@ impl TransformProcessor {
             signal_scope: SignalScope::try_from(&pipeline_expr)?,
             pipeline: Pipeline::new(pipeline_expr),
             metrics: pipeline_ctx.register_metrics::<Metrics>(),
+            contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
         })
     }
@@ -139,8 +146,12 @@ impl TransformProcessor {
         }
     }
 
-    async fn handle_routed_messages(
+    /// sends any result batches that were produced by the pipeline to the appropriate outports
+    /// while managing subscriptions and context
+    async fn handle_exec_result(
         &mut self,
+        inbound_context: Context,
+        pipeline_result: Result<OtapArrowRecords, EngineError>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let router_impl = self
@@ -154,12 +165,79 @@ impl TransformProcessor {
                 error: "Routing error:".into(),
             })?;
 
-        for (route_name, otap_batch) in router_impl.routed.drain(..) {
-            let payload = OtapPayload::OtapArrowRecords(otap_batch);
-            // TODO -- need to properly handle Ack/Nack here by creating a new context, subscribing
-            // interests, and juggling the incoming/outgoing contexts & Ack/Nack messages correctly
-            let pdata = OtapPdata::new(Context::default(), payload);
+        // access the batch that was the output of the call to pipeline.execute. This should
+        // eventually be sent on the default out_port
+        let default_otap_batch = match pipeline_result {
+            Ok(otap_batch) => otap_batch,
+            Err(e) => {
+                // clear any batches that are in the buffer to be routed, as the pipeline failed
+                // to execute
+                router_impl.routed.clear();
+                return Err(e);
+            }
+        };
 
+        // TODO - there's probably some optimization we can make below where if there's only one
+        // non-empty batch to be output, we don't need to change any contexts or subscriptions
+
+        if router_impl.routed.is_empty() {
+            // there were no other record batches that were maybe split off this batch to be
+            // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
+            // and we can just handle the batch normally.
+            let pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
+            effect_handler.send_message_with_source_node(pdata).await?;
+            return Ok(());
+        }
+
+        // keep error reason if there was an error, so we can send it to upstream in Nack once
+        // all routed outbound batches have been Ack/Nack'd
+        let inbound_ctx_key = self
+            .contexts
+            .insert_inbound(inbound_context, None)
+            .ok_or_else(|| EngineError::ProcessorError {
+                processor: effect_handler.processor_id(),
+                kind: ProcessorErrorKind::Other,
+                error: "inbound slots not available".into(),
+                source_detail: "".into(),
+            })?;
+
+        // send the output of the pipeline to the default outport while juggling the context for
+        // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
+        // any routed batches, and we don't want to Ack the inbound context until we receive Acks
+        // from all downstream batches (including this result)
+        let mut pdata = OtapPdata::new(Context::default(), default_otap_batch.into());
+        let outbound_key = self
+            .contexts
+            .insert_outbound(inbound_ctx_key)
+            .ok_or_else(|| {
+                // if we can't emit the default batch, we won't be able to route any of the
+                // routed batches, so clear them to ensure they're not stuck in the router's
+                // buffer
+                router_impl.routed.clear();
+
+                // clear the inbound slot we allocated above as we haven't emitted anything
+                // that would eventually get Ack/Nack'd to clear it later
+                self.contexts.clear_inbound(inbound_ctx_key);
+
+                EngineError::ProcessorError {
+                    processor: effect_handler.processor_id(),
+                    kind: ProcessorErrorKind::Other,
+                    error: "outbound slots not available".into(),
+                    source_detail: "".into(),
+                }
+            })?;
+        if !outbound_key.is_null() {
+            effect_handler.subscribe_to(
+                Interests::NACKS | Interests::ACKS,
+                outbound_key.into(),
+                &mut pdata,
+            );
+        }
+        effect_handler.send_message_with_source_node(pdata).await?;
+
+        // handle any batches that need to be forwarded to a specific out_port thanks to invocation
+        // of a "route_to" operator call
+        for (route_name, otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
             let port_name = effect_handler
                 .connected_ports()
@@ -173,10 +251,67 @@ impl TransformProcessor {
                 })?
                 .clone();
 
-            effect_handler.send_message_to(port_name, pdata).await?;
+            // setup the pdata with the new outbound context
+            let payload = OtapPayload::OtapArrowRecords(otap_batch);
+            let context = Context::default();
+            let mut pdata = OtapPdata::new(context, payload);
+            let outbound_key = self
+                .contexts
+                .insert_outbound(inbound_ctx_key)
+                .ok_or_else(|| {
+                    // the message could not be routed b/c there wasn't room for its context in
+                    // the outbound slot map. set error on the inbound key to ensure we eventually
+                    // nack the inbound request
+                    self.contexts.set_failed_inbound(
+                        inbound_ctx_key,
+                        "outbound slots were not available".into(),
+                    );
+
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        error: "outbound slots not available".into(),
+                        source_detail: "".into(),
+                    }
+                })?;
+            if !outbound_key.is_null() {
+                effect_handler.subscribe_to(
+                    Interests::NACKS | Interests::ACKS,
+                    outbound_key.into(),
+                    &mut pdata,
+                );
+            }
+
+            effect_handler
+                .send_message_with_source_node_to(port_name, pdata)
+                .await?;
         }
 
         Ok(())
+    }
+
+    /// Clears the outbound context for the given key and send an Ack/Nack for the any
+    /// associated inbound if the inbound has no outstanding outbounds.
+    async fn handle_ack_nack_inbound(
+        &mut self,
+        outbound_key: Key,
+        signal_type: SignalType,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), EngineError> {
+        // clear the outbound context.
+        if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
+            // if here, we have cleared the final outbound context for some inbound batch,
+            // which means we can now Ack or Nack the inbound context
+            let (context, error_reason) = inbound;
+            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+            if let Some(error) = error_reason {
+                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            } else {
+                effect_handler.notify_ack(AckMsg::new(pdata)).await
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -222,47 +357,57 @@ impl Processor<OtapPdata> for TransformProcessor {
                         });
                     }
                 }
+                NodeControlMsg::Ack(ack_message) => {
+                    self.handle_ack_nack_inbound(
+                        ack_message.calldata.try_into()?,
+                        ack_message.accepted.signal_type(),
+                        effect_handler,
+                    )
+                    .await?;
+                }
+                NodeControlMsg::Nack(nack_message) => {
+                    let outbound_key: Key = nack_message.calldata.try_into()?;
+                    self.contexts
+                        .set_failed_outbound(outbound_key, nack_message.reason);
+                    self.handle_ack_nack_inbound(
+                        outbound_key,
+                        nack_message.refused.signal_type(),
+                        effect_handler,
+                    )
+                    .await?;
+                }
                 _ => {
                     // other types of control messages are ignored for now
                 }
             },
             Message::PData(pdata) => {
                 let (context, payload) = pdata.into_parts();
-                let payload = if !self.should_process(&payload) {
+                if !self.should_process(&payload) {
                     // skip handling this pdata
-                    payload
+                    effect_handler
+                        .send_message_with_source_node(OtapPdata::new(context, payload))
+                        .await?;
                 } else {
                     let mut otap_batch: OtapArrowRecords = payload.try_into()?;
                     otap_batch.decode_transport_optimized_ids()?;
-                    match self
+                    let result = self
                         .pipeline
                         .execute_with_state(otap_batch, &mut self.execution_state)
                         .await
-                    {
-                        Ok(otap_batch) => {
-                            self.metrics.msgs_transformed.inc();
-                            self.handle_routed_messages(effect_handler).await?;
-                            otap_batch.into()
-                        }
-                        Err(e) => {
-                            // forward the routed messages in the event of a failure to avoid
-                            // caching any batches that were routed before the pipeline fails
-                            self.handle_routed_messages(effect_handler).await?;
-
+                        .inspect(|_| self.metrics.msgs_transformed.inc())
+                        .map_err(|e| {
                             self.metrics.msgs_transform_failed.inc();
-                            return Err(EngineError::ProcessorError {
+                            EngineError::ProcessorError {
                                 processor: effect_handler.processor_id(),
                                 kind: ProcessorErrorKind::Other,
                                 error: format!("Error executing query engine pipeline {e}"),
                                 source_detail: e.to_string(),
-                            });
-                        }
-                    }
-                };
+                            }
+                        });
 
-                effect_handler
-                    .send_message(OtapPdata::new(context, payload))
-                    .await?;
+                    self.handle_exec_result(context, result, effect_handler)
+                        .await?;
+                };
             }
         };
 
@@ -273,11 +418,13 @@ impl Processor<OtapPdata> for TransformProcessor {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_channel::mpsc::Receiver;
     use serde_json::json;
 
     use otap_df_config::{PortName, node::NodeUserConfig};
     use otap_df_engine::{
         context::ControllerContext,
+        control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
         local::message::LocalSender,
         message::Sender,
         node::NodeWithPDataSender,
@@ -299,10 +446,63 @@ mod test {
                 trace::v1::{ResourceSpans, ScopeSpans, Span, TracesData},
             },
         },
-        testing::round_trip::{otap_to_otlp, otlp_to_otap},
+        testing::round_trip::{otap_to_otlp, otlp_to_otap, to_otap_logs},
     };
 
-    use crate::pdata::OtapPdata;
+    use crate::{pdata::OtapPdata, testing::TestCallData};
+
+    /// Helper to create test log records with specific severity levels
+    fn create_log_records(severities: &[&str]) -> Vec<LogRecord> {
+        severities
+            .iter()
+            .map(|severity| LogRecord::build().severity_text(*severity).finish())
+            .collect()
+    }
+
+    /// Helper to create pdata with subscribers for testing Ack/Nack
+    fn create_pdata_with_subscriber(
+        otap_batch: OtapArrowRecords,
+        interests: Interests,
+        call_data_id: u64,
+        node_id: usize,
+    ) -> OtapPdata {
+        OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+            interests,
+            TestCallData::new_with(call_data_id, 0).into(),
+            node_id,
+        )
+    }
+
+    /// Helper to send an Ack for a given context
+    async fn send_ack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+    ) -> Result<(), EngineError> {
+        let (_, ack) = Context::next_ack(AckMsg::new(OtapPdata::new(
+            context,
+            OtapPayload::empty(signal_type),
+        )))
+        .unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+            .await
+    }
+
+    /// Helper to send a Nack for a given context
+    async fn send_nack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+        reason: &str,
+    ) -> Result<(), EngineError> {
+        let (_, nack) = Context::next_nack(NackMsg::new(
+            reason,
+            OtapPdata::new(context, OtapPayload::empty(signal_type)),
+        ))
+        .unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Nack(nack)))
+            .await
+    }
 
     fn try_create_with_config(
         config: Value,
@@ -314,8 +514,13 @@ mod test {
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_context =
-            controller_context.pipeline_context_with("group_id".into(), "pipeline_id".into(), 0, 0);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
         let node_id = test_node("transform-processor");
         create_transform_processor(
             pipeline_context,
@@ -561,13 +766,12 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
-    #[test]
-    fn test_simple_route_to() {
-        // test ensure it will only operate on all signals
-        let runtime = TestRuntime::<OtapPdata>::new();
-        let query = "logs | route_to \"test_port\"";
-        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
-
+    /// test helper function to set a pdata sender on the processor wrapper for the named out_port
+    /// returns the receiver for the channel
+    fn set_pdata_sender(
+        port_name: &'static str,
+        processor: &mut ProcessorWrapper<OtapPdata>,
+    ) -> Receiver<OtapPdata> {
         let test_node_id = NodeId {
             index: 1,
             name: "test_node".into(),
@@ -576,11 +780,22 @@ mod test {
         processor
             .set_pdata_sender(
                 test_node_id,
-                PortName::from("test_port"),
+                PortName::from(port_name),
                 Sender::Local(LocalSender::mpsc(test_port_tx)),
             )
             .unwrap();
 
+        test_port_rx
+    }
+
+    #[test]
+    fn test_simple_route_to() {
+        // test ensure it will only operate on all signals
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | route_to \"test_port\"";
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let test_port_rx = set_pdata_sender("test_port", &mut processor);
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
@@ -640,26 +855,8 @@ mod test {
             }"#;
         let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
 
-        let test_node_id = NodeId {
-            index: 1,
-            name: "test_node".into(),
-        };
-        let (error_port_tx, error_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("error_port"),
-                Sender::Local(LocalSender::mpsc(error_port_tx)),
-            )
-            .unwrap();
-        let (info_port_tx, info_port_rx) = otap_df_channel::mpsc::Channel::new(10);
-        processor
-            .set_pdata_sender(
-                test_node_id.clone(),
-                PortName::from("info_port"),
-                Sender::Local(LocalSender::mpsc(info_port_tx)),
-            )
-            .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
 
         fn assert_logs_records_equal(otap_batch: OtapArrowRecords, log_record: LogRecord) {
             let result = otap_to_otlp(&otap_batch);
@@ -736,6 +933,565 @@ mod test {
                     }
                     _ => panic!("unexpected payload type"),
                 }
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_with_subscribers_no_routing() {
+        // Smoke test to ensure Ack/Nack handling works correctly when there are subscribers.
+        // This verifies that the context tracking mechanism properly preserves subscriber
+        // information through the transform processor, allowing proper Ack/Nack propagation.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | where severity_text == \"INFO\"";
+        let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // Create a log record
+                let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                // Create pdata with a subscriber - this simulates an upstream component
+                // that wants to be notified when processing completes
+                let pdata = OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    999,
+                );
+
+                let (mut inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                // Process the message through the transform processor
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // Drain output and verify message was transformed and emitted
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1, "Should emit one transformed message");
+
+                let outbound_pdata = output.pop().unwrap();
+
+                let (outbound_context, _payload) = outbound_pdata.clone().into_parts();
+
+                // assert that since the pipeline did no routing, the outbound context should be
+                // same as the inbound
+                assert_eq!(inbound_context.source_node(), None);
+                assert_eq!(
+                    outbound_context.source_node(),
+                    Some("transform-processor".into())
+                );
+                inbound_context.set_source_node(Some("transform-processor".into()));
+                assert_eq!(inbound_context, outbound_context);
+                assert!(outbound_context.has_subscribers());
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_with_subscribers_with_routing() {
+        // test to ensure we don't Ack the inbound batch until all outbound batches have been Ack'd
+        // in the case that the inbound batch has subscribers
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            } else if (severity_text == "INFO") {
+                route_to "info_port"
+            }"#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+        let info_port_rx = set_pdata_sender("info_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO", "DEBUG"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // assert that since some routing (splitting of the batch) did occur, we get a
+                // new context
+                let (outbound_context1, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_context1);
+
+                let (outbound_context2, _) = error_port_rx.recv().await.unwrap().into_parts();
+                let (outbound_context3, _) = info_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // now we'll Ack the outbound messages and ensure that we eventually emit an ack
+                // for the inbound message
+                send_ack(&mut ctx, outbound_context1, SignalType::Logs)
+                    .await
+                    .unwrap();
+                // no ack b/c not all outbound are ack'd
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                send_ack(&mut ctx, outbound_context2, SignalType::Logs)
+                    .await
+                    .unwrap();
+                // still no ack b/c not all outbound are ack'd
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                send_ack(&mut ctx, outbound_context3, SignalType::Logs)
+                    .await
+                    .unwrap();
+                // now we've ack'd all three outbound, so it should emit an Ack message
+                let ack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match ack_msg {
+                    PipelineControlMsg::DeliverAck { node_id, .. } => {
+                        assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_nack_with_subscribers_with_routing_downstream_routed_error() {
+        // test that the inbound batch will be Nack'd with the reason from a downstream routed
+        // batch that was Nack'd by something downstreams
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // get the outbound context from the default outport
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // get the outbound context from the routed outport
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // simulate an Ack coming from the message that got sent on the default out port
+                send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
+                    .await
+                    .unwrap();
+                // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                // simulate a Nack coming from the message that got routed
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_routed,
+                    SignalType::Logs,
+                    "downstream routed error",
+                )
+                .await
+                .unwrap();
+
+                // now ensure that we receive a Nack for the inbound b/c one of the downstream
+                // routed messages was Nack'd
+                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "downstream routed error");
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_nack_with_subscribers_with_routing_downstream_default_error() {
+        // Test that we correctly Nack the inbound message when the batch that gets sent
+        // via the default outport is Nack'd by something downstream of this processor
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+        let mut processor = try_create_with_opl_query(query, &runtime).expect("created processor");
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                // get the outbound context from the default outport
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // get the outbound context from the routed outport
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // simulate an Nack coming from the message that got sent on the default out port
+                send_nack(
+                    &mut ctx,
+                    outbound_ctx_default,
+                    SignalType::Logs,
+                    "downstream default error",
+                )
+                .await
+                .unwrap();
+                // ensure we haven't Ack'd yet b/c there are still outstanding outbound messages
+                assert!(pipeline_ctrl_rx.is_empty());
+
+                // simulate a Ack coming from the message that got routed
+                send_ack(&mut ctx, outbound_ctx_routed, SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                // now ensure that we receive a Nack for the inbound b/c one of the downstream
+                // messages that was sent out default out port was Nack'd
+                let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "downstream default error");
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_full_contexts_outbound_slots_for_routed_batch() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "outbound_request_limit": 1,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // preserve the inbound context for later
+                let (inbound_context, payload) = pdata.into_parts();
+                let pdata = OtapPdata::new(inbound_context.clone(), payload);
+
+                // try to process the message. This should return an error b/c only 1
+                // outbound slot is available, but two outbound batches will be produced
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
+
+                // we should still have sent the first batch produced
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                assert_ne!(inbound_context, outbound_ctx_default);
+
+                // the second batch, which will have been routed, will not have been sent due to
+                // insufficient outbound slots
+                assert!(error_port_rx.is_empty());
+
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                // because there's only one outbound message, if this message gets Ack'd, we should
+                // then Nack the inbound batch b/c some part of it was not processed
+                send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                let nack_msg = pipeline_ctrl_rx.try_recv().unwrap();
+                match nack_msg {
+                    PipelineControlMsg::DeliverNack { node_id, nack } => {
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(nack.reason, "outbound slots were not available");
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_full_contexts_outbound_slots_for_default_batch() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "inbound_request_limit": 2,
+                "outbound_request_limit": 2,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // send a first batch that should fill up the slot map
+                ctx.process(Message::PData(pdata)).await.unwrap();
+
+                // send another pdata - this should fail b/c the outbound slot map is full
+                let pdata = OtapPdata::new_default(input.clone().into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
+
+                // now drain and ack the the messages from the first batch to clear out the slot map
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
+                    send_ack(&mut ctx, pdata_ctx, SignalType::Logs)
+                        .await
+                        .unwrap();
+                }
+
+                // send another pdata and it should succeed b/c the slot map is cleared out
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata)).await.unwrap();
+
+                // send yet another failed batch -- we do this to ensure that when we returned
+                // an error for the first failed batch, that we cleared the inbound slot. If
+                // we didn't, we'd see an error saying the inbound slot cannot be allocated
+                let pdata = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("process error");
+                assert!(err.to_string().contains("outbound slots not available"));
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_ack_nack_full_contexts_inbound_slots() {
+        // Test that when inbound slots are full, the processor returns an error
+        // and properly cleans up so subsequent requests can succeed once slots are freed
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = r#"logs
+            | if (severity_text == "ERROR") {
+                route_to "error_port"
+            }
+            "#;
+
+        let mut processor = try_create_with_config(
+            json!({
+                "opl_query": query,
+                "inbound_request_limit": 1,
+                "outbound_request_limit": 10,
+            }),
+            &runtime,
+        )
+        .unwrap();
+        let error_port_rx = set_pdata_sender("error_port", &mut processor);
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let log_records = create_log_records(&["ERROR", "INFO"]);
+                let input = to_otap_logs(log_records);
+
+                let upstream_node_id = 999;
+
+                // Send first batch - this should fill the single inbound slot
+                let pdata1 = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    1,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata1)).await.unwrap();
+
+                // Try to send another batch - this should fail because inbound slot is full
+                let pdata2 = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    2,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata2))
+                    .await
+                    .expect_err("should fail when inbound slots full");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "Expected inbound slots error, got: {}",
+                    err
+                );
+
+                // Collect the outbound messages from the first batch
+                let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
+                let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
+
+                // Ack both outbound messages to free the inbound slot
+                for pdata_ctx in [outbound_ctx_default, outbound_ctx_routed] {
+                    send_ack(&mut ctx, pdata_ctx, SignalType::Logs)
+                        .await
+                        .unwrap();
+                }
+
+                // Now try again - should succeed because inbound slot was freed
+                let pdata3 = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    3,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata3))
+                    .await
+                    .expect("should succeed after inbound slot freed");
+
+                // Verify we can process again and fill the slot
+                let pdata4 = create_pdata_with_subscriber(
+                    input.clone(),
+                    Interests::ACKS | Interests::NACKS,
+                    4,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata4))
+                    .await
+                    .expect_err("should fail again when inbound slot full");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "Expected inbound slots error, got: {}",
+                    err
+                );
             })
             .validate(|_ctx| async move {})
     }

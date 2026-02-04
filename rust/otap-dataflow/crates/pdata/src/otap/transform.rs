@@ -12,12 +12,19 @@ use arrow::array::{
 };
 use arrow::buffer::{Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{SortColumn, and, concat};
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type};
+use arrow::compute::{SortColumn, and, cast, concat, not};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type,
+};
 use arrow::row::{RowConverter, SortField};
+use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array,
+};
+use crate::encode::record::array::{
+    ArrayAppend, ArrayAppendNulls, ArrayAppendStr, ArrayOptions, Float64ArrayBuilder,
+    Int64ArrayBuilder, StringArrayBuilder, dictionary::DictionaryOptions,
 };
 use crate::error::{Error, Result};
 use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
@@ -92,22 +99,28 @@ where
 pub fn remove_delta_encoding_from_column<T>(array: &PrimitiveArray<T>) -> PrimitiveArray<T>
 where
     T: ArrowPrimitiveType,
-    <T as ArrowPrimitiveType>::Native: AddAssign,
+    <T as ArrowPrimitiveType>::Native: AddAssign + Copy,
 {
-    let mut result = PrimitiveBuilder::<T>::with_capacity(array.len());
+    let curr_values = array.values();
+    let mut new_values = Vec::from(curr_values.clone());
     let mut acc: T::Native = T::Native::default(); // zero
 
-    for i in 0..array.len() {
-        if array.is_valid(i) {
-            let delta = array.value(i);
-            acc += delta;
-            result.append_value(acc);
-        } else {
-            result.append_null();
+    if let Some(nulls) = array.nulls() {
+        for (start, end) in BitSliceIterator::new(nulls.buffer().as_slice(), 0, array.len()) {
+            for delta in new_values.iter_mut().take(end).skip(start) {
+                acc += *delta;
+                *delta = acc;
+            }
+        }
+    } else {
+        // no nulls, just accumulate every value
+        for delta in new_values.iter_mut().take(array.len()) {
+            acc += *delta;
+            *delta = acc;
         }
     }
 
-    result.finish()
+    PrimitiveArray::<T>::new(ScalarBuffer::from(new_values), array.nulls().cloned())
 }
 
 /// Decodes the parent IDs from their transport optimized encoding to the actual ID values.
@@ -165,20 +178,26 @@ where
         return Ok(record_batch.clone());
     }
 
+    // in the implementation below, to compare the items from the type, key, and value columns to
+    // their neighbour (to determine which rows are use delta encoded ID), we use the arrow `eq`
+    // compute kernel to generate a "eq bitmask" of for each column indicating where one row's
+    // value is equal to the next row. The first part of this function is computing such bitmasks
+
+    // compute a bitmap for the key column where subsequent keys are equal
     let keys_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_KEY)
         .ok_or_else(|| Error::ColumnNotFound {
             name: consts::ATTRIBUTE_KEY.into(),
         })?;
-    let key_eq_next = create_next_eq_array_for_array(keys_arr);
+    let key_eq_next = create_next_element_equality_array(keys_arr)?;
 
+    // compute a bitmap for the type column where subsequent types are equal
     let type_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_TYPE)
         .ok_or_else(|| Error::ColumnNotFound {
             name: consts::ATTRIBUTE_TYPE.into(),
         })?;
     let types_eq_next = create_next_element_equality_array(type_arr)?;
-    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
 
     let val_str_arr = record_batch.column_by_name(consts::ATTRIBUTE_STR);
     let val_int_arr = record_batch.column_by_name(consts::ATTRIBUTE_INT);
@@ -186,87 +205,272 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    // downcast parent ID into an array of the primitive type
-    let parent_id_arr = MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(
-        get_required_array(record_batch, consts::PARENT_ID)?,
-    )?;
+    // helper function include nulls in the bitmask that's used to determine which rows in values
+    // columns may be delta encoded. It is to be called with the bitmask of which rows are equal.
+    // note: null values break a sequence of delta encoding
+    let and_validity_bitmap = |eq: BooleanArray| -> Buffer {
+        let bits = eq.values().inner().clone();
+        let nulls = eq.nulls();
 
-    let mut materialized_parent_ids =
-        PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
+        // if there are nulls, AND them into the bits buffer
+        // we treats null values as "not equal" for delta encoding purposes
+        if let Some(null_buffer) = nulls {
+            let null_bits = null_buffer.inner();
+            // AND the equality bits with the nulls validity buffer
+            let byte_len = bits.len();
+            let mut result = MutableBuffer::from_len_zeroed(byte_len);
 
-    // below we're iterating through the record batch and each time we find a contiguous range
-    // where all the types & attribute keys are the same, we use the "eq" compute kernel to
-    // compare all the values. Then we use the resulting next-element equality array for the
-    // values to determine if there is delta encoding
-    let mut curr_range_start = 0;
-    for idx in 0..record_batch.num_rows() {
-        // check if we've found the end of a range of where all the type & attribute are the same
-        let found_range_end = if idx == types_eq_next.len() {
-            true // end of list
+            let bits_slice = bits.as_slice();
+            let null_slice = null_bits.inner().as_slice();
+            let result_slice = result.as_slice_mut();
+
+            let min_len = bits_slice.len().min(null_slice.len());
+            for i in 0..min_len {
+                result_slice[i] = bits_slice[i] & null_slice[i];
+            }
+
+            result.into()
         } else {
-            !types_eq_next.value(idx) || !key_eq_next.value(idx)
-        };
+            bits
+        }
+    };
 
-        // when we find the range end, decode the parent ID values
-        if found_range_end {
-            let value_type = AttributeValueType::try_from(type_arr.value(curr_range_start))
+    // Further below, we're going to create the "eq bitmask" for all the values columns to help us
+    // determine which ranges have delta encoding. For best performance, we want to minimize the
+    // data for which this has to be computed.
+    //
+    // Normally, transport encoded data is sorted first by the type column. If we receive a batch
+    // sorted like this, which would be expected, we compute the "eq bitmask" for each value column
+    // only on ranges that contain this type (these ranges can be efficiently computed when the
+    // batch is sorted). If the batch isn't sorted, we compute it for the entire column as a worst-
+    // case fallback.
+    //
+    // The code in the next section is computing these type ranges, if possible, and afterward it
+    // computes the "eq bitmask" for each values column
+
+    // pull out a few references to the type column that will be used later on
+    let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
+    let type_values = type_arr.values();
+    let type_bytes = type_values.inner().as_slice();
+
+    // check if types are sorted - if so, we can optimize by only computing equality for specific ranges
+    let types_are_sorted = type_bytes.is_sorted();
+
+    // when sorted, compute type ranges sequentially to reuse end positions as start positions
+    // use fixed-size array indexed by AttributeValueType value (max is Bytes=7, so size 8)
+    let mut type_ranges: [Option<(usize, usize)>; 8] = [None; 8];
+    if types_are_sorted && !type_bytes.is_empty() {
+        let mut current_pos = 0;
+        // process types in AttributeValueType order: Empty, Str, Int, Double, Bool, Map, Slice, Bytes
+        for type_value in [
+            AttributeValueType::Empty as u8,
+            AttributeValueType::Str as u8,
+            AttributeValueType::Int as u8,
+            AttributeValueType::Double as u8,
+            AttributeValueType::Bool as u8,
+            AttributeValueType::Map as u8,
+            AttributeValueType::Slice as u8,
+            AttributeValueType::Bytes as u8,
+        ] {
+            if current_pos >= type_bytes.len() {
+                break;
+            }
+            // start is the current position (previous type's end)
+            let start = current_pos;
+
+            // find end with single binary search from current position
+            let end = type_bytes[start..].partition_point(|&x| x <= type_value) + start;
+
+            // only add if this type exists
+            if start < type_bytes.len() && type_bytes[start] == type_value {
+                type_ranges[type_value as usize] = Some((start, end));
+                current_pos = end;
+            }
+        }
+    }
+
+    // A couple helper functions for accessing the type ranges:
+
+    let get_type_range = |type_value: u8| -> Option<(usize, usize)> {
+        type_ranges.get(type_value as usize).and_then(|&r| r)
+    };
+
+    let get_type_offset = |type_value: u8| -> usize {
+        if types_are_sorted {
+            get_type_range(type_value)
+                .map(|(start, _)| start)
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    // compute value equality arrays - either for specific ranges (sorted) or entire column (unsorted)
+    let compute_val_eq = |arr: &ArrayRef, type_value: u8| -> Result<Buffer> {
+        if let Some((start, end)) = get_type_range(type_value) {
+            // sorted case: only compute equality for the range where this type appears
+            let sliced = arr.slice(start, end - start);
+            create_next_element_equality_array(&sliced).map(and_validity_bitmap)
+        } else {
+            // unsorted case: compute for entire column
+            create_next_element_equality_array(arr).map(and_validity_bitmap)
+        }
+    };
+
+    let val_str_eq = val_str_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Str as u8))
+        .transpose()?;
+    let val_int_eq = val_int_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Int as u8))
+        .transpose()?;
+    let val_double_eq = val_double_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Double as u8))
+        .transpose()?;
+    let val_bool_eq = val_bool_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Bool as u8))
+        .transpose()?;
+    let val_bytes_eq = val_bytes_arr
+        .as_ref()
+        .map(|arr| compute_val_eq(arr, AttributeValueType::Bytes as u8))
+        .transpose()?;
+
+    // in the next phase of this function, we use the "eq bitmask"s created above to fill in a
+    // new parent ID column, removing delta encoding in subsequent rows of equal type, key and
+    // non-null value ...
+
+    // copy parent IDs value buffer into a mutable vec for in-place modification. This is faster
+    // than rebuilding it from scratch using a PrimitiveBuilder because we only need to rewrite
+    // the delta encoded segments
+    let parent_id_arr_ref = get_required_array(record_batch, consts::PARENT_ID)?;
+    // TODO - currently we're casting to a primitive array, then casting back to the original
+    // array type when we replace the column. This is fine for u16 IDs, but our u32 IDs may be
+    // dictionary encoded, so we should revisit this for metrics/traces which have attributes
+    // that use this kind of ID
+    let parent_id_arr = cast(&parent_id_arr_ref, &T::ArrayType::DATA_TYPE).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("Failed to cast parent_id column: {}", e),
+        }
+    })?;
+    let parent_id_arr = parent_id_arr
+        .as_any()
+        .downcast_ref::<PrimitiveArray<T::ArrayType>>()
+        .ok_or_else(|| Error::UnexpectedRecordBatchState {
+            reason: "Failed to downcast parent_id to primitive array".to_string(),
+        })?;
+    let mut materialized_parent_ids = parent_id_arr.values().to_vec();
+
+    // closure to process a range of values where all type/key are equal.
+    //
+    // note the passed range is the range in the "eq bitmask" which was used to determine where
+    // type/key have equivalent value equal to the next row. this means that from the perspective
+    // of indexing the record batch itself, the range_end is actually an inclusive range end.
+    let mut process_range = |eq_range_start: usize, eq_range_end: usize| -> Result<()> {
+        // first element in range is already correct (not delta encoded) because presumably the
+        // key/type columns were not equal to what is in this range.
+
+        // only continue on to remove delta encodings if the range contains multiple rows
+        if eq_range_end - eq_range_start > 0 {
+            // determine value equality array based on attribute type
+            let value_type = AttributeValueType::try_from(type_values[eq_range_start])
                 .map_err(|e| Error::UnrecognizedAttributeValueType { error: e })?;
-            let value_arr = match value_type {
-                AttributeValueType::Str => val_str_arr,
-                AttributeValueType::Int => val_int_arr,
-                AttributeValueType::Bool => val_bool_arr,
-                AttributeValueType::Bytes => val_bytes_arr,
-                AttributeValueType::Double => val_double_arr,
 
-                // These types are always considered not equal for purposes of determining
-                // whether to delta encode parent ID
+            // get the "eq bitmask" for the column containing the type of values for this range
+            let values_eq = match value_type {
+                AttributeValueType::Str => val_str_eq.as_ref(),
+                AttributeValueType::Int => val_int_eq.as_ref(),
+                AttributeValueType::Bool => val_bool_eq.as_ref(),
+                AttributeValueType::Bytes => val_bytes_eq.as_ref(),
+                AttributeValueType::Double => val_double_eq.as_ref(),
+                // Map/Slice/Empty are never delta-encoded
                 AttributeValueType::Map | AttributeValueType::Slice | AttributeValueType::Empty => {
                     None
                 }
             };
 
-            // add the first value from this range to the parent IDs
-            let mut curr_parent_id = parent_id_arr
-                .value_at(curr_range_start)
-                // safety: there's a check at the beginning of this function to ensure that
-                // the batch is not empty
-                .expect("expect the batch not to be empty");
-            materialized_parent_ids.append_value(curr_parent_id);
+            if let Some(values_eq) = values_eq {
+                // calculate offset adjustment for sorted types - recall that the values_eq
+                // array may contain value for the full dataset, unless the dataset was sorted
+                // by type, in which case it only values for rows containing values of this
+                // type, in which case we need to offset from curr_range_start when indexing it
+                let type_offset = get_type_offset(value_type as u8);
 
-            if let Some(value_arr) = value_arr {
-                // if we have a value array here, we know the parent ID may be delta encoded
-                let range_length = idx + 1 - curr_range_start;
-                let values_range = value_arr.slice(curr_range_start, range_length);
-                let values_eq_next = create_next_element_equality_array(&values_range)?;
+                // Process remaining elements in range
+                let mut curr_parent_id = materialized_parent_ids[eq_range_start];
+                let mut batch_idx = eq_range_start + 1;
 
-                for batch_idx in (curr_range_start + 1)..=idx {
-                    let delta_or_parent_id = parent_id_arr.value_at_or_default(batch_idx);
-                    let prev_value_range_idx = batch_idx - 1 - curr_range_start;
+                // below we will iterate over ranges of delta encoded IDs (e.g. sub-ranges
+                // within the range which for which this closure has been invoked, where
+                // subsequent values are equal and not null). We identify these ranges as runs
+                // of `true` values in the values_eq buffer
 
-                    if values_eq_next.value(prev_value_range_idx)
-                        && !values_eq_next.is_null(prev_value_range_idx)
-                    {
-                        // value at current index equals previous so we're delta encoded
-                        curr_parent_id += delta_or_parent_id;
-                    } else {
-                        // value change (or null) breaks the sequence of delta encoding
-                        curr_parent_id = delta_or_parent_id;
+                let delta_range_iter = BitSliceIterator::new(
+                    values_eq.as_slice(),
+                    eq_range_start - type_offset,
+                    eq_range_end - eq_range_start,
+                );
+                for delta_range in delta_range_iter {
+                    // convert back to batch coordinates ...
+                    // delta_range is relative to the offset (curr_range_start - type_offset)
+                    // values_eq_bits[i] means element[i] == element[i+1], so element[i+1] is delta-encoded
+                    // so: batch_idx = delta_range.0 + (curr_range_start - type_offset) + 1 + type_offset
+                    // simplifies to: delta_range.0 + curr_range_start + 1
+                    let batch_delta_start = delta_range.0 + eq_range_start + 1;
+                    let batch_delta_end = delta_range.1 + eq_range_start + 1;
+
+                    // update curr_parent_id for any non-delta values we're skipping ...
+                    // just jump to the end of the last non-delta encoded range and read the last value
+                    if batch_idx < batch_delta_start {
+                        curr_parent_id = materialized_parent_ids[batch_delta_start - 1];
+                        batch_idx = batch_delta_start;
                     }
-                    materialized_parent_ids.append_value(curr_parent_id);
-                }
-            } else {
-                // if we're here, we've determined that the parent ID values are not delta encoded
-                // because the type doesn't support it
-                for batch_idx in (curr_range_start + 1)..(idx + 1) {
-                    materialized_parent_ids
-                        .append_value(parent_id_arr.value_at_or_default(batch_idx));
+
+                    // process delta-encoded range
+                    while batch_idx < batch_delta_end {
+                        curr_parent_id += materialized_parent_ids[batch_idx];
+                        materialized_parent_ids[batch_idx] = curr_parent_id;
+                        batch_idx += 1;
+                    }
                 }
             }
-
-            curr_range_start = idx + 1;
         }
+
+        Ok(())
+    };
+
+    // below we're going to create an iterator of indices where delta encoding may break due to
+    // a change in type/key. To do this, we and the "eq bitmask"s for key and type, then invert it.
+    // every index that is "true" in the result of this is a break in delta encoding
+    let types_and_keys_eq = and(&types_eq_next, &key_eq_next)
+        .expect("types_eq_next and key_eq_next should have same length");
+    let range_eq_ends = not(&types_and_keys_eq).expect("not operation should succeed");
+    let range_ends_val_buffer = range_eq_ends.values().values();
+    let num_rows = record_batch.num_rows();
+    let last_idx = num_rows - 1;
+
+    // pointer to start of current delta encoded range. Will be updated as we iterate through
+    // ranges to remove delta encoding
+    let mut delta_range_start = 0;
+
+    // process all ranges having equivalent type/key
+    for delta_range_end in BitIndexIterator::new(range_ends_val_buffer, 0, last_idx) {
+        process_range(delta_range_start, delta_range_end)?;
+        delta_range_start = delta_range_end + 1; // skip 1 non-delta encoded value
     }
-    let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
+
+    // Process the final range ending at last_idx if it wasn't already processed
+    if delta_range_start <= last_idx {
+        process_range(delta_range_start, last_idx)?;
+    }
+
+    // create new arrow array for parent_id column
+    let materialized_parent_ids = Arc::new(PrimitiveArray::<T::ArrayType>::new(
+        ScalarBuffer::from(materialized_parent_ids),
+        parent_id_arr.nulls().cloned(),
+    ));
 
     // create new record batch but with parent column replaced
     replace_materialized_parent_id_column(
@@ -409,7 +613,7 @@ fn replace_materialized_parent_id_column(
         .enumerate()
         .map(|(i, col)| {
             if i == parent_id_idx {
-                arrow::compute::cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
+                cast(&materialized_parent_ids, field.data_type()).map_err(|e| {
                     Error::UnexpectedRecordBatchState {
                         reason: format!("could not replace parent id {e}"),
                     }
@@ -450,7 +654,6 @@ pub(crate) fn create_next_element_equality_array(arr: &ArrayRef) -> Result<Boole
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
                     .expect("array can be downcast to DictionaryArray<UInt8Type>");
-
                 Ok(create_next_eq_array_for_array(dict.keys()))
             }
             DataType::UInt16 => {
@@ -478,6 +681,26 @@ fn create_next_eq_array_for_array<T: Array>(arr: T) -> BooleanArray {
     // safety: `eq` should only be returning an error if the types or lengths don't match
     // which because of what we're passing here, these conditions are satisfied
     eq(&lhs, &rhs).expect("should be able to compare slice with offset of 1")
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum LiteralValue {
+    Bool(bool),
+    Int(i64),
+    Double(f64),
+    Str(String),
+}
+
+pub struct InsertTransform {
+    pub(super) entries: BTreeMap<String, LiteralValue>,
+}
+
+impl InsertTransform {
+    #[must_use]
+    pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
+        Self { entries }
+    }
 }
 
 pub struct RenameTransform {
@@ -530,6 +753,9 @@ pub struct AttributesTransform {
 
     // rows with attribute names in this set will be deleted from the attribute record batch
     pub delete: Option<DeleteTransform>,
+
+    // rows that will be inserted into the attribute record batch
+    pub insert: Option<InsertTransform>,
 }
 
 impl AttributesTransform {
@@ -544,6 +770,13 @@ impl AttributesTransform {
     #[must_use]
     pub fn with_delete(mut self, delete: DeleteTransform) -> Self {
         self.delete = Some(delete);
+        self
+    }
+
+    /// Set the insert transform
+    #[must_use]
+    pub fn with_insert(mut self, insert: InsertTransform) -> Self {
+        self.insert = Some(insert);
         self
     }
 
@@ -585,6 +818,16 @@ impl AttributesTransform {
             }
         }
 
+        if let Some(insert) = &self.insert {
+            for key in insert.entries.keys() {
+                if !all_keys.insert(key) {
+                    return Err(Error::InvalidAttributeTransform {
+                        reason: format!("Duplicate key in insert: {key}"),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -609,6 +852,8 @@ pub struct TransformStats {
     pub deleted_entries: u64,
     /// Exact number of attribute entries whose key was renamed
     pub renamed_entries: u64,
+    /// Exact number of attribute entries added by insert rules
+    pub inserted_entries: u64,
 }
 
 /// Apply an [`AttributesTransform`] to an attributes [`RecordBatch`] and return both the
@@ -641,7 +886,21 @@ pub fn transform_attributes_with_stats(
                 name: consts::ATTRIBUTE_KEY.into(),
             })?;
 
-    match schema.field(key_column_idx).data_type() {
+    // Check if we need early materialization for insert
+    // We only need to materialize if insert is present AND we have parent_id column
+    // This allows us to get the full list of parents before any deletes are applied
+    let insert_needed =
+        transform.insert.is_some() && schema.column_with_name(consts::PARENT_ID).is_some();
+    let attrs_record_batch_cow = if insert_needed {
+        let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
+        Cow::Owned(rb)
+    } else {
+        Cow::Borrowed(attrs_record_batch)
+    };
+    let attrs_record_batch = attrs_record_batch_cow.as_ref();
+    let schema = attrs_record_batch.schema();
+
+    let (rb, mut stats) = match schema.field(key_column_idx).data_type() {
         DataType::Utf8 => {
             let keys_arr = attrs_record_batch
                 .column(key_column_idx)
@@ -653,6 +912,7 @@ pub fn transform_attributes_with_stats(
             let stats = TransformStats {
                 renamed_entries: keys_transform_result.replaced_rows as u64,
                 deleted_entries: keys_transform_result.deleted_rows as u64,
+                inserted_entries: 0,
             };
             let new_keys = Arc::new(keys_transform_result.new_keys);
 
@@ -662,7 +922,7 @@ pub fn transform_attributes_with_stats(
             let should_materialize_parent_ids =
                 schema.column_with_name(consts::PARENT_ID).is_some();
             let (attrs_record_batch, schema) = if should_materialize_parent_ids {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
+                let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
                 let schema = rb.schema();
                 (rb, schema)
             } else {
@@ -691,7 +951,7 @@ pub fn transform_attributes_with_stats(
             // safety: this should only return an error if our schema, or column lengths don't match
             let rb = RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns");
-            Ok((rb, stats))
+            (rb, stats)
         }
         DataType::Dictionary(k, _) => {
             let (new_dict, keep_ranges, stats) = match *k.clone() {
@@ -711,6 +971,7 @@ pub fn transform_attributes_with_stats(
                         TransformStats {
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
+                            inserted_entries: 0,
                         },
                     )
                 }
@@ -730,6 +991,7 @@ pub fn transform_attributes_with_stats(
                         TransformStats {
                             deleted_entries: dict_imm_result.deleted_rows as u64,
                             renamed_entries: dict_imm_result.renamed_rows as u64,
+                            inserted_entries: 0,
                         },
                     )
                 }
@@ -742,21 +1004,23 @@ pub fn transform_attributes_with_stats(
             };
 
             // if all rows have been removed (all attributes deleted) just return empty RecordBatch
-            if keep_ranges.as_ref().map(Vec::len) == Some(0) {
-                return Ok((RecordBatch::new_empty(schema), stats));
-            }
-
-            // Materialize the parent ID column if it exists. Renames/replacements can change
-            // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
-            // even when no rows are deleted.
-            let should_materialize_parent_ids =
-                schema.column_with_name(consts::PARENT_ID).is_some();
-            let (attrs_record_batch, schema) = if should_materialize_parent_ids {
-                let rb = materialize_parent_id_for_attributes::<u16>(attrs_record_batch)?;
-                let schema = rb.schema();
-                (rb, schema)
+            // NOTE: If we have inserts, we might still return rows even if all existing were deleted.
+            // But here we just produce the "remaining" batch. Inserts are appended later.
+            let (attrs_record_batch, schema) = if keep_ranges.as_ref().map(Vec::len) == Some(0) {
+                (RecordBatch::new_empty(schema.clone()), schema.clone())
             } else {
-                (attrs_record_batch.clone(), schema)
+                // Materialize the parent ID column if it exists. Renames/replacements can change
+                // logical adjacency of (type,key,value) runs, which can invalidate quasi-delta decoding
+                // even when no rows are deleted.
+                let should_materialize_parent_ids =
+                    schema.column_with_name(consts::PARENT_ID).is_some();
+                if should_materialize_parent_ids {
+                    let rb = materialize_parent_id_for_attributes_auto(attrs_record_batch)?;
+                    let schema = rb.schema();
+                    (rb, schema)
+                } else {
+                    (attrs_record_batch.clone(), schema)
+                }
             };
 
             // TODO if there are any optional columns that now contain only null or default values,
@@ -781,17 +1045,90 @@ pub fn transform_attributes_with_stats(
             // safety: this should only return an error if our schema, or column lengths don't match
             let rb = RecordBatch::try_new(schema, columns)
                 .expect("can build record batch with same schema and columns");
-            Ok((rb, stats))
+            (rb, stats)
         }
-        data_type => Err(Error::InvalidListArray {
-            expect_oneof: vec![
-                DataType::Utf8,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-            ],
-            actual: data_type.clone(),
-        }),
+        data_type => {
+            return Err(Error::InvalidListArray {
+                expect_oneof: vec![
+                    DataType::Utf8,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+                ],
+                actual: data_type.clone(),
+            });
+        }
+    };
+
+    // Handle inserts
+    // According to OTel collector spec, `insert` only inserts if the key does not already exist.
+    // We need:
+    // - Original parent IDs from attrs_record_batch to know which parents exist
+    // - The transformed batch (rb) to check which (parent_id, key) pairs already exist
+    if let Some(insert) = &transform.insert {
+        if let Some(original_parent_ids) = attrs_record_batch.column_by_name(consts::PARENT_ID) {
+            // Determine which value type columns we need based on what's being inserted
+            let needs_int = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Int(_)));
+            let needs_double = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Double(_)));
+            let needs_bool = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Bool(_)));
+            let needs_str = insert
+                .entries
+                .iter()
+                .any(|(_, v)| matches!(v, LiteralValue::Str(_)));
+
+            // Extend schema and batch to include missing value columns
+            let (rb_extended, extended_schema) =
+                extend_schema_for_inserts(&rb, needs_str, needs_int, needs_double, needs_bool)?;
+
+            let (new_rows, count) = match get_parent_id_value_type(original_parent_ids)? {
+                DataType::UInt16 => create_inserted_batch::<u16>(
+                    &rb_extended,
+                    original_parent_ids,
+                    insert,
+                    extended_schema.as_ref(),
+                )?,
+                DataType::UInt32 => create_inserted_batch::<u32>(
+                    &rb_extended,
+                    original_parent_ids,
+                    insert,
+                    extended_schema.as_ref(),
+                )?,
+                data_type => {
+                    return Err(Error::ColumnDataTypeMismatch {
+                        name: consts::PARENT_ID.into(),
+                        expect: DataType::UInt16, // or UInt32
+                        actual: data_type,
+                    });
+                }
+            };
+            if count > 0 {
+                // Reconcile batches in case adaptive builders caused type changes
+                // (e.g., dictionary overflow from Dict<UInt8> to Dict<UInt16> or native)
+                let (reconciled_orig, reconciled_new, unified_schema) =
+                    reconcile_batches_for_concat(rb_extended, new_rows)?;
+
+                let combined = arrow::compute::concat_batches(
+                    &unified_schema,
+                    &[reconciled_orig, reconciled_new],
+                )
+                .map_err(|e| Error::Format {
+                    error: e.to_string(),
+                })?;
+                stats.inserted_entries = count as u64;
+                return Ok((combined, stats));
+            }
+        }
     }
+
+    Ok((rb, stats))
 }
 
 /// This function is used to perform bulk transformations on OTel attributes.
@@ -802,9 +1139,7 @@ pub fn transform_attributes_with_stats(
 /// Currently the operations supported are:
 /// - rename which replaces a given attribute key
 /// - delete which removes all rows from the record batch for a given key
-///
-/// Support for insert will be added in the future (see
-/// https://github.com/open-telemetry/otel-arrow/issues/813)
+/// - insert which adds new attributes to the record batch
 ///
 /// Note that to avoid any ambiguity in how the transformation is applied, this method will
 /// validate the transform. The caller must ensure the supplied transform is valid. See
@@ -1621,6 +1956,9 @@ fn take_ranges_slice<T>(array: T, ranges: &[(usize, usize)]) -> Result<ArrayRef>
 where
     T: Array,
 {
+    if ranges.is_empty() {
+        return Ok(array.slice(0, 0));
+    }
     let slices: Vec<ArrayRef> = ranges
         .iter()
         .map(|&(start, end)| array.slice(start, end - start))
@@ -2359,11 +2697,44 @@ mod test {
     }
 
     #[test]
+    fn test_remove_delta_encoding_with_nonzero_nulls() {
+        // test to cover an edge case where the values buffer contains non-zero values in the
+        // null positions. This is valid arrow array, albeit unusual, and we'd get an error
+        // removing delta encoding if we didn't consider the validitity buffer
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test",
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::new(
+                ScalarBuffer::from(vec![1, 1, 1, 1, 1, 1]),
+                Some(NullBuffer::from(vec![true, true, false, true, true, false])),
+            ))],
+        )
+        .unwrap();
+
+        let result = remove_delta_encoding::<UInt16Type>(&record_batch, "test").unwrap();
+
+        let transformed_column = result
+            .column_by_name("test")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+
+        let expected = UInt16Array::from(vec![Some(1), Some(2), None, Some(3), Some(4), None]);
+        assert_eq!(transformed_column, &expected);
+    }
+
+    #[test]
     fn transform_attributes_basic() {
         let test_cases = vec![
             (
                 // most basic transform
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "b".into(),
                         "B".into(),
@@ -2378,6 +2749,7 @@ mod test {
             (
                 // test replacements at array boundaries
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "A".into(),
@@ -2390,6 +2762,7 @@ mod test {
             (
                 // test replacements where replacements longer than target
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAA".into(),
@@ -2405,6 +2778,7 @@ mod test {
             (
                 // test replacements where replacements shorter than target
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "aaa".into(),
                         "a".into(),
@@ -2420,6 +2794,7 @@ mod test {
             (
                 // test replacing single contiguous block of keys
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AA".into(),
@@ -2438,6 +2813,7 @@ mod test {
             (
                 // test multiple replacements
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
@@ -2456,6 +2832,7 @@ mod test {
             (
                 // test multiple replacements interleaved
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![
                         ("a".into(), "AA".into()),
                         ("dd".into(), "D".into()),
@@ -2474,6 +2851,7 @@ mod test {
             (
                 // test deletion at array boundaries without replaces
                 AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
@@ -2483,6 +2861,7 @@ mod test {
             (
                 // test delete contiguous segment
                 AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["a".into()]))),
                 },
@@ -2495,6 +2874,7 @@ mod test {
             (
                 // test multiple deletes
                 AttributesTransform {
+                    insert: None,
                     rename: None,
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
                         "a".into(),
@@ -2510,6 +2890,7 @@ mod test {
             (
                 // test adjacent replacement and delete
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAA".into(),
@@ -2522,6 +2903,7 @@ mod test {
             (
                 // test we handle an empty rename
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![]))),
                     delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
                 },
@@ -2531,6 +2913,7 @@ mod test {
             (
                 // test we handle an empty delete
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "a".into(),
                         "AAAA".into(),
@@ -2703,6 +3086,7 @@ mod test {
             let result = transform_attributes(
                 &record_batch,
                 &AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                         "k2".into(),
                         "K2".into(),
@@ -2860,6 +3244,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter(vec![(
                     "b".into(),
                     "B".into(),
@@ -2896,6 +3281,7 @@ mod test {
             (
                 // basic dict transform
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -2937,6 +3323,7 @@ mod test {
             (
                 // test with some nulls
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -3004,6 +3391,7 @@ mod test {
                 // test if there's nulls in the dict keys. This would be unusual
                 // but technically it's possible
                 AttributesTransform {
+                    insert: None,
                     rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                         "a".into(),
                         "AA".into(),
@@ -3103,6 +3491,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "c".into(),
                     "CCCCC".into(),
@@ -3146,6 +3535,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
             },
@@ -3181,6 +3571,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(["a".into()].into_iter().collect())),
             },
@@ -3264,6 +3655,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
@@ -3341,6 +3733,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: None,
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
             },
@@ -3407,6 +3800,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "k2".into(),
                     "k1".into(),
@@ -3485,6 +3879,7 @@ mod test {
         let result = transform_attributes(
             &input,
             &AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "k2".into(),
                     "k1".into(),
@@ -3503,6 +3898,7 @@ mod test {
     fn test_invalid_attributes_transforms() {
         let test_cases = vec![
             AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "b".into(),
@@ -3510,6 +3906,7 @@ mod test {
                 delete: None,
             },
             AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([
                     ("b".into(), "b".into()),
                     ("a".into(), "b".into()),
@@ -3517,6 +3914,7 @@ mod test {
                 delete: None,
             },
             AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "a".into(),
@@ -3524,6 +3922,7 @@ mod test {
                 delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec!["b".into()]))),
             },
             AttributesTransform {
+                insert: None,
                 rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                     "b".into(),
                     "a".into(),
@@ -3564,6 +3963,7 @@ mod test {
         .unwrap();
 
         let tx = AttributesTransform {
+            insert: None,
             rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                 String::from("a"),
                 String::from("A"),
@@ -3606,6 +4006,7 @@ mod test {
         .unwrap();
 
         let tx = AttributesTransform {
+            insert: None,
             rename: Some(RenameTransform::new(BTreeMap::from_iter([(
                 String::from("a"),
                 String::from("A"),
@@ -3621,5 +4022,1468 @@ mod test {
 
         let plain = transform_attributes(&input, &tx).unwrap();
         assert_eq!(with_stats, plain);
+    }
+}
+
+/// Extend a RecordBatch's schema to include missing value columns needed for inserts.
+/// Returns the extended batch and schema. If no columns need to be added, returns a clone of
+/// the original batch with its schema.
+fn extend_schema_for_inserts(
+    batch: &RecordBatch,
+    needs_str: bool,
+    needs_int: bool,
+    needs_double: bool,
+    needs_bool: bool,
+) -> Result<(RecordBatch, Arc<arrow::datatypes::Schema>)> {
+    let schema = batch.schema();
+    let num_rows = batch.num_rows();
+
+    // Check which columns already exist
+    let has_str = schema.column_with_name(consts::ATTRIBUTE_STR).is_some();
+    let has_int = schema.column_with_name(consts::ATTRIBUTE_INT).is_some();
+    let has_double = schema.column_with_name(consts::ATTRIBUTE_DOUBLE).is_some();
+    let has_bool = schema.column_with_name(consts::ATTRIBUTE_BOOL).is_some();
+
+    // If all needed columns exist, return unchanged
+    if (!needs_str || has_str)
+        && (!needs_int || has_int)
+        && (!needs_double || has_double)
+        && (!needs_bool || has_bool)
+    {
+        return Ok((batch.clone(), schema));
+    }
+
+    // Build new schema with missing columns
+    let mut new_fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut new_columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+    // Add missing columns with null arrays
+    if needs_str && !has_str {
+        new_fields.push(Field::new(
+            consts::ATTRIBUTE_STR,
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            true,
+        ));
+        new_columns.push(arrow::array::new_null_array(
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
+            num_rows,
+        ));
+    }
+
+    if needs_int && !has_int {
+        new_fields.push(Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true));
+        new_columns.push(arrow::array::new_null_array(&DataType::Int64, num_rows));
+    }
+
+    if needs_double && !has_double {
+        new_fields.push(Field::new(
+            consts::ATTRIBUTE_DOUBLE,
+            DataType::Float64,
+            true,
+        ));
+        new_columns.push(arrow::array::new_null_array(&DataType::Float64, num_rows));
+    }
+
+    if needs_bool && !has_bool {
+        new_fields.push(Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true));
+        new_columns.push(arrow::array::new_null_array(&DataType::Boolean, num_rows));
+    }
+
+    let new_schema = Arc::new(arrow::datatypes::Schema::new(new_fields));
+    let new_batch =
+        RecordBatch::try_new(new_schema.clone(), new_columns).map_err(|e| Error::Format {
+            error: e.to_string(),
+        })?;
+
+    Ok((new_batch, new_schema))
+}
+
+/// Get the value type for a parent ID column, handling both primitive and dictionary-encoded arrays.
+/// Returns the underlying primitive type (UInt16 or UInt32).
+fn get_parent_id_value_type(arr: &ArrayRef) -> Result<DataType> {
+    match arr.data_type() {
+        DataType::UInt16 | DataType::UInt32 => Ok(arr.data_type().clone()),
+        DataType::Dictionary(_, v) => match **v {
+            DataType::UInt16 | DataType::UInt32 => Ok((**v).clone()),
+            _ => Err(Error::UnsupportedDictionaryValueType {
+                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
+                actual: (**v).clone(),
+            }),
+        },
+        _ => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: arr.data_type().clone(),
+        }),
+    }
+}
+
+/// Get the value type for a parent ID column from a schema field, handling both primitive and
+/// dictionary-encoded types.
+/// Returns the underlying primitive type (UInt16 or UInt32).
+fn get_parent_id_value_type_from_schema(
+    schema: &arrow::datatypes::Schema,
+) -> Result<Option<DataType>> {
+    let Some((_, field)) = schema.column_with_name(consts::PARENT_ID) else {
+        return Ok(None);
+    };
+    match field.data_type() {
+        DataType::UInt16 | DataType::UInt32 => Ok(Some(field.data_type().clone())),
+        DataType::Dictionary(_, v) => match **v {
+            DataType::UInt16 | DataType::UInt32 => Ok(Some((**v).clone())),
+            _ => Err(Error::UnsupportedDictionaryValueType {
+                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
+                actual: (**v).clone(),
+            }),
+        },
+        _ => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: field.data_type().clone(),
+        }),
+    }
+}
+
+/// Materialize parent IDs with automatic type dispatch based on schema.
+/// Returns the materialized batch or the original batch if no parent_id column exists.
+fn materialize_parent_id_for_attributes_auto(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    let schema = record_batch.schema();
+    match get_parent_id_value_type_from_schema(&schema)? {
+        Some(DataType::UInt16) => materialize_parent_id_for_attributes::<u16>(record_batch),
+        Some(DataType::UInt32) => materialize_parent_id_for_attributes::<u32>(record_batch),
+        Some(other) => Err(Error::ColumnDataTypeMismatch {
+            name: consts::PARENT_ID.into(),
+            expect: DataType::UInt16, // or UInt32
+            actual: other,
+        }),
+        None => Ok(record_batch.clone()),
+    }
+}
+
+/// Compare two data types and return the "wider" one that can accommodate both.
+/// This handles dictionary type widening (Dict<UInt8> -> Dict<UInt16> -> native).
+/// Returns None if the types are incompatible.
+fn wider_type(t1: &DataType, t2: &DataType) -> Option<DataType> {
+    if t1 == t2 {
+        return Some(t1.clone());
+    }
+
+    match (t1, t2) {
+        // Same non-dict types
+        (a, b) if a == b => Some(a.clone()),
+
+        // Dict<UInt8, V> vs Dict<UInt16, V> -> Dict<UInt16, V>
+        (DataType::Dictionary(k1, v1), DataType::Dictionary(k2, v2)) if v1 == v2 => {
+            match (k1.as_ref(), k2.as_ref()) {
+                (DataType::UInt8, DataType::UInt8) => Some(t1.clone()),
+                (DataType::UInt8, DataType::UInt16) | (DataType::UInt16, DataType::UInt8) => {
+                    Some(DataType::Dictionary(Box::new(DataType::UInt16), v1.clone()))
+                }
+                (DataType::UInt16, DataType::UInt16) => Some(t1.clone()),
+                _ => None,
+            }
+        }
+
+        // Dict<K, V> vs V (native) -> V (native is wider, can hold any value)
+        (DataType::Dictionary(_, v), native) if v.as_ref() == native => Some(native.clone()),
+        (native, DataType::Dictionary(_, v)) if v.as_ref() == native => Some(native.clone()),
+
+        _ => None,
+    }
+}
+
+/// Reconcile two record batches so they can be concatenated.
+/// If column types differ due to dictionary overflow in the new_batch, this will:
+/// 1. Determine the wider type that can accommodate both
+/// 2. Cast the narrower batch's column to the wider type
+///
+/// Returns (original_batch, new_batch, unified_schema) ready for concat_batches.
+fn reconcile_batches_for_concat(
+    original: RecordBatch,
+    new_batch: RecordBatch,
+) -> Result<(RecordBatch, RecordBatch, Arc<arrow::datatypes::Schema>)> {
+    let orig_schema = original.schema();
+    let new_schema = new_batch.schema();
+
+    // Fast path: schemas match exactly
+    if orig_schema == new_schema {
+        return Ok((original, new_batch, orig_schema));
+    }
+
+    // Check each field for type mismatches
+    let mut unified_fields = Vec::with_capacity(orig_schema.fields().len());
+    let mut orig_columns: Vec<ArrayRef> = original.columns().to_vec();
+    let mut new_columns: Vec<ArrayRef> = new_batch.columns().to_vec();
+    let mut needs_cast = false;
+
+    for (i, orig_field) in orig_schema.fields().iter().enumerate() {
+        let new_field = new_schema.field(i);
+
+        if orig_field.data_type() == new_field.data_type() {
+            unified_fields.push(orig_field.as_ref().clone());
+            continue;
+        }
+
+        // Types differ - find the wider type
+        let wide_type =
+            wider_type(orig_field.data_type(), new_field.data_type()).ok_or_else(|| {
+                Error::Format {
+                    error: format!(
+                        "Cannot reconcile column '{}': incompatible types {:?} and {:?}",
+                        orig_field.name(),
+                        orig_field.data_type(),
+                        new_field.data_type()
+                    ),
+                }
+            })?;
+
+        // Update unified field with wider type
+        unified_fields.push(
+            Field::new(
+                orig_field.name(),
+                wide_type.clone(),
+                orig_field.is_nullable(),
+            )
+            .with_metadata(orig_field.metadata().clone()),
+        );
+
+        // Cast columns if needed
+        if orig_field.data_type() != &wide_type {
+            orig_columns[i] = cast(&orig_columns[i], &wide_type).map_err(|e| Error::Format {
+                error: format!(
+                    "Failed to cast original column '{}': {}",
+                    orig_field.name(),
+                    e
+                ),
+            })?;
+            needs_cast = true;
+        }
+        if new_field.data_type() != &wide_type {
+            new_columns[i] = cast(&new_columns[i], &wide_type).map_err(|e| Error::Format {
+                error: format!("Failed to cast new column '{}': {}", new_field.name(), e),
+            })?;
+            needs_cast = true;
+        }
+    }
+
+    if !needs_cast {
+        // No casting was needed, use original schema
+        return Ok((original, new_batch, orig_schema));
+    }
+
+    let unified_schema = Arc::new(arrow::datatypes::Schema::new(unified_fields));
+
+    let reconciled_original =
+        RecordBatch::try_new(unified_schema.clone(), orig_columns).map_err(|e| Error::Format {
+            error: format!("Failed to create reconciled original batch: {}", e),
+        })?;
+
+    let reconciled_new =
+        RecordBatch::try_new(unified_schema.clone(), new_columns).map_err(|e| Error::Format {
+            error: format!("Failed to create reconciled new batch: {}", e),
+        })?;
+
+    Ok((reconciled_original, reconciled_new, unified_schema))
+}
+
+/// Returns `ArrayOptions` configured to match the given `DataType`.
+/// For dictionary types, configures the appropriate dictionary options.
+/// For native types (Utf8, Int64, Float64), returns options with no dictionary.
+fn array_options_for_type(data_type: &DataType) -> ArrayOptions {
+    match data_type {
+        DataType::Dictionary(k, _) => match **k {
+            DataType::UInt8 => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict8()),
+                optional: false,
+                default_values_optional: false,
+            },
+            DataType::UInt16 => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict16()),
+                optional: false,
+                default_values_optional: false,
+            },
+            // Default to dict16 for other key types
+            _ => ArrayOptions {
+                dictionary_options: Some(DictionaryOptions::dict16()),
+                optional: false,
+                default_values_optional: false,
+            },
+        },
+        // Native types - no dictionary
+        _ => ArrayOptions {
+            dictionary_options: None,
+            optional: false,
+            default_values_optional: false,
+        },
+    }
+}
+
+/// Create a batch of inserted attributes.
+/// According to the OTel collector spec, `insert` only inserts if the key does NOT already exist.
+/// This function checks existing (parent_id, key) pairs in the current record batch and only
+/// inserts new keys.
+///
+/// This function is generic over `T: ParentId` to handle different parent ID types (u16, u32)
+/// as well as dictionary-encoded parent IDs.
+fn create_inserted_batch<T>(
+    current_batch: &RecordBatch,
+    parent_ids: &ArrayRef,
+    insert: &InsertTransform,
+    schema: &arrow::datatypes::Schema,
+) -> Result<(RecordBatch, usize)>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native:
+        Ord + std::hash::Hash + Copy + Default,
+{
+    // Use MaybeDictArrayAccessor to handle both primitive and dictionary-encoded parent IDs
+    let parent_ids_accessor =
+        MaybeDictArrayAccessor::<PrimitiveArray<T::ArrayType>>::try_new(parent_ids)?;
+
+    // Build a set of (parent_id, key) pairs that already exist using StringArrayAccessor
+    let key_accessor = current_batch
+        .column_by_name(consts::ATTRIBUTE_KEY)
+        .map(MaybeDictArrayAccessor::<StringArray>::try_new)
+        .transpose()?;
+
+    let mut existing_keys: BTreeMap<
+        <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        BTreeSet<String>,
+    > = BTreeMap::new();
+    if let Some(ref accessor) = key_accessor {
+        for i in 0..current_batch.num_rows() {
+            if let Some(parent) = parent_ids_accessor.value_at(i) {
+                if let Some(key) = accessor.str_at(i) {
+                    let _ = existing_keys
+                        .entry(parent)
+                        .or_default()
+                        .insert(key.to_string());
+                }
+            }
+        }
+    }
+
+    // Get unique parents
+    let mut unique_parents = BTreeSet::new();
+    for i in 0..parent_ids_accessor.len() {
+        if let Some(parent) = parent_ids_accessor.value_at(i) {
+            let _ = unique_parents.insert(parent);
+        }
+    }
+
+    if unique_parents.is_empty() {
+        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
+    }
+
+    // Compute which (parent, key, value) tuples to actually insert
+    // Only insert if the key doesn't already exist for that parent
+    let mut to_insert: Vec<(
+        <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native,
+        &str,
+        &LiteralValue,
+    )> = Vec::new();
+    for &parent in &unique_parents {
+        let parent_existing = existing_keys.get(&parent);
+        for (key, val) in insert.entries.iter() {
+            let key_exists = parent_existing
+                .map(|keys| keys.contains(key))
+                .unwrap_or(false);
+            if !key_exists {
+                to_insert.push((parent, key.as_str(), val));
+            }
+        }
+    }
+
+    let total_rows = to_insert.len();
+    if total_rows == 0 {
+        return Ok((RecordBatch::new_empty(Arc::new(schema.clone())), 0));
+    }
+
+    // Build Parent ID column using the same primitive type
+    let mut new_parent_ids = PrimitiveBuilder::<T::ArrayType>::with_capacity(total_rows);
+    for (parent, _, _) in &to_insert {
+        new_parent_ids.append_value(*parent);
+    }
+    let new_parent_ids = Arc::new(new_parent_ids.finish()) as ArrayRef;
+
+    // Build Attribute Type column
+    let mut new_types = PrimitiveBuilder::<UInt8Type>::with_capacity(total_rows);
+    for (_, _, val) in &to_insert {
+        let type_val = match val {
+            LiteralValue::Str(_) => AttributeValueType::Str,
+            LiteralValue::Int(_) => AttributeValueType::Int,
+            LiteralValue::Double(_) => AttributeValueType::Double,
+            LiteralValue::Bool(_) => AttributeValueType::Bool,
+        };
+        new_types.append_value(type_val as u8);
+    }
+    let new_types = Arc::new(new_types.finish()) as ArrayRef;
+
+    // Build Key column using StringArrayBuilder
+    let key_col_idx =
+        schema
+            .index_of(consts::ATTRIBUTE_KEY)
+            .map_err(|_| Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_KEY.into(),
+            })?;
+    let key_type = schema.field(key_col_idx).data_type();
+    let key_options = array_options_for_type(key_type);
+
+    let mut key_builder = StringArrayBuilder::new(key_options);
+    for (_, key, _) in &to_insert {
+        key_builder.append_str(key);
+    }
+    let new_keys = key_builder
+        .finish()
+        .expect("key builder should produce array since optional=false");
+
+    // We collect columns into a vec matching schema order.
+    let mut columns = Vec::with_capacity(schema.fields().len());
+
+    for field in schema.fields() {
+        let name = field.name();
+        let col: ArrayRef = if name == consts::PARENT_ID {
+            new_parent_ids.clone()
+        } else if name == consts::ATTRIBUTE_TYPE {
+            new_types.clone()
+        } else if name == consts::ATTRIBUTE_KEY {
+            new_keys.clone()
+        } else if name == consts::ATTRIBUTE_STR {
+            let options = array_options_for_type(field.data_type());
+            let mut builder = StringArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Str(s) = val {
+                    builder.append_str(s);
+                } else {
+                    builder.append_null();
+                }
+            }
+            builder
+                .finish()
+                .expect("str builder should produce array since optional=false")
+        } else if name == consts::ATTRIBUTE_INT {
+            let options = array_options_for_type(field.data_type());
+            let mut builder = Int64ArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Int(v) = val {
+                    builder.append_value(v);
+                } else {
+                    builder.append_null();
+                }
+            }
+            builder
+                .finish()
+                .expect("int builder should produce array since optional=false")
+        } else if name == consts::ATTRIBUTE_DOUBLE {
+            let options = array_options_for_type(field.data_type());
+            let mut builder = Float64ArrayBuilder::new(options);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Double(v) = val {
+                    builder.append_value(v);
+                } else {
+                    builder.append_null();
+                }
+            }
+            builder
+                .finish()
+                .expect("double builder should produce array since optional=false")
+        } else if name == consts::ATTRIBUTE_BOOL {
+            // Note: Boolean Dictionaries are not standard/supported by simple builders
+            let mut builder = arrow::array::BooleanBuilder::with_capacity(total_rows);
+            for (_, _, val) in &to_insert {
+                if let LiteralValue::Bool(v) = val {
+                    builder.append_value(*v);
+                } else {
+                    builder.append_null();
+                }
+            }
+            Arc::new(builder.finish())
+        } else {
+            // Fill with nulls
+            arrow::array::new_null_array(field.data_type(), total_rows)
+        };
+        columns.push(col);
+    }
+
+    Ok((
+        RecordBatch::try_new(Arc::new(schema.clone()), columns).expect("schema check"),
+        total_rows,
+    ))
+}
+
+#[cfg(test)]
+mod insert_tests {
+    use super::*;
+    use crate::schema::consts;
+    use arrow::array::*;
+    use arrow::datatypes::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_insert_attributes_simple() {
+        // Schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+            ],
+        )
+        .unwrap();
+
+        // Transform: insert "env"="prod"
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "env".into(),
+                LiteralValue::Str("prod".into()),
+            )]))),
+        };
+
+        let (result, stats) =
+            transform_attributes_with_stats(&input, &tx).expect("transform failed");
+
+        assert_eq!(stats.inserted_entries, 2);
+
+        // Expected: 4 rows
+        assert_eq!(result.num_rows(), 4);
+
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        // The original rows come first, then inserted rows.
+        // Original: k1, k2. Inserted: env, env.
+        let k0 = keys.value(0);
+        let k1 = keys.value(1);
+        let k2 = keys.value(2);
+        let k3 = keys.value(3);
+
+        assert!(k0 == "k1" || k0 == "k2");
+        assert!(k1 == "k1" || k1 == "k2");
+        assert_eq!(k2, "env");
+        assert_eq!(k3, "env");
+
+        // Check values
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let v2 = vals.value(2);
+        let v3 = vals.value(3);
+        assert_eq!(v2, "prod");
+        assert_eq!(v3, "prod");
+    }
+
+    #[test]
+    fn test_insert_attributes_with_delete() {
+        // Schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Input: parent 0 has "del_me".
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["del_me"])),
+                Arc::new(StringArray::from_iter_values(vec!["val"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: Some(DeleteTransform::new(BTreeSet::from_iter(vec![
+                "del_me".into(),
+            ]))),
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "new".into(),
+                LiteralValue::Str("val".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.deleted_entries, 1);
+        assert_eq!(stats.inserted_entries, 1);
+
+        // Result should contain 1 row: "new"="val" for parent 0.
+        assert_eq!(result.num_rows(), 1);
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "new");
+    }
+
+    #[test]
+    fn test_insert_does_not_overwrite_existing_key() {
+        // According to OTel collector spec, `insert` only inserts if the key does not already exist.
+        // This test verifies that existing keys are NOT overwritten.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Input: parent 0 has "existing_key"="original_value"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing_key"])),
+                Arc::new(StringArray::from_iter_values(vec!["original_value"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert "existing_key"="new_value" - should be skipped because key exists
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "existing_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts should happen because the key already exists
+        assert_eq!(stats.inserted_entries, 0);
+
+        // Result should still contain 1 row with the original value
+        assert_eq!(result.num_rows(), 1);
+        let keys = result
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(keys.value(0), "existing_key");
+
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(vals.value(0), "original_value");
+    }
+
+    #[test]
+    fn test_insert_mixed_existing_and_new_keys() {
+        // Test: insert multiple keys where some exist and some don't
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Input: parent 0 has "a"="av", parent 1 has "b"="bv"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["a", "b"])),
+                Arc::new(StringArray::from_iter_values(vec!["av", "bv"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert:
+        // - "a"="new_a" - should be skipped for parent 0 (exists), inserted for parent 1
+        // - "c"="cv" - should be inserted for both parents
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([
+                ("a".into(), LiteralValue::Str("new_a".into())),
+                ("c".into(), LiteralValue::Str("cv".into())),
+            ]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Should insert:
+        // - parent 0: "c" (not "a" because it exists)
+        // - parent 1: "a" and "c" (neither exists)
+        // Total: 3 inserts
+        assert_eq!(stats.inserted_entries, 3);
+
+        // Result should have: 2 original + 3 new = 5 rows
+        assert_eq!(result.num_rows(), 5);
+    }
+
+    #[test]
+    fn test_insert_int_value() {
+        // Test inserting Int values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "count".into(),
+                LiteralValue::Int(42),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        // Check the int value was inserted
+        let int_col = result
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        // First row (existing) should be null, second row (inserted) should be 42
+        assert!(int_col.is_null(0));
+        assert_eq!(int_col.value(1), 42);
+    }
+
+    #[test]
+    fn test_insert_double_value() {
+        // Test inserting Double values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "ratio".into(),
+                LiteralValue::Double(1.2345),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        let double_col = result
+            .column_by_name(consts::ATTRIBUTE_DOUBLE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+        assert!(double_col.is_null(0));
+        assert!((double_col.value(1) - 1.2345).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_insert_bool_value() {
+        // Test inserting Bool values
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "enabled".into(),
+                LiteralValue::Bool(true),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+
+        let bool_col = result
+            .column_by_name(consts::ATTRIBUTE_BOOL)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(bool_col.is_null(0));
+        assert!(bool_col.value(1));
+    }
+
+    #[test]
+    fn test_insert_multiple_value_types() {
+        // Test inserting multiple values of different types at once
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+                Arc::new(Int64Array::from(vec![None])),
+                Arc::new(Float64Array::from(vec![None])),
+                Arc::new(BooleanArray::from(vec![None])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([
+                ("str_key".into(), LiteralValue::Str("str_val".into())),
+                ("int_key".into(), LiteralValue::Int(100)),
+                ("double_key".into(), LiteralValue::Double(2.5)),
+                ("bool_key".into(), LiteralValue::Bool(false)),
+            ]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 4);
+        assert_eq!(result.num_rows(), 5); // 1 original + 4 inserted
+    }
+
+    #[test]
+    fn test_insert_with_dictionary_encoded_keys() {
+        // Test inserting with dictionary-encoded key columns
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        val_builder.append_value("existing_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Insert a new key - should work with dictionary-encoded schema
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "new_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_dictionary_encoded_keys_respects_existing() {
+        // Test that insert respects existing keys when using dictionary-encoded columns
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        val_builder.append_value("original_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Try to insert existing_key - should be skipped
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "existing_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts because key already exists
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 1);
+    }
+
+    #[test]
+    fn test_insert_with_uint16_dictionary_keys() {
+        // Test inserting with UInt16 dictionary-encoded key columns
+        let key_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let str_type = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, key_type.clone(), false),
+            Field::new(consts::ATTRIBUTE_STR, str_type.clone(), true),
+        ]));
+
+        let mut key_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        key_builder.append_value("existing_key");
+        let keys = Arc::new(key_builder.finish());
+
+        let mut val_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        val_builder.append_value("existing_value");
+        let vals = Arc::new(val_builder.finish());
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                keys,
+                vals,
+            ],
+        )
+        .unwrap();
+
+        // Insert new key and try to insert existing key
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([
+                (
+                    "existing_key".into(),
+                    LiteralValue::Str("should_skip".into()),
+                ),
+                ("new_key".into(), LiteralValue::Str("new_value".into())),
+            ]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Only 1 insert (new_key), existing_key should be skipped
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_empty_batch() {
+        // Test inserting when input batch is empty
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::new_empty(schema.clone());
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "key".into(),
+                LiteralValue::Str("value".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No parents to insert into
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 0);
+    }
+
+    #[test]
+    fn test_insert_with_multiple_parents() {
+        // Test insert correctly handles multiple different parent IDs
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // 3 parents: 0, 1, 2 with different existing keys
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 0, 1, 2, 2, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "a", "b", "a", "x", "y", "z",
+                ])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "v0", "v1", "v2", "v3", "v4", "v5",
+                ])),
+            ],
+        )
+        .unwrap();
+
+        // Insert "a" and "new_key"
+        // Parent 0: has "a" -> skip "a", insert "new_key"
+        // Parent 1: has "a" -> skip "a", insert "new_key"
+        // Parent 2: no "a" -> insert both "a" and "new_key"
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([
+                ("a".into(), LiteralValue::Str("inserted_a".into())),
+                ("new_key".into(), LiteralValue::Str("new_val".into())),
+            ]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // 1 + 1 + 2 = 4 inserts
+        assert_eq!(stats.inserted_entries, 4);
+        // 6 original + 4 inserted = 10
+        assert_eq!(result.num_rows(), 10);
+    }
+
+    #[test]
+    fn test_insert_with_null_in_key_column() {
+        // Test that null keys in original data are handled properly
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true), // nullable
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Parent 0 has a null key
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(StringArray::from_iter_values(vec!["value"])),
+            ],
+        )
+        .unwrap();
+
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "new_key".into(),
+                LiteralValue::Str("new_value".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // Should insert new_key for parent 0
+        assert_eq!(stats.inserted_entries, 1);
+        assert_eq!(result.num_rows(), 2);
+    }
+
+    #[test]
+    fn test_insert_with_u32_parent_ids() {
+        // Test that insert works with u32 parent IDs (used for metrics datapoint attributes,
+        // span link attributes, span event attributes).
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt32, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0, 1])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+            ],
+        )
+        .unwrap();
+
+        // Insert "env"="prod" - should be inserted for both parents
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "env".into(),
+                LiteralValue::Str("prod".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        assert_eq!(stats.inserted_entries, 2);
+        assert_eq!(result.num_rows(), 4);
+
+        // Verify parent ID column is still u32
+        let parent_col = result.column_by_name(consts::PARENT_ID).unwrap();
+        assert_eq!(parent_col.data_type(), &DataType::UInt32);
+    }
+
+    #[test]
+    fn test_insert_with_u32_parent_ids_respects_existing() {
+        // Test that insert with u32 parent IDs doesn't overwrite existing keys
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt32, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        // Parent 0 has "existing"
+        let input = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(UInt32Array::from_iter_values(vec![0])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["existing"])),
+                Arc::new(StringArray::from_iter_values(vec!["original"])),
+            ],
+        )
+        .unwrap();
+
+        // Try to insert "existing" with a different value - should be skipped
+        let tx = AttributesTransform {
+            rename: None,
+            delete: None,
+            insert: Some(InsertTransform::new(BTreeMap::from([(
+                "existing".into(),
+                LiteralValue::Str("should_not_overwrite".into()),
+            )]))),
+        };
+
+        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
+
+        // No inserts because key already exists
+        assert_eq!(stats.inserted_entries, 0);
+        assert_eq!(result.num_rows(), 1);
+
+        // Verify original value is preserved
+        let vals = result
+            .column_by_name(consts::ATTRIBUTE_STR)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(vals.value(0), "original");
+    }
+
+    #[test]
+    fn test_reconcile_batches_same_schema() {
+        // Test that reconcile_batches_for_concat handles identical schemas efficiently
+        use super::reconcile_batches_for_concat;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Utf8, false),
+            Field::new("b", DataType::Int64, true),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["x", "y"])),
+                Arc::new(Int64Array::from(vec![Some(1), Some(2)])),
+            ],
+        )
+        .unwrap();
+
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from_iter_values(vec!["z"])),
+                Arc::new(Int64Array::from(vec![Some(3)])),
+            ],
+        )
+        .unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1.clone(), batch2.clone()).unwrap();
+
+        // Should be unchanged
+        assert_eq!(reconciled1, batch1);
+        assert_eq!(reconciled2, batch2);
+        assert_eq!(unified_schema, schema);
+    }
+
+    #[test]
+    fn test_reconcile_batches_dict_widening() {
+        // Test widening from Dict<UInt8> to Dict<UInt16>
+        use super::reconcile_batches_for_concat;
+
+        let dict8_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict16_type =
+            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict8_type.clone(),
+            false,
+        )]));
+
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict16_type.clone(),
+            false,
+        )]));
+
+        // Create a Dict<UInt8> array
+        let mut dict8_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        dict8_builder.append_value("a");
+        dict8_builder.append_value("b");
+        let dict8_arr = Arc::new(dict8_builder.finish());
+
+        // Create a Dict<UInt16> array
+        let mut dict16_builder = StringDictionaryBuilder::<UInt16Type>::new();
+        dict16_builder.append_value("c");
+        let dict16_arr = Arc::new(dict16_builder.finish());
+
+        let batch1 = RecordBatch::try_new(schema1.clone(), vec![dict8_arr]).unwrap();
+
+        let batch2 = RecordBatch::try_new(schema2.clone(), vec![dict16_arr]).unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1, batch2).unwrap();
+
+        // Both should now be Dict<UInt16>
+        assert_eq!(
+            unified_schema.field(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        assert_eq!(
+            reconciled1.column(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+        assert_eq!(
+            reconciled2.column(0).data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+        );
+    }
+
+    #[test]
+    fn test_reconcile_batches_dict_to_native() {
+        // Test widening from Dict<UInt8, Utf8> to native Utf8
+        use super::reconcile_batches_for_concat;
+
+        let dict8_type = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "key",
+            dict8_type.clone(),
+            false,
+        )]));
+
+        let schema2 = Arc::new(Schema::new(vec![Field::new("key", DataType::Utf8, false)]));
+
+        // Create a Dict<UInt8> array
+        let mut dict8_builder = StringDictionaryBuilder::<UInt8Type>::new();
+        dict8_builder.append_value("a");
+        dict8_builder.append_value("b");
+        let dict8_arr = Arc::new(dict8_builder.finish());
+
+        // Create a native Utf8 array
+        let utf8_arr = Arc::new(StringArray::from_iter_values(vec!["c"]));
+
+        let batch1 = RecordBatch::try_new(schema1.clone(), vec![dict8_arr]).unwrap();
+
+        let batch2 = RecordBatch::try_new(schema2.clone(), vec![utf8_arr]).unwrap();
+
+        let (reconciled1, reconciled2, unified_schema) =
+            reconcile_batches_for_concat(batch1, batch2).unwrap();
+
+        // Both should now be native Utf8 (wider type)
+        assert_eq!(unified_schema.field(0).data_type(), &DataType::Utf8);
+        assert_eq!(reconciled1.column(0).data_type(), &DataType::Utf8);
+        assert_eq!(reconciled2.column(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn test_wider_type_function() {
+        use super::wider_type;
+
+        // Same types
+        assert_eq!(
+            wider_type(&DataType::Utf8, &DataType::Utf8),
+            Some(DataType::Utf8)
+        );
+        assert_eq!(
+            wider_type(&DataType::Int64, &DataType::Int64),
+            Some(DataType::Int64)
+        );
+
+        // Dict<UInt8> vs Dict<UInt16> -> Dict<UInt16>
+        let dict8 = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let dict16 = DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8));
+        assert_eq!(wider_type(&dict8, &dict16), Some(dict16.clone()));
+        assert_eq!(wider_type(&dict16, &dict8), Some(dict16.clone()));
+
+        // Dict vs native -> native
+        assert_eq!(wider_type(&dict8, &DataType::Utf8), Some(DataType::Utf8));
+        assert_eq!(wider_type(&DataType::Utf8, &dict8), Some(DataType::Utf8));
+        assert_eq!(wider_type(&dict16, &DataType::Utf8), Some(DataType::Utf8));
+
+        // Incompatible types
+        assert_eq!(wider_type(&DataType::Utf8, &DataType::Int64), None);
+        let dict_int = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Int64));
+        assert_eq!(wider_type(&dict8, &dict_int), None); // Different value types
     }
 }

@@ -6,6 +6,7 @@ use base64::prelude::*;
 use futures::{Stream, StreamExt};
 use notify::{Event, RecursiveMode, Watcher};
 use otap_df_config::tls::TlsServerConfig;
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
@@ -70,7 +71,7 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     let mut pem_data = Vec::new();
 
     for error in &cert_res.errors {
-        log::warn!("Error loading native cert: {}", error);
+        otel_warn!("Error loading native cert", error = ?error);
     }
 
     for cert in &cert_res.certs {
@@ -110,11 +111,11 @@ pub async fn load_server_tls_config(
     ) {
         (Some(cert_file), Some(key_file), _, _) => {
             let cert = read_file_with_limit_async(cert_file).await.map_err(|e| {
-                log::error!("Failed to read cert file {:?}: {}", cert_file, e);
+                otel_error!("Failed to read cert file", cert_file = ?cert_file, error = ?e);
                 e
             })?;
             let key = read_file_with_limit_async(key_file).await.map_err(|e| {
-                log::error!("Failed to read key file {:?}: {}", key_file, e);
+                otel_error!("Failed to read key file", key_file = ?key_file, error = ?e);
                 e
             })?;
             (cert, key)
@@ -259,7 +260,7 @@ pub(crate) async fn load_client_tls_config(
     // Custom CA.
     if let Some(ca_file) = &config.ca_file {
         let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-            log::error!("Failed to read CA file {:?}: {}", ca_file, e);
+            otel_error!("Failed to read CA file", ca_file = ?ca_file, error = ?e);
             e
         })?;
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
@@ -291,25 +292,25 @@ pub(crate) async fn load_client_tls_config(
         ) {
             ((Some(cert_path), _), (Some(key_path), _)) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    log::error!("Failed to read client cert file {:?}: {}", cert_path, e);
+                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = %e);
                     e
                 })?;
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    log::error!("Failed to read client key file {:?}: {}", key_path, e);
+                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key))
             }
             ((Some(cert_path), _), (None, Some(key_pem))) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    log::error!("Failed to read client cert file {:?}: {}", cert_path, e);
+                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
             }
             ((None, Some(cert_pem)), (Some(key_path), _)) => {
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    log::error!("Failed to read client key file {:?}: {}", key_path, e);
+                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
@@ -346,10 +347,10 @@ async fn add_system_trust_anchors_if_enabled(
             tokio::task::spawn_blocking(|| {
                 let native = load_native_certs();
                 if !native.errors.is_empty() {
-                    log::warn!(
-                        "Errors while loading native certificates (count={}): first={:?}",
-                        native.errors.len(),
-                        native.errors.first()
+                    otel_warn!(
+                        "Errors while loading native certificates",
+                        count = native.errors.len(),
+                        first = ?native.errors.first(),
                     );
                 }
                 native.certs
@@ -363,11 +364,7 @@ async fn add_system_trust_anchors_if_enabled(
     let mut store = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
     let (added, ignored) = store.add_parsable_certificates(roots);
-    log::debug!(
-        "Loaded {} system CA certificates ({} ignored)",
-        added,
-        ignored
-    );
+    otel_debug!("Loaded system CA certificates", added, ignored,);
 
     Ok(tls.trust_anchors(store.roots))
 }
@@ -410,11 +407,11 @@ where
                             Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
                             Ok(Err(e)) => {
                                 // TLS handshake failed - log and continue
-                                log::warn!("TLS handshake failed: {}", e);
+                                otel_warn!("TLS handshake failed", error = ?e);
                                 None
                             }
                             Err(_) => {
-                                log::warn!("TLS handshake timed out");
+                                otel_warn!("TLS handshake timed out");
                                 None
                             }
                         }
@@ -524,7 +521,7 @@ impl LazyReloadableCertResolver {
         let current_cert_mtime = match get_mtime(&self.cert_path) {
             Ok(m) => m,
             Err(e) => {
-                log::warn!("Failed to check cert mtime: {}", e);
+                otel_warn!("Failed to check cert mtime", error = ?e);
                 return false;
             }
         };
@@ -532,7 +529,7 @@ impl LazyReloadableCertResolver {
         let current_key_mtime = match get_mtime(&self.key_path) {
             Ok(m) => m,
             Err(e) => {
-                log::warn!("Failed to check key mtime: {}", e);
+                otel_warn!("Failed to check key mtime", error = ?e);
                 return false;
             }
         };
@@ -571,16 +568,16 @@ impl LazyReloadableCertResolver {
                     cert_key.store(Arc::new(new_cert));
                     cert_mtime.store(current_cert_mtime, Ordering::Relaxed);
                     key_mtime.store(current_key_mtime, Ordering::Relaxed);
-                    log::info!(
-                        "TLS certificate reloaded asynchronously: cert={:?}, key={:?}",
-                        cert_path,
-                        key_path
+                    otel_info!(
+                        "TLS certificate reloaded asynchronously",
+                        cert = ?cert_path,
+                        key = ?key_path,
                     );
                 }
                 Err(e) => {
-                    log::error!(
-                        "Failed to reload cert asynchronously (keeping current): {}",
-                        e
+                    otel_error!(
+                        "Failed to reload cert asynchronously (keeping current)",
+                        error = ?e,
                     );
                 }
             }
@@ -664,13 +661,13 @@ impl CaWatcherState {
     fn handle_event(&self, res: Result<Event, notify::Error>) {
         match res {
             Ok(event) => self.process_event(event),
-            Err(e) => log::warn!("File watcher error: {}", e),
+            Err(e) => otel_warn!("File watcher error", error = ?e),
         }
     }
 
     /// Process a file system event, potentially triggering a reload.
     fn process_event(&self, event: Event) {
-        log::debug!("File watcher event: {:?}", event);
+        otel_debug!("File watcher event", event = ?event);
 
         // Filter out irrelevant event types early (before expensive path checks)
         if matches!(event.kind, notify::EventKind::Access(_)) {
@@ -681,7 +678,7 @@ impl CaWatcherState {
             return;
         }
 
-        log::debug!("Event matches our CA file, proceeding with reload check");
+        otel_debug!("Event matches our CA file, proceeding with reload check");
 
         // Small delay to allow filesystem operations to complete (e.g., atomic renames).
         // This blocks the notify thread briefly, but is acceptable because:
@@ -710,10 +707,10 @@ impl CaWatcherState {
         });
 
         if !is_match {
-            log::debug!(
-                "Event not for our file. Event paths: {:?}, watched: {:?}",
-                event.paths,
-                self.watched_path
+            otel_debug!(
+                "Event not for our file",
+                event_paths = ?event.paths,
+                watched_path = ?self.watched_path,
             );
         }
 
@@ -726,27 +723,23 @@ impl CaWatcherState {
         let current_identity = match get_file_identity(&self.reload_path) {
             Ok(id) => id,
             Err(e) => {
-                log::debug!("Failed to get file identity, skipping reload: {}", e);
+                otel_debug!("Failed to get file identity, skipping reload", error = ?e);
                 return false;
             }
         };
 
         let prev_identity = self.last_identity.load(Ordering::Relaxed);
         if current_identity == prev_identity {
-            log::debug!("File identity unchanged, skipping reload");
+            otel_debug!("File identity unchanged, skipping reload");
             return false;
         }
-        log::debug!(
-            "File identity changed from {} to {}",
-            prev_identity,
-            current_identity
-        );
+        otel_debug!("File identity changed", prev_identity, current_identity);
 
         // Check debounce window
         let now = current_timestamp();
         let last = self.last_reload.load(Ordering::Relaxed);
         if now.saturating_sub(last) < CA_RELOAD_DEBOUNCE_SECS {
-            log::debug!("Debouncing CA file change event");
+            otel_debug!("Debouncing CA file change event");
             return false;
         }
 
@@ -756,7 +749,7 @@ impl CaWatcherState {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            log::debug!("CA reload already in progress, skipping");
+            otel_debug!("CA reload already in progress, skipping");
             return false;
         }
 
@@ -765,9 +758,9 @@ impl CaWatcherState {
 
     /// Perform the actual CA certificate reload.
     fn perform_reload(&self) {
-        log::info!(
-            "CA certificate file changed, reloading: {:?}",
-            self.reload_path
+        otel_info!(
+            "CA certificate file changed, reloading",
+            path = ?self.reload_path,
         );
 
         // Note: There's a theoretical TOCTOU between getting identity and reading the file.
@@ -782,10 +775,13 @@ impl CaWatcherState {
                 self.last_identity
                     .store(current_identity, Ordering::Relaxed);
                 self.last_reload.store(now, Ordering::Relaxed);
-                log::info!("Successfully reloaded client CA certificates");
+                otel_info!("Successfully reloaded client CA certificates");
             }
             Err(e) => {
-                log::error!("Failed to reload CA certificates (keeping previous): {}", e);
+                otel_error!(
+                    "Failed to reload CA certificates (keeping previous)",
+                    error = ?e,
+                );
             }
         }
 
@@ -893,7 +889,7 @@ impl ReloadableClientCaVerifier {
     ) -> Result<Arc<Self>, io::Error> {
         // Initial load
         let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
-        log::debug!("Initial CA PEM size: {} bytes", ca_pem.len());
+        otel_debug!("Initial CA PEM size", size_bytes = ca_pem.len());
         let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
 
         let inner = Arc::new(ArcSwap::from_pointee(verifier));
@@ -1004,10 +1000,10 @@ impl ReloadableClientCaVerifier {
             .watch(&parent_dir, RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
 
-        log::info!(
-            "File watcher set up for CA certificates: {:?} (watching parent: {:?})",
-            ca_file_path,
-            parent_dir
+        otel_info!(
+            "File watcher set up for CA certificates",
+            ca_file = ?ca_file_path,
+            watching_parent = ?parent_dir,
         );
 
         Ok(Box::new(watcher))
@@ -1042,20 +1038,20 @@ impl ReloadableClientCaVerifier {
                         return;
                     }
 
-                    log::info!(
-                        "CA certificate file changed (polling), reloading: {:?}",
-                        ca_path
+                    otel_info!(
+                        "CA certificate file changed (polling), reloading",
+                        ca_path = ?ca_path,
                     );
 
                     match reload_ca_verifier(&ca_path, include_system_cas) {
                         Ok(new_verifier) => {
                             inner.store(Arc::new(new_verifier));
-                            log::info!("Successfully reloaded client CA certificates");
+                            otel_info!("Successfully reloaded client CA certificates");
                         }
                         Err(e) => {
-                            log::error!(
-                                "Failed to reload CA certificates (keeping previous): {}",
-                                e
+                            otel_error!(
+                                "Failed to reload CA certificates (keeping previous)",
+                                error = ?e,
                             );
                         }
                     }
@@ -1063,7 +1059,7 @@ impl ReloadableClientCaVerifier {
                     is_reloading.store(false, Ordering::Release);
                 }
                 Err(e) => {
-                    log::warn!("Poll watcher error: {}", e);
+                    otel_warn!("Poll watcher error", error = ?e);
                 }
             },
             config,
@@ -1074,10 +1070,10 @@ impl ReloadableClientCaVerifier {
             .watch(ca_file_path, RecursiveMode::NonRecursive)
             .map_err(io::Error::other)?;
 
-        log::info!(
-            "Poll watcher set up for CA certificates: {:?} (interval: {:?})",
-            ca_file_path,
-            poll_interval
+        otel_info!(
+            "Poll watcher set up for CA certificates",
+            ca_file = ?ca_file_path,
+            interval = ?poll_interval,
         );
 
         Ok(Box::new(watcher))
@@ -1168,11 +1164,11 @@ fn build_webpki_verifier(
     if include_system_cas {
         let system_certs = load_native_certs();
         for error in &system_certs.errors {
-            log::warn!("Error loading native cert: {}", error);
+            otel_warn!("Error loading native cert", error = ?error);
         }
         for cert in system_certs.certs {
             if let Err(e) = roots.add(cert) {
-                log::warn!("Failed to add system cert: {}", e);
+                otel_warn!("Failed to add system", error = ?e);
             }
         }
     }
@@ -1195,7 +1191,7 @@ fn build_webpki_verifier(
         ));
     }
 
-    log::debug!("Built verifier with {} CA certificates", count);
+    otel_debug!("Built verifier with CA certificates", count);
 
     WebPkiClientVerifier::builder(roots.into())
         .build()
@@ -1208,7 +1204,7 @@ fn reload_ca_verifier(
     include_system_cas: bool,
 ) -> Result<Arc<dyn ClientCertVerifier>, io::Error> {
     let ca_pem = read_file_with_limit_sync(ca_path)?;
-    log::debug!("Reloaded CA PEM size: {} bytes", ca_pem.len());
+    otel_debug!("Reloaded CA PEM", size_bytes = ca_pem.len());
     build_webpki_verifier(&ca_pem, include_system_cas)
 }
 
@@ -1394,7 +1390,7 @@ async fn build_client_auth(
 
     if !has_ca_file && !has_ca_pem && !include_system_cas {
         // No client auth configured
-        log::debug!("No client CA configured, disabling client authentication");
+        otel_debug!("No client CA configured, disabling client authentication");
         return Ok(builder.with_no_client_auth());
     }
 
@@ -1402,16 +1398,16 @@ async fn build_client_auth(
     if let Some(ca_file) = &config.client_ca_file {
         // File-based CA configuration
         let verifier = if watch_enabled {
-            log::info!(
-                "Configuring mTLS with file watching for CA certificates: {:?}",
-                ca_file
+            otel_info!(
+                "Configuring mTLS with file watching for CA certificates",
+                ca_file = ?ca_file,
             );
             ReloadableClientCaVerifier::new_with_file_watch(ca_file.clone(), include_system_cas)?
         } else {
-            log::info!(
-                "Configuring mTLS with polling for CA certificates: {:?} (interval: {:?})",
-                ca_file,
-                check_interval
+            otel_info!(
+                "Configuring mTLS with polling for CA certificates",
+                ca_file = ?ca_file,
+                interval = ?check_interval,
             );
             ReloadableClientCaVerifier::new_with_polling(
                 ca_file.clone(),
@@ -1423,7 +1419,7 @@ async fn build_client_auth(
         Ok(builder.with_client_cert_verifier(verifier))
     } else if let Some(ca_pem) = &config.client_ca_pem {
         // PEM-based (static) CA configuration
-        log::info!("Configuring mTLS with static PEM CA certificates");
+        otel_info!("Configuring mTLS with static PEM CA certificates");
 
         // For PEM-based, we need to combine with system CAs if requested
         let mut combined_pem = Vec::new();
@@ -1442,7 +1438,7 @@ async fn build_client_auth(
         Ok(builder.with_client_cert_verifier(verifier))
     } else if include_system_cas {
         // Only system CAs (no user-provided CA)
-        log::info!("Configuring mTLS with system CA certificates only");
+        otel_info!("Configuring mTLS with system CA certificates only");
 
         let cert_res = tokio::task::spawn_blocking(load_native_certs)
             .await
@@ -1480,6 +1476,52 @@ pub async fn build_tls_acceptor(
             Ok(Some(tokio_rustls::TlsAcceptor::from(server_config)))
         }
         None => Ok(None),
+    }
+}
+
+/// Performs a TLS handshake on a single accepted TCP connection.
+///
+/// This is the single-connection counterpart to [`create_tls_stream`], suitable
+/// for receivers that accept connections individually (e.g., Syslog over TCP)
+/// rather than processing a stream of connections (e.g., gRPC servers).
+///
+/// # Arguments
+///
+/// * `stream` - The accepted TCP stream to wrap with TLS
+/// * `acceptor` - The TLS acceptor configured with server certificates
+/// * `handshake_timeout` - Maximum time allowed for the TLS handshake
+///
+/// # Returns
+///
+/// * `Ok(TlsStream)` on successful handshake
+/// * `Err` with `ErrorKind::TimedOut` if handshake exceeds timeout
+/// * `Err` on protocol/certificate errors
+///
+/// # Example
+///
+/// ```ignore
+/// let tls_stream = accept_tls_connection(
+///     tcp_stream,
+///     &tls_acceptor,
+///     Duration::from_secs(10),
+/// ).await?;
+/// let reader = BufReader::new(tls_stream);
+/// ```
+pub async fn accept_tls_connection<T>(
+    stream: T,
+    acceptor: &tokio_rustls::TlsAcceptor,
+    handshake_timeout: Duration,
+) -> Result<tokio_rustls::server::TlsStream<T>, io::Error>
+where
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+        Ok(Ok(tls_stream)) => Ok(tls_stream),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("TLS handshake timed out after {:?}", handshake_timeout),
+        )),
     }
 }
 
@@ -1585,6 +1627,69 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    /// Generate an end-entity (leaf) certificate signed by a CA using rcgen.
+    ///
+    /// This creates a proper PKI hierarchy:
+    /// - CA certificate (`CA:TRUE`) → can be added to root stores as trust anchor
+    /// - End-entity certificate (`CA:FALSE`) → presented during TLS handshake
+    ///
+    /// This avoids two issues:
+    /// 1. `CaUsedAsEndEntity` error when using CA certs as server/client certs
+    /// 2. `ExtensionValueInvalid` error on macOS when adding non-CA certs to root stores
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to write certificate files
+    /// * `ca_name` - Base name for CA files (creates `{ca_name}.crt` and `{ca_name}.key`)
+    /// * `cert_name` - Base name for end-entity cert files
+    /// * `cn` - Common Name for the end-entity cert (also used as SAN for hostname verification)
+    fn generate_ca_signed_cert(dir: &Path, ca_name: &str, cert_name: &str, cn: &str) {
+        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
+
+        // Step 1: Generate CA certificate
+        let mut ca_params = CertificateParams::default();
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, format!("{}CA", cn));
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+
+        let ca_key_pair = KeyPair::generate().expect("Failed to generate CA key pair");
+        let ca_cert = ca_params
+            .self_signed(&ca_key_pair)
+            .expect("Failed to self-sign CA certificate");
+
+        // Write CA cert and key
+        fs::write(dir.join(format!("{}.crt", ca_name)), ca_cert.pem())
+            .expect("Failed to write CA cert");
+        fs::write(
+            dir.join(format!("{}.key", ca_name)),
+            ca_key_pair.serialize_pem(),
+        )
+        .expect("Failed to write CA key");
+
+        // Step 2: Generate end-entity certificate signed by CA
+        let mut ee_params =
+            CertificateParams::new(vec![cn.to_string()]).expect("Failed to create cert params");
+        ee_params.distinguished_name.push(DnType::CommonName, cn);
+        ee_params.is_ca = IsCa::ExplicitNoCa;
+
+        let ee_key_pair = KeyPair::generate().expect("Failed to generate end-entity key pair");
+
+        // Create issuer from CA params and key pair
+        let issuer = Issuer::from_params(&ca_params, &ca_key_pair);
+        let ee_cert = ee_params
+            .signed_by(&ee_key_pair, &issuer)
+            .expect("Failed to sign end-entity certificate");
+
+        // Write end-entity cert and key
+        fs::write(dir.join(format!("{}.crt", cert_name)), ee_cert.pem())
+            .expect("Failed to write end-entity cert");
+        fs::write(
+            dir.join(format!("{}.key", cert_name)),
+            ee_key_pair.serialize_pem(),
+        )
+        .expect("Failed to write end-entity key");
     }
 
     #[tokio::test]
@@ -1855,5 +1960,602 @@ mod tests {
         // Verify mTLS config was created successfully
         // Note: ServerConfig doesn't expose client_auth_mandatory directly,
         // but if we got here without error, mTLS is configured.
+    }
+
+    /// Test accept_tls_connection with server-side TLS only (no client cert required).
+    ///
+    /// This test verifies the full TLS handshake flow:
+    /// 1. Server creates TLS acceptor with CA-signed cert
+    /// 2. Client connects and trusts the CA
+    /// 3. TLS handshake completes successfully
+    /// 4. Data can be exchanged over the encrypted connection
+    #[tokio::test]
+    async fn test_accept_tls_connection_server_only() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA and CA-signed server certificate
+        // CA cert goes in client's trust store, server cert is presented during TLS
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
+
+        // Build server TLS config (no client auth)
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        // Build TLS acceptor (same pattern as syslog_cef_receiver)
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        // Bind TCP listener
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Build client TLS config that trusts the CA (not the server cert directly)
+        let ca_cert_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&ca_cert_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Perform TLS handshake using accept_tls_connection
+            let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
+                .await
+                .expect("TLS handshake failed");
+
+            // Write test data
+            use tokio::io::AsyncWriteExt;
+            let mut tls_stream = tls_stream;
+            tls_stream
+                .write_all(b"Hello from TLS server!\n")
+                .await
+                .expect("Failed to write");
+            tls_stream.flush().await.expect("Failed to flush");
+        });
+
+        // Client connects and performs TLS handshake
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let mut tls_stream = client_connector
+                .connect(server_name, stream)
+                .await
+                .expect("Client TLS handshake failed");
+
+            // Read response
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(&mut tls_stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await.expect("Failed to read");
+            assert_eq!(line, "Hello from TLS server!\n");
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test accept_tls_connection with mTLS (mutual TLS - both server and client certs).
+    ///
+    /// This test verifies mutual authentication:
+    /// 1. Server requires client certificate signed by a trusted CA
+    /// 2. Client trusts server's CA and presents its own certificate
+    /// 3. Both sides authenticate each other
+    /// 4. TLS handshake completes successfully
+    #[tokio::test]
+    async fn test_accept_tls_connection_mtls() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA-signed server and client certs
+        // Using separate CAs for server and client to properly test mTLS
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
+
+        // Build server TLS config with client CA (mTLS)
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            // Server trusts client CA
+            client_ca_file: Some(path.join("client_ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        // Build TLS acceptor (same pattern as syslog_cef_receiver)
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        // Bind TCP listener
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Build client TLS config - client trusts server CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        // Load client cert and key
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
+
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
+        let client_key =
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(client_certs, client_key)
+            .expect("Failed to configure client auth");
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Perform TLS handshake using accept_tls_connection
+            let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5))
+                .await
+                .expect("mTLS handshake failed");
+
+            // Write test data
+            use tokio::io::AsyncWriteExt;
+            let mut tls_stream = tls_stream;
+            tls_stream
+                .write_all(b"Hello from mTLS server!\n")
+                .await
+                .expect("Failed to write");
+            tls_stream.flush().await.expect("Failed to flush");
+        });
+
+        // Client connects with client certificate
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let mut tls_stream = client_connector
+                .connect(server_name, stream)
+                .await
+                .expect("Client mTLS handshake failed");
+
+            // Read response
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(&mut tls_stream);
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await.expect("Failed to read");
+            assert_eq!(line, "Hello from mTLS server!\n");
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test accept_tls_connection timeout when client doesn't complete handshake.
+    #[tokio::test]
+    async fn test_accept_tls_connection_timeout() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA-signed server cert (same pattern as other tests)
+        generate_ca_signed_cert(path, "ca", "server", "localhost");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_millis(100)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Spawn server task that expects timeout
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Use a very short timeout
+            let result =
+                accept_tls_connection(stream, &tls_acceptor, Duration::from_millis(100)).await;
+
+            // Should timeout because client never sends TLS handshake
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        });
+
+        // Client connects but never sends TLS handshake data
+        let client_handle = tokio::spawn(async move {
+            let _stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            // Just hold the connection open without doing TLS handshake
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        // Wait for both tasks
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that client rejects server certificate from untrusted CA.
+    ///
+    /// This verifies that TLS properly enforces certificate validation:
+    /// - Server presents a certificate signed by CA-A
+    /// - Client only trusts CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_server() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert signed by one CA
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate a different CA that client will trust (but server doesn't use)
+        generate_ca_signed_cert(path, "other_ca", "other", "other");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts a DIFFERENT CA (other_ca), not the server's CA (server_ca)
+        let other_ca_pem = fs::read(path.join("other_ca.crt")).expect("Failed to read other CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&other_ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may fail or succeed from server's perspective,
+            // but we expect an error on one side
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects - should fail because it doesn't trust server's CA
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject the server's certificate
+            assert!(
+                result.is_err(),
+                "Client should reject untrusted server certificate"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that server rejects client certificate from untrusted CA in mTLS.
+    ///
+    /// This verifies that mTLS properly enforces client certificate validation:
+    /// - Server expects client certs signed by CA-A
+    /// - Client presents a certificate signed by CA-B
+    /// - Handshake should fail
+    #[tokio::test]
+    async fn test_accept_tls_connection_untrusted_client() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert
+        generate_ca_signed_cert(path, "server_ca", "server", "localhost");
+        // Generate client cert signed by one CA
+        generate_ca_signed_cert(path, "client_ca", "client", "TestClient");
+        // Generate a different CA that server will trust (but client doesn't use)
+        generate_ca_signed_cert(path, "trusted_client_ca", "trusted_client", "TrustedClient");
+
+        // Server trusts trusted_client_ca, but client will present cert from client_ca
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            // Server trusts a DIFFERENT CA than what client uses
+            client_ca_file: Some(path.join("trusted_client_ca.crt")),
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts server's CA
+        let server_ca_pem = fs::read(path.join("server_ca.crt")).expect("Failed to read server CA");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&server_ca_pem) {
+            let cert = cert.expect("Failed to parse server CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        // Client uses cert from client_ca (which server doesn't trust)
+        let client_cert_pem =
+            fs::read(path.join("client.crt")).expect("Failed to read client cert");
+        let client_key_pem = fs::read(path.join("client.key")).expect("Failed to read client key");
+
+        let client_certs: Vec<_> = CertificateDer::pem_slice_iter(&client_cert_pem)
+            .collect::<Result<_, _>>()
+            .expect("Failed to parse client certs");
+        let client_key =
+            PrivateKeyDer::from_pem_slice(&client_key_pem).expect("Failed to parse client key");
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_client_auth_cert(client_certs, client_key)
+            .expect("Failed to configure client auth");
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task - should reject client cert
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            let result = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+
+            // Server should reject the client's certificate
+            assert!(
+                result.is_err(),
+                "Server should reject untrusted client certificate"
+            );
+        });
+
+        // Client connects with untrusted cert
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            // Handshake may fail on client side too when server rejects
+            let _ = client_connector.connect(server_name, stream).await;
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
+    }
+
+    /// Test that client rejects server certificate with hostname mismatch.
+    ///
+    /// This verifies hostname verification:
+    /// - Server cert has SAN for "wronghost"
+    /// - Client connects expecting "localhost"
+    /// - Handshake should fail due to hostname mismatch
+    #[tokio::test]
+    async fn test_accept_tls_connection_hostname_mismatch() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate server cert with SAN for "wronghost", not "localhost"
+        generate_ca_signed_cert(path, "ca", "server", "wronghost");
+
+        let server_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let tls_acceptor = build_tls_acceptor(Some(&server_config))
+            .await
+            .expect("Failed to build TLS acceptor")
+            .expect("TLS acceptor should be Some");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind TCP listener");
+        let server_addr = listener.local_addr().expect("Failed to get server address");
+
+        // Client trusts the CA
+        let ca_pem = fs::read(path.join("ca.crt")).expect("Failed to read CA cert");
+        let mut root_store = RootCertStore::empty();
+        for cert in CertificateDer::pem_slice_iter(&ca_pem) {
+            let cert = cert.expect("Failed to parse CA cert");
+            root_store
+                .add(cert)
+                .expect("Failed to add cert to root store");
+        }
+
+        let client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        let client_connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
+
+        // Spawn server task
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer_addr) = listener
+                .accept()
+                .await
+                .expect("Failed to accept connection");
+
+            // Server handshake may succeed, but client will reject
+            let _ = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(5)).await;
+        });
+
+        // Client connects expecting "localhost" but server cert has "wronghost"
+        let client_handle = tokio::spawn(async move {
+            let stream = tokio::net::TcpStream::connect(server_addr)
+                .await
+                .expect("Failed to connect to server");
+
+            // Client expects "localhost" but cert has SAN for "wronghost"
+            let server_name =
+                rustls_pki_types::ServerName::try_from("localhost").expect("Invalid server name");
+
+            let result = client_connector.connect(server_name, stream).await;
+
+            // Client should reject due to hostname mismatch
+            assert!(
+                result.is_err(),
+                "Client should reject certificate with hostname mismatch"
+            );
+        });
+
+        let (server_result, client_result) = tokio::join!(server_handle, client_handle);
+        server_result.expect("Server task panicked");
+        client_result.expect("Client task panicked");
     }
 }

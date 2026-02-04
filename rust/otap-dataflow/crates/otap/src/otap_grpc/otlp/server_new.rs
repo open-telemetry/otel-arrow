@@ -24,7 +24,9 @@ use http::{Request, Response};
 use otap_df_config::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -359,7 +361,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             };
 
             // Send and wait for Ack/Nack
-            match effect_handler.send_message(otap_batch).await {
+            match effect_handler
+                .send_message_with_source_node(otap_batch)
+                .await
+            {
                 Ok(_) => {}
                 Err(e) => {
                     return Err(pipeline_send_status(e));
@@ -424,12 +429,11 @@ impl ServerCommon {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
             effect_handler,
-            state: settings
-                .wait_for_result
-                .then(|| AckSlot::new(settings.max_concurrent_requests)),
+            state,
             settings: settings.clone(),
             metrics,
         }
@@ -450,9 +454,10 @@ impl LogsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }
@@ -505,9 +510,10 @@ impl MetricsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }
@@ -560,9 +566,10 @@ impl TraceServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics),
+            common: ServerCommon::new(effect_handler, settings, metrics, state),
         }
     }
 }

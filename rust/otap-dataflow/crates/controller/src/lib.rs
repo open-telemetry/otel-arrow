@@ -52,13 +52,21 @@ use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
-use otap_df_engine::entity_context::set_pipeline_entity_key;
+use otap_df_engine::entity_context::{
+    node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
+};
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
-use otap_df_state::reporter::ObservedEventReporter;
 use otap_df_state::store::ObservedStateStore;
-use otap_df_telemetry::event::{ErrorSummary, ObservedEvent};
+use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry::{InternalTelemetrySystem, otel_info, otel_info_span, otel_warn};
+use otap_df_telemetry::{
+    InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_info, otel_info_span,
+    otel_warn, self_tracing::LogContext,
+};
+use smallvec::smallvec;
+use std::sync::Arc;
+use std::sync::mpsc as std_mpsc;
 use std::thread;
 
 /// Error types and helpers for the controller module.
@@ -75,6 +83,17 @@ pub mod thread_task;
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,
+}
+
+/// Returns the set of entity keys relevant to this context.
+fn engine_context() -> LogContext {
+    if let Some(node) = node_entity_key() {
+        smallvec![node]
+    } else if let Some(pipeline) = pipeline_entity_key() {
+        smallvec![pipeline]
+    } else {
+        smallvec![]
+    }
 }
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
@@ -101,13 +120,39 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .map(|group| group.pipelines.len())
                 .sum::<usize>()
         );
-        let telemetry_system = InternalTelemetrySystem::new(telemetry_config)?;
+
+        // Create the shared telemetry registry first - it will be used by both
+        // the observed state store and the internal telemetry system.
+        let telemetry_registry = TelemetryRegistryHandle::new();
+
+        // Create the observed state store for the telemetry system.
+        let obs_state_store =
+            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
+        let obs_state_handle = obs_state_store.handle();
+        let engine_evt_reporter =
+            obs_state_store.reporter(engine_settings.observed_state.engine_events);
+        let console_async_reporter = telemetry_config
+            .logs
+            .providers
+            .uses_console_async_provider()
+            .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
+
+        // Create the telemetry system. The console_async_reporter is passed when any
+        // providers use ConsoleAsync. The its_logs_receiver is passed when any
+        // providers use the ITS mode.
+        let telemetry_system = InternalTelemetrySystem::new(
+            telemetry_config,
+            telemetry_registry.clone(),
+            console_async_reporter,
+            engine_context,
+        )?;
+
+        let admin_tracing_setup = telemetry_system.admin_tracing_setup();
+        let internal_tracing_setup = telemetry_system.internal_tracing_setup();
+
         let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
-        let obs_state_store = ObservedStateStore::new(&engine_settings.observed_state);
-        let obs_evt_reporter = obs_state_store.reporter(); // Only the reporting API
-        let obs_state_handle = obs_state_store.handle(); // Only the querying API
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
@@ -119,18 +164,65 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        // Start the metrics aggregation
-        let telemetry_registry = telemetry_system.registry();
+        let pipeline_count: usize = pipeline_groups
+            .values()
+            .map(|group| group.pipelines.len())
+            .sum();
+        let all_cores =
+            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
+        let its_core = *all_cores.first().expect("a cpu core");
+        let its_key = Self::internal_pipeline_key(its_core);
+        let available_core_ids = if pipeline_count == 0 {
+            Vec::new()
+        } else {
+            all_cores
+        };
+
+        let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
+            its_key.clone(),
+            its_core,
+            &pipeline_groups,
+            &telemetry_system,
+            self.pipeline_factory,
+            &controller_ctx,
+            &engine_evt_reporter,
+            &metrics_reporter,
+            internal_tracing_setup,
+        )?;
+
+        // TODO: This should be validated somewhere, that internal node are defined when
+        // its is requested. Possibly we could fill in a default.
+        let has_internal_pipeline = internal_pipeline_handle.is_some();
+        match (
+            has_internal_pipeline,
+            telemetry_config.logs.providers.uses_its_provider(),
+        ) {
+            (false, true) => {
+                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
+            }
+            (true, false) => {
+                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+            }
+            _ => {}
+        };
+
+        // Initialize the global subscriber AFTER the internal pipeline has signaled
+        // successful startup. This ensures the channel receiver is being consumed
+        // before we start sending logs.
+        telemetry_system.init_global_subscriber();
+
         let internal_collector = telemetry_system.collector();
-        let metrics_agg_handle =
-            spawn_thread_local_task("metrics-aggregator", move |cancellation_token| {
-                internal_collector.run(cancellation_token)
-            })?;
+        let metrics_agg_handle = spawn_thread_local_task(
+            "metrics-aggregator",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| internal_collector.run(cancellation_token),
+        )?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
         let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
+                admin_tracing_setup.clone(),
                 move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
             )?)
         } else {
@@ -138,22 +230,23 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         };
 
         // Start the observed state store background task
-        let obs_state_join_handle =
-            spawn_thread_local_task("observed-state-store", move |cancellation_token| {
-                obs_state_store.run(cancellation_token)
-            })?;
+        let obs_state_join_handle = spawn_thread_local_task(
+            "observed-state-store",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| obs_state_store.run(cancellation_token),
+        )?;
 
-        let pipeline_count: usize = pipeline_groups
-            .values()
-            .map(|group| group.pipelines.len())
-            .sum();
-        let available_core_ids = if pipeline_count == 0 {
-            Vec::new()
-        } else {
-            core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?
-        };
         let mut threads = Vec::new();
         let mut ctrl_msg_senders = Vec::new();
+
+        // TODO: We do not have proper thread::current().id assignment.
+        let mut next_thread_id: usize = 1;
+        let its_thread_id: usize = 0;
+
+        // Add internal pipeline to threads list if present
+        if let Some((thread_name, handle)) = internal_pipeline_handle {
+            threads.push((thread_name, its_thread_id, its_key, handle));
+        }
 
         for (pipeline_group_id, pipeline_group) in pipeline_groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
@@ -163,7 +256,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     &quota.core_allocation,
                 )?;
 
-                for (thread_id, core_id) in requested_cores.into_iter().enumerate() {
+                let num_cores = requested_cores.len();
+                for core_id in requested_cores {
                     let pipeline_key = DeployedPipelineKey {
                         pipeline_group_id: pipeline_group_id.clone(),
                         pipeline_id: pipeline_id.clone(),
@@ -178,10 +272,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
                     let pipeline_config = pipeline.clone();
                     let pipeline_factory = self.pipeline_factory;
+                    let thread_id = next_thread_id;
+                    next_thread_id += 1;
                     let pipeline_handle = controller_ctx.pipeline_context_with(
                         pipeline_group_id.clone(),
                         pipeline_id.clone(),
                         core_id.id,
+                        num_cores,
                         thread_id,
                     );
                     let metrics_reporter = metrics_reporter.clone();
@@ -192,22 +289,25 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_id.as_ref(),
                         core_id.id
                     );
-                    let obs_evt_reporter = obs_evt_reporter.clone();
-                    let group_id = pipeline_group_id.clone();
-                    let pipeline_id = pipeline_id.clone();
+
+                    let run_key = pipeline_key.clone();
+                    let engine_tracing_setup = telemetry_system.engine_tracing_setup();
+                    let engine_evt_reporter = engine_evt_reporter.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
                             Self::run_pipeline_thread(
-                                pipeline_key,
+                                run_key,
                                 core_id,
                                 pipeline_config,
                                 pipeline_factory,
                                 pipeline_handle,
-                                obs_evt_reporter,
+                                engine_evt_reporter,
                                 metrics_reporter,
                                 pipeline_ctrl_msg_tx,
                                 pipeline_ctrl_msg_rx,
+                                engine_tracing_setup,
+                                None,
                             )
                         })
                         .map_err(|e| Error::ThreadSpawnError {
@@ -215,14 +315,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             source: e,
                         })?;
 
-                    threads.push((
-                        thread_name,
-                        thread_id,
-                        core_id.id,
-                        group_id,
-                        pipeline_id,
-                        handle,
-                    ));
+                    threads.push((thread_name, thread_id, pipeline_key, handle));
                 }
             }
         }
@@ -231,18 +324,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         drop(metrics_reporter);
 
         // Start the admin HTTP server
-        let admin_server_handle =
-            spawn_thread_local_task("http-admin", move |cancellation_token| {
+        let admin_server_handle = spawn_thread_local_task(
+            "http-admin",
+            admin_tracing_setup,
+            move |cancellation_token| {
                 // Convert the concrete senders to trait objects for the admin crate
-                let admin_senders: Vec<
-                    std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>,
-                > = ctrl_msg_senders
-                    .into_iter()
-                    .map(|sender| {
-                        std::sync::Arc::new(sender)
-                            as std::sync::Arc<dyn otap_df_engine::control::PipelineAdminSender>
-                    })
-                    .collect();
+                let admin_senders: Vec<Arc<dyn otap_df_engine::control::PipelineAdminSender>> =
+                    ctrl_msg_senders
+                        .into_iter()
+                        .map(|sender| {
+                            Arc::new(sender)
+                                as Arc<dyn otap_df_engine::control::PipelineAdminSender>
+                        })
+                        .collect();
 
                 otap_df_admin::run(
                     admin_settings,
@@ -251,23 +345,19 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     telemetry_registry,
                     cancellation_token,
                 )
-            })?;
+            },
+        )?;
 
         // Wait for all pipeline threads to finish and collect their results
         let mut results: Vec<Result<(), Error>> = Vec::with_capacity(threads.len());
-        for (thread_name, thread_id, core_id, group_id, pipeline_id, handle) in threads {
-            let pipeline_key = DeployedPipelineKey {
-                pipeline_group_id: group_id.clone(),
-                pipeline_id: pipeline_id.clone(),
-                core_id,
-            };
+        for (thread_name, thread_id, pipeline_key, handle) in threads {
             match handle.join() {
                 Ok(Ok(_)) => {
-                    obs_evt_reporter.report(ObservedEvent::drained(pipeline_key, None));
+                    engine_evt_reporter.report(EngineEvent::drained(pipeline_key, None));
                 }
                 Ok(Err(e)) => {
                     let err_summary: ErrorSummary = error_summary_from_gen(&e);
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "Pipeline encountered a runtime error.",
                         err_summary,
@@ -280,12 +370,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         message: "The pipeline panicked during execution.".into(),
                         source: Some(format!("{e:?}")),
                     };
-                    obs_evt_reporter.report(ObservedEvent::pipeline_runtime_error(
+                    engine_evt_reporter.report(EngineEvent::pipeline_runtime_error(
                         pipeline_key.clone(),
                         "The pipeline panicked during execution.",
                         err_summary,
                     ));
                     // Thread join failed, handle the error
+                    let core_id = pipeline_key.core_id;
                     return Err(Error::ThreadPanic {
                         thread_name,
                         thread_id,
@@ -315,7 +406,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             handle.shutdown_and_join()?;
         }
         obs_state_join_handle.shutdown_and_join()?;
-        telemetry_system.shutdown()?;
+        telemetry_system.shutdown_otel()?;
 
         Ok(())
     }
@@ -428,6 +519,130 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
     }
 
+    fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
+        DeployedPipelineKey {
+            pipeline_group_id: "internal".into(),
+            pipeline_id: "internal".into(),
+            core_id: core_id.id,
+        }
+    }
+
+    /// Spawns the internal telemetry pipeline if any pipeline has an internal config.
+    ///
+    /// Returns the thread handle if an internal pipeline was spawned
+    /// and waits for it to start, or None.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_internal_pipeline_if_configured(
+        its_key: DeployedPipelineKey,
+        its_core: CoreId,
+        pipeline_groups: &std::collections::HashMap<
+            otap_df_config::PipelineGroupId,
+            otap_df_config::pipeline_group::PipelineGroupConfig,
+        >,
+        telemetry_system: &InternalTelemetrySystem,
+        pipeline_factory: &'static PipelineFactory<PData>,
+        controller_ctx: &ControllerContext,
+        engine_evt_reporter: &ObservedEventReporter,
+        metrics_reporter: &MetricsReporter,
+        tracing_setup: TracingSetup,
+    ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
+        // TODO: This uses the first internal pipeline it finds.  This
+        // requires a permanent solution, the current approach of
+        // PipelineConfig containing an `internal` nodes section
+        // is incorrect.
+        let internal_config: Option<PipelineConfig> = pipeline_groups
+            .iter()
+            .flat_map(|(_, group)| group.pipelines.iter())
+            .find_map(|(_, pipeline)| pipeline.extract_internal_config());
+
+        let internal_config = match internal_config {
+            Some(config) => config,
+            _ => {
+                // Note: Inconsistent configurations are checked elsewhere.
+                // This method is "_if_configured()" for lifetime reasons,
+                // so a silent return.
+                return Ok(None);
+            }
+        };
+
+        let its_settings = match telemetry_system.internal_telemetry_settings() {
+            None => {
+                // Note: An inconsistency warning will be logged by the
+                // calling function.
+                return Ok(None);
+            }
+            Some(its_settings) => its_settings,
+        };
+
+        let internal_pipeline_ctx = controller_ctx.pipeline_context_with(
+            its_key.pipeline_group_id.clone(),
+            its_key.pipeline_id.clone(),
+            its_key.core_id,
+            1, // Internal telemetry pipeline runs on a single core
+            0, // TODO: we do not have a thread_id
+        );
+
+        // Create control message channel for internal pipeline
+        let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
+            internal_config
+                .pipeline_settings()
+                .default_pipeline_ctrl_msg_channel_size,
+        );
+
+        // Create a channel to signal startup success/failure
+        let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
+
+        let thread_name = "internal-pipeline".to_string();
+        let internal_evt_reporter = engine_evt_reporter.clone();
+        let internal_metrics_reporter = metrics_reporter.clone();
+
+        let handle = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                Self::run_pipeline_thread(
+                    its_key,
+                    its_core,
+                    internal_config,
+                    pipeline_factory,
+                    internal_pipeline_ctx,
+                    internal_evt_reporter,
+                    internal_metrics_reporter,
+                    internal_ctrl_tx,
+                    internal_ctrl_rx,
+                    tracing_setup,
+                    Some((its_settings, startup_tx)),
+                )
+            })
+            .map_err(|e| Error::ThreadSpawnError {
+                thread_name: thread_name.clone(),
+                source: e,
+            })?;
+
+        // Wait for the internal pipeline to signal successful startup
+        match startup_rx.recv() {
+            Ok(Ok(())) => {
+                otel_info!(
+                    "internal_pipeline.started",
+                    message = "Internal telemetry pipeline started successfully"
+                );
+            }
+            Ok(Err(e)) => {
+                // Internal pipeline failed to build - propagate the error
+                return Err(Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                });
+            }
+            Err(err) => {
+                // Channel closed unexpectedly - thread may have panicked
+                return Err(Error::PipelineRuntimeError {
+                    source: Box::new(err),
+                });
+            }
+        }
+
+        Ok(Some((thread_name, handle)))
+    }
+
     /// Runs a single pipeline in the current thread.
     fn run_pipeline_thread(
         pipeline_key: DeployedPipelineKey,
@@ -439,20 +654,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: MetricsReporter,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         pipeline_ctrl_msg_rx: PipelineCtrlMsgReceiver<PData>,
+        tracing_setup: TracingSetup,
+        internal_telemetry: Option<(
+            InternalTelemetrySettings,
+            std_mpsc::SyncSender<Result<(), EngineError>>,
+        )>,
     ) -> Result<Vec<()>, Error> {
-        // Create a tracing span for this pipeline thread
-        // so that all logs within this scope include pipeline context.
-        let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
-        let _guard = span.enter();
-
-        // The controller creates a pipeline instance into a dedicated thread. The corresponding
-        // entity is registered here for proper context tracking and set into thread-local storage
-        // in order to be accessible by all components within this thread.
-        let pipeline_entity_key = pipeline_context.register_pipeline_entity();
-        let _pipeline_entity_guard =
-            set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
-
-        // Pin thread to specific core
+        // Pin thread to specific core. As much as possible, we pin
+        // before allocating memory.
         if !core_affinity::set_for_current(core_id) {
             // Continue execution even if pinning fails.
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
@@ -462,36 +671,67 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             );
         }
 
-        obs_evt_reporter.report(ObservedEvent::admitted(
-            pipeline_key.clone(),
-            Some("Pipeline admission successful.".to_owned()),
-        ));
+        // Run the pipeline with thread-local tracing subscriber active.
+        tracing_setup.with_subscriber(|| {
+            // Create a tracing span for this pipeline thread
+            // so that all logs within this scope include pipeline context.
+            let span = otel_info_span!("pipeline_thread", core.id = core_id.id);
+            let _guard = span.enter();
 
-        // Build the runtime pipeline from the configuration
-        let runtime_pipeline = pipeline_factory
-            .build(pipeline_context.clone(), pipeline_config.clone())
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })?;
+            // The controller creates a pipeline instance into a dedicated thread. The corresponding
+            // entity is registered here for proper context tracking and set into thread-local storage
+            // in order to be accessible by all components within this thread.
+            let pipeline_entity_key = pipeline_context.register_pipeline_entity();
+            let _pipeline_entity_guard =
+                set_pipeline_entity_key(pipeline_context.metrics_registry(), pipeline_entity_key);
 
-        obs_evt_reporter.report(ObservedEvent::ready(
-            pipeline_key.clone(),
-            Some("Pipeline initialization successful.".to_owned()),
-        ));
+            obs_evt_reporter.report(EngineEvent::admitted(
+                pipeline_key.clone(),
+                Some("Pipeline admission successful.".to_owned()),
+            ));
 
-        // Start the pipeline (this will use the current thread's Tokio runtime)
-        runtime_pipeline
-            .run_forever(
-                pipeline_key,
-                pipeline_context,
-                obs_evt_reporter,
-                metrics_reporter,
-                pipeline_ctrl_msg_tx,
-                pipeline_ctrl_msg_rx,
-            )
-            .map_err(|e| Error::PipelineRuntimeError {
-                source: Box::new(e),
-            })
+            // Build the runtime pipeline from the configuration
+            let its_settings = internal_telemetry.as_ref().map(|(s, _)| s).cloned();
+            let runtime_pipeline = pipeline_factory
+                .build(
+                    pipeline_context.clone(),
+                    pipeline_config.clone(),
+                    its_settings,
+                )
+                .map_err(|e| {
+                    if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
+                        let _ = startup_tx.send(Err(EngineError::InternalError {
+                            message: e.to_string(),
+                        }));
+                    }
+                    Error::PipelineRuntimeError {
+                        source: Box::new(e),
+                    }
+                })?;
+
+            obs_evt_reporter.report(EngineEvent::ready(
+                pipeline_key.clone(),
+                Some("Pipeline initialization successful.".to_owned()),
+            ));
+
+            if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
+                let _ = startup_tx.send(Ok(()));
+            }
+
+            // Start the pipeline (this will use the current thread's Tokio runtime)
+            runtime_pipeline
+                .run_forever(
+                    pipeline_key,
+                    pipeline_context,
+                    obs_evt_reporter,
+                    metrics_reporter,
+                    pipeline_ctrl_msg_tx,
+                    pipeline_ctrl_msg_rx,
+                )
+                .map_err(|e| Error::PipelineRuntimeError {
+                    source: Box::new(e),
+                })
+        })
     }
 }
 
