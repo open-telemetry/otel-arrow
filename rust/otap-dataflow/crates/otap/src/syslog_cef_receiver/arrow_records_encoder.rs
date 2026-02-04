@@ -63,7 +63,7 @@ impl ArrowRecordsBuilder {
         if syslog_message.is_fully_parsed() {
             self.logs.body.append_null();
         } else {
-            self.logs.body.append_str(syslog_message.input().as_bytes());
+            self.logs.body.append_str(syslog_message.input());
         }
 
         let attributes_added = syslog_message.add_attributes_to_arrow(&mut self.log_attrs);
