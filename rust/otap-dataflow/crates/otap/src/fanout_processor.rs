@@ -1251,7 +1251,8 @@ mod tests {
             }),
         };
 
-        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0, 0);
         let fanout = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
             .expect("valid config");
 
@@ -1786,7 +1787,8 @@ mod tests {
 
         let metrics_system = InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
-        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0, 0);
         let err = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
             .err()
             .expect("duplicate ports should fail");
@@ -2661,7 +2663,8 @@ mod tests {
             config,
         };
 
-        let pipeline_ctx = controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 0, 0);
         let fanout = FanoutProcessor::from_config(pipeline_ctx, &node_cfg, &node_cfg.config)
             .expect("valid config");
 
