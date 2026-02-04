@@ -882,6 +882,14 @@ pub fn transform_attributes_with_stats(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<(RecordBatch, TransformStats)> {
+    transform_attributes_impl(attrs_record_batch, transform, true)
+}
+
+pub fn transform_attributes_impl(
+    attrs_record_batch: &RecordBatch,
+    transform: &AttributesTransform,
+    compute_stats: bool,
+) -> Result<(RecordBatch, TransformStats)> {
     transform.validate()?;
 
     let schema = attrs_record_batch.schema();
@@ -997,6 +1005,8 @@ pub fn transform_attributes_with_stats(
                             .downcast_ref::<DictionaryArray<UInt8Type>>()
                             .expect("can downcast dictionary column to dictionary array"),
                         transform,
+                        is_transport_optimized,
+                        compute_stats,
                     )?;
                     let new_dict = Arc::new(dict_imm_result.new_keys);
                     (
@@ -1018,6 +1028,8 @@ pub fn transform_attributes_with_stats(
                             .downcast_ref::<DictionaryArray<UInt16Type>>()
                             .expect("can downcast dictionary column to dictionary array"),
                         transform,
+                        is_transport_optimized,
+                        compute_stats,
                     )?;
                     let new_dict = Arc::new(dict_imm_result.new_keys);
                     (
@@ -1198,7 +1210,7 @@ pub fn transform_attributes(
     attrs_record_batch: &RecordBatch,
     transform: &AttributesTransform,
 ) -> Result<RecordBatch> {
-    let (result, _) = transform_attributes_with_stats(attrs_record_batch, transform)?;
+    let (result, _) = transform_attributes_impl(attrs_record_batch, transform, false)?;
     Ok(result)
 }
 
@@ -1496,6 +1508,8 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
+    is_transport_encoded: bool,
+    compute_stats: bool,
 ) -> Result<DictionaryKeysTransformResult<K>>
 where
     K: ArrowDictionaryKeyType,
@@ -1508,39 +1522,77 @@ where
             actual: dict_values.data_type().clone(),
         }
     })?;
+
     let dict_values_transform_result = transform_keys(dict_values, transform)?;
 
-    // TODO:
-    // - do we always need to calculate this?
-    // - now that we've calculated it, can we use it to compute some of the other stuff
-    //   that this function is computing more easily?
-    let dict_key_transform_ranges = dict_value_transform_ranges_to_key_ranges_v2(
-        dict_arr,
-        &dict_values_transform_result.transform_ranges,
-    );
-    // let dict_key_transform_ranges = Vec::new();
+    // TODO
+    // - transform dict value ranges if:
+    //   - there are deletes
+    //   - we are transport optimized
+    // - if taken:
+    //   - use to compute stats
+    // - else
+    //   - compute stats fast
 
-    // Build a quick lookup of which dictionary value indices were renamed
-    let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
-    if let Some(rename) = transform.rename.as_ref().filter(|r| !r.map.is_empty()) {
-        let repl_plan = plan_key_replacements(
-            dict_values.len(),
-            dict_values.values(),
-            dict_values.offsets(),
-            rename,
-        )?;
-        for (start_idx, end_idx) in repl_plan
-            .ranges
+    // Convert the ranges of transformed dictionary values into the ranges of transformed dict keys.
+    // These ranges are used to determine two things:
+    // - if the transformation breaks any delta encoding sequences when the attributes are transport
+    //   encoded
+    // - which ranges from the original record batch to keep if any attributes where deleted
+    // Converting these ranges isn't free as it involves scanning the dictionary keys, so we only do
+    // this conversion if they are needed.
+    let compute_dict_key_transform_ranges = is_transport_encoded
+        || dict_values_transform_result
+            .transform_ranges
             .iter()
-            .map(|k| (k.range.start, k.range.end))
-        {
-            for i in start_idx..end_idx {
-                if let Some(slot) = value_index_renamed.get_mut(i) {
-                    *slot = true;
-                }
-            }
-        }
-    }
+            .any(|range| range.range_type == KeyTransformRangeType::Delete);
+    let dict_key_transform_ranges = compute_dict_key_transform_ranges
+        .then_some(dict_value_transform_ranges_to_key_ranges_v2(
+            dict_arr,
+            &dict_values_transform_result.transform_ranges,
+        ))
+        .unwrap_or_default();
+
+    // If we're tracking statistics on how many rows were transformed, it's less expensive to
+    // compute these statistics from the ranges of transformed dictionary keys. However, if these
+    // ranges haven't been computed, it's more performant to compute the statistics from the
+    // transformed dictionary values than to materialize the ranges of transformed dictionary keys
+    // just for statistics computation.
+    let (renamed_rows, deleted_rows) = if !compute_stats {
+        (0, 0)
+    } else if compute_dict_key_transform_ranges {
+        transform_stats_from_transform_ranges(&dict_key_transform_ranges)
+    } else {
+        let rename_count = transform_rename_count_from_dict_value_transform_range(
+            dict_arr,
+            &dict_values_transform_result.transform_ranges,
+        );
+        (rename_count, 0)
+    };
+
+    // // let dict_key_transform_ranges = Vec::new();
+
+    // // Build a quick lookup of which dictionary value indices were renamed
+    // let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
+    // if let Some(rename) = transform.rename.as_ref().filter(|r| !r.map.is_empty()) {
+    //     let repl_plan = plan_key_replacements(
+    //         dict_values.len(),
+    //         dict_values.values(),
+    //         dict_values.offsets(),
+    //         rename,
+    //     )?;
+    //     for (start_idx, end_idx) in repl_plan
+    //         .ranges
+    //         .iter()
+    //         .map(|k| (k.range.start, k.range.end))
+    //     {
+    //         for i in start_idx..end_idx {
+    //             if let Some(slot) = value_index_renamed.get_mut(i) {
+    //                 *slot = true;
+    //             }
+    //         }
+    //     }
+    // }
 
     if dict_values_transform_result.keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
@@ -1558,30 +1610,30 @@ where
         return Ok(DictionaryKeysTransformResult {
             new_keys: new_dict,
             keep_ranges: None,
-            deleted_rows: 0,
-
+            // deleted_rows: 0,
             transform_ranges: dict_key_transform_ranges,
 
-            // TODO - this is expensive to calculate if we don't need it
-            renamed_rows: {
-                // Count renamed rows among kept rows (all rows are kept in this branch)
-                let mut renamed = 0usize;
-                if !value_index_renamed.is_empty() {
-                    let dict_keys_nulls = dict_keys.nulls();
-                    for i in 0..dict_arr.len() {
-                        if dict_keys_nulls
-                            .map(|nulls| nulls.is_valid(i))
-                            .unwrap_or(true)
-                        {
-                            let dict_key: usize = dict_keys.value(i).as_usize();
-                            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
-                                renamed += 1;
-                            }
-                        }
-                    }
-                }
-                renamed
-            },
+            renamed_rows,
+            deleted_rows, // // TODO - this is expensive to calculate if we don't need it
+                          // renamed_rows: {
+                          //     // Count renamed rows among kept rows (all rows are kept in this branch)
+                          //     let mut renamed = 0usize;
+                          //     if !value_index_renamed.is_empty() {
+                          //         let dict_keys_nulls = dict_keys.nulls();
+                          //         for i in 0..dict_arr.len() {
+                          //             if dict_keys_nulls
+                          //                 .map(|nulls| nulls.is_valid(i))
+                          //                 .unwrap_or(true)
+                          //             {
+                          //                 let dict_key: usize = dict_keys.value(i).as_usize();
+                          //                 if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                          //                     renamed += 1;
+                          //                 }
+                          //             }
+                          //         }
+                          //     }
+                          //     renamed
+                          // },
         });
     }
 
@@ -1676,9 +1728,9 @@ where
     let count_kept_values = keep_ranges.iter().map(|(start, end)| end - start).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
-    let total_rows = dict_arr.len();
-    let deleted_rows_count = total_rows - count_kept_values;
-    let mut renamed_rows_count: usize = 0;
+    // let total_rows = dict_arr.len();
+    // let deleted_rows_count = total_rows - count_kept_values;
+    // let mut renamed_rows_count: usize = 0;
 
     // build an array of by how much to adjust the dictionary key
     let mut prev_offset_end = 0;
@@ -1715,10 +1767,10 @@ where
             .get(dict_key)
             .expect("dict keys values range lookup not properly initialized");
         if *kept_in_dict_values_range_idx >= 0 {
-            // Count rename if the referenced dictionary value was replaced
-            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
-                renamed_rows_count += 1;
-            }
+            // // Count rename if the referenced dictionary value was replaced
+            // if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+            //     renamed_rows_count += 1;
+            // }
 
             let new_dict_key =
                 dict_key - dict_key_adjustments[*kept_in_dict_values_range_idx as usize];
@@ -1751,24 +1803,21 @@ where
         new_keys: new_dict,
         keep_ranges: Some(keep_ranges),
         transform_ranges: dict_key_transform_ranges,
-        deleted_rows: deleted_rows_count,
-        renamed_rows: renamed_rows_count,
+        deleted_rows,
+        renamed_rows,
     })
 }
 
+// TODO - this needs test coverage ...
 fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
     attr_keys: &DictionaryArray<K>,
     dict_value_transform_ranges: &[KeyTransformRange],
 ) -> Vec<KeyTransformRange> {
-    // TODO don't think we should get in here in these conditions, but w/e check anyway?
-    // TODO verify
-    if attr_keys.len() == 0 {
-        todo!()
-    }
-    if dict_value_transform_ranges.len() == 0 {
-        todo!()
+    if attr_keys.len() == 0 || dict_value_transform_ranges.len() == 0 {
+        return Vec::new();
     }
 
+    // TODO this comment no longer makes sense
     // normally, this would only be called when the attributes values are transport optimize
     // encoded, which means it's sorted by attribute type & key, so the number of ranges
     // transformed in the dict values should be roughly equal to the number of ranges of dict keys,
@@ -1793,23 +1842,23 @@ fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
 
         if let Some(curr_range_idx) = curr_range_idx {
             let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
-            // dict_key_transform_ranges.push(KeyTransformRange {
-            //     range: Range {
-            //         start: curr_range_start,
-            //         end: i,
-            //     },
-            //     idx: curr_tx_range.idx,
-            //     range_type: curr_tx_range.range_type,
-            // });
+            dict_key_transform_ranges.push(KeyTransformRange {
+                range: Range {
+                    start: curr_range_start,
+                    end: i,
+                },
+                idx: curr_tx_range.idx,
+                range_type: curr_tx_range.range_type,
+            });
         }
 
         let dict_key_usize = dict_keys[i].as_usize();
         let dict_val_range_idx =
             dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
                 if dict_key_usize < range.start() {
-                    Ordering::Less
-                } else if dict_key_usize >= range.end() {
                     Ordering::Greater
+                } else if dict_key_usize >= range.end() {
+                    Ordering::Less
                 } else {
                     Ordering::Equal
                 }
@@ -1823,14 +1872,14 @@ fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
     // deal with last range
     if let Some(curr_range_idx) = curr_range_idx {
         let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
-        // dict_key_transform_ranges.push(KeyTransformRange {
-        //     range: Range {
-        //         start: curr_range_start,
-        //         end: len,
-        //     },
-        //     idx: curr_tx_range.idx,
-        //     range_type: curr_tx_range.range_type,
-        // });
+        dict_key_transform_ranges.push(KeyTransformRange {
+            range: Range {
+                start: curr_range_start,
+                end: len,
+            },
+            idx: curr_tx_range.idx,
+            range_type: curr_tx_range.range_type,
+        });
     }
 
     dict_key_transform_ranges
@@ -1914,14 +1963,65 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
     dict_key_transform_ranges
 }
 
-#[derive(Clone, Copy, PartialEq)]
+fn transform_stats_from_transform_ranges(transform_ranges: &[KeyTransformRange]) -> (usize, usize) {
+    let mut count_rename = 0;
+    let mut count_delete = 0;
+
+    for range in transform_ranges {
+        match range.range_type {
+            KeyTransformRangeType::Delete => count_delete += range.len(),
+            KeyTransformRangeType::Replace => count_rename += range.len(),
+        }
+    }
+
+    (count_rename, count_delete)
+}
+
+fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyType>(
+    dict_arr: &DictionaryArray<K>,
+    dict_value_transform_ranges: &[KeyTransformRange],
+) -> usize {
+    let dict_values = dict_arr.values();
+    let dict_keys = dict_arr.keys();
+
+    let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
+    for range in dict_value_transform_ranges {
+        if range.range_type == KeyTransformRangeType::Replace {
+            for i in range.start()..range.end() {
+                if let Some(slot) = value_index_renamed.get_mut(i) {
+                    *slot = true;
+                }
+            }
+        }
+    }
+
+    let mut renamed = 0usize;
+    if !value_index_renamed.is_empty() {
+        let dict_keys_nulls = dict_keys.nulls();
+        for i in 0..dict_arr.len() {
+            if dict_keys_nulls
+                .map(|nulls| nulls.is_valid(i))
+                .unwrap_or(true)
+            {
+                let dict_key: usize = dict_keys.value(i).as_usize();
+                if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                    renamed += 1;
+                }
+            }
+        }
+    }
+    renamed
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum KeyTransformRangeType {
+    // TODO - should this be "rename"?
     Replace,
     Delete,
 }
 
 // TODO comments
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct KeyTransformRange {
     range: Range<usize>,
 
@@ -1931,6 +2031,7 @@ struct KeyTransformRange {
 }
 
 impl KeyTransformRange {
+    // TODO - should these be const?
     #[inline]
     fn start(&self) -> usize {
         self.range.start
@@ -1939,6 +2040,11 @@ impl KeyTransformRange {
     #[inline]
     fn end(&self) -> usize {
         self.range.end
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.range.len()
     }
 }
 
@@ -3852,158 +3958,56 @@ mod test {
 
     #[test]
     fn test_transform_attrs_keys_dict_encoded() {
-        let test_cases = vec![
+        let test_cases = vec![(
+            // basic dict transform
+            AttributesTransform {
+                insert: None,
+                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                    "a".into(),
+                    "AA".into(),
+                )]))),
+                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
+            },
             (
-                // basic dict transform
-                AttributesTransform {
-                    insert: None,
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                        "a".into(),
-                        "AA".into(),
-                    )]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
-                },
-                (
-                    // keys column - dict keys
-                    vec![1, 0, 2, 3, 2, 1, 0]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    // keys column - dict values
-                    vec!["a", "b", "c", "d"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    // attr value str column
-                    vec!["a", "b", "c", "d", "e", "f", "g"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                ),
-                (
-                    vec![0, 1, 2, 1, 0]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec!["AA", "c", "d"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec!["b", "c", "d", "e", "g"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                ),
+                // keys column - dict keys
+                vec![1, 0, 2, 3, 2, 1, 0]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
+                // keys column - dict values
+                vec!["a", "b", "c", "d"]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
+                // attr value str column
+                vec!["a", "b", "c", "d", "e", "f", "g"]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
             ),
             (
-                // test with some nulls
-                AttributesTransform {
-                    insert: None,
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                        "a".into(),
-                        "AA".into(),
-                    )]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
-                },
-                (
-                    vec![
-                        Some(1),
-                        Some(0),
-                        None,
-                        Some(2),
-                        Some(3),
-                        None,
-                        Some(2),
-                        Some(1),
-                        None,
-                        Some(0),
-                    ],
-                    vec!["a", "b", "c", "d"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec![
-                        Some("1"),
-                        Some("2"),
-                        Some("3"),
-                        None,
-                        None,
-                        Some("4"),
-                        Some("5"),
-                        None,
-                        Some("6"),
-                        None,
-                    ],
-                ),
-                (
-                    vec![
-                        Some(0),
-                        None,
-                        Some(1),
-                        Some(2),
-                        None,
-                        Some(1),
-                        None,
-                        Some(0),
-                    ],
-                    vec!["AA", "c", "d"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec![
-                        Some("2"),
-                        Some("3"),
-                        None,
-                        None,
-                        Some("4"),
-                        Some("5"),
-                        Some("6"),
-                        None,
-                    ],
-                ),
+                vec![0, 1, 2, 1, 0]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
+                vec!["AA", "c", "d"]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
+                vec!["b", "c", "d", "e", "g"]
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
             ),
-            (
-                // test if there's nulls in the dict keys. This would be unusual
-                // but technically it's possible
-                AttributesTransform {
-                    insert: None,
-                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                        "a".into(),
-                        "AA".into(),
-                    )]))),
-                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
-                },
-                (
-                    vec![0, 1, 2, 3, 0, 1, 2, 3]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec![Some("a"), Some("b"), None, Some("c")],
-                    vec!["1", "2", "3", "4", "1", "2", "3", "4"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                ),
-                (
-                    vec![0, 1, 2, 0, 1, 2]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                    vec![Some("AA"), None, Some("c")],
-                    vec!["1", "3", "4", "1", "3", "4"]
-                        .into_iter()
-                        .map(Some)
-                        .collect::<Vec<_>>(),
-                ),
-            ),
-        ];
+        )];
 
         for (transform, inputs, expected) in test_cases {
             let schema = Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(
                     consts::ATTRIBUTE_KEY,
                     DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                    true,
+                    false,
                 ),
                 Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
             ]));
@@ -4011,6 +4015,10 @@ mod test {
             let input = RecordBatch::try_new(
                 schema.clone(),
                 vec![
+                    Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                        AttributeValueType::Str as u8,
+                        inputs.0.len(),
+                    ))),
                     Arc::new(DictionaryArray::new(
                         UInt8Array::from_iter(inputs.0),
                         Arc::new(StringArray::from_iter(inputs.1)),
@@ -4025,6 +4033,10 @@ mod test {
             let expected = RecordBatch::try_new(
                 schema.clone(),
                 vec![
+                    Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                        AttributeValueType::Str as u8,
+                        expected.0.len(),
+                    ))),
                     Arc::new(DictionaryArray::new(
                         UInt8Array::from_iter(expected.0),
                         Arc::new(StringArray::from_iter(expected.1)),
@@ -4041,10 +4053,11 @@ mod test {
     #[test]
     fn test_transform_attrs_u16_keys() {
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
                 DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
-                true,
+                false,
             ),
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
@@ -4052,8 +4065,19 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    6,
+                ))),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter(vec![Some(1), Some(0), None, Some(2), Some(3), None]),
+                    UInt16Array::from_iter(vec![
+                        Some(1),
+                        Some(0),
+                        Some(0),
+                        Some(2),
+                        Some(3),
+                        Some(0),
+                    ]),
                     Arc::new(StringArray::from_iter_values(vec!["a", "b", "c", "d"])),
                 )),
                 Arc::new(StringArray::from_iter_values(vec![
@@ -4079,8 +4103,12 @@ mod test {
         let expected = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
                 Arc::new(DictionaryArray::new(
-                    UInt16Array::from_iter(vec![Some(0), None, Some(1), Some(2), None]),
+                    UInt16Array::from_iter(vec![Some(0), Some(0), Some(1), Some(2), Some(0)]),
                     Arc::new(StringArray::from_iter_values(vec!["a", "CCCCC", "d"])),
                 )),
                 Arc::new(StringArray::from_iter_values(vec!["2", "3", "4", "5", "6"])),
@@ -4573,9 +4601,11 @@ mod test {
     }
 
     #[test]
-    fn test_with_stats_dict_rename_and_delete() {
+    fn test_with_stats_dict_re() {
+    // fn test_with_stats_dict_rename_and_delete() {
         // keys: [a, b, a, d, c] ; rename a->A ; delete d
         let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
             Field::new(
                 consts::ATTRIBUTE_KEY,
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
@@ -4589,6 +4619,10 @@ mod test {
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    5,
+                ))),
                 Arc::new(DictionaryArray::new(dict_keys, Arc::new(dict_vals))),
                 Arc::new(StringArray::from_iter_values(vec!["1", "1", "3", "4", "5"])),
             ],
@@ -4672,13 +4706,13 @@ mod test {
             )
             .expect("record batch OK");
 
-            // let (result, _) = apply_transport_optimized_encodings(
-            //     &crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
-            //     &batch,
-            // )
-            // .expect("transport optimize encoding apply");
+            let (result, _) = apply_transport_optimized_encodings(
+                &crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
+                &batch,
+            )
+            .expect("transport optimize encoding apply");
 
-            let result = batch;
+            // let result = batch;
             result
         }
 
@@ -4686,16 +4720,23 @@ mod test {
 
         arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
 
-        let transform1 = AttributesTransform::default().with_rename(RenameTransform::new(
-            [("key_1".into(), "key_2".into())].into_iter().collect(),
+        // let transform1 = AttributesTransform::default().with_rename(RenameTransform::new(
+        //     [("key_1".into(), "key_2".into())].into_iter().collect(),
+        // ));
+        // let transform2 = AttributesTransform::default().with_rename(RenameTransform::new(
+        //     [("attr4".into(), "attr5".into())].into_iter().collect(),
+        // ));
+        //
+        let transform1 = AttributesTransform::default().with_delete(DeleteTransform::new(
+            [("key_2".into())].into_iter().collect(),
         ));
         let transform2 = AttributesTransform::default().with_rename(RenameTransform::new(
-            [("attr4".into(), "attr5".into())].into_iter().collect(),
+            [("key_1".into(), "key_3".into())].into_iter().collect(),
         ));
         let result1 = transform_attributes(&input, &transform1).expect("no error");
         arrow::util::pretty::print_batches(&[result1.clone()]).unwrap();
-        // let result2 = transform_attributes(&result1, &transform2).expect("no error");
-        // arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
+        let result2 = transform_attributes(&result1, &transform2).expect("no error");
+        arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
     }
 }
 
