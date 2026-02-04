@@ -1,5 +1,7 @@
 # Syslog and CEF Receiver
 
+**URN:** `urn:otel:syslog_cef:receiver`
+
 A high-performance receiver for ingesting syslog messages (RFC 3164 and RFC 5424)
 and Common Event Format (CEF) security logs. The receiver automatically detects
 the message format and converts them into `OtapPdata` using the efficient
