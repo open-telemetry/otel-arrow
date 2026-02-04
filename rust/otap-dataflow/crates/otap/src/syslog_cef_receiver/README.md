@@ -28,8 +28,8 @@ receivers:
     tls:
       cert_file: "/path/to/server.crt"
       key_file: "/path/to/server.key"
-      ca_file: "/path/to/ca.crt"           # Optional: client cert verification
-      handshake_timeout: "10s"              # Optional: default 10s
+      client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
+      handshake_timeout: "10s"             # Optional: default 10s
 ```
 
 ### Configuration Options
