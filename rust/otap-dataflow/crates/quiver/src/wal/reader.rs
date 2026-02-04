@@ -162,7 +162,7 @@ impl WalReader {
     /// WAL file ever created. After any rotation, both rotated files and the
     /// new active file have non-zero values representing their position in the
     /// logical WAL stream.
-    pub fn wal_position_start(&self) -> u64 {
+    pub const fn wal_position_start(&self) -> u64 {
         self.wal_position_start
     }
 
