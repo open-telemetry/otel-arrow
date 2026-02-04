@@ -3809,4 +3809,119 @@ mod tests {
             );
         }
     }
-}
+
+    #[tokio::test]
+    async fn wal_replay_handles_truncated_entry() {
+        // Test that WAL replay gracefully handles a truncated entry (simulating crash mid-write).
+        // This is the expected case after a crash - the last write was incomplete.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_before_crash = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_before_crash {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Engine dropped - WAL has 5 complete entries
+        }
+
+        // Truncate the WAL file to simulate crash mid-write
+        let wal_path = dir.path().join("wal").join("quiver.wal");
+        let original_len = fs::metadata(&wal_path).expect("metadata").len();
+        // Truncate 20 bytes off the end (partial entry)
+        let truncated_len = original_len.saturating_sub(20);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .expect("open wal")
+            .set_len(truncated_len)
+            .expect("truncate");
+
+        // Reopen engine - should recover gracefully, replaying complete entries only
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite truncated WAL");
+
+            // We should have recovered at least some bundles (the complete ones)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert!(
+                recovered > 0 && recovered <= bundles_before_crash,
+                "should recover some but not all bundles after truncation; got {}",
+                recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_corrupted_entry() {
+        // Test that WAL replay gracefully handles a corrupted entry (CRC mismatch).
+        // The engine should log the error but continue startup with partial recovery.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Corrupt the WAL file by flipping some bytes in the middle
+        let wal_path = dir.path().join("wal").join("quiver.wal");
+        let mut wal_data = fs::read(&wal_path).expect("read wal");
+        // Corrupt bytes in the middle of the file (after header, in entry data)
+        let corrupt_offset = wal_data.len() / 2;
+        for i in 0..8 {
+            if corrupt_offset + i < wal_data.len() {
+                wal_data[corrupt_offset + i] ^= 0xFF; // Flip all bits
+            }
+        }
+        fs::write(&wal_path, &wal_data).expect("write corrupted wal");
+
+        // Reopen engine - should recover gracefully with partial data
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite corrupted WAL");
+
+            // We should have recovered some bundles (before the corruption)
+            let recovered = engine.open_segment.lock().bundle_count();
+            // Corruption in the middle means we'll get entries before the corrupt one
+            assert!(
+                recovered < bundles_ingested,
+                "should recover fewer bundles due to corruption; got {} but ingested {}",
+                recovered,
+                bundles_ingested
+            );
+        }
+    }}
