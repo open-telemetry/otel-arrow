@@ -978,7 +978,7 @@ pub fn transform_attributes_impl(
                     if i == key_column_idx {
                         Ok(new_keys.clone() as ArrayRef)
                     } else {
-                        match to_keep_ranges(
+                        match transform_ranges_to_keep_ranges(
                             attrs_record_batch.num_rows(),
                             &keys_transform_result.transform_ranges,
                         ) {
@@ -1472,9 +1472,18 @@ struct DictionaryKeysTransformResult<K: ArrowDictionaryKeyType> {
     renamed_rows: usize,
 }
 
-/// transforms the keys for the dictionary array.
+/// Transforms the keys for the dictionary array.
 ///
-// TODO comment on the track_rename_ranges arg
+/// # Arguments
+///
+/// * `dict_arr` - The dictionary array for which to apply the transformation
+/// * `transform` - Specification of transformation
+/// * `is_transport_encoded` - Flag for whether the original record was encoded in transport
+///   optimized format. If this flag is set, `transform_ranges` will be populated on the result
+///   as these will be needed to ensure the transformation did not break the encoding. If this
+///   flag is not set, computation of the ranges may be skipped as an optimization
+/// * `compute_stats` - Whether or not to compute statistics about number of rows transformed.
+///   If this flag is not set, the returned statistics will always be zero
 fn transform_dictionary_keys<K>(
     dict_arr: &DictionaryArray<K>,
     transform: &AttributesTransform,
@@ -1532,7 +1541,7 @@ where
         (rename_count, 0)
     };
 
-    let dict_values_keep_ranges = to_keep_ranges(
+    let dict_values_keep_ranges = transform_ranges_to_keep_ranges(
         dict_values.len(),
         &dict_values_transform_result.transform_ranges,
     );
@@ -1576,7 +1585,8 @@ where
 
     // Build the new dictionary keys.
     let key_keep_ranges =
-        to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges).unwrap_or_default();
+        transform_ranges_to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges)
+            .unwrap_or_default();
     let count_kept_values = key_keep_ranges.iter().map(Range::len).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
@@ -1849,7 +1859,16 @@ fn merge_transform_ranges<'a>(
     }
 }
 
-fn to_keep_ranges(
+/// Converts delete transform ranges into "keep" ranges - the inverse ranges that should be retained.
+///
+/// Given a set of transform ranges that may include delete operations, this function computes
+/// the complementary ranges that should be kept.
+///
+/// # Arguments
+///
+/// * `num_rows` - The total number of rows in the attributes record batch
+/// * `transform_ranges` - A slice of transform ranges that may include both Delete and Rename operations
+fn transform_ranges_to_keep_ranges(
     num_rows: usize,
     transform_ranges: &[KeyTransformRange],
 ) -> Option<Vec<Range<usize>>> {
@@ -4491,6 +4510,206 @@ mod test {
             result[0].range_type,
             KeyTransformRangeType::Delete
         ));
+    }
+
+    #[test]
+    fn test_to_keep_ranges_no_deletes() {
+        // When there are no delete ranges, should return None
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 0, end: 5 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Rename,
+            },
+            KeyTransformRange {
+                range: Range { start: 5, end: 10 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Rename,
+            },
+        ];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_to_keep_ranges_empty_input() {
+        // Empty transform ranges should return None
+        let transform_ranges: Vec<KeyTransformRange> = vec![];
+        let result = transform_ranges_to_keep_ranges(100, &transform_ranges);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_to_keep_ranges_single_delete_at_start() {
+        // Delete range at the beginning: delete [0, 3), keep [3, 10)
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 3 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        assert_eq!(keep_ranges.len(), 1);
+        assert_eq!(keep_ranges[0].start, 3);
+        assert_eq!(keep_ranges[0].end, 10);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_single_delete_in_middle() {
+        // Delete range in the middle: keep [0, 5), delete [5, 8), keep [8, 10)
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 5, end: 8 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        assert_eq!(keep_ranges.len(), 2);
+        assert_eq!(keep_ranges[0].start, 0);
+        assert_eq!(keep_ranges[0].end, 5);
+        assert_eq!(keep_ranges[1].start, 8);
+        assert_eq!(keep_ranges[1].end, 10);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_single_delete_at_end() {
+        // Delete range at the end: keep [0, 7), delete [7, 10)
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 7, end: 10 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        assert_eq!(keep_ranges.len(), 2);
+        assert_eq!(keep_ranges[0].start, 0);
+        assert_eq!(keep_ranges[0].end, 7);
+        // Final range from last delete end to num_rows (even though they're equal)
+        assert_eq!(keep_ranges[1].start, 10);
+        assert_eq!(keep_ranges[1].end, 10);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_multiple_deletes() {
+        // Multiple delete ranges: delete [2, 4), delete [7, 9)
+        // Expected keep ranges: [0, 2), [4, 7), [9, 15)
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 2, end: 4 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Delete,
+            },
+            KeyTransformRange {
+                range: Range { start: 7, end: 9 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            },
+        ];
+
+        let result = transform_ranges_to_keep_ranges(15, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        assert_eq!(keep_ranges.len(), 3);
+        assert_eq!(keep_ranges[0].start, 0);
+        assert_eq!(keep_ranges[0].end, 2);
+        assert_eq!(keep_ranges[1].start, 4);
+        assert_eq!(keep_ranges[1].end, 7);
+        assert_eq!(keep_ranges[2].start, 9);
+        assert_eq!(keep_ranges[2].end, 15);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_mixed_with_renames() {
+        // Mix of delete and rename ranges - only deletes should be considered
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 0, end: 2 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Rename,
+            },
+            KeyTransformRange {
+                range: Range { start: 2, end: 5 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            },
+            KeyTransformRange {
+                range: Range { start: 5, end: 8 },
+                idx: 2,
+                range_type: KeyTransformRangeType::Rename,
+            },
+            KeyTransformRange {
+                range: Range { start: 8, end: 10 },
+                idx: 3,
+                range_type: KeyTransformRangeType::Delete,
+            },
+        ];
+
+        let result = transform_ranges_to_keep_ranges(12, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        // Should have: [0, 2), [5, 8), [10, 12)
+        assert_eq!(keep_ranges.len(), 3);
+        assert_eq!(keep_ranges[0].start, 0);
+        assert_eq!(keep_ranges[0].end, 2);
+        assert_eq!(keep_ranges[1].start, 5);
+        assert_eq!(keep_ranges[1].end, 8);
+        assert_eq!(keep_ranges[2].start, 10);
+        assert_eq!(keep_ranges[2].end, 12);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_consecutive_deletes() {
+        // Consecutive delete ranges: delete [0, 3), delete [3, 6)
+        // Expected keep ranges: [6, 10)
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 0, end: 3 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Delete,
+            },
+            KeyTransformRange {
+                range: Range { start: 3, end: 6 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            },
+        ];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        // First delete at start doesn't create a keep range
+        // Second delete creates a keep range that's empty [3, 3)
+        // Final range is [6, 10)
+        assert_eq!(keep_ranges.len(), 2);
+        assert_eq!(keep_ranges[0].start, 3);
+        assert_eq!(keep_ranges[0].end, 3);
+        assert_eq!(keep_ranges[1].start, 6);
+        assert_eq!(keep_ranges[1].end, 10);
+    }
+
+    #[test]
+    fn test_to_keep_ranges_delete_entire_range() {
+        // Delete the entire range: delete [0, 10)
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 10 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let result = transform_ranges_to_keep_ranges(10, &transform_ranges);
+        assert!(result.is_some());
+        let keep_ranges = result.unwrap();
+        // Only the final range [10, 10) which is empty
+        assert_eq!(keep_ranges.len(), 1);
+        assert_eq!(keep_ranges[0].start, 10);
+        assert_eq!(keep_ranges[0].end, 10);
     }
 
     #[test]
