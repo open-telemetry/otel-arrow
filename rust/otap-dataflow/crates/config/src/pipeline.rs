@@ -28,6 +28,9 @@ use std::sync::Arc;
 ///   similar to an SPMC channel.
 ///
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
+///
+/// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
+/// deserializing directly with serde to ensure plugin URNs are normalized.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
@@ -184,14 +187,18 @@ impl PipelineNodes {
         self.0.iter()
     }
 
-    fn normalize_plugin_urns(
+    /// Canonicalize plugin URNs for all nodes in this collection.
+    ///
+    /// This rewrites each node's `plugin_urn` to the canonical form and
+    /// attaches node/pipeline context to any validation errors.
+    fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         for (node_id, node) in self.0.iter_mut() {
             let mut updated = (**node).clone();
-            let normalized = crate::urn::normalize_plugin_urn(
+            let normalized = crate::urn::validate_plugin_urn(
                 updated.plugin_urn.as_ref(),
                 updated.kind,
             )
@@ -457,7 +464,7 @@ impl PipelineConfig {
                 details: e.to_string(),
             })?;
 
-        cfg.normalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
+        cfg.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         cfg.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(cfg)
     }
@@ -475,7 +482,7 @@ impl PipelineConfig {
                 details: e.to_string(),
             })?;
 
-        spec.normalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
+        spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         spec.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(spec)
     }
@@ -629,16 +636,20 @@ impl PipelineConfig {
         }
     }
 
-    fn normalize_plugin_urns(
+    /// Normalize plugin URNs for both main and internal pipeline node maps.
+    ///
+    /// This delegates to `PipelineNodes::canonicalize_plugin_urns` for each
+    /// node collection, ensuring a single canonical representation.
+    fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         self.nodes
-            .normalize_plugin_urns(pipeline_group_id, pipeline_id)?;
+            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
         if !self.internal.is_empty() {
             self.internal
-                .normalize_plugin_urns(pipeline_group_id, pipeline_id)?;
+                .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
         }
         Ok(())
     }
@@ -954,7 +965,7 @@ impl PipelineConfigBuilder {
                 service: ServiceConfig::default(),
             };
 
-            spec.normalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
+            spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
             spec.validate(&pipeline_group_id, &pipeline_id)?;
             Ok(spec)
         }

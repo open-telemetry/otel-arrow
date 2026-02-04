@@ -14,7 +14,6 @@ use crate::node::NodeKind;
 use urn::Urn;
 
 const URN_DOCS_PATH: &str = "rust/otap-dataflow/docs/urns.md";
-const URN_SCHEME: &str = "urn:";
 const EXPECTED_SEGMENT_COUNT: usize = 2;
 
 /// Parse a raw URN string.
@@ -24,52 +23,42 @@ pub fn parse_urn(raw: &str) -> Result<Urn, Error> {
     })
 }
 
-/// Normalize and validate a plugin URN against the expected node kind.
+/// Validate a plugin URN against the expected node kind and return the canonical form.
 ///
 /// Accepted patterns:
 /// - full form: `urn:<namespace>:<id>:<kind>`
 /// - shortcut form (OTel only): `<id>:<kind>` (expanded to `urn:otel:<id>:<kind>`)
-pub fn normalize_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String, Error> {
+pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String, Error> {
     let expected_suffix = kind_suffix(expected_kind);
     let raw = raw.trim();
+    let parts: Vec<&str> = raw.split(':').collect();
 
-    if raw
-        .get(..URN_SCHEME.len())
-        .map(|prefix| prefix.eq_ignore_ascii_case(URN_SCHEME))
-        .unwrap_or(false)
-    {
-        let rest = raw
-            .split_once(':')
-            .map(|(_, tail)| tail)
-            .unwrap_or_default()
-            .trim();
-        let segs: Vec<&str> = rest.split(':').collect();
-        if segs.len() != EXPECTED_SEGMENT_COUNT + 1 {
-            return Err(invalid_plugin_urn(
-                raw,
-                "expected exactly 3 segments in `urn:<namespace>:<id>:<kind>`".to_string(),
-            ));
+    match parts.as_slice() {
+        [_id, _kind] => {
+            validate_segments(raw, "otel", parts.as_slice())?;
+            let (id, kind) = split_segments(raw, parts.as_slice())?;
+            validate_kind(raw, kind, expected_suffix)?;
+            Ok(format!("urn:otel:{id}:{kind}"))
         }
-
-        let namespace = segs[0].to_ascii_lowercase();
-        let id_kind = &segs[1..];
-
-        validate_segments(raw, &namespace, id_kind)?;
-        let (id, kind) = split_segments(raw, id_kind)?;
-        validate_kind(raw, kind, expected_suffix)?;
-        return Ok(format!("urn:{namespace}:{id}:{kind}"));
+        [scheme, namespace, _id, _kind] => {
+            if !scheme.eq_ignore_ascii_case("urn") {
+                return Err(invalid_plugin_urn(
+                    raw,
+                    "expected `urn:<namespace>:<id>:<kind>`".to_string(),
+                ));
+            }
+            let namespace = namespace.to_ascii_lowercase();
+            let id_kind = &parts[2..];
+            validate_segments(raw, &namespace, id_kind)?;
+            let (id, kind) = split_segments(raw, id_kind)?;
+            validate_kind(raw, kind, expected_suffix)?;
+            Ok(format!("urn:{namespace}:{id}:{kind}"))
+        }
+        _ => Err(invalid_plugin_urn(
+            raw,
+            "expected `urn:<namespace>:<id>:<kind>` or `<id>:<kind>` for otel".to_string(),
+        )),
     }
-
-    let segs: Vec<&str> = raw.split(':').collect();
-    validate_segments(raw, "otel", &segs)?;
-    let (id, kind) = split_segments(raw, &segs)?;
-    validate_kind(raw, kind, expected_suffix)?;
-    Ok(format!("urn:otel:{id}:{kind}"))
-}
-
-/// Validate a plugin URN against the expected node kind.
-pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<(), Error> {
-    normalize_plugin_urn(raw, expected_kind).map(|_| ())
 }
 
 fn kind_suffix(expected_kind: NodeKind) -> &'static str {
@@ -177,7 +166,7 @@ mod tests {
 
         // Shortcut form for otel
         assert_eq!(
-            normalize_plugin_urn("otlp:receiver", NodeKind::Receiver).unwrap(),
+            validate_plugin_urn("otlp:receiver", NodeKind::Receiver).unwrap(),
             "urn:otel:otlp:receiver"
         );
 

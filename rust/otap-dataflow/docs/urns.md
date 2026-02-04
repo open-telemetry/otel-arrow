@@ -62,8 +62,3 @@ Shortcut form (OTel only):
 otlp:receiver
 debug:processor
 ```
-
-## Legacy URNs
-
-Legacy URN formats (for example, `urn:otap:processor:<name>` or any URN with more
-than two segments after the namespace) are not accepted and will fail validation.
