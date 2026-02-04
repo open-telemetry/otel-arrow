@@ -1649,7 +1649,6 @@ where
 
     Ok(DictionaryKeysTransformResult {
         new_keys: new_dict,
-        // TODO returning this might not be necessary
         keep_ranges: Some(key_keep_ranges),
         transform_ranges: dict_key_transform_ranges,
         deleted_rows,
@@ -2466,7 +2465,9 @@ fn are_neighbours_with_delta_encoded_parent_ids(
             }
         }
         _ => {
-            todo!() // invalid null keys
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: "expect attributes key column to be non null".into(),
+            });
         }
     }
 
@@ -2512,8 +2513,13 @@ fn are_neighbours_with_delta_encoded_parent_ids(
                 return Ok(false);
             }
         }
-        _ => {
-            unreachable!("TODO")
+        other_data_type => {
+            return Err(Error::UnexpectedRecordBatchState {
+                reason: format!(
+                    "found unexpected attribute value column type {:?}",
+                    other_data_type
+                ),
+            });
         }
     }
     Ok(true)
@@ -5407,9 +5413,7 @@ mod test {
         let batch1 = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-                // TODO - should this have test cases for dict encoded key?
                 Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-                // TODO should we have some tests cases for dict encoded values?
                 Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
             ])),

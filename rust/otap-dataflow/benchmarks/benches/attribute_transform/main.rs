@@ -333,7 +333,6 @@ fn gen_transport_optimized_bench_batch(
             .with_encoding(consts::metadata::encodings::PLAIN),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_KEY, key_array.data_type().clone(), false),
-        // TODO this failing - need convert to dict & also fix bug
         Field::new(
             consts::ATTRIBUTE_STR,
             DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8)),
