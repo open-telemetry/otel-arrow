@@ -890,12 +890,21 @@ pub fn transform_attributes_impl(
     transform.validate()?;
 
     let schema = attrs_record_batch.schema();
-    let key_column_idx =
-        schema
-            .index_of(consts::ATTRIBUTE_KEY)
-            .map_err(|_| Error::ColumnNotFound {
-                name: consts::ATTRIBUTE_KEY.into(),
-            })?;
+    let key_column = get_required_array(&attrs_record_batch, consts::ATTRIBUTE_KEY)?;
+    // safety: the call `get_required_array` above would return error if the field wasn't present
+    let (key_column_idx, _) = schema
+        .fields()
+        .find(consts::ATTRIBUTE_KEY)
+        .expect("key present");
+
+    // key column should be non-nullable. the transformation code called by this method assumes
+    // there are no nulls in the column, so return early to avoid creating a batch with bad data
+    // if there are nulls
+    if key_column.null_count() > 0 {
+        return Err(Error::UnexpectedRecordBatchState {
+            reason: format!("expected attribute keys column to be non-nullable"),
+        });
+    }
 
     // TODO comment how we're pulling out transport_optimize
     // Check if we need early materialization for insert
@@ -922,10 +931,9 @@ pub fn transform_attributes_impl(
     let attrs_record_batch = attrs_record_batch_cow.as_ref();
     let schema = attrs_record_batch.schema();
 
-    let (rb, mut stats) = match schema.field(key_column_idx).data_type() {
+    let (rb, mut stats) = match key_column.data_type() {
         DataType::Utf8 => {
-            let keys_arr = attrs_record_batch
-                .column(key_column_idx)
+            let keys_arr = key_column
                 .as_any()
                 .downcast_ref()
                 .expect("can downcast Utf8 Column to string array");
@@ -1222,6 +1230,7 @@ struct KeysTransformResult {
     // TODO comments
     transform_ranges: Vec<KeyTransformRange>,
 
+    // TODO can be computed post-hoc by the caller ...
     /// Exact number of rows whose key was renamed (row-level replacements)
     replaced_rows: usize,
     /// Exact number of rows that were deleted due to delete rules (row-level deletions)
@@ -1294,7 +1303,7 @@ fn transform_keys(
     // iterate over the transform ranges, copying unmodified ranges and replacing renamed keys
     for transform_range in transform_ranges.iter() {
         // directly copy all the bytes of the values that were not replaced
-        let start_offset = offsets[transform_range.range.start] as usize;
+        let start_offset = offsets[transform_range.start()] as usize;
         new_values.extend_from_slice(
             &values.slice_with_length(last_end_offset, start_offset - last_end_offset),
         );
@@ -1306,7 +1315,7 @@ fn transform_keys(
                     .as_ref()
                     .expect("replacement plan should be initialized")
                     .replacement_bytes[transform_range.idx];
-                for _ in transform_range.range.start..transform_range.range.end {
+                for _ in transform_range.start()..transform_range.end() {
                     new_values.extend_from_slice(replacement_bytes);
                 }
             }
@@ -1316,7 +1325,7 @@ fn transform_keys(
             }
         }
 
-        last_end_offset = offsets[transform_range.range.end] as usize;
+        last_end_offset = offsets[transform_range.end()] as usize;
     }
 
     // copy any bytes from the tail of the source value buffer
@@ -1349,7 +1358,7 @@ fn transform_keys(
                 .inner()
                 .slice(
                     prev_range_index_end,
-                    transform_range.range.start - prev_range_index_end,
+                    transform_range.start() - prev_range_index_end,
                 )
                 .into_iter()
                 .for_each(|offset| {
@@ -1371,8 +1380,8 @@ fn transform_keys(
                         .expect("replacement plan should be initialized")
                         .replacement_bytes[transform_range.idx];
                     let mut offset =
-                        offsets[transform_range.range.start] + curr_total_offset_adjustment;
-                    for _ in transform_range.range.start..transform_range.range.end {
+                        offsets[transform_range.start()] + curr_total_offset_adjustment;
+                    for _ in transform_range.start()..transform_range.end() {
                         new_offsets.push(offset);
                         offset += replacement_bytes.len() as i32;
                     }
@@ -1399,7 +1408,7 @@ fn transform_keys(
                 }
             }
 
-            prev_range_index_end = transform_range.range.end;
+            prev_range_index_end = transform_range.end();
         }
 
         // copy any remaining offsets between the last replaced range and the end of the array
@@ -1757,16 +1766,10 @@ fn transform_rename_count_from_dict_value_transform_range<K: ArrowDictionaryKeyT
 
     let mut renamed = 0usize;
     if !value_index_renamed.is_empty() {
-        let dict_keys_nulls = dict_keys.nulls();
         for i in 0..dict_arr.len() {
-            if dict_keys_nulls
-                .map(|nulls| nulls.is_valid(i))
-                .unwrap_or(true)
-            {
-                let dict_key: usize = dict_keys.value(i).as_usize();
-                if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
-                    renamed += 1;
-                }
+            let dict_key: usize = dict_keys.value(i).as_usize();
+            if value_index_renamed.get(dict_key).copied().unwrap_or(false) {
+                renamed += 1;
             }
         }
     }
@@ -1823,8 +1826,8 @@ fn merge_transform_ranges<'a>(
             let mut del_idx = 0;
 
             while rep_idx < replacement_plan.ranges.len() && del_idx < delete_plan.ranges.len() {
-                let rep_start = replacement_plan.ranges[rep_idx].range.start;
-                let del_start = delete_plan.ranges[del_idx].range.start;
+                let rep_start = replacement_plan.ranges[rep_idx].start();
+                let del_start = delete_plan.ranges[del_idx].start();
 
                 if rep_start <= del_start {
                     let rep_range = replacement_plan.ranges[rep_idx].clone();
@@ -2100,7 +2103,7 @@ fn find_matching_key_ranges(
     }
 
     // Sort the ranges to replace by start_index (first element in contained tuple)
-    ranges.sort_unstable_by_key(|r| r.range.start);
+    ranges.sort_unstable_by_key(|r| r.start());
 
     Ok(KeyTransformTargetRanges {
         ranges,
@@ -2274,7 +2277,7 @@ fn find_previous_neighbour_post_transform(
                 });
             }
             KeyTransformRangeType::Delete => {
-                index = range.range.start;
+                index = range.start();
                 if index == 0 {
                     return None;
                 }
@@ -2298,7 +2301,7 @@ fn find_next_neighbour_post_transform(
     }
 
     for range in transform_ranges.iter() {
-        if range.range.start != index + 1 {
+        if range.start() != index + 1 {
             break;
         }
 
@@ -2310,7 +2313,7 @@ fn find_next_neighbour_post_transform(
                 });
             }
             KeyTransformRangeType::Delete => {
-                index = range.range.end - 1;
+                index = range.end() - 1;
                 if index >= len - 1 {
                     return None;
                 }
@@ -4713,6 +4716,200 @@ mod test {
     }
 
     #[test]
+    fn test_transform_rename_count_empty_dictionary() {
+        // Empty dictionary should return 0
+        let dict_keys = UInt8Array::from_iter_values(Vec::<u8>::new());
+        let dict_values = StringArray::from_iter_values(Vec::<&str>::new());
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 1 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_transform_rename_count_no_rename_ranges() {
+        // Only delete ranges, no renames - should return 0
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 0, 1, 1]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 1 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_transform_rename_count_single_value_renamed() {
+        // Dictionary keys: [0, 0, 1, 1, 2]
+        // Dictionary values: ["a", "b", "c"]
+        // Rename value at index 0 ("a")
+        // Expected: 2 keys point to value 0, so count = 2
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 0, 1, 1, 2]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b", "c"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 1 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_transform_rename_count_multiple_values_renamed() {
+        // Dictionary keys: [0, 1, 0, 2, 1, 3]
+        // Dictionary values: ["a", "b", "c", "d"]
+        // Rename values at indices 0 and 2 ("a" and "c")
+        // Keys pointing to 0: positions 0, 2 (count = 2)
+        // Keys pointing to 2: position 3 (count = 1)
+        // Total = 3
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 1, 0, 2, 1, 3]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b", "c", "d"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 0, end: 1 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Rename,
+            },
+            KeyTransformRange {
+                range: Range { start: 2, end: 3 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Rename,
+            },
+        ];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_transform_rename_count_all_values_renamed() {
+        // All dictionary values are renamed
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 1, 2, 0, 1, 2]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b", "c"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 3 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 6); // All 6 keys
+    }
+
+    #[test]
+    fn test_transform_rename_count_no_keys_point_to_renamed() {
+        // Rename value at index 2, but no keys point to it
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 0, 1, 1]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b", "c"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 2, end: 3 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_transform_rename_count_mixed_rename_and_delete() {
+        // Mix of rename and delete ranges - only renames should be counted
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 1, 2, 0, 1, 2]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b", "c"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 0, end: 1 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Rename,
+            },
+            KeyTransformRange {
+                range: Range { start: 1, end: 2 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Delete,
+            },
+            KeyTransformRange {
+                range: Range { start: 2, end: 3 },
+                idx: 2,
+                range_type: KeyTransformRangeType::Rename,
+            },
+        ];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        // Keys at positions 0, 3 point to value 0 (renamed)
+        // Keys at positions 2, 5 point to value 2 (renamed)
+        // Keys at positions 1, 4 point to value 1 (deleted, not counted)
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn test_transform_rename_count_with_uint16_keys() {
+        // Test with UInt16 dictionary keys
+        let dict_keys = UInt16Array::from_iter_values(vec![0u16, 0, 1, 1, 2]);
+        let dict_values = StringArray::from_iter_values(vec!["x", "y", "z"]);
+        let dict_arr = DictionaryArray::<UInt16Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 1, end: 2 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        // Keys at positions 2, 3 point to value 1
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_transform_rename_count_out_of_bounds_range() {
+        // Rename range that goes beyond actual dictionary values
+        let dict_keys = UInt8Array::from_iter_values(vec![0u8, 0, 1, 1]);
+        let dict_values = StringArray::from_iter_values(vec!["a", "b"]);
+        let dict_arr = DictionaryArray::<UInt8Type>::new(dict_keys, Arc::new(dict_values));
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 5, end: 10 }, // Out of bounds
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let count =
+            transform_rename_count_from_dict_value_transform_range(&dict_arr, &transform_ranges);
+        // No valid values in this range, so count should be 0
+        assert_eq!(count, 0);
+    }
+
+    #[test]
     fn test_invalid_attributes_transforms() {
         let test_cases = vec![
             AttributesTransform {
@@ -6111,46 +6308,6 @@ mod insert_tests {
         assert_eq!(stats.inserted_entries, 4);
         // 6 original + 4 inserted = 10
         assert_eq!(result.num_rows(), 10);
-    }
-
-    #[test]
-    fn test_insert_with_null_in_key_column() {
-        // Test that null keys in original data are handled properly
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(consts::PARENT_ID, DataType::UInt16, false),
-            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, true), // nullable
-            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-        ]));
-
-        // Parent 0 has a null key
-        let input = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(UInt16Array::from_iter_values(vec![0])),
-                Arc::new(UInt8Array::from_iter_values(vec![
-                    AttributeValueType::Str as u8,
-                ])),
-                Arc::new(StringArray::from(vec![None::<&str>])),
-                Arc::new(StringArray::from_iter_values(vec!["value"])),
-            ],
-        )
-        .unwrap();
-
-        let tx = AttributesTransform {
-            rename: None,
-            delete: None,
-            insert: Some(InsertTransform::new(BTreeMap::from([(
-                "new_key".into(),
-                LiteralValue::Str("new_value".into()),
-            )]))),
-        };
-
-        let (result, stats) = transform_attributes_with_stats(&input, &tx).unwrap();
-
-        // Should insert new_key for parent 0
-        assert_eq!(stats.inserted_entries, 1);
-        assert_eq!(result.num_rows(), 2);
     }
 
     #[test]
