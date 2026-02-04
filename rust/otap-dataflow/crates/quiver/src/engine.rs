@@ -581,17 +581,32 @@ impl QuiverEngine {
         };
 
         let mut replayed_count = 0;
+        let mut skipped_corrupt = 0u64;
 
         for entry_result in iter {
             let entry = match entry_result {
                 Ok(e) => e,
+                Err(crate::wal::WalError::UnexpectedEof(context)) => {
+                    // UnexpectedEof is expected during crash recovery - it means the
+                    // last write was incomplete when the process died. This is normal
+                    // and we should stop replay here (the partial entry is discarded).
+                    tracing::debug!(
+                        context,
+                        replayed_so_far = replayed_count,
+                        "WAL replay stopped at incomplete entry (expected after crash)"
+                    );
+                    break;
+                }
                 Err(e) => {
-                    // Critical errors during replay should be logged prominently
-                    // but we continue to avoid losing other recoverable entries
+                    // CRC mismatch, InvalidEntry, etc. indicate corruption.
+                    // Log prominently but continue - availability > perfect recovery.
+                    // We can't safely read past corruption (entry boundaries unknown),
+                    // so stop replay here.
+                    skipped_corrupt += 1;
                     tracing::error!(
                         error = %e,
                         replayed_so_far = replayed_count,
-                        "WAL entry decode error during replay, stopping replay"
+                        "WAL corruption detected during replay, stopping replay"
                     );
                     break;
                 }
@@ -637,11 +652,12 @@ impl QuiverEngine {
             replayed_count += 1;
         }
 
-        if replayed_count > 0 {
-            tracing::debug!(
+        if replayed_count > 0 || skipped_corrupt > 0 {
+            tracing::info!(
                 replayed_count,
+                skipped_corrupt,
                 cursor_position,
-                "replayed WAL entries into open segment"
+                "WAL replay completed"
             );
         }
 
