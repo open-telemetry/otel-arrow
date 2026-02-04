@@ -16,7 +16,7 @@ nodes:
       listening_addr: "127.0.0.1:4318"
   perf:
     kind: exporter
-    plugin_urn: "urn:otel:otap:perf:exporter"
+    plugin_urn: "urn:otel:perf:exporter"
     config:
       frequency: 1000
       cpu_usage: false

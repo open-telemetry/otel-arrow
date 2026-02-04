@@ -6,7 +6,7 @@ settings:
 nodes:
   generator:
     kind: receiver
-    plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+    plugin_urn: "urn:otel:traffic_generator:receiver"
     out_ports:
       out_port:
         destinations:

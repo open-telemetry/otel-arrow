@@ -215,7 +215,11 @@ mod tests {
         let controller_ctx = ControllerContext::new(telemetry_registry);
         controller_ctx
             .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
-            .with_node_context("node".into(), "urn:test".into(), NodeKind::Receiver)
+            .with_node_context(
+                "node".into(),
+                "urn:test:example:receiver".into(),
+                NodeKind::Receiver,
+            )
     }
 
     fn take_local_sender_handle(

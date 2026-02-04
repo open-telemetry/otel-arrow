@@ -29,7 +29,7 @@ nodes:
 
   azure-monitor-exporter:
     kind: exporter
-    plugin_urn: "urn:otel:azuremonitor:exporter"
+    plugin_urn: "urn:microsoft_azure:monitor:exporter"
     config:
       # API configuration - Update with your actual values
       api:

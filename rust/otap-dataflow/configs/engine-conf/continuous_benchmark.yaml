@@ -29,7 +29,7 @@ pipeline_groups:
         nodes:
           receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            plugin_urn: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -63,7 +63,7 @@ pipeline_groups:
         nodes:
           receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            plugin_urn: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -120,7 +120,7 @@ pipeline_groups:
 
           router:
             kind: processor
-            plugin_urn: "urn:otap:processor:signal_type_router"
+            plugin_urn: "urn:otel:type_router:processor"
             out_ports:
               logs:
                 destinations:

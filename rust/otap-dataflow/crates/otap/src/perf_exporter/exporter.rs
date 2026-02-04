@@ -46,7 +46,7 @@ use std::time::Instant;
 use tokio::time::Duration;
 
 /// The URN for the OTAP Perf exporter
-pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:otap:perf:exporter";
+pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:perf:exporter";
 
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {

@@ -39,7 +39,7 @@ pub use stats::AzureMonitorExporterStats;
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
-pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:otel:azuremonitor:exporter";
+pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft_azure:monitor:exporter";
 
 /// Register Azure Monitor Exporter with the OTAP exporter factory.
 ///
@@ -78,6 +78,9 @@ mod tests {
 
     #[test]
     fn test_urn_constant() {
-        assert_eq!(AZURE_MONITOR_EXPORTER_URN, "urn:otel:azuremonitor:exporter");
+        assert_eq!(
+            AZURE_MONITOR_EXPORTER_URN,
+            "urn:microsoft_azure:monitor:exporter"
+        );
     }
 }
