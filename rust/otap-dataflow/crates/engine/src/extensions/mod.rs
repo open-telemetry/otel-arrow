@@ -3,19 +3,14 @@
 //! This module provides:
 //! - [`ExtensionBundle`](registry::ExtensionBundle) - A collection of trait implementations for a single extension
 //! - [`ExtensionRegistry`](registry::ExtensionRegistry) - A registry to look up extension traits by name
-//! - Common extension traits like [`TokenProvider`](token_provider::TokenProvider)
+//! - Common extension traits like [`BearerTokenProvider`](bearer_token_provider::BearerTokenProvider)
 //!
 //! # Adding New Extension Traits
 //!
-//! All extension traits must implement the [`ExtensionTrait`] marker trait to be usable
-//! with [`ExtensionBundle`](registry::ExtensionBundle). This ensures type safety and
-//! restricts the bundle to only contain recognized extension capabilities.
+//! New extension traits must be defined in this module. External crates can implement
+//! existing extension traits on their types, but cannot define new extension trait types.
 //!
-//! ```ignore
-//! pub trait MyNewTrait: ExtensionTrait {
-//!     fn my_method(&self);
-//! }
-//! ```
+//! This restriction is enforced at compile time via the sealed trait pattern.
 
 pub mod registry;
 
@@ -23,31 +18,36 @@ pub mod registry;
 pub use registry::{ExtensionBundle, ExtensionError, ExtensionRegistry, ExtensionRegistryBuilder};
 
 /// Extension traits that components can implement to expose capabilities.
-pub mod token_provider;
+pub mod bearer_token_provider;
 
-/// Marker trait for all extension traits.
-///
-/// This trait must be implemented by any trait that can be stored in an
-/// [`ExtensionBundle`](registry::ExtensionBundle). It ensures that only
-/// recognized extension capabilities can be registered.
-///
-/// # Defining a New Extension Trait
-///
-/// ```ignore
-/// use otap_df_engine::extensions::ExtensionTrait;
-///
-/// // The extension trait must have ExtensionTrait as a supertrait
-/// pub trait MyCapability: ExtensionTrait {
-///     fn do_something(&self);
-/// }
-///
-/// // Concrete implementations must implement ExtensionTrait
-/// struct MyImpl;
-/// impl ExtensionTrait for MyImpl {}
-/// impl MyCapability for MyImpl {
-///     fn do_something(&self) { /* ... */ }
-/// }
-/// ```
-pub trait ExtensionTrait: Send + Sync {}
+// Private module for sealing - external crates cannot implement Sealed
+mod private {
+    pub trait Sealed {}
+}
 
-pub use token_provider::TokenProvider;
+/// Marker trait for extension trait types that can be stored in [`ExtensionBundle`].
+///
+/// This trait is **sealed** - it can only be implemented for `dyn` extension traits
+/// defined in this module. External crates cannot add new extension trait types,
+/// but they CAN implement existing traits like [`BearerTokenProvider`] on their types.
+///
+/// # How It Works
+///
+/// - `ExtensionTrait` is implemented for `dyn BearerTokenProvider` (and other extension traits)
+/// - External crates can `impl BearerTokenProvider for MyType` freely
+/// - External crates CANNOT create new traits usable with `ExtensionBundle`
+///
+/// This ensures the extension system only supports well-defined, documented capabilities.
+pub trait ExtensionTrait: private::Sealed + Send + Sync {}
+
+// Implement ExtensionTrait for each extension trait's dyn type.
+// This is the ONLY place where ExtensionTrait can be implemented.
+impl private::Sealed for dyn BearerTokenProvider {}
+impl ExtensionTrait for dyn BearerTokenProvider {}
+
+/// Error type for extension operations.
+///
+/// Thread-safe error type compatible with any `thiserror`-derived error.
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+
+pub use bearer_token_provider::{BearerToken, BearerTokenProvider, Secret};

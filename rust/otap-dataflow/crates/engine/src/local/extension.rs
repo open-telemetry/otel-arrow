@@ -51,9 +51,12 @@ pub trait Extension<PData> {
     /// The pipeline engine will call this function to start the extension in a separate task.
     /// Extensions are assigned their own dedicated task at pipeline initialization.
     ///
-    /// The extension is taken as `Box<Self>` so the method takes ownership of the extension once `start` is called.
+    /// The extension is taken as `Arc<Self>` so the method takes ownership of the extension once `start` is called.
     /// This lets it move into an independent task, after which the pipeline can only
     /// reach it through the control-message channel.
+    ///
+    /// Extensions are required to be wrapped in Arc because they are shared services
+    /// that can be accessed by other components through the extension registry.
     ///
     /// Extensions process control messages only - they do not receive or send pipeline data.
     ///
@@ -70,7 +73,7 @@ pub trait Extension<PData> {
     ///
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
-        self: Box<Self>,
+        self: Arc<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
@@ -111,7 +114,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     ///
     /// # Errors
     ///

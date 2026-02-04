@@ -7,27 +7,6 @@ use serde::Deserialize;
 
 use super::Error;
 
-/// Configuration for the Azure Identity Auth Extension.
-#[derive(Debug, Deserialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Config {
-    /// Authentication configuration
-    #[serde(default)]
-    pub auth: AuthConfig,
-}
-
-impl Config {
-    /// Validate the configuration.
-    pub fn validate(&self) -> Result<(), Error> {
-        // Validate scope is not empty
-        if self.auth.scope.is_empty() {
-            return Err(Error::Config("OAuth scope cannot be empty".to_string()));
-        }
-
-        Ok(())
-    }
-}
-
 /// Authentication method for Azure.
 #[derive(Debug, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -51,9 +30,10 @@ impl std::fmt::Display for AuthMethod {
     }
 }
 
-/// Authentication configuration for Azure.
+/// Configuration for the Azure Identity Auth Extension.
 #[derive(Debug, Deserialize, Clone)]
-pub struct AuthConfig {
+#[serde(deny_unknown_fields)]
+pub struct Config {
     /// Authentication method to use.
     #[serde(default)]
     pub method: AuthMethod,
@@ -69,13 +49,25 @@ pub struct AuthConfig {
     pub scope: String,
 }
 
-impl Default for AuthConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             method: AuthMethod::default(),
             client_id: None,
             scope: default_scope(),
         }
+    }
+}
+
+impl Config {
+    /// Validate the configuration.
+    pub fn validate(&self) -> Result<(), Error> {
+        // Validate scope is not empty
+        if self.scope.is_empty() {
+            return Err(Error::Config("OAuth scope cannot be empty".to_string()));
+        }
+
+        Ok(())
     }
 }
 
@@ -90,9 +82,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.auth.method, AuthMethod::ManagedIdentity);
-        assert!(config.auth.client_id.is_none());
-        assert_eq!(config.auth.scope, "https://management.azure.com/.default");
+        assert_eq!(config.method, AuthMethod::ManagedIdentity);
+        assert!(config.client_id.is_none());
+        assert_eq!(config.scope, "https://management.azure.com/.default");
     }
 
     #[test]
@@ -107,11 +99,9 @@ mod tests {
     #[test]
     fn test_config_validation_empty_scope() {
         let config = Config {
-            auth: AuthConfig {
-                method: AuthMethod::ManagedIdentity,
-                client_id: None,
-                scope: "".to_string(),
-            },
+            method: AuthMethod::ManagedIdentity,
+            client_id: None,
+            scope: "".to_string(),
         };
         let result = config.validate();
         assert!(result.is_err());
@@ -127,46 +117,40 @@ mod tests {
     #[test]
     fn test_deserialize_managed_identity_system_assigned() {
         let json = r#"{
-            "auth": {
-                "method": "managed_identity",
-                "scope": "https://monitor.azure.com/.default"
-            }
+            "method": "managed_identity",
+            "scope": "https://monitor.azure.com/.default"
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.auth.method, AuthMethod::ManagedIdentity);
-        assert!(config.auth.client_id.is_none());
+        assert_eq!(config.method, AuthMethod::ManagedIdentity);
+        assert!(config.client_id.is_none());
     }
 
     #[test]
     fn test_deserialize_managed_identity_user_assigned() {
         let json = r#"{
-            "auth": {
-                "method": "msi",
-                "client_id": "12345-abcde",
-                "scope": "https://monitor.azure.com/.default"
-            }
+            "method": "msi",
+            "client_id": "12345-abcde",
+            "scope": "https://monitor.azure.com/.default"
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.auth.method, AuthMethod::ManagedIdentity);
-        assert_eq!(config.auth.client_id, Some("12345-abcde".to_string()));
+        assert_eq!(config.method, AuthMethod::ManagedIdentity);
+        assert_eq!(config.client_id, Some("12345-abcde".to_string()));
     }
 
     #[test]
     fn test_deserialize_development() {
         let json = r#"{
-            "auth": {
-                "method": "development"
-            }
+            "method": "development"
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.auth.method, AuthMethod::Development);
+        assert_eq!(config.method, AuthMethod::Development);
     }
 
     #[test]
     fn test_deserialize_with_defaults() {
         let json = r#"{}"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.auth.method, AuthMethod::ManagedIdentity);
-        assert_eq!(config.auth.scope, "https://management.azure.com/.default");
+        assert_eq!(config.method, AuthMethod::ManagedIdentity);
+        assert_eq!(config.scope, "https://management.azure.com/.default");
     }
 }

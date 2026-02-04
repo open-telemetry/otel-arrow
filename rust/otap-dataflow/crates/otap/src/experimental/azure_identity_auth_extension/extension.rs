@@ -9,7 +9,9 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
+use otap_df_engine::extensions::{BearerToken, BearerTokenProvider};
 use std::sync::Arc;
+use tokio::sync::watch;
 
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error as EngineError;
@@ -29,6 +31,14 @@ const MAX_RETRY_DELAY_SECS: f64 = 30.0;
 /// Maximum jitter percentage (±10%) to add to retry delays.
 const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
 
+/// Buffer time before token expiry to trigger refresh (in seconds).
+/// Tokens will be refreshed ~5 minutes before they expire.
+const TOKEN_EXPIRY_BUFFER_SECS: u64 = 299;
+/// Minimum interval between token refresh attempts (in seconds).
+const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
+/// Retry interval when token refresh fails (in seconds).
+const TOKEN_REFRESH_RETRY_SECS: u64 = 10;
+
 /// Azure Identity Auth Extension.
 ///
 /// This extension provides Azure authentication services to the pipeline.
@@ -40,6 +50,8 @@ pub struct AzureIdentityAuthExtension {
     scope: String,
     /// The authentication method being used.
     method: AuthMethod,
+    /// Sender for broadcasting token refresh events to subscribers.
+    token_sender: watch::Sender<Option<BearerToken>>,
 }
 
 // TODO: Remove print_stdout after logging is set up
@@ -48,21 +60,23 @@ impl AzureIdentityAuthExtension {
     /// Creates a new Azure Identity Auth Extension with the given configuration.
     pub fn new(config: Config) -> Result<Self, Error> {
         let credential = Self::create_credential(&config)?;
+        let (token_sender, _) = watch::channel(None);
 
         Ok(Self {
             credential,
-            scope: config.auth.scope.clone(),
-            method: config.auth.method.clone(),
+            scope: config.scope.clone(),
+            method: config.method.clone(),
+            token_sender,
         })
     }
 
     /// Creates a credential provider based on the configuration.
     fn create_credential(config: &Config) -> Result<Arc<dyn TokenCredential>, Error> {
-        match config.auth.method {
+        match config.method {
             AuthMethod::ManagedIdentity => {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
-                if let Some(client_id) = &config.auth.client_id {
+                if let Some(client_id) = &config.client_id {
                     println!(
                         "[AzureIdentityAuthExtension] Using user-assigned managed identity with client_id: {}",
                         client_id
@@ -105,7 +119,7 @@ impl AzureIdentityAuthExtension {
     ///
     /// This method implements exponential backoff with jitter for retrying
     /// token acquisition on failure.
-    pub async fn get_token(&mut self) -> Result<AccessToken, Error> {
+    pub async fn get_token(&self) -> Result<AccessToken, Error> {
         let mut attempt = 0_i32;
         loop {
             attempt += 1;
@@ -150,6 +164,32 @@ impl AzureIdentityAuthExtension {
         }
     }
 
+    /// Calculates when the next token refresh should occur.
+    ///
+    /// This schedules refresh before the token expires (with a buffer),
+    /// but ensures we don't refresh too frequently.
+    fn get_next_token_refresh(token: &BearerToken) -> tokio::time::Instant {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let duration_remaining = if token.expires_on > now_secs {
+            std::time::Duration::from_secs((token.expires_on - now_secs) as u64)
+        } else {
+            std::time::Duration::ZERO
+        };
+
+        let token_valid_until = tokio::time::Instant::now() + duration_remaining;
+        let next_token_refresh =
+            token_valid_until - tokio::time::Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
+        std::cmp::max(
+            next_token_refresh,
+            tokio::time::Instant::now()
+                + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS),
+        )
+    }
+
     /// Returns the authentication method being used.
     #[must_use]
     pub fn method(&self) -> &AuthMethod {
@@ -169,17 +209,19 @@ impl AzureIdentityAuthExtension {
     }
 }
 
-impl TokenProvider for AzureIdentityAuthExtension {
-    fn get_token(&self) -> BearerToken {
-        // Note: This is a synchronous trait method, so we block on the async token fetch.
-        let token = tokio::runtime::Handle::current()
-            .block_on(self.get_token())
-            .expect("Failed to get token");
+#[async_trait]
+impl BearerTokenProvider for AzureIdentityAuthExtension {
+    async fn get_token(&self) -> Result<BearerToken, otap_df_engine::extensions::Error> {
+        let access_token = AzureIdentityAuthExtension::get_token(self).await?;
 
-        BearerToken {
-            token: token.token.secret().to_string(),
-            expires_on: token.expires_on.unix_timestamp(),
-        }
+        Ok(BearerToken::new(
+            access_token.token.secret().to_string(),
+            access_token.expires_on.unix_timestamp(),
+        ))
+    }
+
+    fn subscribe_token_refresh(&self) -> watch::Receiver<Option<BearerToken>> {
+        self.token_sender.subscribe()
     }
 }
 
@@ -187,52 +229,98 @@ impl TokenProvider for AzureIdentityAuthExtension {
 impl Extension<OtapPdata> for AzureIdentityAuthExtension {
     #[allow(clippy::print_stdout)]
     async fn start(
-        self: Box<Self>,
+        self: Arc<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
         effect_handler
             .info(&format!(
-                "Azure Identity Auth Extension started with {} authentication",
+                "[AzureIdentityAuthExtension] Started with {} authentication",
                 self.method
             ))
             .await;
 
-        // Main event loop - extensions only handle control messages
+        // Fetch initial token immediately
+        let mut next_token_refresh = tokio::time::Instant::now();
+
+        // Main event loop - extensions handle control messages and proactive token refresh
         loop {
-            match msg_chan.recv().await? {
-                Message::Control(NodeControlMsg::Shutdown { reason, .. }) => {
-                    effect_handler
-                        .info(&format!(
-                            "Azure Identity Auth Extension shutting down: {}",
-                            reason
-                        ))
-                        .await;
-                    break;
+            tokio::select! {
+                biased;
+
+                // Proactive token refresh - keeps Azure Identity's internal cache warm
+                _ = tokio::time::sleep_until(next_token_refresh) => {
+                    match AzureIdentityAuthExtension::get_token(&self).await {
+                        Ok(access_token) => {
+                            let bearer_token = BearerToken::new(
+                                access_token.token.secret().to_string(),
+                                access_token.expires_on.unix_timestamp(),
+                            );
+
+                            // Broadcast the new token to all subscribers
+                            let _ = self.token_sender.send(Some(bearer_token.clone()));
+
+                            // Schedule next refresh
+                            next_token_refresh = Self::get_next_token_refresh(&bearer_token);
+
+                            let refresh_in = next_token_refresh.saturating_duration_since(tokio::time::Instant::now());
+                            let total_secs = refresh_in.as_secs();
+                            let hours = total_secs / 3600;
+                            let minutes = (total_secs % 3600) / 60;
+                            let seconds = total_secs % 60;
+
+                            effect_handler
+                                .info(&format!(
+                                    "[AzureIdentityAuthExtension] Token refreshed, next refresh in {}h {}m {}s",
+                                    hours, minutes, seconds
+                                ))
+                                .await;
+                        }
+                        Err(e) => {
+                            effect_handler
+                                .info(&format!("[AzureIdentityAuthExtension] Failed to refresh token: {:?}, retrying in {}s", e, TOKEN_REFRESH_RETRY_SECS))
+                                .await;
+                            // Retry after a short delay
+                            next_token_refresh = tokio::time::Instant::now()
+                                + tokio::time::Duration::from_secs(TOKEN_REFRESH_RETRY_SECS);
+                        }
+                    }
                 }
-                Message::Control(NodeControlMsg::TimerTick {}) => {
-                    // Could implement periodic token refresh here if needed
-                    effect_handler
-                        .info("Azure Identity Auth Extension received timer tick")
-                        .await;
-                }
-                Message::Control(NodeControlMsg::Config { config }) => {
-                    // Handle dynamic configuration updates
-                    effect_handler
-                        .info(&format!(
-                            "Azure Identity Auth Extension received config update: {:?}",
-                            config
-                        ))
-                        .await;
-                }
-                Message::PData(_) => {
-                    // Extensions don't process pipeline data - this shouldn't happen
-                    effect_handler
-                        .info("Azure Identity Auth Extension received unexpected PData message")
-                        .await;
-                }
-                _ => {
-                    // Handle other control messages as needed
+
+                // Handle control messages
+                msg = msg_chan.recv() => {
+                    match msg? {
+                        Message::Control(NodeControlMsg::Shutdown { reason, .. }) => {
+                            effect_handler
+                                .info(&format!(
+                                    "[AzureIdentityAuthExtension] Shutting down: {}",
+                                    reason
+                                ))
+                                .await;
+                            break;
+                        }
+                        Message::Control(NodeControlMsg::TimerTick {}) => {
+                            // Timer ticks handled by tokio::select sleep_until
+                        }
+                        Message::Control(NodeControlMsg::Config { config }) => {
+                            // Handle dynamic configuration updates
+                            effect_handler
+                                .info(&format!(
+                                    "[AzureIdentityAuthExtension] Received config update: {:?}",
+                                    config
+                                ))
+                                .await;
+                        }
+                        Message::PData(_) => {
+                            // Extensions don't process pipeline data - this shouldn't happen
+                            effect_handler
+                                .info("[AzureIdentityAuthExtension] Received unexpected PData message")
+                                .await;
+                        }
+                        _ => {
+                            // Handle other control messages as needed
+                        }
+                    }
                 }
             }
         }
@@ -292,10 +380,12 @@ mod tests {
             scope: String,
             method: AuthMethod,
         ) -> Self {
+            let (token_sender, _) = watch::channel(None);
             Self {
                 credential,
                 scope,
                 method,
+                token_sender,
             }
         }
     }
@@ -322,11 +412,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_managed_identity_system_assigned() {
         let config = Config {
-            auth: super::super::config::AuthConfig {
-                method: AuthMethod::ManagedIdentity,
-                client_id: None,
-                scope: "https://test.scope".to_string(),
-            },
+            method: AuthMethod::ManagedIdentity,
+            client_id: None,
+            scope: "https://test.scope".to_string(),
         };
 
         let ext = AzureIdentityAuthExtension::new(config);
@@ -338,11 +426,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_managed_identity_user_assigned() {
         let config = Config {
-            auth: super::super::config::AuthConfig {
-                method: AuthMethod::ManagedIdentity,
-                client_id: Some("test-client-id".to_string()),
-                scope: "https://test.scope".to_string(),
-            },
+            method: AuthMethod::ManagedIdentity,
+            client_id: Some("test-client-id".to_string()),
+            scope: "https://test.scope".to_string(),
         };
 
         let ext = AzureIdentityAuthExtension::new(config);
@@ -352,11 +438,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_development_auth() {
         let config = Config {
-            auth: super::super::config::AuthConfig {
-                method: AuthMethod::Development,
-                client_id: None,
-                scope: "https://test.scope".to_string(),
-            },
+            method: AuthMethod::Development,
+            client_id: None,
+            scope: "https://test.scope".to_string(),
         };
 
         // May fail if Azure CLI not installed - both outcomes are valid

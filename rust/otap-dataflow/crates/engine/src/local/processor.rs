@@ -146,7 +146,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     ///
     /// # Errors
     ///

@@ -11,13 +11,13 @@
 //! ```ignore
 //! // An extension registers its capabilities:
 //! let mut bundle = ExtensionBundle::new();
-//! bundle.insert::<dyn TokenProvider>(Arc::new(my_token_provider));
+//! bundle.insert::<dyn BearerTokenProvider>(Arc::new(my_token_provider));
 //! bundle.insert::<dyn Logger>(Arc::new(my_logger));
 //! registry.register("azure_auth", bundle);
 //!
 //! // A consumer retrieves a capability by trait:
-//! let token_provider: Arc<dyn TokenProvider> = registry
-//!     .get_trait::<dyn TokenProvider>("azure_auth")?;
+//! let token_provider: Arc<dyn BearerTokenProvider> = registry
+//!     .get_trait::<dyn BearerTokenProvider>("azure_auth")?;
 //! ```
 
 use crate::extensions::ExtensionTrait;
@@ -68,29 +68,25 @@ impl std::error::Error for ExtensionError {}
 ///
 /// # Type Safety
 ///
-/// Only traits that have [`ExtensionTrait`](crate::extensions::ExtensionTrait) as a supertrait
-/// can be used with this macro. Attempting to use a trait that doesn't implement `ExtensionTrait`
-/// will result in a compile-time error.
+/// Only extension traits defined in [`crate::extensions`] can be used with this macro.
+/// External crates can implement these traits on their types, but cannot create new
+/// extension trait types.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use otap_df_engine::extension_bundle;
-/// use otap_df_engine::extensions::ExtensionTrait;
+/// use otap_df_engine::extensions::BearerTokenProvider;
+/// use std::sync::Arc;
 ///
-/// // Define traits with ExtensionTrait as supertrait
-/// trait TokenProvider: ExtensionTrait { fn get_token(&self) -> String; }
-/// trait Logger: ExtensionTrait { fn log(&self, msg: &str); }
+/// // Your extension type implements BearerTokenProvider
+/// struct MyAuthExtension { /* ... */ }
+/// impl BearerTokenProvider for MyAuthExtension { /* ... */ }
 ///
-/// struct MyExtension { /* ... */ }
-/// impl ExtensionTrait for MyExtension {}
-/// impl TokenProvider for MyExtension { /* ... */ }
-/// impl Logger for MyExtension { /* ... */ }
+/// let instance = Arc::new(MyAuthExtension { /* ... */ });
+/// let bundle = extension_bundle!(instance => BearerTokenProvider);
 ///
-/// let instance = Arc::new(MyExtension { /* ... */ });
-/// let bundle = extension_bundle!(instance => TokenProvider, Logger);
-///
-/// // This would NOT compile (Debug doesn't implement ExtensionTrait):
+/// // This would NOT compile (Debug is not an extension trait):
 /// // let bundle = extension_bundle!(instance => Debug);  // ERROR!
 /// ```
 #[macro_export]
@@ -118,13 +114,13 @@ macro_rules! extension_bundle {
 /// Using the [`extension_bundle!`] macro:
 /// ```ignore
 /// let instance = Arc::new(MyExtension { /* ... */ });
-/// let bundle = extension_bundle!(instance => TokenProvider, Logger);
+/// let bundle = extension_bundle!(instance => BearerTokenProvider, Logger);
 /// ```
 ///
 /// Or manually:
 /// ```ignore
 /// let mut bundle = ExtensionBundle::new();
-/// bundle.insert::<dyn TokenProvider>(instance.clone() as Arc<dyn TokenProvider>);
+/// bundle.insert::<dyn BearerTokenProvider>(instance.clone() as Arc<dyn BearerTokenProvider>);
 /// bundle.insert::<dyn Logger>(instance.clone() as Arc<dyn Logger>);
 /// ```
 #[derive(Default)]
@@ -148,12 +144,12 @@ impl ExtensionBundle {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     ///
     /// # Example
     ///
     /// ```ignore
-    /// bundle.insert::<dyn TokenProvider>(Arc::new(my_impl) as Arc<dyn TokenProvider>);
+    /// bundle.insert::<dyn BearerTokenProvider>(Arc::new(my_impl) as Arc<dyn BearerTokenProvider>);
     /// ```
     pub fn insert<T: ExtensionTrait + ?Sized + 'static>(&mut self, value: Arc<T>)
     where
@@ -168,7 +164,7 @@ impl ExtensionBundle {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     #[must_use]
     pub fn get<T: ExtensionTrait + ?Sized + 'static>(&self) -> Option<Arc<T>>
     where
@@ -244,7 +240,7 @@ impl ExtensionRegistry {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     ///
     /// # Errors
     ///
@@ -254,8 +250,8 @@ impl ExtensionRegistry {
     /// # Example
     ///
     /// ```ignore
-    /// let token_provider: Arc<dyn TokenProvider> = registry
-    ///     .get_trait::<dyn TokenProvider>("azure_auth")?;
+    /// let token_provider: Arc<dyn BearerTokenProvider> = registry
+    ///     .get_trait::<dyn BearerTokenProvider>("azure_auth")?;
     /// ```
     pub fn get_trait<T: ExtensionTrait + ?Sized + 'static>(
         &self,
@@ -357,68 +353,52 @@ impl ExtensionRegistryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extensions::ExtensionTrait;
+    use crate::extensions::bearer_token_provider::{BearerToken, BearerTokenProvider};
+    use async_trait::async_trait;
 
-    // Test traits must implement ExtensionTrait
-    trait TestTrait: ExtensionTrait {
-        fn value(&self) -> i32;
+    // Test implementation of BearerTokenProvider
+    struct TestTokenProvider {
+        token: String,
     }
 
-    trait AnotherTrait: ExtensionTrait {
-        fn name(&self) -> &str;
-    }
-
-    struct TestImpl {
-        val: i32,
-        name: String,
-    }
-
-    // TestImpl must implement ExtensionTrait to be cast to trait objects
-    impl ExtensionTrait for TestImpl {}
-
-    impl TestTrait for TestImpl {
-        fn value(&self) -> i32 {
-            self.val
+    #[async_trait]
+    impl BearerTokenProvider for TestTokenProvider {
+        async fn get_token(&self) -> Result<BearerToken, crate::extensions::Error> {
+            Ok(BearerToken::new(self.token.clone(), 0))
         }
-    }
 
-    impl AnotherTrait for TestImpl {
-        fn name(&self) -> &str {
-            &self.name
+        fn subscribe_token_refresh(&self) -> tokio::sync::watch::Receiver<Option<BearerToken>> {
+            let (tx, rx) = tokio::sync::watch::channel(None);
+            drop(tx);
+            rx
         }
     }
 
     #[test]
     fn test_bundle_insert_and_get() {
-        let instance = Arc::new(TestImpl {
-            val: 42,
-            name: "test".to_string(),
+        let instance = Arc::new(TestTokenProvider {
+            token: "test_token".to_string(),
         });
 
         let mut bundle = ExtensionBundle::new();
-        bundle.insert::<dyn TestTrait>(instance.clone() as Arc<dyn TestTrait>);
-        bundle.insert::<dyn AnotherTrait>(instance.clone() as Arc<dyn AnotherTrait>);
+        bundle.insert::<dyn BearerTokenProvider>(instance.clone() as Arc<dyn BearerTokenProvider>);
 
         // Get by trait
-        let test_trait: Arc<dyn TestTrait> = bundle.get::<dyn TestTrait>().unwrap();
-        assert_eq!(test_trait.value(), 42);
-
-        let another_trait: Arc<dyn AnotherTrait> = bundle.get::<dyn AnotherTrait>().unwrap();
-        assert_eq!(another_trait.name(), "test");
-
-        assert_eq!(bundle.len(), 2);
+        let token_provider: Arc<dyn BearerTokenProvider> = bundle.get::<dyn BearerTokenProvider>().unwrap();
+        // We can't easily test async here, but we can verify it's retrieved
+        assert_eq!(bundle.len(), 1);
+        assert!(bundle.contains::<dyn BearerTokenProvider>());
+        drop(token_provider);
     }
 
     #[test]
     fn test_registry_get_trait() {
-        let instance = Arc::new(TestImpl {
-            val: 42,
-            name: "test".to_string(),
+        let instance = Arc::new(TestTokenProvider {
+            token: "test_token".to_string(),
         });
 
         let mut bundle = ExtensionBundle::new();
-        bundle.insert::<dyn TestTrait>(instance.clone() as Arc<dyn TestTrait>);
-        bundle.insert::<dyn AnotherTrait>(instance.clone() as Arc<dyn AnotherTrait>);
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
 
         let mut map = HashMap::new();
         let _ = map.insert("test_ext".to_string(), bundle);
@@ -426,42 +406,28 @@ mod tests {
         let registry = ExtensionRegistry::from_map(map);
 
         // Get trait by name
-        let test_trait: Arc<dyn TestTrait> = registry.get_trait("test_ext").unwrap();
-        assert_eq!(test_trait.value(), 42);
-
-        let another_trait: Arc<dyn AnotherTrait> = registry.get_trait("test_ext").unwrap();
-        assert_eq!(another_trait.name(), "test");
+        let _token_provider: Arc<dyn BearerTokenProvider> = registry.get_trait("test_ext").unwrap();
     }
 
     #[test]
     fn test_not_found() {
         let registry = ExtensionRegistry::new();
-        let result: Result<Arc<dyn TestTrait>, _> = registry.get_trait("missing");
+        let result: Result<Arc<dyn BearerTokenProvider>, _> = registry.get_trait("missing");
         assert!(matches!(result, Err(ExtensionError::NotFound { .. })));
     }
 
     #[test]
     fn test_trait_not_implemented() {
-        let instance = Arc::new(TestImpl {
-            val: 42,
-            name: "test".to_string(),
-        });
-
-        let mut bundle = ExtensionBundle::new();
-        // Only register TestTrait, not AnotherTrait
-        bundle.insert::<dyn TestTrait>(instance as Arc<dyn TestTrait>);
+        // Empty bundle - no traits registered
+        let bundle = ExtensionBundle::new();
 
         let mut map = HashMap::new();
         let _ = map.insert("test_ext".to_string(), bundle);
 
         let registry = ExtensionRegistry::from_map(map);
 
-        // TestTrait works
-        let test_trait: Arc<dyn TestTrait> = registry.get_trait("test_ext").unwrap();
-        assert_eq!(test_trait.value(), 42);
-
-        // AnotherTrait fails
-        let result: Result<Arc<dyn AnotherTrait>, _> = registry.get_trait("test_ext");
+        // BearerTokenProvider fails because it wasn't registered
+        let result: Result<Arc<dyn BearerTokenProvider>, _> = registry.get_trait("test_ext");
         assert!(matches!(
             result,
             Err(ExtensionError::TraitNotImplemented { .. })
@@ -470,21 +436,16 @@ mod tests {
 
     #[test]
     fn test_extension_bundle_macro() {
-        let instance = Arc::new(TestImpl {
-            val: 99,
-            name: "macro_test".to_string(),
+        let instance = Arc::new(TestTokenProvider {
+            token: "macro_test".to_string(),
         });
 
         // Use the macro to create a bundle
-        let bundle = crate::extension_bundle!(instance => TestTrait, AnotherTrait);
+        let bundle = crate::extension_bundle!(instance => BearerTokenProvider);
 
-        // Verify both traits are accessible
-        let test_trait: Arc<dyn TestTrait> = bundle.get::<dyn TestTrait>().unwrap();
-        assert_eq!(test_trait.value(), 99);
+        // Verify trait is accessible
+        let _token_provider: Arc<dyn BearerTokenProvider> = bundle.get::<dyn BearerTokenProvider>().unwrap();
 
-        let another_trait: Arc<dyn AnotherTrait> = bundle.get::<dyn AnotherTrait>().unwrap();
-        assert_eq!(another_trait.name(), "macro_test");
-
-        assert_eq!(bundle.len(), 2);
+        assert_eq!(bundle.len(), 1);
     }
 }

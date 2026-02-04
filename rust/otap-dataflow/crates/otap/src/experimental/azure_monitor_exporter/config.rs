@@ -13,54 +13,10 @@ pub struct Config {
     /// API configuration for Azure Monitor
     pub api: ApiConfig,
 
-    /// Authentication configuration
+    /// Name of the authentication extension to use for token acquisition.
+    /// This should match the name of an Azure Identity Auth Extension configured in the pipeline.
     #[serde(default)]
-    pub auth: AuthConfig,
-}
-
-/// Authentication method for Azure
-#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AuthMethod {
-    /// Use Managed Identity (system or user-assigned with client_id)
-    #[serde(alias = "msi", alias = "managed_identity")]
-    #[default]
-    ManagedIdentity,
-
-    /// Use developer tools (Azure CLI, Azure Developer CLI)
-    #[serde(alias = "dev", alias = "developer", alias = "cli")]
-    Development,
-}
-
-/// Authentication configuration for Azure
-#[derive(Debug, Deserialize, Clone)]
-pub struct AuthConfig {
-    /// Authentication method to use
-    #[serde(default)]
-    pub method: AuthMethod,
-
-    /// Client ID for user-assigned managed identity (optional)
-    /// Only used when method is ManagedIdentity
-    /// If not provided with ManagedIdentity, system-assigned identity will be used
-    pub client_id: Option<String>,
-
-    /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
-    #[serde(default = "default_scope")]
-    pub scope: String,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            method: AuthMethod::default(),
-            client_id: None,
-            scope: default_scope(),
-        }
-    }
-}
-
-fn default_scope() -> String {
-    "https://monitor.azure.com/.default".to_string()
+    pub auth: String,
 }
 
 /// API configuration for connecting to Azure Monitor
@@ -99,13 +55,6 @@ pub struct SchemaConfig {
 impl Config {
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), Error> {
-        // Validate auth configuration
-        if self.auth.scope.is_empty() {
-            return Err(Error::Config(
-                "Invalid configuration: auth scope must be non-empty".to_string(),
-            ));
-        }
-
         // Validate API configuration
         if self.api.dcr_endpoint.is_empty() {
             return Err(Error::Config(
@@ -194,11 +143,7 @@ mod tests {
                 dcr: "mydcr".to_string(),
                 schema: SchemaConfig::default(),
             },
-            auth: AuthConfig {
-                scope: "https://monitor.azure.com/.default".to_string(),
-                client_id: Some("myclientid".to_string()),
-                method: AuthMethod::ManagedIdentity,
-            },
+            auth: "azure_identity_auth".to_string(),
         };
 
         assert!(config.validate().is_ok());
@@ -213,7 +158,7 @@ mod tests {
                 dcr: "".to_string(),
                 schema: SchemaConfig::default(),
             },
-            auth: AuthConfig::default(),
+            auth: String::new(),
         };
 
         let result = config.validate();
@@ -241,7 +186,7 @@ mod tests {
                     ]),
                 },
             },
-            auth: AuthConfig::default(),
+            auth: String::new(),
         };
 
         let result = config.validate();
@@ -281,7 +226,7 @@ mod tests {
                     ]),
                 },
             },
-            auth: AuthConfig::default(),
+            auth: String::new(),
         };
 
         let result = config.validate();
@@ -310,7 +255,7 @@ mod tests {
                     )]),
                 },
             },
-            auth: AuthConfig::default(),
+            auth: String::new(),
         };
 
         let result = config.validate();

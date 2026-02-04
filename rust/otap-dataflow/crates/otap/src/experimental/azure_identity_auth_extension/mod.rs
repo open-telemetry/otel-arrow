@@ -16,11 +16,11 @@
 
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ExtensionFactory;
+use otap_df_engine::{ExtensionFactory, extension_bundle};
+use otap_df_engine::extensions::BearerTokenProvider;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::extension::ExtensionWrapper;
-use otap_df_engine::extensions::ExtensionBundle;
 use otap_df_engine::node::NodeId;
 use serde_json;
 use std::sync::Arc;
@@ -37,7 +37,7 @@ pub use error::Error;
 pub use extension::AzureIdentityAuthExtension;
 
 /// URN identifying the Azure Identity Auth Extension in configuration pipelines.
-pub const AZURE_IDENTITY_AUTH_EXTENSION_URN: &str = "urn:otel:azure:identity:auth:extension";
+pub const AZURE_IDENTITY_AUTH_EXTENSION_URN: &str = "urn:otel:azureidentityauth:extension";
 
 /// Register Azure Identity Auth Extension with the OTAP extension factory.
 ///
@@ -64,15 +64,15 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory<OtapPdata> = Extensio
             })?;
 
         // Create the extension
-        let extension = AzureIdentityAuthExtension::new(cfg).map_err(|e| {
+        let extension = Arc::new(AzureIdentityAuthExtension::new(cfg).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
-        })?;
+        })?);
 
         Ok(ExtensionWrapper::local(
-            extension,
-            ExtensionBundle::new(),
+            extension.clone(),
+            extension_bundle!(extension => BearerTokenProvider),
             node,
             node_config,
             extension_config,

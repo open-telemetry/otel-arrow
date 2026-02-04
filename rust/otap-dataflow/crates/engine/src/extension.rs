@@ -43,8 +43,8 @@ pub enum ExtensionWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
-        /// The extension instance.
-        extension: Box<dyn local::Extension<PData>>,
+        /// The extension instance wrapped in Arc (required for shared access via registry).
+        extension: Arc<dyn local::Extension<PData>>,
         /// Extension traits that this extension provides.
         /// Taken during pipeline initialization to build the central registry.
         extension_traits: Option<ExtensionBundle>,
@@ -65,8 +65,8 @@ pub enum ExtensionWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
-        /// The extension instance.
-        extension: Box<dyn shared::Extension<PData>>,
+        /// The extension instance wrapped in Arc (required for shared access via registry).
+        extension: Arc<dyn shared::Extension<PData>>,
         /// Extension traits that this extension provides.
         /// Taken during pipeline initialization to build the central registry.
         extension_traits: Option<ExtensionBundle>,
@@ -97,8 +97,16 @@ impl<PData> Controllable<PData> for ExtensionWrapper<PData> {
 impl<PData> ExtensionWrapper<PData> {
     /// Creates a new local `ExtensionWrapper` with the given extension and configuration (!Send
     /// implementation).
+    ///
+    /// # Arguments
+    ///
+    /// * `extension` - The extension instance wrapped in Arc (required for shared access via registry)
+    /// * `extension_traits` - The extension traits bundle for registry lookups
+    /// * `node_id` - The node identifier
+    /// * `user_config` - The user configuration
+    /// * `config` - The extension runtime configuration
     pub fn local<E>(
-        extension: E,
+        extension: Arc<E>,
         extension_traits: ExtensionBundle,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
@@ -114,7 +122,7 @@ impl<PData> ExtensionWrapper<PData> {
             node_id,
             user_config,
             runtime_config: config.clone(),
-            extension: Box::new(extension),
+            extension,
             extension_traits: Some(extension_traits),
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: LocalReceiver::mpsc(control_receiver),
@@ -125,8 +133,16 @@ impl<PData> ExtensionWrapper<PData> {
 
     /// Creates a new shared `ExtensionWrapper` with the given extension and configuration (Send
     /// implementation).
+    ///
+    /// # Arguments
+    ///
+    /// * `extension` - The extension instance wrapped in Arc (required for shared access via registry)
+    /// * `extension_traits` - The extension traits bundle for registry lookups
+    /// * `node_id` - The node identifier
+    /// * `user_config` - The user configuration
+    /// * `config` - The extension runtime configuration
     pub fn shared<E>(
-        extension: E,
+        extension: Arc<E>,
         extension_traits: ExtensionBundle,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
@@ -142,7 +158,7 @@ impl<PData> ExtensionWrapper<PData> {
             node_id,
             user_config,
             runtime_config: config.clone(),
-            extension: Box::new(extension),
+            extension,
             extension_traits: Some(extension_traits),
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: SharedReceiver::mpsc(control_receiver),
@@ -442,7 +458,7 @@ mod tests {
     #[async_trait(?Send)]
     impl local::Extension<TestMsg> for TestExtension {
         async fn start(
-            self: Box<Self>,
+            self: Arc<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             _effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
@@ -477,7 +493,7 @@ mod tests {
     #[test]
     fn test_local_extension_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
-        let extension = TestExtension::new(counter);
+        let extension = Arc::new(TestExtension::new(counter));
         let node_id = test_node("test_extension");
         let user_config = Arc::new(NodeUserConfig::with_user_config(
             NodeKind::Receiver, // Extension is not a config kind yet
@@ -511,7 +527,7 @@ mod tests {
     #[async_trait]
     impl shared::Extension<TestMsg> for SharedTestExtension {
         async fn start(
-            self: Box<Self>,
+            self: Arc<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             _effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
@@ -541,7 +557,7 @@ mod tests {
     #[test]
     fn test_shared_extension_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
-        let extension = SharedTestExtension::new(counter);
+        let extension = Arc::new(SharedTestExtension::new(counter));
         let node_id = test_node("test_extension");
         let user_config = Arc::new(NodeUserConfig::with_user_config(
             NodeKind::Receiver, // Extension is not a config kind yet

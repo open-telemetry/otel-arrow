@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::config::AuthMethod;
+use crate::experimental::azure_identity_auth_extension::AuthMethod;
 use http::StatusCode;
 use http::header::InvalidHeaderValue;
 
@@ -124,7 +124,7 @@ pub enum Error {
 
     /// Failed to create auth handler.
     #[error("Failed to create auth handler")]
-    AuthHandlerCreation(#[source] Box<Error>),
+    AuthHandlerCreation(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// Client pool initialization failed.
     #[error("Client pool initialization failed")]

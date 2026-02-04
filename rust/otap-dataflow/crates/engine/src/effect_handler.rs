@@ -68,7 +68,7 @@ impl<PData> EffectHandlerCore<PData> {
     ///
     /// # Type Parameters
     ///
-    /// * `T` - The trait type (e.g., `dyn TokenProvider`). Must implement `ExtensionTrait`.
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
     ///
     /// # Errors
     ///
@@ -79,8 +79,8 @@ impl<PData> EffectHandlerCore<PData> {
     /// # Example
     ///
     /// ```ignore
-    /// let token_provider: Arc<dyn TokenProvider> = effect_handler
-    ///     .get_extension::<dyn TokenProvider>("azure_auth")?;
+    /// let token_provider: Arc<dyn BearerTokenProvider> = effect_handler
+    ///     .get_extension::<dyn BearerTokenProvider>("azure_auth")?;
     /// let token = token_provider.get_token();
     /// ```
     pub(crate) fn get_extension<T: ExtensionTrait + ?Sized + 'static>(

@@ -143,7 +143,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
         create_extension: F,
     ) -> (ExtensionWrapper<PData>, TestContext<PData>)
     where
-        F: FnOnce(CtrlMsgCounters) -> Box<dyn crate::local::extension::Extension<PData>>,
+        F: FnOnce(CtrlMsgCounters) -> Arc<dyn crate::local::extension::Extension<PData>>,
     {
         let counters = CtrlMsgCounters::new();
         let extension = create_extension(counters.clone());
@@ -186,7 +186,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
         create_extension: F,
     ) -> (ExtensionWrapper<PData>, TestContext<PData>)
     where
-        F: FnOnce(CtrlMsgCounters) -> Box<dyn crate::shared::extension::Extension<PData> + Send>,
+        F: FnOnce(CtrlMsgCounters) -> Arc<dyn crate::shared::extension::Extension<PData> + Send>,
     {
         let counters = CtrlMsgCounters::new();
         let extension = create_extension(counters.clone());

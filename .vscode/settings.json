@@ -23,6 +23,9 @@
         "rust/experimental/query_engine/Cargo.toml"
     ],
 
+    "rust-analyzer.check.features": "all",
+    "rust-analyzer.cargo.features": "all",
+
     // Exclude Rust build artifacts from file watching and search
     // to improve performance and reduce noise in search results.
     "files.watcherExclude": {
