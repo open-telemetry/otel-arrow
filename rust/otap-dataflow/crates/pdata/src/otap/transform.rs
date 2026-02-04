@@ -7205,15 +7205,272 @@ mod insert_tests {
         todo!()
     }
 
-    #[ignore]
     #[test]
-    fn test_should_remove_transport_optimized_encoding() {
-        // - rename joins left
-        // - rename joins right
-        // - delete joins
-        // - rename doesn't join
-        // - delete doesn't join
+    fn test_should_remove_encoding_rename_joins_left() {
+        // Keys: [k1, k2, k2] with values [v1, v2, v2] and parent_ids [1, 2, 3]
+        // Rename k2->k1 at positions 1-2
+        // After rename: [k1, k1, k1] with values [v1, v2, v2] and parent_ids [1, 2, 3]
+        // Position 1 (renamed k2->k1) joins with position 0 (k1) but different values
+        // So they shouldn't join, but let's make them join by having same value
 
-        todo!()
+        // Keys: [k1, k2, k2] with values [v1, v1, v1] and parent_ids [1, 2, 3]
+        // Rename k2->k1 creates [k1, k1, k1] all same value, parent_ids consecutive
+        // Position 1 joins with position 0 -> should remove encoding
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v1", "v1"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 1, end: 3 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let replacement_bytes = vec![b"k1".to_vec()];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(result, "Rename that joins left should return true");
+    }
+
+    #[test]
+    fn test_should_remove_encoding_rename_joins_right() {
+        // Keys: [k1, k1, k2] with values [v1, v1, v1] and parent_ids [1, 2, 3]
+        // Rename k1->k2 at positions 0-1
+        // After rename: [k2, k2, k2] all same, parent_ids consecutive
+        // Position 1 (end of rename) joins with position 2 (k2) -> should remove encoding
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v1", "v1"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 2 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let replacement_bytes = vec![b"k2".to_vec()];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(result, "Rename that joins right should return true");
+    }
+
+    #[test]
+    fn test_should_remove_encoding_delete_joins_neighbors() {
+        // Keys: [k1, k2, k1] with values [v1, v2, v1] and parent_ids [1, 2, 3]
+        // Delete k2 at position 1
+        // After delete: [k1, k1] with values [v1, v1] and parent_ids [1, 3]
+        // But parent_ids aren't consecutive (1, 3) so they shouldn't join
+
+        // Keys: [k1, k2, k2, k1] with values [v1, v2, v2, v1] and parent_ids [1, 2, 3, 4]
+        // Delete k2 at positions 1-2
+        // After delete: [k1, k1] with same values and consecutive parent_ids -> should join
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2, 3, 4])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2", "k2", "k1"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2", "v2", "v1"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 1, end: 3 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let replacement_bytes = vec![];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(result, "Delete that joins neighbors should return true");
+    }
+
+    #[test]
+    fn test_should_remove_encoding_rename_doesnt_join() {
+        // Keys: [k1, k2] with different values or non-consecutive parent_ids
+        // Rename k1->k3, doesn't create joins
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 0, end: 1 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Rename,
+        }];
+
+        let replacement_bytes = vec![b"k3".to_vec()];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(!result, "Rename that doesn't join should return false");
+    }
+
+    #[test]
+    fn test_should_remove_encoding_delete_doesnt_join() {
+        // Keys: [k1, k2, k3] with different values
+        // Delete k2, but k1 and k3 don't join (different keys)
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2", "k3"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2", "v3"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![KeyTransformRange {
+            range: Range { start: 1, end: 2 },
+            idx: 0,
+            range_type: KeyTransformRangeType::Delete,
+        }];
+
+        let replacement_bytes = vec![];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(
+            !result,
+            "Delete that doesn't join neighbors should return false"
+        );
+    }
+
+    #[test]
+    fn test_should_remove_encoding_no_transforms() {
+        // Empty transform ranges should return false
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v2"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges: Vec<KeyTransformRange> = vec![];
+        let replacement_bytes = vec![];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(!result, "No transforms should return false");
     }
 }
