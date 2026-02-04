@@ -3,19 +3,15 @@
 
 //! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
-pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
 };
 
-use crate::{
-    error::Error,
-    otel_sdk::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
-};
+use crate::{error::Error, otel_sdk::meter_provider::MeterProvider};
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
@@ -23,8 +19,6 @@ pub struct OpentelemetryClient {
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
-    logger_provider: Option<SdkLoggerProvider>,
-    // TODO: Add traces providers.
 }
 
 impl OpentelemetryClient {
@@ -32,9 +26,7 @@ impl OpentelemetryClient {
     ///
     /// # Arguments
     /// * `config` - The telemetry configuration.
-    /// * `needs_logger_provider` - Whether to create a logger provider. Set to `true` if
-    ///   the global or engine provider mode is `OpenTelemetry`.
-    pub fn new(config: &TelemetryConfig, needs_logger_provider: bool) -> Result<Self, Error> {
+    pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
         let runtime = None;
@@ -45,21 +37,9 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        // Only create logger provider if needed (for OpenTelemetry mode)
-        let (logger_provider, runtime) = if needs_logger_provider {
-            let lp = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
-            let (provider, rt) = lp.into_parts();
-            (Some(provider), rt)
-        } else {
-            (None, runtime)
-        };
-
-        //TODO: Configure traces provider.
-
         Ok(Self {
             _runtime: runtime,
             meter_provider,
-            logger_provider,
         })
     }
 
@@ -108,15 +88,6 @@ impl OpentelemetryClient {
         &self.meter_provider
     }
 
-    /// Get a reference to the logger provider (if configured).
-    ///
-    /// Returns `None` if the logger provider was not created (i.e., when
-    /// `needs_logger_provider` was `false` in `new()`).
-    #[must_use]
-    pub fn logger_provider(&self) -> Option<&SdkLoggerProvider> {
-        self.logger_provider.as_ref()
-    }
-
     /// Consume the client and return the tokio runtime (if any).
     ///
     /// This is used when the runtime ownership needs to be transferred
@@ -129,16 +100,11 @@ impl OpentelemetryClient {
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        let logger_provider_shutdown_result =
-            self.logger_provider().map(|p| p.shutdown()).transpose();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
         }
 
-        if let Err(e) = logger_provider_shutdown_result {
-            return Err(Error::ShutdownError(e.to_string()));
-        }
         Ok(())
     }
 }
@@ -160,7 +126,6 @@ mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
         AttributeValue,
-        logs::LogsConfig,
         metrics::{
             MetricsConfig,
             readers::{
@@ -169,6 +134,7 @@ mod tests {
             },
         },
     };
+    use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use std::{f64::consts::PI, time::Duration};
@@ -176,7 +142,7 @@ mod tests {
     #[test]
     fn test_configure_minimal_opentelemetry_client() -> Result<(), Error> {
         let config = TelemetryConfig::default();
-        let client = OpentelemetryClient::new(&config, false)?;
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();
@@ -210,7 +176,7 @@ mod tests {
             logs: LogsConfig::default(),
             resource,
         };
-        let client = OpentelemetryClient::new(&config, true)?;
+        let client = OpentelemetryClient::new(&config)?;
         let meter = global::meter("test-meter");
 
         let counter = meter.u64_counter("test-counter").build();

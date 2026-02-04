@@ -51,13 +51,7 @@ nodes:
     plugin_urn: "urn:otel:noop:exporter"
     config:
 
-service:
+settings:
   telemetry:
     logs:
       level: "error"
-      processors:
-        - batch:
-            exporter:
-              console:
-    resource:
-      service.name: "kql-processor-demo"
