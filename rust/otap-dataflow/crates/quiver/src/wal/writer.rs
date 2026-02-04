@@ -906,6 +906,16 @@ impl ActiveWalFile {
     }
 }
 
+/// Result of scanning a WAL file for entries.
+struct ScanResult {
+    /// The last valid sequence number found, if any.
+    last_sequence: Option<u64>,
+    /// File offset immediately after the last valid entry (where new writes begin).
+    last_valid_offset: u64,
+    /// File offsets at the end of each entry (for cursor validation).
+    entry_boundaries: Vec<u64>,
+}
+
 impl WalCoordinator {
     fn new(
         options: WalWriterOptions,
@@ -1101,19 +1111,21 @@ impl WalCoordinator {
         self.active_header_size.saturating_add(data_within_active)
     }
 
-    /// Scans a WAL file and returns the last valid sequence number, the
-    /// byte offset immediately after the last valid entry (i.e., where new
-    /// writes should begin), and a list of entry boundary offsets (file offsets).
-    /// Returns file offsets (not WAL positions).
+    /// Scans a WAL file and returns information about its entries.
     ///
-    /// The entry boundaries can be used to initialize the `entry_boundaries` vector
-    /// for cursor validation during WAL replay.
+    /// Returns file offsets (not WAL positions). The entry boundaries can be
+    /// used to initialize the `entry_boundaries` vector for cursor validation
+    /// during WAL replay.
     ///
     /// Note: Uses sync I/O via `WalReader` - this is acceptable because it's
     /// only called during startup/recovery.
-    fn scan_file_for_entries(&self, path: &Path) -> WalResult<(Option<u64>, u64, Vec<u64>)> {
+    fn scan_file_for_entries(&self, path: &Path) -> WalResult<ScanResult> {
         if !path.exists() {
-            return Ok((None, 0, Vec::new()));
+            return Ok(ScanResult {
+                last_sequence: None,
+                last_valid_offset: 0,
+                entry_boundaries: Vec::new(),
+            });
         }
         let mut reader = WalReader::open(path)?;
         let header_size = reader.header_size();
@@ -1140,7 +1152,11 @@ impl WalCoordinator {
                 Err(err) => return Err(err),
             }
         }
-        Ok((last_seq, last_valid_offset, boundaries))
+        Ok(ScanResult {
+            last_sequence: last_seq,
+            last_valid_offset,
+            entry_boundaries: boundaries,
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1157,27 +1173,26 @@ impl WalCoordinator {
     /// Note: Uses sync I/O via `WalReader` internally - this is acceptable because
     /// this method is only called during startup/recovery, not on the hot path.
     async fn detect_next_sequence(&mut self) -> WalResult<(u64, u64)> {
-        let (active_seq, active_valid_offset, boundaries) =
-            self.scan_file_for_entries(&self.options.path)?;
+        let scan = self.scan_file_for_entries(&self.options.path)?;
 
         // Populate entry_boundaries so cursor validation works during WAL replay
-        self.entry_boundaries = boundaries;
+        self.entry_boundaries = scan.entry_boundaries;
 
         // If active file has entries, use its sequence
-        if let Some(seq) = active_seq {
-            return Ok((seq.wrapping_add(1), active_valid_offset));
+        if let Some(seq) = scan.last_sequence {
+            return Ok((seq.wrapping_add(1), scan.last_valid_offset));
         }
 
         // Active file is empty - check the most recent rotated file (highest rotation_id)
         if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
-            let (seq, _, _) = self.scan_file_for_entries(&most_recent.path)?;
-            if let Some(s) = seq {
-                return Ok((s.wrapping_add(1), active_valid_offset));
+            let rotated_scan = self.scan_file_for_entries(&most_recent.path)?;
+            if let Some(s) = rotated_scan.last_sequence {
+                return Ok((s.wrapping_add(1), scan.last_valid_offset));
             }
         }
 
         // No entries anywhere - start at sequence 0
-        Ok((0, active_valid_offset))
+        Ok((0, scan.last_valid_offset))
     }
 
     async fn reload_rotated_files(&mut self, active_len: u64) -> WalResult<()> {
