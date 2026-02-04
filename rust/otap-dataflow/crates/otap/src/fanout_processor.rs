@@ -366,7 +366,7 @@ struct Inflight {
     /// Queue of destination indices to send next (used in sequential mode).
     /// In parallel mode, all non-fallback destinations are sent immediately.
     /// In sequential mode, only the head of this queue is dispatched at a time.
-    next_send_queue: SmallVec<[usize; 4]>,
+    next_send_queue: DestinationIndexQueue,
 }
 
 #[metric_set(name = "fanout.processor.metrics")]
@@ -1180,6 +1180,7 @@ mod tests {
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::local::processor::EffectHandler;
     use otap_df_engine::message::Message;
+    use otap_df_engine::message::Sender;
     use otap_df_engine::testing::processor::TEST_OUT_PORT_NAME;
     use otap_df_engine::testing::test_node;
     use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
@@ -1258,7 +1259,7 @@ mod tests {
         let mut senders = HashMap::new();
         for port in node_cfg.out_ports.keys() {
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
-            let _ = senders.insert(port.clone(), LocalSender::mpsc(tx));
+            let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }
 
@@ -2668,7 +2669,7 @@ mod tests {
         let mut senders = HashMap::new();
         for port in node_cfg.out_ports.keys() {
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
-            let _ = senders.insert(port.clone(), LocalSender::mpsc(tx));
+            let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
         }
 
