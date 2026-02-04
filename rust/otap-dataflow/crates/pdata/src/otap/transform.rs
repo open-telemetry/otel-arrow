@@ -2334,11 +2334,6 @@ fn are_neighbours_with_delta_encoded_parent_ids(
     prev: &MaybeReplacedKey,
     next: &MaybeReplacedKey,
 ) -> Result<bool> {
-    // // check that the candidates are indeed neighbours
-    // if prev.index + 1 != next.index {
-    //     return Ok(false);
-    // }
-
     // check if the rows have the same type
     let prev_type = AttributeValueType::try_from(val_columns.attr_type.value(prev.index))?;
     let next_type = AttributeValueType::try_from(val_columns.attr_type.value(next.index))?;
