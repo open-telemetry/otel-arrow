@@ -87,7 +87,13 @@ impl ReplayBundle {
         let ingestion_time = if entry.ingestion_ts_nanos >= 0 {
             UNIX_EPOCH + Duration::from_nanos(entry.ingestion_ts_nanos as u64)
         } else {
-            // For negative timestamps (before epoch), just use epoch
+            // Negative timestamps (before epoch) are likely clock skew or bugs.
+            // Clamp to epoch and log for diagnostics.
+            tracing::debug!(
+                sequence = entry.sequence,
+                timestamp_nanos = entry.ingestion_ts_nanos,
+                "WAL entry has negative timestamp, clamping to epoch"
+            );
             UNIX_EPOCH
         };
 
