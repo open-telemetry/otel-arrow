@@ -1443,11 +1443,6 @@ fn transform_keys(
     // if there were some deletes. Otherwise, this will be `None` which signals to the caller that
     // we can keep the other columns in their entirety.
     let keep_ranges = to_keep_ranges(len, &transform_ranges);
-    let keep_ranges = if keep_ranges.is_empty() {
-        None
-    } else {
-        Some(keep_ranges)
-    };
 
     // create the new nulls buffer
     // let new_nulls = take_null_buffer_ranges(array.nulls(), keep_ranges.as_ref());
@@ -1579,7 +1574,8 @@ where
     let dict_values_keep_ranges = to_keep_ranges(
         dict_values.len(),
         &dict_values_transform_result.transform_ranges,
-    );
+    ).unwrap_or_default();
+
     let mut dict_key_kept_in_values_range: Vec<Option<usize>> = vec![None; dict_values.len()];
     for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
         for i in range.start..range.end {
@@ -1588,7 +1584,7 @@ where
     }
 
     // Build the new dictionary keys.
-    let key_keep_ranges = to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges);
+    let key_keep_ranges = to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges).unwrap_or_default();
     let count_kept_values = key_keep_ranges.iter().map(Range::len).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
@@ -1861,14 +1857,16 @@ fn merge_transform_ranges<'a>(
     }
 }
 
-fn to_keep_ranges(num_rows: usize, transform_ranges: &[KeyTransformRange]) -> Vec<Range<usize>> {
+fn to_keep_ranges(num_rows: usize, transform_ranges: &[KeyTransformRange]) -> Option<Vec<Range<usize>>> {
     let mut keep_ranges = Vec::new();
     let mut last_delete_range_end = 0;
+    let mut count_delete_ranges = 0;
     for (start, end) in transform_ranges
         .iter()
         .filter(|r| r.range_type == KeyTransformRangeType::Delete)
         .map(|r| (r.start(), r.end()))
     {
+        count_delete_ranges += 1;
         // don't push a keep range at the start if the first value was deleted
         if start != 0 {
             keep_ranges.push(Range {
@@ -1879,13 +1877,18 @@ fn to_keep_ranges(num_rows: usize, transform_ranges: &[KeyTransformRange]) -> Ve
         last_delete_range_end = end;
     }
 
-    // add the final range
-    keep_ranges.push(Range {
-        start: last_delete_range_end,
-        end: num_rows,
-    });
+    if count_delete_ranges == 0 {
+        None
+    } else {
 
-    keep_ranges
+        // add the final range
+        keep_ranges.push(Range {
+            start: last_delete_range_end,
+            end: num_rows,
+        });
+
+        Some(keep_ranges)
+    }
 }
 
 /// This is a plan for how the source keys array should be modified in `transform_keys` in order to
