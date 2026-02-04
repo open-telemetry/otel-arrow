@@ -34,6 +34,18 @@ pub enum Error {
         actual: DataType,
     },
 
+    #[error(
+        "Column `{}` value type mismatch, expect: {}, actual: {}",
+        name,
+        expect,
+        actual
+    )]
+    ColumnValueTypeMismatch {
+        name: String,
+        expect: DataType,
+        actual: DataType,
+    },
+
     #[error("Failed to compare two columns with unequal length")]
     ColumnLengthMismatch { source: ArrowError },
 
@@ -167,6 +179,18 @@ pub enum Error {
         given
     )]
     InvalidId { expected: usize, given: usize },
+
+    #[error(
+        "Invalid data type for struct, parent: {}, name: {}, data_type: {}",
+        parent,
+        name,
+        data_type
+    )]
+    InvalidDataTypeForStruct {
+        parent: String,
+        name: String,
+        data_type: DataType,
+    },
 
     #[error("Mixed signals")]
     MixedSignals,

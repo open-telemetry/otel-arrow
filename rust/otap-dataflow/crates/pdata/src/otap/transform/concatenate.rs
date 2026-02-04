@@ -751,9 +751,7 @@ fn select_all_mut<const N: usize>(
 mod schema_tests {
     use super::*;
     use crate::record_batch;
-    use arrow::array::{
-        Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array,
-    };
+    use arrow::array::{Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array};
     use rand::Rng;
     use std::sync::Arc;
 
@@ -1045,12 +1043,10 @@ mod schema_tests {
         let batch_refs: Vec<Option<&RecordBatch>> = batches.iter().map(|b| Some(b)).collect();
 
         // Test schema selection
-        let index = index_records(batch_refs.into_iter()).unwrap_or_else(|e| {
-            panic!("Failed to index records {}: {:?}", test_context, e)
-        });
-        let actual_schema = select_schema(&index).unwrap_or_else(|e| {
-            panic!("Failed to select schema {}: {:?}", test_context, e)
-        });
+        let index = index_records(batch_refs.into_iter())
+            .unwrap_or_else(|e| panic!("Failed to index records {}: {:?}", test_context, e));
+        let actual_schema = select_schema(&index)
+            .unwrap_or_else(|e| panic!("Failed to select schema {}: {:?}", test_context, e));
 
         let expected_field_type = match expected_dict_key.clone() {
             Some(key_type) => {
@@ -1068,9 +1064,8 @@ mod schema_tests {
         let mut batches_for_concat: Vec<[Option<RecordBatch>; 1]> =
             batches.into_iter().map(|batch| [Some(batch)]).collect();
 
-        let result = concatenate::<1>(&mut batches_for_concat).unwrap_or_else(|e| {
-            panic!("Concatenation failed {}: {:?}", test_context, e)
-        });
+        let result = concatenate::<1>(&mut batches_for_concat)
+            .unwrap_or_else(|e| panic!("Concatenation failed {}: {:?}", test_context, e));
 
         // Verify concatenated result
         assert_eq!(
@@ -1202,12 +1197,10 @@ mod schema_tests {
             )),
             // 2-byte float (Float16)
             DataType::Float16 => {
-                use arrow::datatypes::Float16Type;
                 use arrow::buffer::Buffer;
+                use arrow::datatypes::Float16Type;
                 // Generate unique Float16 values
-                let values: Vec<u16> = (start..start + count)
-                    .map(|i| (i % 65536) as u16)
-                    .collect();
+                let values: Vec<u16> = (start..start + count).map(|i| (i % 65536) as u16).collect();
                 let buffer = Buffer::from_slice_ref(&values);
                 Arc::new(PrimitiveArray::<Float16Type>::new(buffer.into(), None))
             }
@@ -1221,7 +1214,9 @@ mod schema_tests {
             )),
             // 4-byte float
             DataType::Float32 => Arc::new(Float32Array::from(
-                (start..start + count).map(|i| i as f32 + 0.5).collect::<Vec<_>>(),
+                (start..start + count)
+                    .map(|i| i as f32 + 0.5)
+                    .collect::<Vec<_>>(),
             )),
             // 8-byte unsigned integer
             DataType::UInt64 => Arc::new(UInt64Array::from(
@@ -1233,7 +1228,9 @@ mod schema_tests {
             )),
             // 8-byte float
             DataType::Float64 => Arc::new(Float64Array::from(
-                (start..start + count).map(|i| i as f64 + 0.5).collect::<Vec<_>>(),
+                (start..start + count)
+                    .map(|i| i as f64 + 0.5)
+                    .collect::<Vec<_>>(),
             )),
             // Fixed-size binary (8 bytes)
             DataType::FixedSizeBinary(8) => {
