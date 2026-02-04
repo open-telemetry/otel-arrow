@@ -1514,10 +1514,11 @@ where
     // - do we always need to calculate this?
     // - now that we've calculated it, can we use it to compute some of the other stuff
     //   that this function is computing more easily?
-    let dict_key_transform_ranges = dict_value_transform_ranges_to_key_ranges(
+    let dict_key_transform_ranges = dict_value_transform_ranges_to_key_ranges_v2(
         dict_arr,
         &dict_values_transform_result.transform_ranges,
     );
+    // let dict_key_transform_ranges = Vec::new();
 
     // Build a quick lookup of which dictionary value indices were renamed
     let mut value_index_renamed: Vec<bool> = vec![false; dict_values.len()];
@@ -1785,26 +1786,29 @@ fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
         .contains(&curr_range_key.as_usize())
         .then_some(0);
 
-    for i in 1..len {
-        if dict_keys[i] == curr_range_key {
+    for (i, dict_key) in dict_keys.iter().enumerate().skip(1) {
+        if *dict_key == curr_range_key {
             continue;
         }
 
         if let Some(curr_range_idx) = curr_range_idx {
             let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
-            dict_key_transform_ranges.push(KeyTransformRange {
-                range: Range { start: curr_range_start, end: i },
-                idx: curr_tx_range.idx,
-                range_type: curr_tx_range.range_type
-            });
+            // dict_key_transform_ranges.push(KeyTransformRange {
+            //     range: Range {
+            //         start: curr_range_start,
+            //         end: i,
+            //     },
+            //     idx: curr_tx_range.idx,
+            //     range_type: curr_tx_range.range_type,
+            // });
         }
 
-        let dict_key = dict_keys[i].as_usize();
+        let dict_key_usize = dict_keys[i].as_usize();
         let dict_val_range_idx =
             dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
-                if dict_key < range.start() {
+                if dict_key_usize < range.start() {
                     Ordering::Less
-                } else if dict_key >= range.end() {
+                } else if dict_key_usize >= range.end() {
                     Ordering::Greater
                 } else {
                     Ordering::Equal
@@ -1812,20 +1816,22 @@ fn dict_value_transform_ranges_to_key_ranges_v2<K: ArrowDictionaryKeyType>(
             });
 
         curr_range_start = i;
-        curr_range_key = dict_keys[i];
+        curr_range_key = *dict_key;
         curr_range_idx = dict_val_range_idx.ok();
     }
 
     // deal with last range
     if let Some(curr_range_idx) = curr_range_idx {
         let curr_tx_range = &dict_value_transform_ranges[curr_range_idx];
-        dict_key_transform_ranges.push(KeyTransformRange {
-            range: Range { start: curr_range_start, end: len },
-            idx: curr_tx_range.idx,
-            range_type: curr_tx_range.range_type
-        });
+        // dict_key_transform_ranges.push(KeyTransformRange {
+        //     range: Range {
+        //         start: curr_range_start,
+        //         end: len,
+        //     },
+        //     idx: curr_tx_range.idx,
+        //     range_type: curr_tx_range.range_type,
+        // });
     }
-
 
     dict_key_transform_ranges
 }
@@ -1854,33 +1860,34 @@ fn dict_value_transform_ranges_to_key_ranges<K: ArrowDictionaryKeyType>(
         &mut partition_boundaries,
     );
 
-    let unintialized = -2;
-    let not_present = -1;
-    let mut dict_val_range_cache = vec![unintialized; attr_keys.values().len()];
+    // let unintialized = -2;
+    // let not_present = -1;
+    // let mut dict_val_range_cache = vec![unintialized; attr_keys.values().len()];
 
     let mut find_and_maybe_push_key_range = |start: usize, end: usize| {
         let dict_key = dict_keys[start].as_usize();
-        if dict_val_range_cache[dict_key] == unintialized {
-            let dict_val_range_idx =
-                dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
-                    if dict_key < range.start() {
-                        Ordering::Less
-                    } else if dict_key >= range.end() {
-                        Ordering::Greater
-                    } else {
-                        Ordering::Equal
-                    }
-                });
-            if let Ok(dict_val_range_idx) = dict_val_range_idx {
-                dict_val_range_cache[dict_key] = dict_val_range_idx as i32;
-            } else {
-                dict_val_range_cache[dict_key] = not_present;
-            }
-        }
+        // if dict_val_range_cache[dict_key] == unintialized {
+        let dict_val_range_idx =
+            dict_value_transform_ranges.binary_search_by(|range: &KeyTransformRange| {
+                if dict_key < range.start() {
+                    Ordering::Less
+                } else if dict_key >= range.end() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                }
+            });
+        //     if let Ok(dict_val_range_idx) = dict_val_range_idx {
+        //         dict_val_range_cache[dict_key] = dict_val_range_idx as i32;
+        //     } else {
+        //         dict_val_range_cache[dict_key] = not_present;
+        //     }
+        // }
 
-        let dict_val_range_idx = dict_val_range_cache[dict_key];
-        if dict_val_range_idx >= 0 {
-            let dict_val_range = &dict_value_transform_ranges[dict_val_range_idx as usize];
+        // let dict_val_range_idx = dict_val_range_cache[dict_key];
+        // if dict_val_range_idx >= 0 {
+        if let Ok(dict_val_range_idx) = dict_val_range_idx {
+            let dict_val_range = &dict_value_transform_ranges[dict_val_range_idx]; // as usize];
             dict_key_transform_ranges.push(KeyTransformRange {
                 range: Range { start, end },
                 idx: dict_val_range.idx,
@@ -4665,29 +4672,30 @@ mod test {
             )
             .expect("record batch OK");
 
-            let (result, _) = apply_transport_optimized_encodings(
-                &crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
-                &batch,
-            )
-            .expect("transport optimize encoding apply");
+            // let (result, _) = apply_transport_optimized_encodings(
+            //     &crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::LogAttrs,
+            //     &batch,
+            // )
+            // .expect("transport optimize encoding apply");
 
+            let result = batch;
             result
         }
 
-        let input = gen_transport_optimized_bench_batch(128, false);
+        let input = gen_transport_optimized_bench_batch(128, true);
 
         arrow::util::pretty::print_batches(&[input.clone()]).unwrap();
 
         let transform1 = AttributesTransform::default().with_rename(RenameTransform::new(
-            [("attr3".into(), "attr5".into())].into_iter().collect(),
+            [("key_1".into(), "key_2".into())].into_iter().collect(),
         ));
         let transform2 = AttributesTransform::default().with_rename(RenameTransform::new(
             [("attr4".into(), "attr5".into())].into_iter().collect(),
         ));
         let result1 = transform_attributes(&input, &transform1).expect("no error");
         arrow::util::pretty::print_batches(&[result1.clone()]).unwrap();
-        let result2 = transform_attributes(&result1, &transform2).expect("no error");
-        arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
+        // let result2 = transform_attributes(&result1, &transform2).expect("no error");
+        // arrow::util::pretty::print_batches(&[result2.clone()]).unwrap();
     }
 }
 
