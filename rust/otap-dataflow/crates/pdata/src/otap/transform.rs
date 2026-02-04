@@ -5695,8 +5695,7 @@ mod test {
                 Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
                 Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
                 Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
-                // TODO need add bytes
-                // Field::new(consts::ATTRIBUTE_BYTES, DataType::Int64, true),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
             ])),
             vec![
                 Arc::new(UInt8Array::from_iter_values([
@@ -5712,12 +5711,18 @@ mod test {
                     AttributeValueType::Bool as u8,
                     AttributeValueType::Bool as u8,
                     AttributeValueType::Bool as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
                 ])),
-                Arc::new(StringArray::from_iter_values(std::iter::repeat_n("a", 12))),
+                Arc::new(StringArray::from_iter_values(std::iter::repeat_n("a", 15))),
                 Arc::new(StringArray::from_iter([
                     Some("a"),
                     Some("a"),
                     Some("b"),
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -5741,6 +5746,9 @@ mod test {
                     None,
                     None,
                     None,
+                    None,
+                    None,
+                    None,
                 ])),
                 Arc::new(Float64Array::from_iter([
                     None,
@@ -5752,6 +5760,9 @@ mod test {
                     Some(1.0),
                     Some(1.0),
                     Some(2.0),
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -5769,6 +5780,26 @@ mod test {
                     Some(true),
                     Some(true),
                     Some(false),
+                    None,
+                    None,
+                    None,
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(b"a"),
+                    Some(b"a"),
+                    Some(b"b"),
                 ])),
             ],
         )
@@ -5905,12 +5936,116 @@ mod test {
         )
         .unwrap();
         assert!(!result);
+
+        // assert adjacent non-null floats will evaluate equality correctly
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 12,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 13,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(result);
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 13,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 14,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
     }
 
-    #[ignore]
     #[test]
     fn test_are_neighbours_with_delta_encoded_parent_ids_null_values_logic() {
-        todo!()
+        let batch1 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["a", "a", "a", "a", "a"])),
+                Arc::new(StringArray::from_iter([None, Some(""), None, None, None])),
+            ],
+        )
+        .unwrap();
+
+        let key_col =
+            StringArrayAccessor::try_new_for_column(&batch1, consts::ATTRIBUTE_KEY).unwrap();
+        let val_cols = AnyValueArrays::try_from(&batch1).unwrap();
+
+        // ensure returns false left neighbour is null
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 0,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // ensure returns false if right neighbour is null
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 1,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 2,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
+
+        // ensure returns false both values are considered null (b/c value column for type missing)
+        let result = are_neighbours_with_delta_encoded_parent_ids(
+            &key_col,
+            &val_cols,
+            &[],
+            &MaybeReplacedKey {
+                index: 3,
+                replacement_idx: None,
+            },
+            &MaybeReplacedKey {
+                index: 4,
+                replacement_idx: None,
+            },
+        )
+        .unwrap();
+        assert!(!result);
     }
 
     #[test]
