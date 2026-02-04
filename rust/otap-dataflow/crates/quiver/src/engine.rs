@@ -3315,6 +3315,129 @@ mod tests {
         );
     }
 
+    /// Test that segment sequence numbers are correctly recovered after engine restart.
+    ///
+    /// The test verifies:
+    /// 1. First engine run creates segment files (e.g., 00000000.qseg, 00000001.qseg)
+    /// 2. After shutdown and restart, next_segment_seq is initialized to max(existing) + 1
+    /// 3. New segments after restart use non-colliding sequence numbers
+    /// 4. All segment files have unique sequence numbers
+    #[tokio::test]
+    async fn restart_recovers_segment_sequence_numbers() {
+        use std::collections::HashSet;
+
+        let dir = tempdir().expect("tempdir");
+        let segment_dir = dir.path().join("segments");
+
+        // === First engine run: create some segments ===
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(), // Very small to trigger finalization
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .expect("first engine open");
+
+        // Ingest data to create multiple segment files
+        for _ in 0..10 {
+            let bundle = DummyBundle::with_rows(50);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        engine.flush().await.expect("flush");
+
+        let segments_before_restart = engine.total_segments_written();
+        assert!(
+            segments_before_restart >= 1,
+            "should have created at least one segment before restart"
+        );
+
+        // Shutdown cleanly
+        engine.shutdown().await.expect("first shutdown");
+        drop(engine);
+
+        // Collect segment files created in first run
+        let files_after_first_run: HashSet<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            !files_after_first_run.is_empty(),
+            "should have segment files after first run"
+        );
+
+        // === Second engine run: verify sequence recovery ===
+        let engine2 = QuiverEngine::open(config.clone(), test_budget())
+            .await
+            .expect("second engine open");
+
+        // The next segment sequence should be >= segments created in first run
+        // (it tracks total segments ever created, not just loaded)
+        assert!(
+            engine2.total_segments_written() >= segments_before_restart,
+            "next_segment_seq should be initialized from existing segments: got {}, expected >= {}",
+            engine2.total_segments_written(),
+            segments_before_restart
+        );
+
+        // Ingest more data to create additional segments
+        for _ in 0..10 {
+            let bundle = DummyBundle::with_rows(50);
+            engine2.ingest(&bundle).await.expect("ingest after restart");
+        }
+        engine2.flush().await.expect("flush after restart");
+
+        let segments_after_restart = engine2.total_segments_written();
+        assert!(
+            segments_after_restart > segments_before_restart,
+            "should have created more segments after restart"
+        );
+
+        engine2.shutdown().await.expect("second shutdown");
+        drop(engine2);
+
+        // === Verify no sequence collisions ===
+        // Collect all segment files and verify unique sequence numbers
+        let all_files: Vec<_> = fs::read_dir(&segment_dir)
+            .expect("read segment dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+
+        let unique_files: HashSet<_> = all_files.iter().cloned().collect();
+
+        assert_eq!(
+            all_files.len(),
+            unique_files.len(),
+            "all segment files should have unique names (no sequence collisions)"
+        );
+
+        // Verify new segments were created (not overwriting old ones)
+        assert!(
+            all_files.len() > files_after_first_run.len(),
+            "should have more segment files after restart: {} vs {}",
+            all_files.len(),
+            files_after_first_run.len()
+        );
+
+        // Verify all original files still exist (weren't overwritten)
+        for original_file in &files_after_first_run {
+            assert!(
+                unique_files.contains(original_file),
+                "original segment file {} should still exist after restart",
+                original_file
+            );
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────────
     // WAL Replay Tests
     // ─────────────────────────────────────────────────────────────────────────────
@@ -3666,129 +3789,6 @@ mod tests {
                 open_segment_bundles, bundles_ingested,
                 "open segment should have all {} replayed bundles after recovery from rotated files, got {}",
                 bundles_ingested, open_segment_bundles
-            );
-        }
-    }
-
-    /// Test that segment sequence numbers are correctly recovered after engine restart.
-    ///
-    /// The test verifies:
-    /// 1. First engine run creates segment files (e.g., 00000000.qseg, 00000001.qseg)
-    /// 2. After shutdown and restart, next_segment_seq is initialized to max(existing) + 1
-    /// 3. New segments after restart use non-colliding sequence numbers
-    /// 4. All segment files have unique sequence numbers
-    #[tokio::test]
-    async fn restart_recovers_segment_sequence_numbers() {
-        use std::collections::HashSet;
-
-        let dir = tempdir().expect("tempdir");
-        let segment_dir = dir.path().join("segments");
-
-        // === First engine run: create some segments ===
-        let config = QuiverConfig::builder()
-            .data_dir(dir.path())
-            .segment(SegmentConfig {
-                target_size_bytes: NonZeroU64::new(100).unwrap(), // Very small to trigger finalization
-                ..Default::default()
-            })
-            .build()
-            .expect("config");
-
-        let engine = QuiverEngine::open(config.clone(), test_budget())
-            .await
-            .expect("first engine open");
-
-        // Ingest data to create multiple segment files
-        for _ in 0..10 {
-            let bundle = DummyBundle::with_rows(50);
-            engine.ingest(&bundle).await.expect("ingest");
-        }
-        engine.flush().await.expect("flush");
-
-        let segments_before_restart = engine.total_segments_written();
-        assert!(
-            segments_before_restart >= 1,
-            "should have created at least one segment before restart"
-        );
-
-        // Shutdown cleanly
-        engine.shutdown().await.expect("first shutdown");
-        drop(engine);
-
-        // Collect segment files created in first run
-        let files_after_first_run: HashSet<_> = fs::read_dir(&segment_dir)
-            .expect("read segment dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-
-        assert!(
-            !files_after_first_run.is_empty(),
-            "should have segment files after first run"
-        );
-
-        // === Second engine run: verify sequence recovery ===
-        let engine2 = QuiverEngine::open(config.clone(), test_budget())
-            .await
-            .expect("second engine open");
-
-        // The next segment sequence should be >= segments created in first run
-        // (it tracks total segments ever created, not just loaded)
-        assert!(
-            engine2.total_segments_written() >= segments_before_restart,
-            "next_segment_seq should be initialized from existing segments: got {}, expected >= {}",
-            engine2.total_segments_written(),
-            segments_before_restart
-        );
-
-        // Ingest more data to create additional segments
-        for _ in 0..10 {
-            let bundle = DummyBundle::with_rows(50);
-            engine2.ingest(&bundle).await.expect("ingest after restart");
-        }
-        engine2.flush().await.expect("flush after restart");
-
-        let segments_after_restart = engine2.total_segments_written();
-        assert!(
-            segments_after_restart > segments_before_restart,
-            "should have created more segments after restart"
-        );
-
-        engine2.shutdown().await.expect("second shutdown");
-        drop(engine2);
-
-        // === Verify no sequence collisions ===
-        // Collect all segment files and verify unique sequence numbers
-        let all_files: Vec<_> = fs::read_dir(&segment_dir)
-            .expect("read segment dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect();
-
-        let unique_files: HashSet<_> = all_files.iter().cloned().collect();
-
-        assert_eq!(
-            all_files.len(),
-            unique_files.len(),
-            "all segment files should have unique names (no sequence collisions)"
-        );
-
-        // Verify new segments were created (not overwriting old ones)
-        assert!(
-            all_files.len() > files_after_first_run.len(),
-            "should have more segment files after restart: {} vs {}",
-            all_files.len(),
-            files_after_first_run.len()
-        );
-
-        // Verify all original files still exist (weren't overwritten)
-        for original_file in &files_after_first_run {
-            assert!(
-                unique_files.contains(original_file),
-                "original segment file {} should still exist after restart",
-                original_file
             );
         }
     }
