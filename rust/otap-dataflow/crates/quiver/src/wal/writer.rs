@@ -1381,6 +1381,8 @@ impl WalCoordinator {
                 #[cfg(not(unix))]
                 {
                     let mut permissions = std::fs::metadata(&front.path)?.permissions();
+                    // The clippy warning about world-writable files only applies to Unix.
+                    #[allow(clippy::permissions_set_readonly_false)]
                     permissions.set_readonly(false);
                     std::fs::set_permissions(&front.path, permissions)?;
                 }
