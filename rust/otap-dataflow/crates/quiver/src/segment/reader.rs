@@ -1357,6 +1357,8 @@ mod tests {
             let mut permissions = std::fs::metadata(&seg.path)
                 .expect("metadata")
                 .permissions();
+            // The clippy warning about world-writable files only applies to Unix.
+            #[allow(clippy::permissions_set_readonly_false)]
             permissions.set_readonly(false);
             std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
         }
