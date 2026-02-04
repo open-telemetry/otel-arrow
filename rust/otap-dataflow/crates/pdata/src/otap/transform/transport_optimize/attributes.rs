@@ -871,10 +871,7 @@ impl SortedValuesColumnBuilder {
                 // safety: if this is the datatype, we'll have initialized offsets in constructor
                 let offsets_buffer = self.offsets.expect("offsets not None");
                 let offsets_buffer = offsets_buffer.into();
-                let sb = ScalarBuffer::new(offsets_buffer, 0, len + 1);
-                println!("offsets_buffer = {:?}", sb.to_vec());
-
-                let offsets = OffsetBuffer::new(sb);
+                let offsets = OffsetBuffer::new(ScalarBuffer::new(offsets_buffer, 0, len + 1));
                 Ok(Arc::new(StringArray::new(offsets, self.data.into(), nulls)))
             }
 
@@ -1341,7 +1338,7 @@ impl AttrValuesSorter {
 /// Performance: Depending on the function that is passed, this can also be auto-vectorized.
 /// For example, a simply comparison function like `left[i].is_eq(right[i])` can be compiled to use
 /// SIMD to do the comparisons
-pub(crate) fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
+fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, result_buf: &mut Vec<u8>) {
     result_buf.clear();
     result_buf.reserve(bit_util::ceil(len, 64) * 8);
 
@@ -1373,7 +1370,7 @@ pub(crate) fn collect_bool_inverted<F: Fn(usize) -> bool>(len: usize, f: F, resu
 /// Collect partitions of equivalent values in the given range of the source ID into the passed
 /// results Vec. The indices in the result ranges will be relative to the passed range, NOT to the
 /// indices of the passed source.
-pub fn collect_partitions_for_range(
+fn collect_partitions_for_range(
     range: &Range<usize>,
     source: &ArrayRef,
     result: &mut Vec<Range<usize>>,
