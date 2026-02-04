@@ -100,11 +100,13 @@ RFC 5424 messages follow this structure:
 
 **Example Input:**
 
+<!-- markdownlint-disable MD013 -->
+
 ```text
-<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su 12345 ID47
-[exampleSDID@32473 iut="3" eventSource="Application"]
-'su root' failed for lonvick on /dev/pts/8
+<34>1 2003-10-11T22:14:15.003Z mymachine.example.com su 12345 ID47 [exampleSDID@32473 iut="3" eventSource="Application"] 'su root' failed for lonvick on /dev/pts/8
 ```
+
+<!-- markdownlint-enable MD013 -->
 
 **Resulting LogRecord:**
 
@@ -113,7 +115,7 @@ RFC 5424 messages follow this structure:
 | `timestamp` | `2003-10-11T22:14:15.003Z` |
 | `severity_number` | `18` (ERROR2 - maps from syslog severity 2/Critical) |
 | `severity_text` | `ERROR2` |
-| `body` | *(empty - fully parsed)* |
+| `body` | *(null - fully parsed)* |
 
 | Attribute | Value |
 |-----------|-------|
@@ -149,7 +151,7 @@ RFC 3164 messages follow this structure:
 | `timestamp` | `<current_year>-10-11T22:14:15` (local timezone) |
 | `severity_number` | `18` (ERROR2) |
 | `severity_text` | `ERROR2` |
-| `body` | *(empty - fully parsed)* |
+| `body` | *(null - fully parsed)* |
 
 | Attribute | Value |
 |-----------|-------|
@@ -169,21 +171,27 @@ RFC 3164 messages follow this structure:
 CEF messages follow this structure:
 
 ```text
-CEF:version|vendor|product|version|event_class_id|name|severity|extensions
+CEF:Version|Device Vendor|Device Product|Device Version|Device Event Class ID|Name|Severity|[Extension]
 ```
+
+See the [CEF Implementation Standard][cef-spec] for full details.
 
 **Example Input:**
 
+<!-- markdownlint-disable MD013 -->
+
 ```text
-CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|
-src=10.0.0.1 dst=2.1.2.2 spt=1232
+CEF:0|Security|threatmanager|1.0|100|worm successfully stopped|10|src=10.0.0.1 dst=2.1.2.2 spt=1232
 ```
+
+<!-- markdownlint-enable MD013 -->
 
 **Resulting LogRecord:**
 
 | Field | Value |
 |-------|-------|
-| `timestamp` | *(observed time)* |
+| `timestamp` | `0` *(not available in CEF format)* |
+| `observed_time` | *(set to current time when batch is built)* |
 | `severity_number` | `0` (UNSPECIFIED - CEF has its own severity) |
 | `severity_text` | `UNSPECIFIED` |
 | `body` | *(empty - fully parsed)* |
@@ -201,6 +209,8 @@ src=10.0.0.1 dst=2.1.2.2 spt=1232
 | `dst` | `2.1.2.2` |
 | `spt` | `1232` |
 
+[cef-spec]: https://www.microfocus.com/documentation/arcsight/arcsight-smartconnectors-8.3/cef-implementation-standard/Content/CEF/Chapter%201%20What%20is%20CEF.htm
+
 ### CEF over Syslog
 
 When CEF is transported over syslog, both the syslog header and CEF content
@@ -208,10 +218,13 @@ are parsed:
 
 **Example Input:**
 
+<!-- markdownlint-disable MD013 -->
+
 ```text
-<34>1 2003-10-11T22:14:15.003Z myhost app 5678 - -
-CEF:0|Security|IDS|1.0|100|Attack detected|8|src=10.0.0.1 dst=192.168.1.1
+<34>1 2003-10-11T22:14:15.003Z myhost app 5678 - - CEF:0|Security|IDS|1.0|100|Attack detected|8|src=10.0.0.1 dst=192.168.1.1 spt=12345
 ```
+
+<!-- markdownlint-enable MD013 -->
 
 **Resulting LogRecord:**
 
