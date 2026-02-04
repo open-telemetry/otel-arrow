@@ -1127,7 +1127,7 @@ mod tests {
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
     use crate::subscriber::SubscriberId;
-    use crate::wal::WalReader;
+    use crate::wal::{WalReader, CURSOR_SIDECAR_FILENAME};
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
@@ -1444,7 +1444,7 @@ mod tests {
         assert_eq!(payload.num_rows(), 10, "expected 10 rows in payload");
 
         // === Verify WAL cursor was advanced ===
-        let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
+        let sidecar_path = temp_dir.path().join("wal").join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // The cursor should be > 0 (advanced past the header)
@@ -1675,7 +1675,7 @@ mod tests {
         );
 
         // === Verify cursor is at or past the last finalized segment ===
-        let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
+        let sidecar_path = temp_dir.path().join("wal").join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Cursor should be > 0 (some segments were finalized)
@@ -1967,7 +1967,7 @@ mod tests {
 
         // === Verify WAL + cursor state ===
         let wal_dir = temp_dir.path().join("wal");
-        let sidecar_path = wal_dir.join("quiver.wal.cursor");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Count WAL files and sizes

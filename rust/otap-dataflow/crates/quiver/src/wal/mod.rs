@@ -85,6 +85,9 @@ pub(crate) use replay::ReplayBundle;
 pub(crate) use writer::{FlushPolicy, WalOffset, WalWriter, WalWriterOptions};
 // CursorSidecar is used by engine to read the persisted cursor position.
 pub(crate) use cursor_sidecar::CursorSidecar;
+// CURSOR_SIDECAR_FILENAME is only used in tests.
+#[cfg(test)]
+pub(crate) use cursor_sidecar::CURSOR_SIDECAR_FILENAME;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WAL Format Constants

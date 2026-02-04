@@ -350,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn write_and_read_sidecar() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("quiver.wal.cursor");
+        let path = dir.path().join(CURSOR_SIDECAR_FILENAME);
         let value = sample_sidecar();
         CursorSidecar::write_to(&path, &value).await.expect("write");
         let loaded = CursorSidecar::read_from(&path).await.expect("read");

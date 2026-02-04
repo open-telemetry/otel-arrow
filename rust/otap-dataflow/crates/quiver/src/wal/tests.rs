@@ -20,7 +20,7 @@ use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
 
-use super::cursor_sidecar::CursorSidecar;
+use super::cursor_sidecar::{CursorSidecar, CURSOR_SIDECAR_FILENAME};
 use super::header::WalHeader;
 use super::reader::test_support::{self, ReadFailure};
 use super::writer::FlushPolicy;
@@ -582,7 +582,7 @@ async fn wal_writer_records_cursor_without_truncating() {
         "recording a safe cursor no longer mutates the active wal immediately"
     );
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
@@ -652,7 +652,7 @@ async fn wal_writer_enforces_safe_offset_boundaries() {
         .expect("record succeeds with aligned cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
@@ -680,7 +680,7 @@ async fn wal_writer_persists_consumer_cursor_sidecar() {
     writer.persist_cursor(&cursor).await.expect("record cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().expect("dir").join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().expect("dir").join(CURSOR_SIDECAR_FILENAME);
     let state = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(state.wal_position, offset.next_offset);
 }
@@ -715,7 +715,7 @@ async fn wal_writer_rotates_when_target_exceeded() {
     let active_len = std::fs::metadata(&wal_path).expect("active metadata").len();
     assert_eq!(active_len, test_header_size());
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     // Sidecar should exist after rotation (even if no cursor has been recorded yet)
     assert!(sidecar_path.exists(), "sidecar should exist after rotation");
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar should be readable");
@@ -885,7 +885,7 @@ async fn wal_writer_ignores_invalid_cursor_sidecar() {
         .expect("writer");
     }
 
-    let sidecar_path = wal_path.parent().expect("dir").join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().expect("dir").join(CURSOR_SIDECAR_FILENAME);
     // Write a truncated sidecar file (shorter than minimum length)
     std::fs::write(&sidecar_path, vec![0u8; 8]).expect("write corrupt");
 
@@ -2016,7 +2016,7 @@ async fn assert_crash_recovery(
         .path
         .parent()
         .expect("wal dir")
-        .join("quiver.wal.cursor");
+        .join(CURSOR_SIDECAR_FILENAME);
     if sidecar_path.exists() {
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar readable");
         let total_logical = total_logical_bytes(&options.path);
@@ -2335,7 +2335,7 @@ async fn wal_writer_handles_bundle_with_unpopulated_descriptor_slots() {
 async fn wal_recovery_clamps_stale_sidecar_offset() {
     // Test that recovery handles a sidecar with wal_position beyond actual WAL data
     let (_dir, wal_path) = temp_wal("stale_sidecar.wal");
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
 
     let descriptor = logs_descriptor();
 
