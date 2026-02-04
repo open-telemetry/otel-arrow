@@ -532,6 +532,7 @@ impl QuiverEngine {
     /// # Returns
     ///
     /// The number of WAL entries replayed.
+    #[must_use = "the replay count indicates recovery status and should be logged"]
     async fn replay_wal(&self) -> Result<usize> {
         let wal_path = wal_path(&self.config);
 
