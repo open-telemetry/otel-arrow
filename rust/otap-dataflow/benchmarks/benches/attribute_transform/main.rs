@@ -17,7 +17,7 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use otap_df_pdata::otap::transform::{
-    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
+    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes, transform_attributes_with_stats,
 };
 use otap_df_pdata::schema::{FieldExt, consts};
 
@@ -345,10 +345,9 @@ fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool)
     )
     .expect("record batch OK");
 
-    // let (result, _) = apply_transport_optimized_encodings(&ArrowPayloadType::LogAttrs, &batch)
-    //     .expect("transport optimize encoding apply");
+    let (result, _) = apply_transport_optimized_encodings(&ArrowPayloadType::LogAttrs, &batch)
+        .expect("transport optimize encoding apply");
 
-    let result = batch;
     result
 }
 
@@ -360,28 +359,21 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
     for dict_encoded_keys in [false, true] {
         for num_rows in [128, 1536, 8092] {
             let benchmark_id_param =
-                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},needs_decode=true");
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},rename,needs_decode=true");
             let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
 
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-                        let transform1 =
-                            AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("key_1".into(), "key_2".into())].into_iter().collect(),
-                            ));
-                        let transform2 =
-                            AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("key_2".into(), "key_3".into())].into_iter().collect(),
-                            ));
-                        (input, transform1, transform2)
+                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
+                            [("key_2".into(), "key_3".into())].into_iter().collect(),
+                        ));
+
+                        (input, transform)
                     },
-                    |(input, transform1, transform2)| {
-                        let result1 = transform_attributes(input, &transform1).expect("no error");
-                        black_box(result1)
-                        // let result2 =
-                        //     transform_attributes(&result1, &transform2).expect("no error");
-                        // black_box(result2)
+                    |(input, transform)| {
+                        let result = transform_attributes(input, &transform).expect("no error");
+                        black_box(result)
                     },
                     BatchSize::SmallInput,
                 )
@@ -392,27 +384,78 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
     for dict_encoded_keys in [false, true] {
         for num_rows in [128, 1536, 8092] {
             let benchmark_id_param =
-                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},needs_decode=false");
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},rename,needs_decode=false");
             let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
 
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-                        let transform1 =
-                            AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("key_0".into(), "key_3".into())].into_iter().collect(),
-                            ));
-                        let transform2 =
-                            AttributesTransform::default().with_rename(RenameTransform::new(
-                                [("key_2".into(), "key_4".into())].into_iter().collect(),
-                            ));
-                        (input, transform1, transform2)
+
+                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
+                            [("key_2".into(), "key_4".into())].into_iter().collect(),
+                        ));
+
+                        (input, transform)
                     },
-                    |(input, transform1, transform2)| {
-                        let result1 = transform_attributes(input, &transform1).expect("no error");
-                        // let result2 =
-                        //     transform_attributes(&result1, &transform2).expect("no error");
-                        black_box(result1)
+                    |(input, transform)| {
+                        let result = transform_attributes(input, &transform).expect("no error");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8092] {
+            let benchmark_id_param =
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},delete,needs_decode=true");
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
+            let transform = AttributesTransform::default().with_rename(RenameTransform::new(
+                [("key_1".into(), "key_3".into())].into_iter().collect(),
+            ));
+            let input = transform_attributes(&input, &transform).expect("no error");
+
+            let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
+                b.iter_batched(
+                    || {
+
+                        let transform = AttributesTransform::default().with_delete(DeleteTransform::new(
+                                [("key_2".into())].into_iter().collect(),
+                            ));
+
+                        (input, transform)
+                    },
+                    |(input, transform)| {
+                        let result = transform_attributes(input, &transform).expect("no error");
+                        black_box(result)
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+        }
+    }
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8092] {
+            let benchmark_id_param =
+                format!("num_rows={num_rows},dict_encoded_keys={dict_encoded_keys},delete,needs_decode=false");
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys);
+
+            let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
+                b.iter_batched(
+                    || {
+
+                        let transform = AttributesTransform::default().with_delete(DeleteTransform::new(
+                                [("key_2".into())].into_iter().collect(),
+                            ));
+
+                        (input, transform)
+                    },
+                    |(input, transform)| {
+                        let result = transform_attributes(input, &transform).expect("no error");
+                        black_box(result)
                     },
                     BatchSize::SmallInput,
                 )

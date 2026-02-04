@@ -1546,12 +1546,15 @@ where
             .transform_ranges
             .iter()
             .any(|range| range.range_type == KeyTransformRangeType::Delete);
-    let dict_key_transform_ranges = compute_dict_key_transform_ranges
-        .then_some(dict_value_transform_ranges_to_key_ranges_v2(
+    // println!("transport_encoded {:?}", is_transport_encoded);
+    let dict_key_transform_ranges = if compute_dict_key_transform_ranges {
+        dict_value_transform_ranges_to_key_ranges_v2(
             dict_arr,
             &dict_values_transform_result.transform_ranges,
-        ))
-        .unwrap_or_default();
+        )
+    } else {
+        Vec::new()
+    };
 
     // If we're tracking statistics on how many rows were transformed, it's less expensive to
     // compute these statistics from the ranges of transformed dictionary keys. However, if these
