@@ -53,16 +53,5 @@ nodes:
 
 settings:
   telemetry:
-    # Internal logging
     logs:
       level: "error"
-      providers:
-        global: its
-        engine: its
-        internal: console_direct
-        admin: its
-# OpenTelemetry-specific, visible in "its" modes
-service:
-  telemetry:
-    resource:
-      service.name: "kql-processor-demo"
