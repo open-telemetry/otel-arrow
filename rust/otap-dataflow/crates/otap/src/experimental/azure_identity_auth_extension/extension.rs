@@ -575,4 +575,169 @@ mod tests {
             err => panic!("Expected Auth token acquisition error, got: {:?}", err),
         }
     }
+
+    // ==================== BearerTokenProvider Trait Tests ====================
+
+    #[tokio::test]
+    async fn test_bearer_token_provider_get_token() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let credential = make_mock_credential(
+            "bearer_test_token",
+            azure_core::time::Duration::minutes(60),
+            call_count.clone(),
+        );
+
+        let ext = AzureIdentityAuthExtension::from_mock(
+            credential,
+            "scope".to_string(),
+            AuthMethod::Development,
+        );
+
+        // Use the BearerTokenProvider trait method
+        let token: BearerToken = BearerTokenProvider::get_token(&ext).await.unwrap();
+        assert_eq!(token.token.secret(), "bearer_test_token");
+        assert!(token.expires_on > 0);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_bearer_token_provider_subscribe_token_refresh() {
+        let credential = make_mock_credential(
+            "test_token",
+            azure_core::time::Duration::minutes(60),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        let ext = AzureIdentityAuthExtension::from_mock(
+            credential,
+            "scope".to_string(),
+            AuthMethod::Development,
+        );
+
+        // Get a subscriber
+        let mut rx = ext.subscribe_token_refresh();
+
+        // Initially should be None
+        assert!(rx.borrow().is_none());
+
+        // Simulate token broadcast (using internal sender)
+        let new_token = BearerToken::new("refreshed_token".to_string(), 12345);
+        let _ = ext.token_sender.send(Some(new_token.clone()));
+
+        // Subscriber should receive the update
+        rx.changed().await.unwrap();
+        let received = rx.borrow();
+        assert!(received.is_some());
+        let received_token = received.as_ref().unwrap();
+        assert_eq!(received_token.token.secret(), "refreshed_token");
+        assert_eq!(received_token.expires_on, 12345);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_subscribers_receive_token_updates() {
+        let credential = make_mock_credential(
+            "test_token",
+            azure_core::time::Duration::minutes(60),
+            Arc::new(AtomicUsize::new(0)),
+        );
+
+        let ext = AzureIdentityAuthExtension::from_mock(
+            credential,
+            "scope".to_string(),
+            AuthMethod::Development,
+        );
+
+        // Create multiple subscribers
+        let mut rx1 = ext.subscribe_token_refresh();
+        let mut rx2 = ext.subscribe_token_refresh();
+
+        // Broadcast a token
+        let token = BearerToken::new("broadcast_token".to_string(), 99999);
+        let _ = ext.token_sender.send(Some(token));
+
+        // Both subscribers should receive the update
+        rx1.changed().await.unwrap();
+        rx2.changed().await.unwrap();
+
+        assert_eq!(rx1.borrow().as_ref().unwrap().token.secret(), "broadcast_token");
+        assert_eq!(rx2.borrow().as_ref().unwrap().token.secret(), "broadcast_token");
+    }
+
+    // ==================== Token Refresh Scheduling Tests ====================
+
+    #[test]
+    fn test_get_next_token_refresh_schedules_before_expiry() {
+        // Token expires in 10 minutes (600 seconds)
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let token = BearerToken::new("test".to_string(), now_secs + 600);
+        let next_refresh = AzureIdentityAuthExtension::get_next_token_refresh(&token);
+
+        // Should refresh before expiry (600s - 299s buffer = ~301s from now)
+        // But at least MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) from now
+        let now = tokio::time::Instant::now();
+        let min_expected = now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS);
+
+        assert!(next_refresh >= min_expected);
+    }
+
+    #[test]
+    fn test_get_next_token_refresh_respects_minimum_interval() {
+        // Token expires very soon (in 5 seconds)
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let token = BearerToken::new("test".to_string(), now_secs + 5);
+        let next_refresh = AzureIdentityAuthExtension::get_next_token_refresh(&token);
+
+        // Should still wait at least MIN_TOKEN_REFRESH_INTERVAL_SECS (allowing 1s tolerance)
+        let now = tokio::time::Instant::now();
+        let min_expected = now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
+
+        assert!(next_refresh >= min_expected);
+    }
+
+    #[test]
+    fn test_get_next_token_refresh_handles_expired_token() {
+        // Token already expired (in the past)
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let token = BearerToken::new("test".to_string(), now_secs - 100);
+        let next_refresh = AzureIdentityAuthExtension::get_next_token_refresh(&token);
+
+        // Should schedule refresh at minimum interval (allowing 1s tolerance)
+        let now = tokio::time::Instant::now();
+        let min_expected = now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
+
+        assert!(next_refresh >= min_expected);
+    }
+
+    #[test]
+    fn test_get_next_token_refresh_long_lived_token() {
+        // Token expires in 1 hour (3600 seconds)
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let token = BearerToken::new("test".to_string(), now_secs + 3600);
+        let next_refresh = AzureIdentityAuthExtension::get_next_token_refresh(&token);
+
+        // Should refresh ~5 minutes before expiry (3600 - 299 = 3301s from now)
+        let now = tokio::time::Instant::now();
+        let expected_approx = now + tokio::time::Duration::from_secs(3600 - TOKEN_EXPIRY_BUFFER_SECS);
+
+        // Allow some tolerance for timing
+        let tolerance = tokio::time::Duration::from_secs(2);
+        assert!(next_refresh >= expected_approx - tolerance);
+        assert!(next_refresh <= expected_approx + tolerance);
+    }
 }

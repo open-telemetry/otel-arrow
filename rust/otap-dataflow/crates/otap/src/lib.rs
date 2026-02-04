@@ -52,10 +52,11 @@ pub mod noop_exporter;
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
-/// Experimental exporters and processors
+/// Experimental exporters, processors, and extensions
 #[cfg(any(
     feature = "experimental-exporters",
-    feature = "experimental-processors"
+    feature = "experimental-processors",
+    feature = "experimental-extensions"
 ))]
 pub mod experimental;
 

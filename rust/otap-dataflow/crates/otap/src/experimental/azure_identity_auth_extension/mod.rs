@@ -88,7 +88,7 @@ mod tests {
     fn test_extension_urn() {
         assert_eq!(
             AZURE_IDENTITY_AUTH_EXTENSION_URN,
-            "urn:otel:azure:identity:auth:extension"
+            "urn:otel:azureidentityauth:extension"
         );
     }
 

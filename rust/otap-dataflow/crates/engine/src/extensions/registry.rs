@@ -448,4 +448,166 @@ mod tests {
 
         assert_eq!(bundle.len(), 1);
     }
+
+    #[test]
+    fn test_bundle_is_empty() {
+        let bundle = ExtensionBundle::new();
+        assert!(bundle.is_empty());
+        assert_eq!(bundle.len(), 0);
+
+        let instance = Arc::new(TestTokenProvider {
+            token: "test".to_string(),
+        });
+        let mut bundle = ExtensionBundle::new();
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
+        assert!(!bundle.is_empty());
+    }
+
+    #[test]
+    fn test_bundle_debug() {
+        let mut bundle = ExtensionBundle::new();
+        let debug_str = format!("{:?}", bundle);
+        assert!(debug_str.contains("ExtensionBundle"));
+        assert!(debug_str.contains("trait_count"));
+        assert!(debug_str.contains("0"));
+
+        let instance = Arc::new(TestTokenProvider {
+            token: "test".to_string(),
+        });
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
+        let debug_str = format!("{:?}", bundle);
+        assert!(debug_str.contains("1"));
+    }
+
+    #[test]
+    fn test_registry_get_bundle() {
+        let instance = Arc::new(TestTokenProvider {
+            token: "test".to_string(),
+        });
+        let mut bundle = ExtensionBundle::new();
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
+
+        let registry = ExtensionRegistry::from_map(HashMap::from([("my_ext".to_string(), bundle)]));
+
+        assert!(registry.get_bundle("my_ext").is_some());
+        assert!(registry.get_bundle("missing").is_none());
+
+        let retrieved_bundle = registry.get_bundle("my_ext").unwrap();
+        assert!(retrieved_bundle.contains::<dyn BearerTokenProvider>());
+    }
+
+    #[test]
+    fn test_registry_contains_len_is_empty() {
+        let registry = ExtensionRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+        assert!(!registry.contains("any"));
+
+        let bundle = ExtensionBundle::new();
+        let registry = ExtensionRegistry::from_map(HashMap::from([("ext1".to_string(), bundle)]));
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains("ext1"));
+        assert!(!registry.contains("ext2"));
+    }
+
+    #[test]
+    fn test_registry_names() {
+        let bundle1 = ExtensionBundle::new();
+        let bundle2 = ExtensionBundle::new();
+        let registry = ExtensionRegistry::from_map(HashMap::from([
+            ("alpha".to_string(), bundle1),
+            ("beta".to_string(), bundle2),
+        ]));
+
+        let names: Vec<&String> = registry.names().collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().any(|n| *n == "alpha"));
+        assert!(names.iter().any(|n| *n == "beta"));
+    }
+
+    #[test]
+    fn test_registry_debug() {
+        let bundle = ExtensionBundle::new();
+        let registry = ExtensionRegistry::from_map(HashMap::from([("test_ext".to_string(), bundle)]));
+
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("ExtensionRegistry"));
+        assert!(debug_str.contains("test_ext"));
+    }
+
+    #[test]
+    fn test_registry_builder() {
+        let mut builder = ExtensionRegistryBuilder::new();
+        assert!(builder.extensions.is_empty());
+
+        let instance = Arc::new(TestTokenProvider {
+            token: "builder_test".to_string(),
+        });
+        let mut bundle = ExtensionBundle::new();
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
+
+        builder.register("my_extension".to_string(), bundle);
+
+        let registry = builder.build();
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains("my_extension"));
+        let _: Arc<dyn BearerTokenProvider> = registry.get_trait("my_extension").unwrap();
+    }
+
+    #[test]
+    fn test_extension_error_display() {
+        let not_found = ExtensionError::NotFound {
+            name: "missing_ext".to_string(),
+        };
+        let display = format!("{}", not_found);
+        assert!(display.contains("missing_ext"));
+        assert!(display.contains("not found"));
+
+        let not_impl = ExtensionError::TraitNotImplemented {
+            name: "my_ext".to_string(),
+            expected: "BearerTokenProvider",
+        };
+        let display = format!("{}", not_impl);
+        assert!(display.contains("my_ext"));
+        assert!(display.contains("BearerTokenProvider"));
+        assert!(display.contains("does not implement"));
+    }
+
+    #[test]
+    fn test_extension_error_is_error() {
+        let err: Box<dyn std::error::Error> = Box::new(ExtensionError::NotFound {
+            name: "test".to_string(),
+        });
+        // Verify it implements std::error::Error
+        assert!(err.to_string().contains("test"));
+    }
+
+    #[test]
+    fn test_bundle_default() {
+        let bundle = ExtensionBundle::default();
+        assert!(bundle.is_empty());
+    }
+
+    #[test]
+    fn test_registry_builder_default() {
+        let builder = ExtensionRegistryBuilder::default();
+        let registry = builder.build();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_registry_clone() {
+        let instance = Arc::new(TestTokenProvider {
+            token: "clone_test".to_string(),
+        });
+        let mut bundle = ExtensionBundle::new();
+        bundle.insert::<dyn BearerTokenProvider>(instance as Arc<dyn BearerTokenProvider>);
+
+        let registry = ExtensionRegistry::from_map(HashMap::from([("ext".to_string(), bundle)]));
+        let cloned = registry.clone();
+
+        assert_eq!(cloned.len(), registry.len());
+        assert!(cloned.contains("ext"));
+    }
 }

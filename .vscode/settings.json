@@ -22,9 +22,14 @@
         "rust/experimental/query_abstraction/Cargo.toml",
         "rust/experimental/query_engine/Cargo.toml"
     ],
-
-    "rust-analyzer.check.features": "all",
-    "rust-analyzer.cargo.features": "all",
+    
+    // Enable specific features for rust-analyzer
+    "rust-analyzer.cargo.features": [
+        "experimental-exporters",
+        "geneva-exporter",
+        "azure-monitor-exporter",
+        "azure-identity-auth-extension"
+    ],
 
     // Exclude Rust build artifacts from file watching and search
     // to improve performance and reduce noise in search results.
