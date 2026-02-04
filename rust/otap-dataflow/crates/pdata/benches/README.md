@@ -2,75 +2,12 @@
 
 This directory contains benchmarks for comparing the performance of different OTAP record concatenation implementations.
 
-## Available Benchmarks
-
-### `concatenate.rs`
-
-Compares two implementations for concatenating OTAP record batches:
-
-1. **New implementation**: `concatenate()` from `transform/concatenate.rs`
-2. **Old implementation**: `generic_schemaless_concatenate()` from `groups.rs`
-
-**Important**: Both implementations are benchmarked on the exact same data to ensure fair comparison. Data is generated once upfront for each configuration, then cloned for each benchmark iteration.
-
-The benchmark tests both implementations with:
-- **Single metric type**: Varying numbers of inputs (10, 100) with 100 points per metric
-- **Mixed metric types**: Gauges, sums, and histograms with varying numbers of inputs (10, 100)
-
 ## Running the Benchmarks
 
-### Run all concatenation benchmarks
+### Concatenation
 ```bash
 cargo bench --bench concatenate
 ```
-
-### Run only single-metric-type comparison
-```bash
-cargo bench --bench concatenate concatenate_comparison
-```
-
-### Run only mixed-metric-type comparison
-```bash
-cargo bench --bench concatenate mixed_comparison
-```
-
-### Filter for just new or old implementation results
-```bash
-cargo bench --bench concatenate -- new
-cargo bench --bench concatenate -- old
-```
-
-### Test that benchmarks work (without full benchmark run)
-```bash
-cargo bench --bench concatenate -- --test
-```
-
-## Interpreting Results
-
-Criterion will output:
-- **Time per iteration**: How long each concatenation operation takes
-- **Throughput**: Operations per second
-- **Comparison**: Performance difference between new and old implementations
-
-Results are saved to `target/criterion/` and can be viewed as HTML reports.
-
-Since both implementations run on identical data within each benchmark group, the performance comparison is directly meaningful and fair.
-
-## Implementation Details
-
-The benchmarks:
-1. Generate OTAP metrics data using `DataGenerator` from the testing module
-2. Convert OTLP protocol messages to OTAP format using `otlp_to_otap`
-3. Extract the internal batch arrays from `OtapArrowRecords::Metrics`
-4. **Store the generated data for reuse across both implementations**
-5. For each iteration, clone the pre-generated data (cloning time is measured but negligible compared to concatenation)
-6. Measure the time to concatenate the batches using each implementation
-
-This approach ensures:
-- Both implementations operate on identical data
-- Only the concatenation logic is meaningfully benchmarked
-- Results are directly comparable
-- The clone overhead is consistent across both implementations
 
 ## Benchmark Results
 
