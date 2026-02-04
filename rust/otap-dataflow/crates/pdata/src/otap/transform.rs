@@ -978,8 +978,11 @@ pub fn transform_attributes_impl(
                     if i == key_column_idx {
                         Ok(new_keys.clone() as ArrayRef)
                     } else {
-                        match keys_transform_result.keep_ranges.as_ref() {
-                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
+                        match to_keep_ranges(
+                            attrs_record_batch.num_rows(),
+                            &keys_transform_result.transform_ranges,
+                        ) {
+                            Some(keep_ranges) => take_ranges_slice(col, &keep_ranges),
                             None => Ok(col.clone()),
                         }
                     }
@@ -1216,13 +1219,8 @@ pub fn transform_attributes(
 struct KeysTransformResult {
     new_keys: StringArray,
 
-    // TODO remove the others stuff this returns ...
+    // TODO comments
     transform_ranges: Vec<KeyTransformRange>,
-
-    /// Ranges of of the additional columns which should be kept.
-    ///
-    /// This will be `None` if there are no ranges that have been deleted
-    keep_ranges: Option<Vec<Range<usize>>>,
 
     /// Exact number of rows whose key was renamed (row-level replacements)
     replaced_rows: usize,
@@ -1273,7 +1271,6 @@ fn transform_keys(
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
             transform_ranges: Vec::new(),
-            keep_ranges: None,
             replaced_rows: 0,
             deleted_rows: 0,
         });
@@ -1439,14 +1436,6 @@ fn transform_keys(
         }
     };
 
-    // calculate which ranges from other columns in the dataset should be kept. This will be `Some`
-    // if there were some deletes. Otherwise, this will be `None` which signals to the caller that
-    // we can keep the other columns in their entirety.
-    let keep_ranges = to_keep_ranges(len, &transform_ranges);
-
-    // create the new nulls buffer
-    // let new_nulls = take_null_buffer_ranges(array.nulls(), keep_ranges.as_ref());
-
     let new_values = new_values.into();
     // Safety: we use unchecked here for better performance because we avoid doing utf8 validation
     // on the new values buffer. This should be OK because we've copied bytes from the existing
@@ -1458,7 +1447,6 @@ fn transform_keys(
         new_keys,
         // TODO - is into_owned free here?
         transform_ranges: transform_ranges.into_owned(),
-        keep_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
     })
@@ -1544,7 +1532,12 @@ where
         (rename_count, 0)
     };
 
-    if dict_values_transform_result.keep_ranges.is_none() {
+    let dict_values_keep_ranges = to_keep_ranges(
+        dict_values.len(),
+        &dict_values_transform_result.transform_ranges,
+    );
+
+    if dict_values_keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
         let new_dict_keys = dict_keys.clone();
@@ -1567,15 +1560,13 @@ where
         });
     }
 
+    // safety: we've checked above that this is not None
+    let dict_values_keep_ranges = dict_values_keep_ranges.expect("not none");
+
     // create quick lookup for each dictionary key of whether it was kept and if so which
     // contiguous range of kept dictionary values the key points to. This will allow us to build
     // the new dictionary keys array very quickly, because we know how many dictionary values were
     // deleted prior to this range.
-    let dict_values_keep_ranges = to_keep_ranges(
-        dict_values.len(),
-        &dict_values_transform_result.transform_ranges,
-    ).unwrap_or_default();
-
     let mut dict_key_kept_in_values_range: Vec<Option<usize>> = vec![None; dict_values.len()];
     for (range_idx, range) in dict_values_keep_ranges.iter().enumerate() {
         for i in range.start..range.end {
@@ -1584,7 +1575,8 @@ where
     }
 
     // Build the new dictionary keys.
-    let key_keep_ranges = to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges).unwrap_or_default();
+    let key_keep_ranges =
+        to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges).unwrap_or_default();
     let count_kept_values = key_keep_ranges.iter().map(Range::len).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
@@ -1857,7 +1849,10 @@ fn merge_transform_ranges<'a>(
     }
 }
 
-fn to_keep_ranges(num_rows: usize, transform_ranges: &[KeyTransformRange]) -> Option<Vec<Range<usize>>> {
+fn to_keep_ranges(
+    num_rows: usize,
+    transform_ranges: &[KeyTransformRange],
+) -> Option<Vec<Range<usize>>> {
     let mut keep_ranges = Vec::new();
     let mut last_delete_range_end = 0;
     let mut count_delete_ranges = 0;
@@ -1880,7 +1875,6 @@ fn to_keep_ranges(num_rows: usize, transform_ranges: &[KeyTransformRange]) -> Op
     if count_delete_ranges == 0 {
         None
     } else {
-
         // add the final range
         keep_ranges.push(Range {
             start: last_delete_range_end,
