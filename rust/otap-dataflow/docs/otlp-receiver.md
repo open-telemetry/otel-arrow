@@ -4,7 +4,7 @@ The OTLP Receiver ingests telemetry data via the OpenTelemetry Protocol (OTLP)
 and forwards it into the OTAP dataflow pipeline. It supports both gRPC (HTTP/2)
 and HTTP/1.1 protocols with unified concurrency control.
 
-**Plugin URN (full):** `urn:otel:otlp:receiver`  
+**Plugin URN (full):** `urn:otel:otlp:receiver`
 **Plugin URN (OTel shortcut):** `otlp:receiver`
 
 ## Architecture Overview
