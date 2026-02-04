@@ -9,7 +9,7 @@
 //!
 //! The settings in service::telemetry are OpenTelemetry-SDK specific, the path
 //! taken from the Collector's configuration model (which has a service::pipelines
-//! nearby), and based on the OpenTelemetry decolarative configuration model.
+//! nearby), and based on the OpenTelemetry declarative configuration model.
 
 pub mod logs;
 
