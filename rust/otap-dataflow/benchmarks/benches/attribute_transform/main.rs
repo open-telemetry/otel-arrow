@@ -4,7 +4,8 @@
 //! Benchmarks for functions that transform attributes
 
 use arrow::array::{
-    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder, StringDictionaryBuilder, UInt8Builder, UInt16Array, UInt16Builder
+    ArrayRef, DictionaryArray, PrimitiveBuilder, RecordBatch, StringBuilder,
+    StringDictionaryBuilder, UInt8Builder, UInt16Array, UInt16Builder,
 };
 use arrow::compute::cast;
 use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
@@ -17,7 +18,8 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use otap_df_pdata::otap::transform::{
-    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes, transform_attributes_with_stats,
+    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
+    transform_attributes_with_stats,
 };
 use otap_df_pdata::schema::{FieldExt, consts};
 
@@ -293,7 +295,11 @@ fn bench_transform_attributes(c: &mut Criterion) {
     group.finish();
 }
 
-fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool, transport_encode: bool) -> RecordBatch {
+fn gen_transport_optimized_bench_batch(
+    num_rows: usize,
+    dict_encoded_keys: bool,
+    transport_encode: bool,
+) -> RecordBatch {
     let mut parent_id_builder = UInt16Builder::with_capacity(num_rows);
     let mut type_builder = UInt8Builder::with_capacity(num_rows);
     let mut keys_builder = StringBuilder::new();
@@ -323,7 +329,8 @@ fn gen_transport_optimized_bench_batch(num_rows: usize, dict_encoded_keys: bool,
     };
 
     let schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_encoding(consts::metadata::encodings::PLAIN),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false)
+            .with_encoding(consts::metadata::encodings::PLAIN),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_KEY, key_array.data_type().clone(), false),
         // TODO this failing - need convert to dict & also fix bug
@@ -369,9 +376,10 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
-                            [("key_2".into(), "key_3".into())].into_iter().collect(),
-                        ));
+                        let transform =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_2".into(), "key_3".into())].into_iter().collect(),
+                            ));
 
                         (input, transform)
                     },
@@ -394,10 +402,10 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-
-                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
-                            [("key_2".into(), "key_4".into())].into_iter().collect(),
-                        ));
+                        let transform =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_2".into(), "key_4".into())].into_iter().collect(),
+                            ));
 
                         (input, transform)
                     },
@@ -424,10 +432,9 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-
-                        let transform = AttributesTransform::default().with_delete(DeleteTransform::new(
-                                [("key_2".into())].into_iter().collect(),
-                            ));
+                        let transform = AttributesTransform::default().with_delete(
+                            DeleteTransform::new([("key_2".into())].into_iter().collect()),
+                        );
 
                         (input, transform)
                     },
@@ -450,10 +457,9 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-
-                        let transform = AttributesTransform::default().with_delete(DeleteTransform::new(
-                                [("key_2".into())].into_iter().collect(),
-                            ));
+                        let transform = AttributesTransform::default().with_delete(
+                            DeleteTransform::new([("key_2".into())].into_iter().collect()),
+                        );
 
                         (input, transform)
                     },
@@ -476,9 +482,10 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
-                            [("key_2".into(), "key_3".into())].into_iter().collect(),
-                        ));
+                        let transform =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_2".into(), "key_3".into())].into_iter().collect(),
+                            ));
 
                         (input, transform)
                     },
@@ -501,15 +508,16 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
             let _ = group.bench_with_input(benchmark_id_param, &input, |b, input| {
                 b.iter_batched(
                     || {
-
-                        let transform = AttributesTransform::default().with_rename(RenameTransform::new(
-                            [("key_2".into(), "key_3".into())].into_iter().collect(),
-                        ));
+                        let transform =
+                            AttributesTransform::default().with_rename(RenameTransform::new(
+                                [("key_2".into(), "key_3".into())].into_iter().collect(),
+                            ));
 
                         (input, transform)
                     },
                     |(input, transform)| {
-                        let result = transform_attributes_with_stats(input, &transform).expect("no error");
+                        let result =
+                            transform_attributes_with_stats(input, &transform).expect("no error");
                         black_box(result)
                     },
                     BatchSize::SmallInput,
