@@ -339,6 +339,12 @@ struct DestinationState {
 
 /// Most fanout configurations have 2-4 destinations; inline storage avoids heap allocation.
 type DestinationVec = SmallVec<[DestinationState; 4]>;
+/// Queue of destination indices for sequential dispatch or pending sends.
+type DestinationIndexQueue = SmallVec<[usize; 4]>;
+/// Collection of deadlines returned from dispatch operations.
+type DeadlineVec = SmallVec<[Deadline; 4]>;
+/// Request IDs pending dispatch after timeout handling.
+type PendingDispatchQueue = SmallVec<[u64; 8]>;
 
 #[derive(Debug)]
 struct Inflight {
@@ -479,7 +485,7 @@ impl FanoutProcessor {
         self.next_id = self.next_id.wrapping_add(1).max(1);
 
         let mut destinations_state = DestinationVec::new();
-        let mut queue = SmallVec::<[usize; 4]>::new();
+        let mut queue = DestinationIndexQueue::new();
         // We only need ack/nack notifications; the payload is not used since we keep
         // original_pdata for upstream routing and use calldata for destination lookup.
         let interests = Interests::ACKS_OR_NACKS;
@@ -548,9 +554,9 @@ impl FanoutProcessor {
         inflight: &mut Inflight,
         destinations: &[DestinationConfig],
         effect_handler: &EffectHandler<OtapPdata>,
-    ) -> Result<SmallVec<[Deadline; 4]>, TypedError<OtapPdata>> {
-        let mut to_send = SmallVec::<[usize; 4]>::new();
-        let mut new_deadlines = SmallVec::<[Deadline; 4]>::new();
+    ) -> Result<DeadlineVec, TypedError<OtapPdata>> {
+        let mut to_send = DestinationIndexQueue::new();
+        let mut new_deadlines = DeadlineVec::new();
         match inflight.mode {
             DeliveryMode::Parallel => {
                 for (idx, ep) in inflight.destinations.iter().enumerate() {
@@ -637,8 +643,9 @@ impl FanoutProcessor {
         // No fallback, produce a nack using original pdata for correct upstream routing.
         Some(NackMsg {
             reason,
-            calldata: smallvec![],
+            calldata: CallData::new(),
             refused: Box::new(inflight.original_pdata.clone()),
+            permanent: false, // Timeout is retriable
         })
     }
 
@@ -648,7 +655,7 @@ impl FanoutProcessor {
     ) -> Result<Vec<NackMsg<OtapPdata>>, Error> {
         let now = now();
         let mut expired = Vec::new();
-        let mut dispatch_requests = SmallVec::<[u64; 8]>::new();
+        let mut dispatch_requests = PendingDispatchQueue::new();
 
         // Pop expired deadlines from the min-heap (O(log n) per pop).
         while let Some(&Reverse(deadline)) = self.deadline_heap.peek() {
@@ -790,7 +797,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ack_to_return = AckMsg {
                     accepted: Box::new(inflight.original_pdata),
-                    calldata: smallvec![],
+                    calldata: CallData::new(),
                 };
                 effect_handler.notify_ack(ack_to_return).await?;
             }
@@ -819,7 +826,7 @@ impl FanoutProcessor {
                 // Use original_pdata for correct upstream routing
                 let ackmsg = AckMsg {
                     accepted: Box::new(original_pdata),
-                    calldata: smallvec![],
+                    calldata: CallData::new(),
                 };
                 effect_handler.notify_ack(ackmsg).await?;
             }
@@ -948,8 +955,9 @@ impl FanoutProcessor {
                     "fanout: max_inflight limit ({}) exceeded",
                     self.config.max_inflight
                 ),
-                calldata: smallvec![],
+                calldata: CallData::new(),
                 refused: Box::new(pdata),
+                permanent: false, // Backpressure is retriable
             };
             effect_handler.notify_nack(nack).await?;
             return Ok(());
@@ -1018,8 +1026,9 @@ impl FanoutProcessor {
             self.metrics.nacked.add(1);
             let nackmsg = NackMsg {
                 reason: nack.reason,
-                calldata: smallvec![],
+                calldata: CallData::new(),
                 refused: Box::new(original_pdata),
+                permanent: nack.permanent, // Propagate from downstream
             };
             effect_handler.notify_nack(nackmsg).await?;
         }
@@ -1100,8 +1109,9 @@ impl Processor<OtapPdata> for FanoutProcessor {
                             "fanout: max_inflight limit ({}) exceeded",
                             self.config.max_inflight
                         ),
-                        calldata: smallvec![],
+                        calldata: CallData::new(),
                         refused: Box::new(pdata),
+                        permanent: false, // Backpressure is retriable
                     };
                     effect_handler.notify_nack(nack).await?;
                     return Ok(());
