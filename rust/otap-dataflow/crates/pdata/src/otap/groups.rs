@@ -996,7 +996,8 @@ fn size_over_limit(max_items: Option<NonZeroU64>, size: usize) -> bool {
         .unwrap_or(false)
 }
 
-fn generic_schemaless_concatenate<const N: usize>(
+/// FIXME: pub
+pub fn generic_schemaless_concatenate<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
     unify(batches)?;
