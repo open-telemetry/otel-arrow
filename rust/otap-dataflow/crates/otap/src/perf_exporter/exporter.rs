@@ -373,7 +373,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok());
+                exporter_result.unwrap();
 
                 telemetry_registry_handle.visit_current_metrics(
                     |_metrics_descriptor, _attrs, _metric_values| {
@@ -392,7 +392,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let exporter = ExporterWrapper::local(
             PerfExporter::new(pipeline_ctx, config),
             test_node(test_runtime.config().name.clone()),

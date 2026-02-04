@@ -610,7 +610,7 @@ mod condense_tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("condense-attributes-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();

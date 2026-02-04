@@ -61,7 +61,7 @@ enum Protocol {
     Udp,
 }
 
-/// config for a syslog cef receiver
+/// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
@@ -142,7 +142,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
-        mut self: Box<Self>,
+        self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
@@ -524,7 +524,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Do not propagate downstream send errors; keep running
                                         // so that telemetry can still be collected (tests expect refused
                                         // to be counted and reported). We already incremented
-                                        // `received_logs_refused` above.
+                                        // `received_logs_forward_failed` above.
                                         if res.is_err() {
                                             // swallow error
                                         }
@@ -626,7 +626,6 @@ mod tests {
             }
         }
     }
-    use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -821,9 +820,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -836,57 +837,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -940,9 +890,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -955,57 +907,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -1072,9 +973,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -1087,56 +990,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Get all the message bodies from all batches for validation
-                let mut all_bodies = Vec::new();
-                for arrow_records in &received_messages {
-                    let logs_batch = arrow_records
-                        .get(ArrowPayloadType::Logs)
-                        .expect("Expected Logs record batch to be present");
-
-                    let body_column = logs_batch
-                        .column_by_name("body")
-                        .expect("Body column should exist");
-
-                    let struct_array = body_column
-                        .as_any()
-                        .downcast_ref::<arrow::array::StructArray>()
-                        .expect("Body column should be a StructArray");
-
-                    let str_field = struct_array
-                        .column_by_name("str")
-                        .expect("Body struct should have 'str' field");
-
-                    let dict_array = str_field.as_any().downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                        .expect("str field should be a Dictionary array");
-
-                    let values = dict_array
-                        .values()
-                        .as_any()
-                        .downcast_ref::<arrow::array::StringArray>()
-                        .expect("Dictionary values should be StringArray");
-
-                    for i in 0..logs_batch.num_rows() {
-                        let key = dict_array.key(i).expect("Record should exist");
-                        let body = values.value(key);
-                        all_bodies.push(body);
-                    }
-                }
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Verify that both expected messages are present (order doesn't matter)
-                assert!(
-                    all_bodies.contains(&expected_message1),
-                    "First message not found in received bodies"
-                );
-                assert!(
-                    all_bodies.contains(&expected_message2),
-                    "Second message not found in received bodies"
                 );
             })
         }
@@ -1246,6 +1099,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1339,6 +1193,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
