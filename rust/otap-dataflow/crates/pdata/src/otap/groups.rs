@@ -4,7 +4,7 @@
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    iter::{once, repeat, repeat_n},
+    iter::repeat_n,
     num::NonZeroU64,
     ops::{Add, ControlFlow, Range, RangeFrom, RangeInclusive},
     sync::Arc,
@@ -651,39 +651,72 @@ impl IDSeqs {
     }
 }
 
+// Check if any batch in the set uses UInt16 for ID columns.
+// If so, we need to cap batch sizes at u16::MAX to avoid overflow.
+fn requires_u16_cap<const N: usize>(batches: &[[Option<RecordBatch>; N]]) -> bool {
+    for batch_set in batches {
+        for batch in batch_set.iter().flatten() {
+            if let Some(id_col) = batch.column_by_name(consts::ID) {
+                if id_col.data_type() == &DataType::UInt16 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn split_non_metric_batches<const N: usize>(
     max_items: NonZeroU64,
     batches: &[[Option<RecordBatch>; N]],
 ) -> Result<Vec<(usize, Range<usize>)>> {
     let mut result = Vec::new();
 
-    let mut total_records_seen: u64 = 0; // think of this like iter::single(0).chain(batch_sizes.iter()).cumsum()
+    // Determine effective max based on ID column type
+    let base_max: u64 = max_items.get();
+    let effective_max: u64 = if requires_u16_cap(batches) {
+        base_max.min(u16::MAX as u64)
+    } else {
+        base_max
+    };
+
+    debug_assert!(effective_max > 0, "effective_max must be positive");
+
+    let mut total_records_seen: u64 = 0;
     for (batch_index, batches) in batches.iter().enumerate() {
         let num_records = num_items(batches);
-
-        // SAFETY: % panics if the second arg is 0, but we're relying on NonZeroU64 to ensure
-        // that can't happen.
-        let prev_batch_size = total_records_seen % max_items.get();
-        let first_batch_size = (max_items.get() - prev_batch_size) as usize;
-        // FIXME: this calculation is broken for logs & traces since it doesn't take into account
-        // how we have to limit batch size to accomodate the u16::MAX size limit for non-null IDs.
-
-        if num_records > first_batch_size {
-            let batch_sizes = once(first_batch_size).chain(repeat(max_items.get() as usize));
-            let mut offset = 0;
-            for batch_size in batch_sizes {
-                let batch_size = batch_size.min(num_records - offset);
-                result.push((batch_index, offset..(offset + batch_size)));
-                offset += batch_size;
-                if offset >= num_records {
-                    break;
-                }
-            }
-        } else {
-            result.push((batch_index, 0..num_records));
+        if num_records == 0 {
+            continue;
         }
 
-        total_records_seen += num_records as u64;
+        let num_records_u64 = num_records as u64;
+        let prev_batch_size = total_records_seen % effective_max;
+
+        // Calculate first batch size, ensuring it's never zero
+        let first_batch_size = if prev_batch_size == 0 {
+            effective_max
+        } else {
+            effective_max - prev_batch_size
+        };
+
+        let mut offset: u64 = 0;
+        while offset < num_records_u64 {
+            let remaining = num_records_u64 - offset;
+
+            let batch_size = if offset == 0 {
+                first_batch_size.min(remaining)
+            } else {
+                effective_max.min(remaining)
+            };
+
+            debug_assert!(batch_size > 0, "batch_size must be positive");
+
+            result.push((batch_index, offset as usize..(offset + batch_size) as usize));
+
+            offset += batch_size;
+        }
+
+        total_records_seen += num_records_u64;
     }
 
     Ok(result)
