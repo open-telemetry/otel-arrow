@@ -3,8 +3,8 @@
 
 //! An alternative to Tokio fmt::layer().
 
-use super::{LogRecord, SavedCallsite};
-use bytes::Bytes;
+use super::encoder::level_to_severity_number;
+use super::{LogContext, LogContextFn, LogRecord, SavedCallsite};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::LogRecordView;
@@ -24,15 +24,25 @@ pub const LOG_BUFFER_SIZE: usize = 4096;
 /// ANSI codes a.k.a. "Select Graphic Rendition" codes.
 #[derive(Clone, Copy)]
 #[repr(u8)]
-enum AnsiCode {
+pub enum AnsiCode {
+    /// Reset all attributes.
     Reset = 0,
+    /// Bold text.
     Bold = 1,
+    /// Dim text.
     Dim = 2,
+    /// Red foreground. Use for ERROR/FATAL.
     Red = 31,
+    /// Green foreground. Use for INFO.
     Green = 32,
+    /// Yellow foreground. Use for WARN.
     Yellow = 33,
+    /// Blue foreground. Use for DEBUG/TRACE.
     Blue = 34,
+    /// Magenta foreground. Use for SCOPE/ENTITY.
     Magenta = 35,
+    /// Cyan foreground. Use for RESOURCE.
+    Cyan = 36,
 }
 
 /// Color mode for console output.
@@ -44,34 +54,59 @@ pub enum ColorMode {
     NoColor,
 }
 
-impl ColorMode {
+/// A buffer writer with color mode for styled output.
+///
+/// Combines a \`Cursor<&mut [u8]>\` buffer with a \`ColorMode\` so callbacks
+/// only need one argument that can both write bytes and apply ANSI styling.
+pub struct StyledBufWriter<'a> {
+    buf: Cursor<&'a mut [u8]>,
+    color_mode: ColorMode,
+}
+
+impl<'a> StyledBufWriter<'a> {
+    /// Create a new styled buffer writer.
+    #[inline]
+    pub fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+        Self {
+            buf: Cursor::new(buf),
+            color_mode,
+        }
+    }
+
     /// Write an ANSI escape sequence (no-op for NoColor).
     #[inline]
-    fn write_ansi(self, w: &mut BufWriter<'_>, code: AnsiCode) {
-        if let ColorMode::Color = self {
-            let _ = write!(w, "\x1b[{}m", code as u8);
+    fn write_ansi(&mut self, code: AnsiCode) {
+        if let ColorMode::Color = self.color_mode {
+            // TODO: This could be optimized using precalculated or
+            // hardcoded ANSI [u8;4] values.
+            let _ = write!(self.buf, "\x1b[{}m", code as u8);
         }
     }
 
-    /// Write level with color and padding.
+    /// Get current buffer position.
     #[inline]
-    fn write_level(self, w: &mut BufWriter<'_>, level: &Level) {
-        self.write_ansi(w, Self::color(level));
-        let _ = w.write_all(level.as_str().as_bytes());
-        self.write_ansi(w, AnsiCode::Reset);
-        let _ = w.write_all(b"  ");
+    #[must_use]
+    pub const fn position(&self) -> usize {
+        self.buf.position() as usize
     }
 
-    /// Get ANSI color code for a severity level.
+    /// Check if the buffer is full (position >= capacity).
     #[inline]
-    fn color(level: &Level) -> AnsiCode {
-        match *level {
-            Level::ERROR => AnsiCode::Red,
-            Level::WARN => AnsiCode::Yellow,
-            Level::INFO => AnsiCode::Green,
-            Level::DEBUG => AnsiCode::Blue,
-            Level::TRACE => AnsiCode::Magenta,
-        }
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        self.buf.position() as usize >= self.buf.get_ref().len()
+    }
+}
+
+impl Write for StyledBufWriter<'_> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buf.write(buf)
+    }
+
+    #[inline]
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.buf.flush()
     }
 }
 
@@ -81,32 +116,28 @@ pub struct ConsoleWriter {
     color_mode: ColorMode,
 }
 
-/// A minimal alternative to `tracing_subscriber::fmt::layer()`.
+/// A minimal alternative to tracing_subscriber::fmt::layer().
 pub struct RawLoggingLayer {
     writer: ConsoleWriter,
+    context_fn: LogContextFn,
 }
 
 impl RawLoggingLayer {
-    /// Return a new formatting layer with associated writer.
+    /// Return a new formatting layer with associated writer and context function.
     #[must_use]
-    pub fn new(writer: ConsoleWriter) -> Self {
-        Self { writer }
+    pub fn new(writer: ConsoleWriter, context_fn: LogContextFn) -> Self {
+        Self { writer, context_fn }
     }
 
     /// Process a tracing Event directly, bypassing the dispatcher.
     pub fn dispatch_event(&self, event: &Event<'_>) {
         let time = SystemTime::now();
-        // TODO: there are allocations implied in LogRecord::new that we
-        // would prefer to avoid; it will be an extensive change in the
-        // ProtoBuffer impl to stack-allocate this as a temporary.
-        let record = LogRecord::new(event);
-        self.writer.print_log_record(time, &record);
+        let record = LogRecord::new(event, (self.context_fn)());
+        self.writer.print_log_record(time, &record, |w| {
+            w.format_entity_suffix_without_registry(&record.context);
+        });
     }
 }
-
-/// Type alias for a cursor over a byte buffer.
-/// Uses `std::io::Cursor` for position tracking with `std::io::Write`.
-pub type BufWriter<'a> = Cursor<&'a mut [u8]>;
 
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
@@ -124,70 +155,101 @@ impl ConsoleWriter {
             color_mode: ColorMode::Color,
         }
     }
+}
 
-    /// Format a LogRecord as a human-readable string (for testing/compatibility).
-    ///
-    /// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
-    pub fn format_log_record(&self, time: Option<SystemTime>, record: &LogRecord) -> String {
-        let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into(&mut buf, time, record);
-        // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
-        String::from_utf8_lossy(&buf[..len]).into_owned()
+/// Format a LogRecord as a human-readable string (for testing/compatibility).
+///
+/// Output format: `2026-01-06T10:30:45.123Z  INFO target::name (file.rs:42): body [attr=value, ...]`
+pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord) -> String {
+    let mut buf = [0u8; LOG_BUFFER_SIZE];
+    let len = {
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        w.format_log_record(time, record, |w| {
+            w.format_entity_suffix_without_registry(&record.context);
+        });
+        w.position()
+    };
+    // The buffer contains valid UTF-8 since we only write ASCII and valid UTF-8 strings
+    String::from_utf8_lossy(&buf[..len]).into_owned()
+}
+
+impl ConsoleWriter {
+    /// Return the color mode.
+    #[must_use]
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
     }
 
     /// Print a LogRecord directly to stdout or stderr (based on level).
-    pub fn print_log_record(&self, time: SystemTime, record: &LogRecord) {
+    ///
+    /// The `scope_formatter` callback is invoked after the log body/attributes,
+    /// before the newline. This allows callers to append scope information
+    /// (e.g., entity context from a registry) atomically within the same write.
+    pub fn print_log_record<F>(&self, time: SystemTime, record: &LogRecord, scope_formatter: F)
+    where
+        F: FnOnce(&mut StyledBufWriter<'_>),
+    {
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let len = self.format_log_record_into(&mut buf, Some(time), record);
+        let len = {
+            let mut w = StyledBufWriter::new(&mut buf, self.color_mode);
+            w.format_log_record(Some(time), record, scope_formatter);
+            w.position()
+        };
         self.write_line(record.callsite().level(), &buf[..len]);
     }
+}
 
-    /// Encode a LogRecord to a byte buffer. Returns the number of bytes written.
-    fn format_log_record_into(
-        &self,
-        buf: &mut [u8],
+/// Write callsite details as event_name to any `io::Write` target.
+///
+/// Format: `target::name (file:line)` or `target::name` if no file/line.
+/// This is used by both the text formatter and the OTLP encoder, so does
+/// not belong in StyledBufWriter.
+#[inline]
+pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
+    let _ = w.write_all(callsite.target().as_bytes());
+    let _ = w.write_all(b"::");
+    let _ = w.write_all(callsite.name().as_bytes());
+    if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
+        let _ = write!(w, " ({}:{})", file, line);
+    }
+}
+
+impl StyledBufWriter<'_> {
+    /// Format a LogRecord with custom suffix formatter.
+    ///
+    /// This is the core formatting method for log records. The `write_suffix` callback
+    /// is invoked after the log body/attributes, before the newline.
+    pub fn format_log_record<F>(
+        &mut self,
         time: Option<SystemTime>,
         record: &LogRecord,
-    ) -> usize {
-        let mut w = Cursor::new(buf);
-        let cm = self.color_mode;
+        write_suffix: F,
+    ) where
+        F: FnOnce(&mut Self),
+    {
+        let view = RawLogRecord::new(record.body_attrs_bytes.as_ref());
+        let level = *record.callsite().level();
 
-        if let Some(time) = time {
-            cm.write_ansi(&mut w, AnsiCode::Dim);
-            Self::write_timestamp(&mut w, time);
-            cm.write_ansi(&mut w, AnsiCode::Reset);
-            let _ = w.write_all(b"  ");
-        }
-        cm.write_level(&mut w, record.callsite().level());
-        cm.write_ansi(&mut w, AnsiCode::Bold);
-        Self::write_event_name(&mut w, record.callsite());
-        cm.write_ansi(&mut w, AnsiCode::Reset);
-        let _ = w.write_all(b": ");
-        Self::write_body_attrs(&mut w, &record.body_attrs_bytes);
-        let _ = w.write_all(b"\n");
-
-        w.position() as usize
+        self.format_log_line(
+            time,
+            &view,
+            |w| w.write_level(&level),
+            |w| {
+                w.write_styled(AnsiCode::Bold, |w| {
+                    write_event_name_to(w, &record.callsite())
+                });
+            },
+            write_suffix,
+        );
     }
-
-    /// Write callsite details as event_name to buffer.
+    /// Write a SystemTime timestamp as ISO 8601 (UTC) to buffer.
     #[inline]
-    pub(crate) fn write_event_name(w: &mut BufWriter<'_>, callsite: SavedCallsite) {
-        let _ = w.write_all(callsite.target().as_bytes());
-        let _ = w.write_all(b"::");
-        let _ = w.write_all(callsite.name().as_bytes());
-        if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-            let _ = write!(w, " ({}:{})", file, line);
-        }
-    }
-
-    /// Write nanosecond timestamp as ISO 8601 (UTC) to buffer.
-    #[inline]
-    fn write_timestamp(w: &mut BufWriter<'_>, time: SystemTime) {
+    pub fn write_timestamp(&mut self, time: SystemTime) {
         let dt: DateTime<Utc> = time.into();
         let millis = dt.timestamp_subsec_millis();
 
         let _ = write!(
-            w,
+            self,
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
             dt.year(),
             dt.month(),
@@ -199,124 +261,297 @@ impl ConsoleWriter {
         );
     }
 
-    /// Write body+attrs bytes to buffer using LogRecordView.
-    pub(crate) fn write_body_attrs(w: &mut BufWriter<'_>, bytes: &Bytes) {
-        if bytes.is_empty() {
-            return;
-        }
+    /// Write body and attributes from a LogRecordView to buffer.
+    /// - If has_event_name and body present: print ": " then body
+    /// - If has_event_name and no body but attrs present: print ":" (attrs add " [")
+    /// - Body prints directly
+    /// - Attributes print " [...]" before themselves
+    fn write_body_and_attrs<V: LogRecordView>(&mut self, record: &V, has_event_name: bool) {
+        let body = record.body();
+        let mut attrs = record.attributes().peekable();
+        let has_body = body.is_some();
+        let has_attrs = attrs.peek().is_some();
 
-        // A partial protobuf message (just body + attributes) is still a valid message.
-        // We can use the RawLogRecord view to access just the fields we encoded.
-        let record = RawLogRecord::new(bytes.as_ref());
+        // Print separator after event_name if there's content following
+        if has_event_name && (has_body || has_attrs) {
+            if has_body {
+                let _ = self.write_all(b": ");
+            } else {
+                // No body, attrs will add " [" so just print ":"
+                let _ = self.write_all(b":");
+            }
+        }
 
         // Write body if present
-        if let Some(body) = record.body() {
-            Self::write_any_value(w, &body);
+        if let Some(body) = body {
+            self.write_any_value(&body);
         }
 
-        // Write attributes if present
-        let mut attrs = record.attributes().peekable();
+        // Write attributes if present (with leading " [")
+        self.write_attrs(attrs);
+    }
+
+    /// Write attributes from any AttributeView iterator to buffer.
+    pub fn write_attrs<A: AttributeView>(&mut self, attrs: impl Iterator<Item = A>) {
+        let mut attrs = attrs.peekable();
         if attrs.peek().is_some() {
-            let _ = w.write_all(b" [");
+            let _ = self.write_all(b" [");
             let mut first = true;
             for attr in attrs {
-                if Self::is_full(w) {
+                if self.is_full() {
                     break;
                 }
                 if !first {
-                    let _ = w.write_all(b", ");
+                    let _ = self.write_all(b", ");
                 }
                 first = false;
-                let _ = w.write_all(attr.key());
-                let _ = w.write_all(b"=");
+                let _ = self.write_all(attr.key());
+                let _ = self.write_all(b"=");
                 match attr.value() {
-                    Some(v) => Self::write_any_value(w, &v),
+                    Some(v) => self.write_any_value(&v),
                     None => {
-                        let _ = w.write_all(b"<?>");
+                        let _ = self.write_all(b"<?>");
                     }
                 }
             }
-            let _ = w.write_all(b"]");
+            let _ = self.write_all(b"]");
         }
     }
 
-    /// Check if the buffer is full (position >= capacity).
-    #[inline]
-    fn is_full(w: &BufWriter<'_>) -> bool {
-        w.position() as usize >= w.get_ref().len()
-    }
-
-    /// Write an AnyValue to buffer.
-    fn write_any_value<'a>(w: &mut BufWriter<'_>, value: &impl AnyValueView<'a>) {
+    /// Write an AnyValue to buffer (strings unquoted).
+    fn write_any_value<'b>(&mut self, value: &impl AnyValueView<'b>) {
         match value.value_type() {
             ValueType::String => {
                 if let Some(s) = value.as_string() {
-                    let _ = w.write_all(s);
+                    let _ = self.write_all(s);
                 }
             }
             ValueType::Int64 => {
                 if let Some(i) = value.as_int64() {
-                    let _ = write!(w, "{}", i);
+                    let _ = write!(self, "{}", i);
                 }
             }
             ValueType::Bool => {
                 if let Some(b) = value.as_bool() {
-                    let _ = w.write_all(if b { b"true" } else { b"false" });
+                    let _ = self.write_all(if b { b"true" } else { b"false" });
                 }
             }
             ValueType::Double => {
                 if let Some(d) = value.as_double() {
-                    let _ = write!(w, "{:.6}", d);
+                    let _ = write!(self, "{:.6}", d);
                 }
             }
             ValueType::Bytes => {
                 if let Some(bytes) = value.as_bytes() {
-                    let _ = w.write_all(b"[");
+                    let _ = self.write_all(b"[");
                     for (i, b) in bytes.iter().enumerate() {
                         if i > 0 {
-                            let _ = w.write_all(b", ");
+                            let _ = self.write_all(b", ");
                         }
-                        let _ = write!(w, "{}", b);
+                        let _ = write!(self, "{}", b);
                     }
-                    let _ = w.write_all(b"]");
+                    let _ = self.write_all(b"]");
                 }
             }
             ValueType::Array => {
-                let _ = w.write_all(b"[");
+                let _ = self.write_all(b"[");
                 if let Some(array_iter) = value.as_array() {
                     let mut first = true;
                     for item in array_iter {
                         if !first {
-                            let _ = w.write_all(b", ");
+                            let _ = self.write_all(b", ");
                         }
                         first = false;
-                        Self::write_any_value(w, &item);
+                        self.write_any_value(&item);
                     }
                 }
-                let _ = w.write_all(b"]");
+                let _ = self.write_all(b"]");
             }
             ValueType::KeyValueList => {
-                let _ = w.write_all(b"{");
+                let _ = self.write_all(b"{");
                 if let Some(kvlist_iter) = value.as_kvlist() {
                     let mut first = true;
                     for kv in kvlist_iter {
                         if !first {
-                            let _ = w.write_all(b", ");
+                            let _ = self.write_all(b", ");
                         }
                         first = false;
-                        let _ = w.write_all(kv.key());
+                        let _ = self.write_all(kv.key());
                         if let Some(val) = kv.value() {
-                            let _ = w.write_all(b"=");
-                            Self::write_any_value(w, &val);
+                            let _ = self.write_all(b"=");
+                            self.write_any_value(&val);
                         }
                     }
                 }
-                let _ = w.write_all(b"}");
+                let _ = self.write_all(b"}");
             }
             ValueType::Empty => {}
         }
     }
 
+    /// Write content with ANSI styling, automatically resetting after.
+    #[inline]
+    pub fn write_styled<F>(&mut self, code: AnsiCode, f: F)
+    where
+        F: FnOnce(&mut Self),
+    {
+        // Note! This may leave the console in a colored state if the buffer fills
+        // mid-write. TODO: This can likely be fixed as part of #1746.
+        self.write_ansi(code);
+        f(self);
+        self.write_ansi(AnsiCode::Reset);
+    }
+
+    /// Write a tracing Level with appropriate color and padding.
+    #[inline]
+    pub fn write_level(&mut self, level: &Level) {
+        self.write_severity(Some(level_to_severity_number(level) as i32), None);
+    }
+
+    /// Write severity with appropriate color and padding.
+    /// Severity numbers follow OTLP conventions (1-24, where INFO=9).
+    /// If severity_text is provided, it overrides the default text derived from the number.
+    #[inline]
+    pub fn write_severity(&mut self, severity: Option<i32>, severity_text: Option<&[u8]>) {
+        // Determine text: use provided text if non-empty, otherwise derive from number
+        let (text, code): (&[u8], _) = match severity_text.filter(|t| !t.is_empty()) {
+            Some(t) => (t, Self::severity_to_color(severity)),
+            None => match severity {
+                Some(s) if s >= 17 => (b"ERROR", AnsiCode::Red),
+                Some(s) if s >= 13 => (b"WARN ", AnsiCode::Yellow),
+                Some(s) if s >= 9 => (b"INFO ", AnsiCode::Green),
+                Some(s) if s >= 5 => (b"DEBUG", AnsiCode::Blue),
+                Some(s) if s >= 1 => (b"TRACE", AnsiCode::Magenta),
+                _ => (b"     ", AnsiCode::Reset),
+            },
+        };
+        self.write_styled(code, |w| {
+            let _ = w.write_all(text);
+        });
+        let _ = self.write_all(b" ");
+    }
+
+    /// Map severity number to ANSI color code.
+    #[inline]
+    fn severity_to_color(severity: Option<i32>) -> AnsiCode {
+        match severity {
+            Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
+            Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
+            Some(s) if s >= 9 => AnsiCode::Green,   // INFO
+            Some(s) if s >= 1 => AnsiCode::Blue,    // DEBUG/TRACE
+            _ => AnsiCode::Reset,
+        }
+    }
+
+    /// This prints the entity keys without attempting any form of lookup
+    /// leaving context keys unsymbolized e.g. 'entity/pipeline=EntityKey("1v3")'.
+    pub fn format_entity_suffix_without_registry(&mut self, context: &LogContext) {
+        self.write_styled(AnsiCode::Magenta, |w| {
+            for key in context.iter() {
+                let _ = write!(w, " entity={:?}", key);
+            }
+        });
+    }
+
+    /// Format a log line from a LogRecordView with custom formatters.
+    ///
+    /// Spacing convention: each section adds its own leading separator.
+    /// - Level ends with a space
+    /// - Event name (if any) prints space before itself
+    /// - Body (if any) prints ": " before itself
+    /// - Attributes (if any) print " [...]" before themselves
+    /// - Suffix (if any) is written after attributes, before the newline
+    pub fn format_log_line<V, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        record: &V,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        V: LogRecordView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, has_event_name| {
+                w.write_body_and_attrs(record, has_event_name);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Format a header line (RESOURCE, SCOPE) with attributes and custom formatters.
+    ///
+    /// Unlike `format_log_line`, this takes raw attributes instead of a `LogRecordView`,
+    /// and doesn't print a body - just the header name and attributes.
+    pub fn format_header_line<A, L, E, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        attrs: impl Iterator<Item = A>,
+        format_level: L,
+        format_event_name: E,
+        write_suffix: S,
+    ) where
+        A: AttributeView,
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        S: FnOnce(&mut Self),
+    {
+        self.format_line_impl(
+            time,
+            format_level,
+            format_event_name,
+            |w, _has_event_name| {
+                w.write_attrs(attrs);
+            },
+            write_suffix,
+        );
+    }
+
+    /// Common implementation for formatting a line with timestamp, level, event name, and content.
+    fn format_line_impl<L, E, C, S>(
+        &mut self,
+        time: Option<SystemTime>,
+        format_level: L,
+        format_event_name: E,
+        write_content: C,
+        write_suffix: S,
+    ) where
+        L: FnOnce(&mut Self),
+        E: FnOnce(&mut Self),
+        C: FnOnce(&mut Self, bool),
+        S: FnOnce(&mut Self),
+    {
+        // Timestamp (optional)
+        if let Some(time) = time {
+            self.write_styled(AnsiCode::Dim, |w| w.write_timestamp(time));
+            let _ = self.write_all(b"  ");
+        }
+
+        // Custom level/prefix formatting (tree structure, severity, etc.)
+        format_level(self);
+
+        // Track position to detect if event_name was written
+        let pos_before = self.position();
+        format_event_name(self);
+        let has_event_name = self.position() > pos_before;
+
+        // Write content (body+attrs or just attrs)
+        write_content(self, has_event_name);
+
+        // Write suffix (e.g., entity scope) before newline
+        write_suffix(self);
+
+        let _ = self.write_all(b"\n");
+    }
+}
+
+impl ConsoleWriter {
     /// Write a log line to stdout or stderr.
     fn write_line(&self, level: &Level, data: &[u8]) {
         let use_stderr = matches!(*level, Level::ERROR | Level::WARN);
@@ -373,11 +608,10 @@ mod tests {
     {
         fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
             let time = SystemTime::now();
-            let record = LogRecord::new(event);
+            let record = LogRecord::new(event, LogContext::new());
 
             // Capture formatted output
-            let writer = ConsoleWriter::no_color();
-            *self.formatted.lock().unwrap() = writer.format_log_record(Some(time), &record);
+            *self.formatted.lock().unwrap() = format_log_record_to_string(Some(time), &record);
 
             // Capture full OTLP encoding
             let mut buf = ProtoBuffer::with_capacity(512);
@@ -405,12 +639,11 @@ mod tests {
 
     // helps test that a timestamp formats to text and from proto timestamp the same.
     fn format_timestamp(nanos: u64) -> String {
-        let time = std::time::UNIX_EPOCH.checked_add(Duration::from_nanos(nanos));
         let mut buf = [0u8; 32];
-        let mut w = Cursor::new(buf.as_mut_slice());
-
-        ConsoleWriter::write_timestamp(&mut w, time.expect("valid"));
-        let len = w.position() as usize;
+        let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+        let time = std::time::UNIX_EPOCH + Duration::from_nanos(nanos);
+        w.write_timestamp(time);
+        let len = w.position();
         assert_eq!(len, 24);
         String::from_utf8_lossy(&buf[..len]).into_owned()
     }
@@ -542,25 +775,16 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::new(),
+            context: LogContext::new(),
         };
 
-        let writer = ConsoleWriter::no_color();
-        let output = writer.format_log_record(Some(time), &record);
+        let output = format_log_record_to_string(Some(time), &record);
 
         // Note that the severity text is formatted using the Metadata::Level
         // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123): \n"
-        );
-
-        let writer = ConsoleWriter::color();
-        let output = writer.format_log_record(Some(time), &record);
-
-        // With ANSI codes: dim timestamp, green INFO, bold event name
-        assert_eq!(
-            output,
-            "\x1b[2m2024-01-15T12:30:45.678Z\x1b[0m  \x1b[32mINFO\x1b[0m  \x1b[1mtest_module::submodule::test_event (src/test.rs:123)\x1b[0m: \n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
         );
 
         // Verify full OTLP encoding with known callsite
@@ -604,11 +828,15 @@ mod tests {
         let record = LogRecord {
             callsite_id: tracing::callsite::Identifier(&TEST_CALLSITE),
             body_attrs_bytes: Bytes::from(encoded),
+            context: LogContext::new(),
         };
 
         let mut buf = [0u8; LOG_BUFFER_SIZE];
-        let writer = ConsoleWriter::no_color();
-        let len = writer.format_log_record_into(&mut buf, Some(time), &record);
+        let len = {
+            let mut w = StyledBufWriter::new(&mut buf, ColorMode::NoColor);
+            w.format_log_record(Some(time), &record, |_| {});
+            w.position()
+        };
 
         // Fills exactly to capacity due to overflow.
         // Note! we could append a ... or some other indicator.

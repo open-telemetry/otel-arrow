@@ -207,6 +207,16 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }
                     // shutdown the exporter
                     Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                        // TODO: There is a race condition somewhere,
+                        // causing this shutdown message to be never received.
+                        // Noticed when load testing
+                        // or more easily, when exporter is hitting errors
+                        // like endpoint not available. (the backoff sleep
+                        // might be causing it?)
+                        otel_info!(
+                            "exporter.shutdown",
+                            message = "OTAP Exporter shutting down"
+                        );
                         _ = shutdown_tx.send_replace(true);
                         _ = logs_handle.await;
                         _ = metrics_handle.await;
@@ -354,10 +364,15 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                             shutdown_rx.clone()
                         ).await;
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         // there was an error initiating the streaming request
                         _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(signal_type)).await;
-                        otel_error!("failed request, waiting", backoff = ?failed_request_backoff);
+                        otel_error!(
+                            "exporter.request_failed",
+                            message = "Failed to connect, retrying after backoff",
+                            error = %e,
+                            backoff = ?failed_request_backoff
+                        );
                         tokio::time::sleep(failed_request_backoff).await;
                         failed_request_backoff = std::cmp::min(failed_request_backoff * BACKOFF_MULTIPLIER, MAX_BACKOFF);
                     }
@@ -537,7 +552,7 @@ mod tests {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok());
+                exporter_result.unwrap();
 
                 // check that the message was properly sent from the exporter
                 let metrics_received: OtapArrowRecords =
@@ -632,7 +647,7 @@ mod tests {
         // Create a proper pipeline context for the benchmark
         let controller_ctx = ControllerContext::new(test_runtime.metrics_registry());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let exporter = ExporterWrapper::local(
             OTAPExporter::from_config(pipeline_ctx, &config).expect("Config should be valid"),
             test_node(test_runtime.config().name.clone()),
@@ -659,7 +674,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
@@ -679,7 +694,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let config_with_timeout = json!({
             "grpc_endpoint": "http://localhost:4317",
@@ -708,7 +723,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let result = OTAPExporter::from_config(pipeline_ctx, &json_config);
 
@@ -728,7 +743,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
 
@@ -763,7 +778,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let exporter =
             OTAPExporter::from_config(pipeline_ctx, &json_config).expect("Config should be valid");
         assert!(
@@ -793,7 +808,7 @@ mod tests {
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let node_id = test_node(test_runtime.config().name.clone());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let mut exporter = ExporterWrapper::local(
             OTAPExporter::from_config(

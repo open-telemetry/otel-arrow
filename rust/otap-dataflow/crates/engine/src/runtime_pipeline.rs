@@ -16,7 +16,7 @@ use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;

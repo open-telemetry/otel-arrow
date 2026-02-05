@@ -7,16 +7,13 @@
 //! For more details on the `!Send` implementation of a receiver, see [`local::Receiver`].
 //! See [`shared::Receiver`] for the Send implementation.
 
-use crate::channel_metrics::{
-    CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_CONTROL, CHANNEL_MODE_LOCAL,
-    CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPSC, ChannelMetricsRegistry, ChannelReceiverMetrics,
-    ChannelSenderMetrics, control_channel_id,
-};
+use crate::channel_metrics::ChannelMetricsRegistry;
+use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
-use crate::entity_context::{NodeTelemetryGuard, current_node_telemetry_handle};
-use crate::error::{Error, ProcessorErrorKind, ReceiverErrorKind};
+use crate::entity_context::NodeTelemetryGuard;
+use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -52,7 +49,9 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
-        pdata_senders: HashMap<PortName, LocalSender<PData>>,
+        /// Uses the generic `Sender` so local receivers can still target shared channels when
+        /// mixed local/shared wiring requires it.
+        pdata_senders: HashMap<PortName, Sender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
@@ -73,6 +72,7 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: SharedReceiver<NodeControlMsg<PData>>,
         /// Senders for PData messages per out port.
+        /// Uses `SharedSender` to keep the shared receiver `Send` for multi-threaded execution.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<SharedReceiver<PData>>,
@@ -220,58 +220,16 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 ..
             } => {
-                let control_sender = control_sender.into_mpsc();
-                let control_receiver = control_receiver.into_mpsc();
-                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
-                    (Ok(sender), Ok(receiver)) => {
-                        let channel_entity_key = pipeline_ctx.register_channel_entity(
-                            control_channel_id(&node_id),
-                            CHANNEL_KIND_CONTROL,
-                            CHANNEL_MODE_LOCAL,
-                            CHANNEL_TYPE_MPSC,
-                            CHANNEL_IMPL_INTERNAL,
-                        );
-                        if let Some(telemetry) = current_node_telemetry_handle() {
-                            telemetry.set_control_channel_key(channel_entity_key);
-                        }
-                        if channel_metrics_enabled {
-                            let sender_metrics = pipeline_ctx
-                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                    channel_entity_key,
-                                );
-                            let receiver_metrics = pipeline_ctx
-                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                    channel_entity_key,
-                                );
-                            (
-                                LocalSender::mpsc_with_metrics(
-                                    sender,
-                                    channel_metrics,
-                                    sender_metrics,
-                                ),
-                                LocalReceiver::mpsc_with_metrics(
-                                    receiver,
-                                    channel_metrics,
-                                    receiver_metrics,
-                                    runtime_config.control_channel.capacity as u64,
-                                ),
-                            )
-                        } else {
-                            (LocalSender::mpsc(sender), LocalReceiver::mpsc(receiver))
-                        }
-                    }
-                    (sender, receiver) => {
-                        let sender = match sender {
-                            Ok(sender) => LocalSender::mpsc(sender),
-                            Err(sender) => sender,
-                        };
-                        let receiver = match receiver {
-                            Ok(receiver) => LocalReceiver::mpsc(receiver),
-                            Err(receiver) => receiver,
-                        };
-                        (sender, receiver)
-                    }
-                };
+                let (control_sender, control_receiver) =
+                    wrap_control_channel_metrics::<LocalMode, PData>(
+                        &node_id,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_metrics_enabled,
+                        runtime_config.control_channel.capacity as u64,
+                        control_sender,
+                        control_receiver,
+                    );
 
                 ReceiverWrapper::Local {
                     node_id,
@@ -297,58 +255,16 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 ..
             } => {
-                let control_sender = control_sender.into_mpsc();
-                let control_receiver = control_receiver.into_mpsc();
-                let (control_sender, control_receiver) = match (control_sender, control_receiver) {
-                    (Ok(sender), Ok(receiver)) => {
-                        let channel_entity_key = pipeline_ctx.register_channel_entity(
-                            control_channel_id(&node_id),
-                            CHANNEL_KIND_CONTROL,
-                            CHANNEL_MODE_SHARED,
-                            CHANNEL_TYPE_MPSC,
-                            CHANNEL_IMPL_TOKIO,
-                        );
-                        if let Some(telemetry) = current_node_telemetry_handle() {
-                            telemetry.set_control_channel_key(channel_entity_key);
-                        }
-                        if channel_metrics_enabled {
-                            let sender_metrics = pipeline_ctx
-                                .register_metric_set_for_entity::<ChannelSenderMetrics>(
-                                    channel_entity_key,
-                                );
-                            let receiver_metrics = pipeline_ctx
-                                .register_metric_set_for_entity::<ChannelReceiverMetrics>(
-                                    channel_entity_key,
-                                );
-                            (
-                                SharedSender::mpsc_with_metrics(
-                                    sender,
-                                    channel_metrics,
-                                    sender_metrics,
-                                ),
-                                SharedReceiver::mpsc_with_metrics(
-                                    receiver,
-                                    channel_metrics,
-                                    receiver_metrics,
-                                    runtime_config.control_channel.capacity as u64,
-                                ),
-                            )
-                        } else {
-                            (SharedSender::mpsc(sender), SharedReceiver::mpsc(receiver))
-                        }
-                    }
-                    (sender, receiver) => {
-                        let sender = match sender {
-                            Ok(sender) => SharedSender::mpsc(sender),
-                            Err(sender) => sender,
-                        };
-                        let receiver = match receiver {
-                            Ok(receiver) => SharedReceiver::mpsc(receiver),
-                            Err(receiver) => receiver,
-                        };
-                        (sender, receiver)
-                    }
-                };
+                let (control_sender, control_receiver) =
+                    wrap_control_channel_metrics::<SharedMode, PData>(
+                        &node_id,
+                        pipeline_ctx,
+                        channel_metrics,
+                        channel_metrics_enabled,
+                        runtime_config.control_channel.capacity as u64,
+                        control_sender,
+                        control_receiver,
+                    );
 
                 ReceiverWrapper::Shared {
                     node_id,
@@ -501,7 +417,7 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
         sender: Sender<PData>,
     ) -> Result<(), Error> {
         match (self, sender) {
-            (ReceiverWrapper::Local { pdata_senders, .. }, Sender::Local(sender)) => {
+            (ReceiverWrapper::Local { pdata_senders, .. }, sender) => {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
@@ -509,15 +425,9 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
                 let _ = pdata_senders.insert(port, sender);
                 Ok(())
             }
-            (ReceiverWrapper::Local { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
-                error: "Expected a local sender for PData".to_owned(),
-                source_detail: String::new(),
-            }),
-            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
+            (ReceiverWrapper::Shared { .. }, _) => Err(Error::ReceiverError {
+                receiver: node_id,
+                kind: ReceiverErrorKind::Configuration,
                 error: "Expected a shared sender for PData".to_owned(),
                 source_detail: String::new(),
             }),

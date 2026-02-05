@@ -9,6 +9,7 @@ use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
+use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,8 +21,8 @@ use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
-/// - "Hyper" because the edges connecting the nodes can be hyper-edges.  
-/// - A node can be connected to multiple outgoing nodes.  
+/// - "Hyper" because the edges connecting the nodes can be hyper-edges.
+/// - A node can be connected to multiple outgoing nodes.
 /// - The way messages are dispatched over each hyper-edge is defined by a dispatch strategy representing
 ///   different communication model semantics. For example, it could be a broadcast channel that sends
 ///   the same message to all destination nodes, or it might have a round-robin or least-loaded semantic,
@@ -357,42 +358,6 @@ pub struct PipelineSettings {
     pub telemetry: TelemetrySettings,
 }
 
-/// Configuration for pipeline-internal telemetry capture.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TelemetrySettings {
-    /// Enable capture of per-pipeline internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub pipeline_metrics: bool,
-
-    /// Enable capture of Tokio runtime internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub tokio_metrics: bool,
-
-    /// Enable capture of channel-level metrics.
-    ///
-    /// When disabled, the engine does not report channel sender/receiver metrics.
-    #[serde(default = "default_true")]
-    pub channel_metrics: bool,
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-impl Default for TelemetrySettings {
-    fn default() -> Self {
-        Self {
-            pipeline_metrics: true,
-            tokio_metrics: true,
-            channel_metrics: true,
-        }
-    }
-}
-
 fn default_node_ctrl_msg_channel_size() -> usize {
     100
 }
@@ -562,6 +527,41 @@ impl PipelineConfig {
     /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
     pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.internal.iter()
+    }
+
+    /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
+    #[must_use]
+    pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
+        if self.internal.is_empty() {
+            return None;
+        }
+
+        Some(PipelineConfig {
+            r#type: self.r#type.clone(),
+            settings: Self::internal_pipeline_settings(),
+            quota: Quota::default(),
+            nodes: self.internal.clone(),
+            internal: PipelineNodes::default(),
+            service: ServiceConfig::default(),
+        })
+    }
+
+    /// Returns hardcoded settings for the internal telemetry pipeline.
+    ///
+    /// TODO: these are hard-coded, add configurability.
+    #[must_use]
+    pub fn internal_pipeline_settings() -> PipelineSettings {
+        PipelineSettings {
+            default_node_ctrl_msg_channel_size: 50,
+            default_pipeline_ctrl_msg_channel_size: 50,
+            default_pdata_channel_size: 50,
+            health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                channel_metrics: false,
+            },
+        }
     }
 
     /// Validate the pipeline specification.
@@ -1572,5 +1572,78 @@ mod tests {
         } else {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
+    }
+
+    #[test]
+    fn test_extract_internal_config_from_yaml() {
+        // Parse a config with internal nodes from YAML
+        let yaml = r#"
+            settings:
+              default_pipeline_ctrl_msg_channel_size: 100
+              default_node_ctrl_msg_channel_size: 100
+              default_pdata_channel_size: 100
+
+            nodes:
+              receiver:
+                kind: receiver
+                plugin_urn: "urn:test:receiver"
+                out_ports:
+                  out:
+                    destinations: [exporter]
+                    dispatch_strategy: round_robin
+                config: {}
+              exporter:
+                kind: exporter
+                plugin_urn: "urn:test:exporter"
+                config: {}
+
+            internal:
+              itr:
+                kind: receiver
+                plugin_urn: "urn:otel:otap:internal_telemetry:receiver"
+                out_ports:
+                  out_port:
+                    destinations: [console]
+                    dispatch_strategy: round_robin
+                config: {}
+              console:
+                kind: exporter
+                plugin_urn: "urn:otel:console:exporter"
+                config: {}
+        "#;
+
+        use super::PipelineConfig;
+        let config: PipelineConfig = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Verify the main pipeline has internal nodes
+        assert_eq!(config.internal_node_iter().count(), 2);
+
+        // Extract internal config
+        let internal_config = config.extract_internal_config();
+        assert!(internal_config.is_some(), "should extract internal config");
+
+        let internal = internal_config.unwrap();
+
+        // Should have the internal pipeline settings
+        assert_eq!(internal.settings.default_node_ctrl_msg_channel_size, 50);
+        assert_eq!(internal.settings.default_pdata_channel_size, 50);
+
+        // Should have the internal nodes as its main nodes
+        assert_eq!(internal.nodes.len(), 2);
+
+        assert_eq!(
+            internal.nodes["itr"].plugin_urn.as_ref(),
+            "urn:otel:otap:internal_telemetry:receiver"
+        );
+        assert_eq!(
+            internal.nodes["console"].plugin_urn.as_ref(),
+            "urn:otel:console:exporter"
+        );
+
+        // The extracted config's internal should be empty
+        assert!(internal.internal.is_empty());
+
+        // Telemetry should be disabled
+        assert!(!internal.settings.telemetry.pipeline_metrics);
     }
 }
