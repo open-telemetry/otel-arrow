@@ -3,8 +3,6 @@
 
 //! Logs level configurations.
 
-pub mod processors;
-
 use crate::error::Error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,10 +17,6 @@ pub struct LogsConfig {
     /// Logging provider configuration.
     #[serde(default = "default_providers")]
     pub providers: LoggingProviders,
-
-    /// OpenTelemetry SDK is configured via processors.
-    #[serde(default)]
-    pub processors: Vec<processors::LogProcessorConfig>,
 }
 
 /// Log level for dataflow engine logs.
@@ -78,32 +72,9 @@ impl LoggingProviders {
             || self.admin.uses_its_provider()
     }
 
-    /// Returns true if this uses an OTel logs provider.
-    #[must_use]
-    pub const fn uses_otel_provider(&self) -> bool {
-        self.global.uses_otel_provider()
-            || self.engine.uses_otel_provider()
-            || self.admin.uses_otel_provider()
-            || self.internal.uses_otel_provider()
-    }
-
-    /// Returns true if this uses an async logs provider.
-    #[must_use]
-    pub const fn uses_any_internal_provider(&self) -> bool {
-        // Note: internal is not checked, it's not permitted.
-        debug_assert!(!self.internal.uses_any_internal_provider());
-
-        self.global.uses_any_internal_provider()
-            || self.engine.uses_any_internal_provider()
-            || self.admin.uses_any_internal_provider()
-    }
-
     /// Returns true if this uses an console_async provider.
     #[must_use]
     pub const fn uses_console_async_provider(&self) -> bool {
-        // Note: internal is not checked, it's not permitted.
-        debug_assert!(!self.internal.uses_any_internal_provider());
-
         self.global.uses_console_async_provider()
             || self.engine.uses_console_async_provider()
             || self.admin.uses_console_async_provider()
@@ -120,9 +91,6 @@ pub enum ProviderMode {
     /// Delivery using the internal telemetry system.
     ITS,
 
-    /// Use OTel-Rust as the provider.
-    OpenTelemetry,
-
     /// Asynchronous console logging. The caller writes to a channel
     /// the same as ITS delivery, but bypasses the internal pipeline
     /// with console logging.
@@ -138,7 +106,7 @@ pub enum ProviderMode {
 impl ProviderMode {
     /// Is this any console logging mode?
     #[must_use]
-    pub const fn uses_any_internal_provider(&self) -> bool {
+    const fn uses_any_internal_provider(&self) -> bool {
         matches!(self, Self::ITS | Self::ConsoleAsync)
     }
 
@@ -152,12 +120,6 @@ impl ProviderMode {
     #[must_use]
     pub const fn uses_its_provider(&self) -> bool {
         matches!(self, Self::ITS)
-    }
-
-    /// Is this the OTel logging mode?
-    #[must_use]
-    pub const fn uses_otel_provider(&self) -> bool {
-        matches!(self, Self::OpenTelemetry)
     }
 }
 
@@ -191,7 +153,6 @@ impl Default for LogsConfig {
         Self {
             level: LogLevel::default(),
             providers: default_providers(),
-            processors: Vec::new(),
         }
     }
 }
@@ -202,8 +163,6 @@ impl LogsConfig {
     /// Returns an error if:
     /// - `internal` is configured to use ITS, ConsoleAsync (needs_reporter())
     /// - `admin` is configured to use ConsoleAsync (would loop to itself)
-    /// - `engine` is `OpenTelemetry` but `global` is not
-    ///   (current implementation restriction).
     pub fn validate(&self) -> Result<(), Error> {
         if self.providers.internal.uses_any_internal_provider() {
             return Err(Error::InvalidUserConfig {
@@ -286,7 +245,6 @@ mod tests {
         assert_eq!(config.providers.engine, ProviderMode::ConsoleAsync);
         assert_eq!(config.providers.internal, ProviderMode::Noop);
         assert_eq!(config.providers.admin, ProviderMode::ConsoleDirect);
-        assert!(config.processors.is_empty());
 
         // Serde defaults should match Rust Default
         let parsed = parse("{}");
@@ -317,10 +275,6 @@ mod tests {
         assert_eq!(config.providers.global, ProviderMode::Noop);
         assert_eq!(config.providers.engine, ProviderMode::ITS);
         assert_eq!(config.providers.internal, ProviderMode::ConsoleDirect);
-
-        let config = parse("providers: { global: opentelemetry, engine: opentelemetry }");
-        assert_eq!(config.providers.global, ProviderMode::OpenTelemetry);
-        assert_eq!(config.providers.engine, ProviderMode::OpenTelemetry);
     }
 
     #[test]
@@ -329,7 +283,6 @@ mod tests {
         let cases = [
             (Noop, false),
             (ITS, true),
-            (OpenTelemetry, false),
             (ConsoleDirect, false),
             (ConsoleAsync, true),
         ];
@@ -354,20 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_mixed_otel() {
-        use ProviderMode::*;
-
-        for config in [
-            config_with(ConsoleAsync, OpenTelemetry, Noop, Noop),
-            config_with(OpenTelemetry, OpenTelemetry, Noop, Noop),
-            config_with(Noop, OpenTelemetry, Noop, OpenTelemetry),
-            config_with(OpenTelemetry, OpenTelemetry, OpenTelemetry, OpenTelemetry),
-        ] {
-            assert!(config.validate().is_ok());
-        }
-    }
-
-    #[test]
     fn test_validate_admin_cannot_use_console_async() {
         use ProviderMode::*;
         // Admin ConsoleAsync should fail validation
@@ -378,7 +317,7 @@ mod tests {
         assert_invalid(&config, "admin provider cannot be 'console_async'");
 
         // Others should succeed
-        for admin in [Noop, ITS, ConsoleDirect, OpenTelemetry] {
+        for admin in [Noop, ITS, ConsoleDirect] {
             let config = LogsConfig {
                 providers: providers(ConsoleAsync, ConsoleAsync, Noop, admin),
                 ..Default::default()

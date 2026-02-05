@@ -13,8 +13,10 @@ nodes:
           - exporter
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
-      # timeout: "30s"  # Optional: timeout for RPC requests
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+          # timeout: "30s"  # Optional: timeout for RPC requests
 
       # TLS / mTLS (receiver-side)
       # tls:
@@ -33,14 +35,16 @@ nodes:
     kind: exporter
     plugin_urn: "urn:otel:otap:exporter"
     config:
-      grpc_endpoint: "http://127.0.0.1:4318"
+      # Downstream OTAP/gRPC collector endpoint.
+      # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
+      grpc_endpoint: "http://127.0.0.1:4319"
       # timeout: "15s"  # Optional: timeout for RPC requests
 
       # TLS / mTLS (exporter-side)
       # - TLS is enabled when `grpc_endpoint` uses https:// (scheme default).
       # - Setting `tls` enables TLS/mTLS and provides additional configuration options.
       # - If `tls` is omitted and `grpc_endpoint` uses http://, the connection is plaintext.
-      # grpc_endpoint: "https://collector.example.com:4318"
+      # grpc_endpoint: "https://collector.example.com:4319"
       # tls:
       #   ca_file: "/path/to/ca.crt"          # or `ca_pem: | ...`
       #   include_system_ca_certs_pool: false # default is true
