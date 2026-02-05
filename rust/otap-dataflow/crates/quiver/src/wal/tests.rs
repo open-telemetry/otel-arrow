@@ -3515,4 +3515,3 @@ async fn multi_file_reader_discovers_files_in_correct_order() {
         );
     }
 }
-
