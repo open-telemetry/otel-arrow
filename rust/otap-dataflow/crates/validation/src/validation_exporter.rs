@@ -28,6 +28,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::time::Duration;
 
+/// URN that identifies the validation exporter within OTAP pipelines.
 pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +56,7 @@ struct ValidationExporterMetrics {
     valid: otap_df_telemetry::instrument::Gauge<u64>,
 }
 
+/// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
 pub struct ValidationExporter {
     config: ValidationExporterConfig,
     control_msgs: Vec<OtlpProtoMessage>,
@@ -64,6 +66,7 @@ pub struct ValidationExporter {
 
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
+/// Distributed-slice factory that registers the validation exporter with the engine.
 pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
     name: VALIDATION_EXPORTER_URN,
     create: |pipeline_ctx: PipelineContext,
@@ -101,6 +104,7 @@ impl ValidationExporter {
         self.metrics.valid.set(passed as u64);
     }
 
+    /// Build a new exporter instance from user configuration embedded in the pipeline.
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,

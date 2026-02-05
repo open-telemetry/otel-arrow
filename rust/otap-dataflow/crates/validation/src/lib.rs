@@ -13,5 +13,7 @@ pub mod fanout_processor;
 pub mod metrics_types;
 /// module for validating pipelines, runs and monitors pipelines
 pub mod pipeline;
+/// define structs to describe the traffic being created and captured for validation
+pub mod traffic;
 /// validation exporter to receive messages and assert their equivalence
 pub mod validation_exporter;

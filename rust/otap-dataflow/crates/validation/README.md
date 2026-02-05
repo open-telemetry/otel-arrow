@@ -1,4 +1,4 @@
-# Validation Tests
+# Validation
 
 The validation test validates a OTLP or OTAP messages after
 experiencing various processes such as encoding/decoding

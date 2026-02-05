@@ -1,23 +1,22 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(dead_code)]
-
 //! Validation test module to validate pipelines for otap/otlp messages
+#![cfg_attr(not(test), allow(dead_code))]
 
+use crate::traffic::{Capture, Generator};
 use minijinja::{Environment, context};
 use otap_df_config::engine::EngineConfig;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
-use std::fs::File;
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::time::{Duration, sleep};
 
-use crate::error::PipelineError;
+use crate::error::ValidationError;
 use crate::metrics_types::MetricsSnapshot;
 
 const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
@@ -26,44 +25,23 @@ const READY_MAX_ATTEMPTS: usize = 10;
 const READY_BACKOFF_SECS: u64 = 3;
 
 const METRICS_POLL_SECS: u64 = 2;
-const LOADGEN_MAX_SIGNALS: u64 = 2000;
 const LOADGEN_TIMEOUT_SECS: u64 = 70;
 const PROPAGATION_DELAY_SECS: u64 = 10;
 
-const PIPELINE_GROUP_ID: &str = "validation_test";
-const PIPELINE_ID_TRAFFIC: &str = "traffic_gen";
-const PIPELINE_ID_SUV: &str = "suv";
-const PIPELINE_ID_VALIDATION: &str = "validate";
-pub const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_configs.yaml";
+/// Default location of the YAML file that lists pipeline validation scenarios.
+pub const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_scenarios.yaml";
 
-/// Helps distinguish between the message types
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageType {
-    /// otlp type
-    Otlp,
-    /// otap type
-    Otap,
+#[derive(Debug, Deserialize)]
+struct ValidationScenarios {
+    pub scenarios: Vec<Scenario>,
 }
 
 #[derive(Debug, Deserialize)]
-struct PipelineValidationConfig {
-    pub tests: Vec<PipelineValidation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PipelineValidation {
+struct Scenario {
     name: String,
-    pipeline_config_path: PathBuf,
-    variables: TemplateVariables,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TemplateVariables {
-    loadgen_exporter_type: MessageType,
-    backend_receiver_type: MessageType,
-    #[serde(default)]
-    transformative: bool,
+    scenario_config_path: PathBuf,
+    traffic_generation_config: Generator,
+    traffic_capture_config: Capture,
 }
 
 /// struct to simulate a pipeline running, reads a config and starts a pipeline to send and receive data
@@ -73,9 +51,9 @@ pub struct PipelineSimulator {
 
 impl PipelineSimulator {
     /// creates a new simulator from a pipeline yaml configuration
-    pub fn new(yaml: &str) -> Result<Self, PipelineError> {
+    pub fn new(yaml: &str) -> Result<Self, ValidationError> {
         let engine_config =
-            EngineConfig::from_yaml(yaml).map_err(|e| PipelineError::Config(e.to_string()))?;
+            EngineConfig::from_yaml(yaml).map_err(|e| ValidationError::Config(e.to_string()))?;
         Ok(Self { engine_config })
     }
 
@@ -88,11 +66,11 @@ impl PipelineSimulator {
     }
 }
 
-impl PipelineValidation {
+impl Scenario {
     /// validates a pipeline, returns true if valid, false if not
-    pub async fn validate(&self, pipeline: String) -> Result<bool, PipelineError> {
+    pub async fn validate(&self, pipeline: String) -> Result<bool, ValidationError> {
         let base = ADMIN_ENDPOINT;
-        let max_signals_sent = LOADGEN_MAX_SIGNALS;
+        let max_signals_sent = self.traffic_generation_config.max_signal_count as u64;
         let metric_poll_cooldown = METRICS_POLL_SECS;
         let pipeline_delay_sec = PROPAGATION_DELAY_SECS;
         let pipeline_simulator = PipelineSimulator::new(pipeline.as_str())?;
@@ -111,11 +89,11 @@ impl PipelineValidation {
         let loadgen_deadline = Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
         loop {
             let snapshot = fetch_metrics(&admin_client, base).await?;
-            if loadgen_reached_limit(&snapshot) {
+            if loadgen_reached_limit(&snapshot, max_signals_sent) {
                 break;
             }
             if Instant::now() >= loadgen_deadline {
-                return Err(PipelineError::Ready(format!(
+                return Err(ValidationError::Ready(format!(
                     "load generator did not reach {max_signals_sent} signals before timeout"
                 )));
             }
@@ -134,40 +112,51 @@ impl PipelineValidation {
             .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
             .send()
             .await
-            .map_err(|e| PipelineError::Http(e.to_string()))?
+            .map_err(|e| ValidationError::Http(e.to_string()))?
             .error_for_status()
-            .map_err(|e| PipelineError::Http(e.to_string()))?;
+            .map_err(|e| ValidationError::Http(e.to_string()))?;
         Ok(result)
     }
 
     /// render_template generates the validation pipeline group with the pipeline that will be validated
-    pub fn render_template(&mut self, template_path: &str) -> Result<String, PipelineError> {
+    pub fn render_template(&mut self, template_path: &str) -> Result<String, ValidationError> {
         // get suv pipeline defintion
-        let pipeline_config = fs::read_to_string(&self.pipeline_config_path).map_err(|_| {
-            PipelineError::Io(format!(
+        let pipeline_config = fs::read_to_string(&self.scenario_config_path).map_err(|_| {
+            ValidationError::Io(format!(
                 "Failed to read in from {}",
-                &self.pipeline_config_path.display()
+                &self.scenario_config_path.display()
             ))
         })?;
         // get pipeline group template to run validation test
         let template = fs::read_to_string(template_path)
-            .map_err(|_| PipelineError::Io(format!("Failed to read in from {template_path}")))?;
+            .map_err(|_| ValidationError::Io(format!("Failed to read in from {template_path}")))?;
         let mut env = Environment::new();
         env.add_template("template", template.as_str())
-            .map_err(|e| PipelineError::Template(e.to_string()))?;
+            .map_err(|e| ValidationError::Template(e.to_string()))?;
         let tmpl = env
             .get_template("template")
-            .map_err(|e| PipelineError::Template(e.to_string()))?;
+            .map_err(|e| ValidationError::Template(e.to_string()))?;
         // pass the context variables
+        let traffic_gen = &self.traffic_generation_config;
+        let traffic_cap = &self.traffic_capture_config;
         let ctx = context! {
-            loadgen_exporter_type => &self.variables.loadgen_exporter_type,
-            backend_receiver_type => &self.variables.backend_receiver_type,
-            transformative => self.variables.transformative,
+            suv_receiver_type => &traffic_cap.suv_receiver_type,
+            suv_exporter_type => &traffic_gen.suv_exporter_type,
+            control_receiver_type => &traffic_cap.control_receiver_type,
+            control_exporter_type => &traffic_gen.control_exporter_type,
+            expect_failure => traffic_cap.transformative,
+            max_signal_count => traffic_gen.max_signal_count,
+            max_batch_size => traffic_gen.max_batch_size,
+            signals_per_second => traffic_gen.signals_per_second,
+            suv_addr => &traffic_cap.suv_listening_addr,
+            suv_endpoint => &traffic_gen.suv_endpoint,
+            control_addr => &traffic_cap.control_listening_addr,
+            control_endpoint => &traffic_gen.control_endpoint,
             pipeline_config => pipeline_config,
         };
         let rendered = tmpl
             .render(ctx)
-            .map_err(|e| PipelineError::Template(e.to_string()))?;
+            .map_err(|e| ValidationError::Template(e.to_string()))?;
         Ok(rendered)
     }
 }
@@ -178,7 +167,7 @@ async fn wait_for_ready(
     base: &str,
     max_retry: usize,
     retry_cooldown: u64,
-) -> Result<(), PipelineError> {
+) -> Result<(), ValidationError> {
     let readyz_url = format!("{base}/readyz");
     let mut last_error: Option<String> = None;
     for _attempt in 0..max_retry {
@@ -196,29 +185,29 @@ async fn wait_for_ready(
         sleep(Duration::from_secs(retry_cooldown)).await;
     }
 
-    Err(PipelineError::Ready(
+    Err(ValidationError::Ready(
         last_error.unwrap_or_else(|| "readyz timeout".to_string()),
     ))
 }
 
 /// fetch_metric fetches metrics from the metric endpoint and returns them as a serialized struct
-async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, PipelineError> {
+async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
     client
         .get(format!("{base}/telemetry/metrics"))
         .query(&[("reset", false), ("keep_all_zeroes", false)])
         .send()
         .await
-        .map_err(|_| PipelineError::Http(format!("No Response from {base}/telemetry/metrics")))?
+        .map_err(|_| ValidationError::Http(format!("No Response from {base}/telemetry/metrics")))?
         .error_for_status()
-        .map_err(|e| PipelineError::Http(e.to_string()))?
+        .map_err(|e| ValidationError::Http(e.to_string()))?
         .json()
         .await
-        .map_err(|e| PipelineError::Http(e.to_string()))
+        .map_err(|e| ValidationError::Http(e.to_string()))
 }
 
 /// loadgen_reached checks the metric for the fake_data_generator metrics
 /// and returns true if the max signal count has been reached
-fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
+fn loadgen_reached_limit(snapshot: &MetricsSnapshot, max_signals: u64) -> bool {
     // Prefer the fake data generator metrics if present.
     if let Some(v) = snapshot
         .metric_sets
@@ -231,7 +220,7 @@ fn loadgen_reached_limit(snapshot: &MetricsSnapshot) -> bool {
                 .map(|m| m.value.to_u64_lossy())
         })
     {
-        return v >= LOADGEN_MAX_SIGNALS;
+        return v >= max_signals;
     }
     false
 }
@@ -255,21 +244,26 @@ fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
     false
 }
 
-/// Execute pipeline validations from the given config file path (or the default).
-pub async fn run_validation_tests(config_path: Option<&str>) -> Result<(), PipelineError> {
-    let path = config_path.unwrap_or(PIPELINE_CONFIG_YAML);
-    let file =
-        File::open(path).map_err(|e| PipelineError::Io(format!("failed to open {path}: {e}")))?;
-    let config: PipelineValidationConfig = serde_yaml::from_reader(file)
-        .map_err(|e| PipelineError::Config(format!("Could not deserialize {path}: {e}")))?;
+#[cfg(test)]
+use std::fs::File;
+
+const REPORT_PATH: &str = "target/pipeline_validation_report.txt";
+
+// ignore as we run this seperately in a different job
+#[ignore] 
+#[tokio::test]
+async fn run_validation_scenarios() {
+    let file = File::open(PIPELINE_CONFIG_YAML).expect("failed to open config file");
+    let config: ValidationScenarios =
+        serde_yaml::from_reader(file).expect("failed to serialize config from file");
 
     println!("========== Running Pipeline Validation ===========");
 
     let mut report = String::from("========== Pipeline Validation Results ===========\n");
-    let mut failures = 0usize;
+    let mut failures: usize = 0;
 
     // loop through each test config
-    for mut config in config.tests {
+    for mut config in config.scenarios {
         // render the pipeline group yaml
         match config.render_template(VALIDATION_TEMPLATE_PATH) {
             // run the validation process on the pipeline group and get the result
@@ -299,12 +293,13 @@ pub async fn run_validation_tests(config_path: Option<&str>) -> Result<(), Pipel
     // print out the report string
     println!("{report}");
 
-    // trigger failed test if we encountered any failed results
-    if failures == 0 {
-        Ok(())
-    } else {
-        Err(PipelineError::Validation(format!(
-            "{failures} pipeline validation(s) failed"
-        )))
+    // persist report for CI to surface
+    let report_path = PathBuf::from(REPORT_PATH);
+    if let Some(parent) = report_path.parent() {
+        fs::create_dir_all(parent).expect("failed to create report directory");
     }
+    fs::write(&report_path, &report).expect("failed to write validation report");
+
+    // trigger failed test if we encountered any failed results
+    assert_eq!(failures, 0);
 }

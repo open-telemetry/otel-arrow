@@ -16,15 +16,24 @@ pub struct OtelProtoSimulator {
 
 impl OtelProtoSimulator {
     /// Takes the Otlp request message and encodes it and decodes it via producer -> consumer
-    pub fn simulate_proto(&mut self, proto_message: &OtlpProtoMessage) -> OtlpProtoMessage {
+    pub fn simulate_proto(
+        &mut self,
+        proto_message: &OtlpProtoMessage,
+    ) -> Result<OtlpProtoMessage, String> {
         // take otlp proto message
         // convert to otap arrow records which we can pass to the producer
         let mut otap_message = otlp_to_otap(proto_message);
         // convert to batch arrow records
         // converg batch arrow records
         // convert msg to proto bytes?
-        let mut bar = self.producer.produce_bar(&mut otap_message).unwrap();
-        let records = self.consumer.consume_bar(&mut bar).unwrap();
+        let mut bar = self
+            .producer
+            .produce_bar(&mut otap_message)
+            .map_err(|e| e.to_string())?;
+        let records = self
+            .consumer
+            .consume_bar(&mut bar)
+            .map_err(|e| e.to_string())?;
         let otap_message = match proto_message {
             OtlpProtoMessage::Logs(_) => OtapArrowRecords::Logs(from_record_messages(records)),
             OtlpProtoMessage::Metrics(_) => {
@@ -32,7 +41,7 @@ impl OtelProtoSimulator {
             }
             OtlpProtoMessage::Traces(_) => OtapArrowRecords::Traces(from_record_messages(records)),
         };
-        otap_to_otlp(&otap_message)
+        Ok(otap_to_otlp(&otap_message))
     }
 }
 
@@ -117,17 +126,23 @@ mod test {
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result
             let logs = OtlpProtoMessage::Logs(semconv_otlp_logs(LOG_SIGNAL_COUNT, &registry));
-            let logs_output = otel_proto_simulator.simulate_proto(&logs);
+            let logs_output = otel_proto_simulator
+                .simulate_proto(&logs)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[logs], &[logs_output]);
 
             let metrics =
                 OtlpProtoMessage::Metrics(semconv_otlp_metrics(METRIC_SIGNAL_COUNT, &registry));
-            let metrics_output = otel_proto_simulator.simulate_proto(&metrics);
+            let metrics_output = otel_proto_simulator
+                .simulate_proto(&metrics)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[metrics], &[metrics_output]);
 
             let traces =
                 OtlpProtoMessage::Traces(semconv_otlp_traces(TRACE_SIGNAL_COUNT, &registry));
-            let traces_output = otel_proto_simulator.simulate_proto(&traces);
+            let traces_output = otel_proto_simulator
+                .simulate_proto(&traces)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[traces], &[traces_output]);
         }
     }

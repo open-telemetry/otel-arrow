@@ -2,20 +2,37 @@
 settings:
   http_admin:
     bind_address: 127.0.0.1:8085
-{% set receiver_type = backend_receiver_type | default("otlp") -%}
-{% set exporter_type = loadgen_exporter_type | default("otlp") -%}
-{% set receiver_extra_config = "" -%}
-{% set receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
-{% if receiver_type == "otap" -%}
-  {% set receiver_plugin_urn = "urn:otel:otap:receiver" -%}
-  {% set receiver_extra_config = "response_stream_channel_size: 256" -%}
+{% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
+{% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
+{% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% if suv_receiver_type == "otap" -%}
+  {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
 {% endif -%}
-{% set exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
-{% if exporter_type == "otap" -%}
-  {% set exporter_plugin_urn = "urn:otel:otap:exporter" -%}
+{% set suv_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
+{% if suv_exporter_type == "otap" -%}
+  {% set suv_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
 {% endif -%}
-{% set suv_pipeline = pipeline_config | default("nodes:") -%}
+{% set control_receiver_type = control_receiver_type | default("otlp") -%}
+{% set control_exporter_type = control_exporter_type | default("otlp") -%}
+{% set control_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% if control_receiver_type == "otap" -%}
+  {% set control_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
+{% endif -%}
+{% set control_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
+{% if control_exporter_type == "otap" -%}
+  {% set control_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
+{% endif -%}
 {% set expect_failure = transformative | default(false) -%}
+{% set suv_pipeline = pipeline_config | default("nodes:") -%}
+{% set max_signal_count = max_signal_count | default(2000) -%}
+{% set max_batch_size = max_batch_size | default(100) -%}
+{% set signals_per_second = signals_per_second | default(100) -%}
+
+{% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
+{% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
+{% set control_addr = control_addr | default("127.0.0.1:4316") -%}
+{% set control_endpoint = control_endpoint | default("http://127.0.0.1:4316") -%}
+
 
 pipeline_groups:
   validation_test:
@@ -34,26 +51,31 @@ pipeline_groups:
         nodes:
           suv_receiver:
             kind: receiver
-            plugin_urn: "{{ receiver_plugin_urn }}"
+            plugin_urn: "{{ suv_receiver_plugin_urn }}"
             out_ports:
               out_port:
                 destinations:
                   - validation_exporter
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "127.0.0.1:4318"
-              {{ receiver_extra_config }}
+              listening_addr: "{{ suv_addr }}"
+              {% if suv_receiver_type == "otap" -%}
+              response_stream_channel_size: 256
+              {% endif %}
 
           control_receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
+            plugin_urn: "{{ control_receiver_plugin_urn }}"
             out_ports:
               out_port:
                 destinations:
                   - validation_exporter
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "127.0.0.1:4316"
+              listening_addr: "{{ control_addr }}"
+              {% if control_receiver_type == "otap" -%}
+              response_stream_channel_size: 256
+              {% endif %}
           validation_exporter:
             kind: exporter
             plugin_urn: "urn:otel:validation:exporter"
@@ -98,9 +120,9 @@ pipeline_groups:
                 dispatch_strategy: round_robin
             config:
               traffic_config:
-                max_signal_count: 2000
-                max_batch_size: 100
-                signals_per_second: 100
+                max_signal_count: {{ max_signal_count }}
+                max_batch_size: {{ max_batch_size }}
+                signals_per_second: {{ signals_per_second }}
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 100
@@ -121,10 +143,10 @@ pipeline_groups:
             config:
           suv_exporter:
             kind: exporter
-            plugin_urn: "{{ exporter_plugin_urn }}"
+            plugin_urn: "{{ suv_exporter_plugin_urn }}"
             config:
-              grpc_endpoint: "http://127.0.0.1:4317"
-              {% if exporter_type == "otap" -%}
+              grpc_endpoint: "{{ suv_endpoint }}"
+              {% if suv_exporter_type == "otap" -%}
               compression_method: none
               arrow:
                 payload_compression: none
@@ -132,6 +154,11 @@ pipeline_groups:
 
           control_exporter:
             kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            plugin_urn: "{{ control_exporter_plugin_urn }}"
             config:
-              grpc_endpoint: "http://127.0.0.1:4316"
+              grpc_endpoint: "{{ control_endpoint }}"
+              {% if control_exporter_type == "otap" -%}
+              compression_method: none
+              arrow:
+                payload_compression: none
+              {% endif %}
