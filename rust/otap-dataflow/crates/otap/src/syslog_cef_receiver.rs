@@ -20,7 +20,7 @@ use otap_df_engine::{
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
@@ -36,7 +36,7 @@ use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 #[cfg(feature = "experimental-tls")]
-use otap_df_telemetry::{otel_debug, otel_warn};
+use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -213,11 +213,19 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // capped at MAX_TASK_DRAIN_WAIT.
                                     let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
                                     let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
-                                    let _ = tokio::time::timeout(drain_wait, async {
+                                    let drain_result = tokio::time::timeout(drain_wait, async {
                                         while active_task_count.get() > 0 {
                                             tokio::task::yield_now().await;
                                         }
                                     }).await;
+
+                                    if drain_result.is_err() {
+                                        otel_warn!(
+                                            "receiver.shutdown.drain_timeout",
+                                            active_tasks = active_task_count.get(),
+                                            message = "Shutdown drain timeout expired with tasks still active"
+                                        );
+                                    }
 
                                     let snapshot = self.metrics.borrow().snapshot();
                                     return Ok(TerminalState::new(deadline, [snapshot]));
