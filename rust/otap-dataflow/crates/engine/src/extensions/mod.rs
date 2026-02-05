@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Extension traits and registry for capability-based lookups.
 //!
 //! This module provides:

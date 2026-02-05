@@ -410,7 +410,10 @@ mod tests {
             body: String::new(),
             retry_after: Some(std::time::Duration::from_secs(60)),
         };
-        assert_eq!(error.retry_after(), Some(std::time::Duration::from_secs(60)));
+        assert_eq!(
+            error.retry_after(),
+            Some(std::time::Duration::from_secs(60))
+        );
     }
 
     #[test]

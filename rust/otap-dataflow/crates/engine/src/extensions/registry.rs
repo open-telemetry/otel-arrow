@@ -384,7 +384,8 @@ mod tests {
         bundle.insert::<dyn BearerTokenProvider>(instance.clone() as Arc<dyn BearerTokenProvider>);
 
         // Get by trait
-        let token_provider: Arc<dyn BearerTokenProvider> = bundle.get::<dyn BearerTokenProvider>().unwrap();
+        let token_provider: Arc<dyn BearerTokenProvider> =
+            bundle.get::<dyn BearerTokenProvider>().unwrap();
         // We can't easily test async here, but we can verify it's retrieved
         assert_eq!(bundle.len(), 1);
         assert!(bundle.contains::<dyn BearerTokenProvider>());
@@ -444,7 +445,8 @@ mod tests {
         let bundle = crate::extension_bundle!(instance => BearerTokenProvider);
 
         // Verify trait is accessible
-        let _token_provider: Arc<dyn BearerTokenProvider> = bundle.get::<dyn BearerTokenProvider>().unwrap();
+        let _token_provider: Arc<dyn BearerTokenProvider> =
+            bundle.get::<dyn BearerTokenProvider>().unwrap();
 
         assert_eq!(bundle.len(), 1);
     }
@@ -529,7 +531,8 @@ mod tests {
     #[test]
     fn test_registry_debug() {
         let bundle = ExtensionBundle::new();
-        let registry = ExtensionRegistry::from_map(HashMap::from([("test_ext".to_string(), bundle)]));
+        let registry =
+            ExtensionRegistry::from_map(HashMap::from([("test_ext".to_string(), bundle)]));
 
         let debug_str = format!("{:?}", registry);
         assert!(debug_str.contains("ExtensionRegistry"));

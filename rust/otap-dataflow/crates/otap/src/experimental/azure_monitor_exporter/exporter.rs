@@ -398,7 +398,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let auth = effect_handler.get_extension::<dyn BearerTokenProvider>(self.config.auth.as_str())
+        let auth = effect_handler
+            .get_extension::<dyn BearerTokenProvider>(self.config.auth.as_str())
             .map_err(|e| {
                 let error = Error::AuthHandlerCreation(Box::new(e));
                 EngineError::InternalError {
@@ -421,11 +422,13 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         // Wait for the initial token - blocks until the auth extension provides one
         println!("[AzureMonitorExporter] Waiting for initial auth token...");
-        let _ = token_rx.wait_for(|t| t.is_some()).await.map_err(|_| {
-            EngineError::InternalError {
-                message: "Auth extension closed before providing a token".to_string(),
-            }
-        })?;
+        let _ =
+            token_rx
+                .wait_for(|t| t.is_some())
+                .await
+                .map_err(|_| EngineError::InternalError {
+                    message: "Auth extension closed before providing a token".to_string(),
+                })?;
 
         // Now we're guaranteed to have a token
         if let Some(token) = token_rx.borrow().as_ref() {

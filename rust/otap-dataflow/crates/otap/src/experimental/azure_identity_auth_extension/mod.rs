@@ -16,12 +16,12 @@
 
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::{ExtensionFactory, extension_bundle};
-use otap_df_engine::extensions::BearerTokenProvider;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::extension::ExtensionWrapper;
+use otap_df_engine::extensions::BearerTokenProvider;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::{ExtensionFactory, extension_bundle};
 use serde_json;
 use std::sync::Arc;
 

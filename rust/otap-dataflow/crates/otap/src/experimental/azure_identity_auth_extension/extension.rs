@@ -659,8 +659,14 @@ mod tests {
         rx1.changed().await.unwrap();
         rx2.changed().await.unwrap();
 
-        assert_eq!(rx1.borrow().as_ref().unwrap().token.secret(), "broadcast_token");
-        assert_eq!(rx2.borrow().as_ref().unwrap().token.secret(), "broadcast_token");
+        assert_eq!(
+            rx1.borrow().as_ref().unwrap().token.secret(),
+            "broadcast_token"
+        );
+        assert_eq!(
+            rx2.borrow().as_ref().unwrap().token.secret(),
+            "broadcast_token"
+        );
     }
 
     // ==================== Token Refresh Scheduling Tests ====================
@@ -697,7 +703,8 @@ mod tests {
 
         // Should still wait at least MIN_TOKEN_REFRESH_INTERVAL_SECS (allowing 1s tolerance)
         let now = tokio::time::Instant::now();
-        let min_expected = now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
+        let min_expected =
+            now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
 
         assert!(next_refresh >= min_expected);
     }
@@ -715,7 +722,8 @@ mod tests {
 
         // Should schedule refresh at minimum interval (allowing 1s tolerance)
         let now = tokio::time::Instant::now();
-        let min_expected = now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
+        let min_expected =
+            now + tokio::time::Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS - 1);
 
         assert!(next_refresh >= min_expected);
     }
@@ -733,7 +741,8 @@ mod tests {
 
         // Should refresh ~5 minutes before expiry (3600 - 299 = 3301s from now)
         let now = tokio::time::Instant::now();
-        let expected_approx = now + tokio::time::Duration::from_secs(3600 - TOKEN_EXPIRY_BUFFER_SECS);
+        let expected_approx =
+            now + tokio::time::Duration::from_secs(3600 - TOKEN_EXPIRY_BUFFER_SECS);
 
         // Allow some tolerance for timing
         let tolerance = tokio::time::Duration::from_secs(2);
