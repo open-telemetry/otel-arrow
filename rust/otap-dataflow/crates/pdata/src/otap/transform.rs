@@ -977,6 +977,10 @@ pub fn transform_attributes_impl(
             // TODO if there are any optional columns that now contain only null or default values,
             //  we should remove them here.
 
+            let keep_ranges = transform_ranges_to_keep_ranges(
+                attrs_record_batch.num_rows(),
+                &keys_transform_result.transform_ranges,
+            );
             let columns = attrs_record_batch
                 .columns()
                 .iter()
@@ -985,11 +989,8 @@ pub fn transform_attributes_impl(
                     if i == key_column_idx {
                         Ok(new_keys.clone() as ArrayRef)
                     } else {
-                        match transform_ranges_to_keep_ranges(
-                            attrs_record_batch.num_rows(),
-                            &keys_transform_result.transform_ranges,
-                        ) {
-                            Some(keep_ranges) => take_ranges_slice(col, &keep_ranges),
+                        match keep_ranges.as_ref() {
+                            Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
                             None => Ok(col.clone()),
                         }
                     }
@@ -1447,9 +1448,27 @@ fn transform_keys(
     #[allow(unsafe_code)]
     let new_keys = unsafe { StringArray::new_unchecked(new_offsets, new_values, None) };
 
+    // TODO mess
+    let transform_ranges = if let Cow::Owned(ranges) = transform_ranges {
+        ranges
+    } else {
+        match (replacement_plan, delete_plan) {
+            (Some(replacement), None) => {
+                replacement.ranges
+            },
+            (None, Some(delete_plan)) => {
+                delete_plan.ranges
+            },
+            _ => {
+                // TODO - is it really?
+                unreachable!("")
+            }
+        }
+    };
+
     Ok(KeysTransformResult {
         new_keys,
-        transform_ranges: transform_ranges.into_owned(),
+        transform_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
     })
