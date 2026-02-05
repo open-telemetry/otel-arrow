@@ -64,7 +64,7 @@ mod metrics;
 use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
-pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otap:processor:attributes_processor";
+pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:attribute:processor";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Actions that can be performed on attributes.

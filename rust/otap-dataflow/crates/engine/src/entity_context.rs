@@ -349,10 +349,16 @@ mod tests {
             set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
         let _pipeline_metrics = PipelineMetricsMonitor::new(pipeline_ctx.clone());
 
-        let source_ctx =
-            pipeline_ctx.with_node_context("source".into(), "urn:test".into(), NodeKind::Receiver);
-        let dest_ctx =
-            pipeline_ctx.with_node_context("dest".into(), "urn:test".into(), NodeKind::Processor);
+        let source_ctx = pipeline_ctx.with_node_context(
+            "source".into(),
+            "urn:test:example:receiver".into(),
+            NodeKind::Receiver,
+        );
+        let dest_ctx = pipeline_ctx.with_node_context(
+            "dest".into(),
+            "urn:test:example:processor".into(),
+            NodeKind::Processor,
+        );
 
         let source_entity_key = source_ctx.register_node_entity();
         let dest_entity_key = dest_ctx.register_node_entity();

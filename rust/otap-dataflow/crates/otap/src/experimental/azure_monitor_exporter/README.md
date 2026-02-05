@@ -21,7 +21,7 @@ cargo build --release --features azure-monitor-exporter
 ./target/release/df_engine --help
 ```
 
-You should see `urn:otel:azuremonitor:exporter` in the Exporters list.
+You should see `urn:microsoft_azure:monitor:exporter` in the Exporters list.
 
 ## Configuration
 
@@ -34,7 +34,7 @@ configuration:
 nodes:
   azure-monitor-exporter:
     kind: exporter
-    plugin_urn: "urn:otel:azuremonitor:exporter"
+    plugin_urn: "urn:microsoft_azure:monitor:exporter"
     config:
       # API configuration (REQUIRED)
       api:

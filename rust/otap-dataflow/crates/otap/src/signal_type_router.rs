@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
-pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
+pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:type_router:processor";
 
 /// Well-known out port names for type-based routing
 /// Name of the out port used for trace signals
