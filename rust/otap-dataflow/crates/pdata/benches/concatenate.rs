@@ -2,14 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Benchmarks for concatenating OTAP record batches
-//!
-//! ## Running
-//!
-//! ```bash
-//! cargo bench --bench concatenate
-//! ```
-//!
-//! ```
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otap::transform::concatenate::concatenate;

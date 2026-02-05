@@ -39,6 +39,8 @@ use itertools::Itertools;
 use otap_df_config::SignalType;
 use smallvec::SmallVec;
 
+use super::transform::concatenate::{self, concatenate};
+
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
 ///
@@ -984,7 +986,7 @@ fn concatenate_emitter<const N: usize>(
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
     reindex(current, allowed_payloads)?;
-    result.push(generic_schemaless_concatenate(current)?);
+    result.push(concatenate(current)?);
     assert_all_empty(current);
     current.clear();
     Ok(())
