@@ -11,6 +11,9 @@ We value all contributions, whether big or small, and encourage you to join us
 in improving this project. If you have questions, don't hesitate to reach out to
 the OpenTelemetry community - we're here to help!
 
+Looking for a place to start? See the repository's
+[Contribute page](https://github.com/open-telemetry/otel-arrow/contribute).
+
 ## Pre-requisites
 
 To work with this repository, you'll need:

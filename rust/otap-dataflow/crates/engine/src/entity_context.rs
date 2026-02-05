@@ -342,7 +342,7 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry.clone());
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 0);
+            controller_ctx.pipeline_context_with("group".into(), "pipe".into(), 0, 1, 0);
 
         let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
         let _pipeline_entity_guard =
@@ -365,6 +365,7 @@ mod tests {
         let channel_id: Cow<'static, str> = "chan:pdata".into();
         let out_key = source_ctx.register_channel_entity(
             channel_id.clone(),
+            "out".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
@@ -373,6 +374,7 @@ mod tests {
         source_handle.add_output_channel_key("out".into(), out_key);
         let in_key = dest_ctx.register_channel_entity(
             channel_id,
+            "input".into(),
             CHANNEL_KIND_PDATA,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,
@@ -381,6 +383,7 @@ mod tests {
         dest_handle.set_input_channel_key(in_key);
         let ctrl_key = source_ctx.register_channel_entity(
             "chan:ctrl".into(),
+            "input".into(),
             CHANNEL_KIND_CONTROL,
             CHANNEL_MODE_LOCAL,
             CHANNEL_TYPE_MPSC,

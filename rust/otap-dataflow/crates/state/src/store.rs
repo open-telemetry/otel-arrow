@@ -8,13 +8,16 @@ use crate::error::Error;
 use crate::phase::PipelinePhase;
 use crate::pipeline_rt_status::{ApplyOutcome, PipelineRuntimeStatus};
 use crate::pipeline_status::PipelineStatus;
-use crate::reporter::ObservedEventReporter;
 use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
-use otap_df_config::observed_state::ObservedStateSettings;
-use otap_df_telemetry::event::{EventType, ObservedEvent};
+use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
+use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
+use otap_df_telemetry::{otel_error, otel_info};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -28,9 +31,6 @@ const RECENT_EVENTS_CAPACITY: usize = 10;
 #[derive(Debug, Clone, Serialize)]
 pub struct ObservedStateStore {
     #[serde(skip)]
-    config: ObservedStateSettings,
-
-    #[serde(skip)]
     default_health_policy: HealthPolicy,
 
     #[serde(skip)]
@@ -41,6 +41,15 @@ pub struct ObservedStateStore {
 
     #[serde(skip)]
     receiver: flume::Receiver<ObservedEvent>,
+
+    /// Console is used only for Log events when this component acts
+    /// as the ConsoleAsync consumer and logs to the console.
+    #[serde(skip)]
+    console: ConsoleWriter,
+
+    /// Telemetry registry for resolving entity keys to attributes.
+    #[serde(skip)]
+    registry: TelemetryRegistryHandle,
 
     pipelines: Arc<Mutex<HashMap<PipelineKey, PipelineStatus>>>,
 }
@@ -58,8 +67,9 @@ impl ObservedStateHandle {
         match self.pipelines.lock() {
             Ok(guard) => guard.clone(),
             Err(poisoned) => {
-                log::warn!(
-                    "ObservedStateHandle mutex was poisoned; returning possibly stale snapshot"
+                otel_error!(
+                    "state.mutex_poisoned",
+                    action = "continuing with stale snapshot"
                 );
                 poisoned.into_inner().clone()
             }
@@ -68,25 +78,26 @@ impl ObservedStateHandle {
 }
 
 impl ObservedStateStore {
-    /// Creates a new `ObservedStateStore` with the given configuration.
+    /// Creates a new `ObservedStateStore` with the given configuration and telemetry registry.
     #[must_use]
-    pub fn new(config: &ObservedStateSettings) -> Self {
+    pub fn new(config: &ObservedStateSettings, registry: TelemetryRegistryHandle) -> Self {
         let (sender, receiver) = flume::bounded::<ObservedEvent>(config.reporting_channel_size);
 
         Self {
-            config: config.clone(),
             default_health_policy: HealthPolicy::default(),
             health_policies: Arc::new(Mutex::new(HashMap::new())),
             sender,
             receiver,
+            console: ConsoleWriter::color(),
+            registry,
             pipelines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// Returns a reporter that can be used to send observed events to this store.
     #[must_use]
-    pub fn reporter(&self) -> ObservedEventReporter {
-        ObservedEventReporter::new(self.config.reporting_timeout, self.sender.clone())
+    pub fn reporter(&self, policy: SendPolicy) -> ObservedEventReporter {
+        ObservedEventReporter::new(policy, self.sender.clone())
     }
 
     /// Registers or updates the health policy for a specific pipeline.
@@ -96,8 +107,9 @@ impl ObservedStateStore {
         health_policy: HealthPolicy,
     ) {
         let mut policies = self.health_policies.lock().unwrap_or_else(|poisoned| {
-            log::warn!(
-                "ObservedStateStore health policy mutex was poisoned; continuing with possibly inconsistent state"
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with stale health policy"
             );
             poisoned.into_inner()
         });
@@ -113,27 +125,79 @@ impl ObservedStateStore {
     }
 
     /// Reports a new observed event in the store.
-    #[allow(
-        clippy::print_stderr,
-        reason = "Use `eprintln!` while waiting for https://github.com/open-telemetry/otel-arrow/issues/1237."
-    )]
-    fn report(&self, observed_event: ObservedEvent) -> Result<ApplyOutcome, Error> {
-        // ToDo Event reporting see: https://github.com/open-telemetry/otel-arrow/issues/1237
-        // The code below is temporary and should be replaced with a proper event reporting
-        // mechanism (see previous todo).
-        match &observed_event.r#type {
-            EventType::Request(_) | EventType::Error(_) => {
-                eprintln!("Observed event: {observed_event:?}")
+    fn report(&self, observed_event: ObservedEvent) -> Result<(), Error> {
+        match observed_event {
+            ObservedEvent::Engine(engine) => {
+                let _ = self.report_engine(engine)?;
             }
-            EventType::Success(_) => { /* no console output for success events */ }
-        }
+            ObservedEvent::Log(log) => {
+                let context = &log.record.context;
 
-        // Log events and events without a pipeline key don't update state.
+                self.console.print_log_record(log.time, &log.record, |w| {
+                    if !context.is_empty() {
+                        w.write_styled(AnsiCode::Magenta, |w| {
+                            Self::format_scope_from_registry(w, context, &self.registry);
+                        });
+                    }
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Format scope attributes by looking up entity keys in the registry.
+    /// Appends entity references inline after the log message.
+    /// Format: ` entity/schema: key=val key2=val2 entity/schema2: ...`
+    ///
+    /// TODO(#1907, #1746): This code is too expensive. We would like a lower-cost
+    /// way to output human readable text.
+    fn format_scope_from_registry(
+        w: &mut StyledBufWriter<'_>,
+        context: &LogContext,
+        registry: &TelemetryRegistryHandle,
+    ) {
+        for key in context.iter() {
+            let visited = registry.visit_entity(*key, |attrs| {
+                (
+                    attrs
+                        .iter_attributes()
+                        .map(|(a, b)| (a, b.clone()))
+                        .collect::<Vec<_>>(),
+                    attrs.schema_name(),
+                )
+            });
+            visited
+                .map(|(attrs, schema_name)| {
+                    let _ = write!(w, " entity/{}:", schema_name);
+
+                    // TODO(#1907): We should be able to use
+                    for (attr_key, attr_value) in attrs {
+                        let _ = write!(w, " {}={}", attr_key, attr_value.to_string_value());
+                    }
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    /// Reports a new observed event in the store.
+    fn report_engine(&self, observed_event: EngineEvent) -> Result<ApplyOutcome, Error> {
+        match &observed_event.r#type {
+            EventType::Request(_) => {
+                otel_info!("state.observed_event", observed_event = ?observed_event);
+            }
+            EventType::Error(_) => {
+                otel_error!("state.observed_error", observed_event = ?observed_event);
+            }
+            EventType::Success(_) => {}
+        };
+
+        // Events without a pipeline key don't update state.
         let key = &observed_event.key;
 
         let mut pipelines = self.pipelines.lock().unwrap_or_else(|poisoned| {
-            log::warn!(
-                "ObservedStateStore mutex was poisoned; continuing with possibly inconsistent state"
+            otel_error!(
+                "state.mutex_poisoned",
+                action = "continuing with possibly inconsistent state"
             );
             poisoned.into_inner()
         });
@@ -172,7 +236,7 @@ impl ObservedStateStore {
                 // Exit the loop if the channel is closed
                 while let Ok(event) = self.receiver.recv_async().await {
                     if let Err(e) = self.report(event) {
-                        log::error!("Error reporting observed event: {e}");
+                        otel_error!("state.report_failed", error = ?e);
                     }
                 }
             } => { /* Channel closed, exit gracefully */ }

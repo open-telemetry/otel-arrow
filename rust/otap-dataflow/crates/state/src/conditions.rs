@@ -210,13 +210,13 @@ impl ConditionState {
     pub fn new(
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         last_transition_time: Option<SystemTime>,
     ) -> Self {
         Self {
             status,
             reason: reason.into(),
-            message: message.into(),
+            message,
             last_transition_time,
         }
     }
@@ -226,11 +226,10 @@ impl ConditionState {
         &mut self,
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         transition_time: SystemTime,
     ) -> bool {
         let reason = reason.into();
-        let message = message.into();
         if self.status == status && self.reason == reason && self.message == message {
             return false;
         }

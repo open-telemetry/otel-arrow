@@ -38,8 +38,10 @@ nodes:
           - geneva-exporter
         dispatch_strategy: round_robin
     config:
-      # The address to listen on for gRPC connections
-      listening_addr: "127.0.0.1:4317"
+      protocols:
+        grpc:
+          # The address to listen on for gRPC connections
+          listening_addr: "127.0.0.1:4317"
 
   # Geneva exporter configuration
   geneva-exporter:

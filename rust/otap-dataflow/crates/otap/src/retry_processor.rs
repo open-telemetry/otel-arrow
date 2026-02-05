@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
@@ -490,6 +491,13 @@ impl RetryProcessor {
         // refusal.
         self.metrics.add_produced_refused(signal, rstate.num_items);
 
+        // Permanent errors should not be retried, notify the next recipient.
+        if nack.permanent {
+            effect_handler.notify_nack(nack).await?;
+            self.metrics.add_consumed_refused(signal, rstate.num_items);
+            return Ok(());
+        }
+
         // Check for missing payload, we won't retry an empty request.
         if nack.refused.is_empty() {
             // The downstream refused the request and did not give us
@@ -567,7 +575,7 @@ impl RetryProcessor {
         num_items: u64,
     ) -> Result<(), Error> {
         let signal = data.signal_type();
-        match effect_handler.send_message(data).await {
+        match effect_handler.send_message_with_source_node(data).await {
             Ok(()) => {
                 // Request control flows downstream.
                 Ok(())
@@ -762,7 +770,7 @@ mod test {
     fn create_test_pipeline_context() -> PipelineContext {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry);
-        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 0)
+        controller_ctx.pipeline_context_with("test_grp".into(), "test_pipeline".into(), 0, 1, 0)
     }
 
     fn create_test_config() -> serde_json::Value {
@@ -784,10 +792,10 @@ mod test {
         // For the success case, we expect success with or without a
         // working clock.  Test both ways.
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, true)
+            test_retry_processor(create_test_config(), i, None, true, false)
         }
         for i in 0..3 {
-            test_retry_processor(create_test_config(), i, None, false)
+            test_retry_processor(create_test_config(), i, None, false, false)
         }
     }
 
@@ -796,8 +804,20 @@ mod test {
         test_retry_processor(
             create_test_config(),
             4,
-            Some("final retry: simulated".into()),
+            Some("final retry: simulated downstream".into()),
+            true,  // working clock
+            false, // retryable
+        )
+    }
+
+    #[test]
+    fn test_retry_processor_permanent_error_not_retried() {
+        test_retry_processor(
+            create_test_config(),
+            1,
+            Some("simulated permanent".into()),
             true,
+            true, // permanent error
         )
     }
 
@@ -809,7 +829,8 @@ mod test {
             Some("final retry: simulated".into()),
             // this places emphasis on the logical limit, not the
             // max-elapsed walltime.
-            false,
+            false, // broken clock
+            false, // retryable
         )
     }
 
@@ -818,6 +839,7 @@ mod test {
         number_of_nacks: usize,
         outcome_failure: Option<String>,
         working_clock: bool,
+        permanent_error: bool,
     ) {
         let pipeline_ctx = create_test_pipeline_context();
         let node = test_node("retry-processor-full-test");
@@ -868,7 +890,11 @@ mod test {
                 let mut have_pmsg: Option<PipelineControlMsg<OtapPdata>> = None;
                 let mut nacks_delivered = 0;
                 while nacks_delivered < number_of_nacks {
-                    let nack = NackMsg::new("simulated downstream failure", current_data.clone());
+                    let nack = if permanent_error {
+                        NackMsg::new_permanent("simulated permanent failure", current_data.clone())
+                    } else {
+                        NackMsg::new("simulated downstream failure", current_data.clone())
+                    };
 
                     let (_, nack_ctx) = Context::next_nack(nack).unwrap();
 
@@ -959,7 +985,13 @@ mod test {
                 }
 
                 // With 0-3 Nacks, we retry every time. On the 4th Nack, this changes.
-                assert_eq!(std::cmp::min(nacks_delivered, 3), retry_count);
+                // Permanent errors are never retried.
+                let expected_retries = if permanent_error {
+                    0
+                } else {
+                    std::cmp::min(nacks_delivered, 3)
+                };
+                assert_eq!(expected_retries, retry_count);
                 assert_eq!(nacks_delivered, number_of_nacks);
             })
             .validate(|ctx| async move {

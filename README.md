@@ -257,20 +257,29 @@ you're more than welcome to participate!
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
 
 For more information about the maintainer role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#maintainer).
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer).
 
 ### Approvers
 
+- [Cijo Thomas](https://github.com/cijothomas), Microsoft
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
 For more information about the approver role, see the [community
-repository](https://github.com/open-telemetry/community/blob/main/community-membership.md#approver).
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
 
 ### Emeritus Approvers
 
 - [Alex Boten](https://github.com/codeboten)
 - [Moh Osman](https://github.com/moh-osman3)
+
+### Triagers
+
+- [Tom Tan](https://github.com/ThomsonTan), Microsoft
+
+For more information about the approver role, see the [community
+repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#triager).
 
 ### Thanks to all of our contributors
 

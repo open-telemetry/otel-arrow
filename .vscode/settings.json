@@ -1,0 +1,34 @@
+{
+    // ==========================================================================
+    // Shared VS Code settings for the otel-arrow repository.
+    // These settings are checked into version control and apply to all users.
+    //
+    // For personal customizations:
+    // - Use your User Settings (Ctrl+Shift+P → "Preferences: Open User Settings")
+    // - Object settings like "files.watcherExclude" merge with these, so you
+    //   can add your own excludes without modifying this file.
+    // - For other settings, User Settings are overridden by these Workspace
+    //   Settings, so you may need to use a VS Code Profile for project-specific
+    //   personal preferences.
+    // ==========================================================================
+
+    // Rust workspace configuration
+    // This repo has multiple independent Cargo workspaces that rust-analyzer
+    // needs to know about for proper IDE support.
+    "rust-analyzer.linkedProjects": [
+        "rust/beaubourg/Cargo.toml",
+        "rust/otap-dataflow/Cargo.toml",
+        "rust/parquet-query-examples/Cargo.toml",
+        "rust/experimental/query_abstraction/Cargo.toml",
+        "rust/experimental/query_engine/Cargo.toml"
+    ],
+
+    // Exclude Rust build artifacts from file watching and search
+    // to improve performance and reduce noise in search results.
+    "files.watcherExclude": {
+        "**/target/**": true
+    },
+    "search.exclude": {
+        "**/target/**": true
+    }
+}

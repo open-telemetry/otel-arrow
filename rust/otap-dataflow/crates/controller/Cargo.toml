@@ -27,3 +27,5 @@ miette = { workspace = true }
 core_affinity = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
+flume = { workspace = true }
+smallvec = { workspace = true }
