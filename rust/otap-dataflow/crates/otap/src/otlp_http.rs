@@ -360,7 +360,6 @@ fn decode_content_encoding(
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Decompressed size exceeded",
                     reason = "decompressed_size_exceeded",
                     encoding = "gzip",
                     max_len = max_len,
@@ -371,7 +370,6 @@ fn decode_content_encoding(
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Invalid gzip encoding",
                     reason = "invalid_encoding",
                     encoding = "gzip",
                     error = err_msg.as_str()
@@ -392,7 +390,6 @@ fn decode_content_encoding(
                 // Size limit exceeded
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Decompressed size exceeded",
                     reason = "decompressed_size_exceeded",
                     encoding = "deflate",
                     max_len = max_len,
@@ -403,7 +400,6 @@ fn decode_content_encoding(
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Invalid deflate encoding",
                     reason = "invalid_encoding",
                     encoding = "deflate",
                     error = err_msg.as_str()
@@ -421,7 +417,6 @@ fn decode_content_encoding(
             let err_msg = e.to_string();
             otap_df_telemetry::otel_debug!(
                 "HttpRequestRejected",
-                "Invalid zstd encoding",
                 reason = "invalid_encoding",
                 encoding = "zstd",
                 error = err_msg.as_str()
@@ -438,7 +433,6 @@ fn decode_content_encoding(
             if err_msg.contains("decoded body too large") {
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Decompressed size exceeded",
                     reason = "decompressed_size_exceeded",
                     encoding = "zstd",
                     max_len = max_len,
@@ -448,7 +442,6 @@ fn decode_content_encoding(
             } else {
                 otap_df_telemetry::otel_debug!(
                     "HttpRequestRejected",
-                    "Invalid zstd encoding",
                     reason = "invalid_encoding",
                     encoding = "zstd",
                     error = err_msg.as_str()
@@ -606,7 +599,6 @@ impl HttpHandler {
                 if (upper as usize) > max_len {
                     otap_df_telemetry::otel_debug!(
                         "HttpRequestRejected",
-                        "Body size hint exceeded",
                         reason = "body_too_large_hint",
                         max_len = max_len,
                         size_hint = upper,
@@ -621,7 +613,6 @@ impl HttpHandler {
                 if e.downcast_ref::<LengthLimitError>().is_some() {
                     otap_df_telemetry::otel_debug!(
                         "HttpRequestRejected",
-                        "Body size exceeded",
                         reason = "body_too_large_collected",
                         max_len = max_len,
                         path = parts.uri.path().to_string()
@@ -710,7 +701,6 @@ impl HttpHandler {
                     Ok(Err(nack)) => {
                         otap_df_telemetry::otel_debug!(
                             "HttpRequestNacked",
-                            "Http request was NACKed by the pipeline",
                             reason = nack.reason.as_str(),
                             signal = format!("{:?}", signal)
                         );
@@ -854,7 +844,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("http.connection_error", "Http connection error", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("http.connection_error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {
@@ -878,7 +868,7 @@ pub async fn serve(
                     tokio::select! {
                         res = &mut conn => {
                             if let Err(err) = res {
-                                otap_df_telemetry::otel_debug!("HttpConnectionError", "Http connection error", error = err.to_string());
+                                otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
                             }
                         },
                         _ = shutdown.cancelled() => {

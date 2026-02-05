@@ -333,7 +333,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             if is_draining {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_timer",
-                                    "Ignoring StartTimer during shutdown draining",
                                     node_id = node_id,
                                 );
                             } else {

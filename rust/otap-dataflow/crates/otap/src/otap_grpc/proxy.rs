@@ -235,12 +235,7 @@ impl ProxyConfig {
 
         // Check if host should bypass proxy
         if self.should_bypass(host, port) {
-            otel_debug!(
-                "proxy.bypass",
-                "bypassing proxy for target",
-                host = host,
-                port = port
-            );
+            otel_debug!("proxy.bypass", host = host, port = port);
             return None;
         }
 
@@ -253,16 +248,11 @@ impl ProxyConfig {
         if let Some(url) = proxy {
             otel_debug!(
                 "proxy.using",
-                "using proxy for target",
                 proxy = url.to_string(),
                 target = uri.to_string(),
             );
         } else {
-            otel_debug!(
-                "proxy.none",
-                "no proxy for target",
-                target = uri.to_string()
-            );
+            otel_debug!("proxy.none", target = uri.to_string());
         }
 
         proxy.map(|u| u.expose())
@@ -495,7 +485,6 @@ async fn http_connect_tunnel_on_stream(
     // Avoid logging the raw request to reduce the risk of leaking headers or internal targets.
     otel_debug!(
         "proxy.connect_request",
-        "sending HTTP CONNECT request to proxy",
         target = format!("{formatted_target}:{target_port}"),
         has_auth = proxy_auth.is_some()
     );
@@ -512,11 +501,7 @@ async fn http_connect_tunnel_on_stream(
         ));
     }
 
-    otel_debug!(
-        "proxy.connect_response",
-        "received HTTP CONNECT response from proxy",
-        status_line = status_line.trim()
-    );
+    otel_debug!("proxy.connect_response", status_line = status_line.trim());
 
     // Parse "HTTP/1.1 200 Connection established".
     // Be robust to multiple ASCII spaces/tabs between tokens.
@@ -633,12 +618,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
     if let Some(proxy_url) = proxy_config.get_proxy_for_uri(target_uri) {
         let (proxy_host, proxy_port, proxy_auth) = parse_proxy_url(proxy_url)?;
 
-        otel_debug!(
-            "proxy.connecting",
-            "connecting to proxy",
-            host = proxy_host,
-            port = proxy_port
-        );
+        otel_debug!("proxy.connecting", host = proxy_host, port = proxy_port);
         let stream = TcpStream::connect((proxy_host.as_str(), proxy_port))
             .await
             .map_err(|e| {
@@ -651,12 +631,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
-        otel_debug!(
-            "proxy.connected",
-            "connected to proxy",
-            host = proxy_host,
-            port = proxy_port
-        );
+        otel_debug!("proxy.connected", host = proxy_host, port = proxy_port);
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(

@@ -790,7 +790,6 @@ impl DurableBuffer {
             if Instant::now() >= deadline {
                 otel_debug!(
                     "durable_buffer.drain.budget_exhausted",
-                    "time budget for draining bundles exhausted",
                     bundles_processed = bundles_processed,
                     budget_ms = drain_budget.as_millis()
                 );
@@ -801,7 +800,6 @@ impl DurableBuffer {
             if !self.can_send_more() {
                 otel_debug!(
                     "durable_buffer.drain.at_capacity",
-                    "max in-flight bundles reached",
                     bundles_processed = bundles_processed,
                     in_flight = self.pending_bundles.len(),
                     max_in_flight = self.config.max_in_flight
@@ -834,7 +832,6 @@ impl DurableBuffer {
                                 // are blocked. Break to avoid busy-looping.
                                 otel_debug!(
                                     "durable_buffer.drain.all_blocked",
-                                    "all available bundles are in-flight or scheduled for retry",
                                     bundles_processed = bundles_processed,
                                     in_flight = self.pending_bundles.len(),
                                     retry_scheduled = self.retry_scheduled.len()
@@ -850,7 +847,6 @@ impl DurableBuffer {
                             // processor handle other messages (including incoming data)
                             otel_debug!(
                                 "durable_buffer.drain.backpressure",
-                                "downstream channel is full, deferring remaining bundles",
                                 bundles_processed = bundles_processed
                             );
                             break;
@@ -976,7 +972,6 @@ impl DurableBuffer {
 
                         otel_debug!(
                             "durable_buffer.bundle.forwarded",
-                            "bundle forwarded downstream",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             retry_count = retry_count
@@ -1061,7 +1056,6 @@ impl DurableBuffer {
                 .set(self.pending_bundles.len() as u64);
             otel_debug!(
                 "durable_buffer.bundle.acked",
-                "bundle ACK'd by downstream",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw()
             );
@@ -1108,7 +1102,6 @@ impl DurableBuffer {
 
             otel_debug!(
                 "durable_buffer.bundle.nacked",
-                "bundle NACK'd by downstream, scheduling retry",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 retry_count = retry_count,
@@ -1171,7 +1164,6 @@ impl DurableBuffer {
             // Bundle stays in retry_scheduled (wasn't removed yet).
             otel_debug!(
                 "durable_buffer.retry.deferred",
-                "backpressure still present, deferring retry",
                 segment_seq = bundle_ref.segment_seq.raw(),
                 bundle_index = bundle_ref.bundle_index.raw(),
                 in_flight = self.pending_bundles.len(),
@@ -1217,7 +1209,6 @@ impl DurableBuffer {
                     ProcessBundleResult::Sent => {
                         otel_debug!(
                             "durable_buffer.retry.sent",
-                            "retry successful, bundle forwarded downstream",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw(),
                             retry_count = retry_count
@@ -1236,7 +1227,6 @@ impl DurableBuffer {
                         // Re-schedule retry with a short delay.
                         otel_debug!(
                             "durable_buffer.retry.backpressure",
-                            "backpressure on retry, deferring again",
                             segment_seq = bundle_ref.segment_seq.raw(),
                             bundle_index = bundle_ref.bundle_index.raw()
                         );
@@ -1261,7 +1251,6 @@ impl DurableBuffer {
                 // Claim failed - bundle may have been resolved or segment dropped
                 otel_debug!(
                     "durable_buffer.retry.claim_failed",
-                    "failed to claim bundle for retry, it may have been resolved or expired",
                     segment_seq = bundle_ref.segment_seq.raw(),
                     bundle_index = bundle_ref.bundle_index.raw(),
                     error = %e
@@ -1400,7 +1389,6 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
             self.timer_started = true;
             otel_debug!(
                 "durable_buffer.timer.started",
-                "started periodic timer for polling Quiver",
                 poll_interval = ?self.config.poll_interval
             );
         }
@@ -1445,7 +1433,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         })
                 }
                 NodeControlMsg::Config { config } => {
-                    otel_debug!("durable_buffer.config.update", "Durable buffer config update", config = ?config);
+                    otel_debug!("durable_buffer.config.update", config = ?config);
                     Ok(())
                 }
                 NodeControlMsg::DelayedData { data, .. } => {

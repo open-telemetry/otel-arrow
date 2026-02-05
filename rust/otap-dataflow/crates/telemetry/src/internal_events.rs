@@ -70,11 +70,18 @@ macro_rules! otel_warn {
 /// ```ignore
 /// use otap_df_telemetry::otel_debug;
 /// otel_debug!("processing.batch", "Processing batch of items", batch_size = 100);
+/// otel_debug!("processing.done", count = 5);  // no message, just fields
+/// otel_debug!("processing.start");            // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr, $message:expr $(, $($fields:tt)*)?) => {
+    // With message
+    ($name:expr, $message:literal $(, $($fields:tt)*)?) => {
         $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
+    };
+    // Without message (uses empty string as message)
+    ($name:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };
 }
 
@@ -154,5 +161,29 @@ mod tests {
         let err = Error::ConfigurationError("bad config".into());
         raw_error!("raw error message", error = ?err);
         raw_error!("simple error message");
+    }
+
+    #[test]
+    fn test_otel_debug() {
+        otel_debug!("debug.event");
+    }
+
+    #[test]
+    fn test_otel_debug_with_attributes() {
+        otel_debug!("debug.event.with_attributes", value = 42);
+    }
+
+    #[test]
+    fn test_otel_debug_with_message() {
+        otel_debug!("debug.event.with_message", "This is a debug message");
+    }
+
+    #[test]
+    fn test_otel_debug_with_message_and_attributes() {
+        otel_debug!(
+            "debug.event.with_message_and_attributes",
+            "This is a debug message",
+            value = 42
+        );
     }
 }
