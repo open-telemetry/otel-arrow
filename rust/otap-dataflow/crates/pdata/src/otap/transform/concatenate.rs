@@ -6,7 +6,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
     StructArray,
 };
-use arrow::compute::kernels::{cast, concat};
+use arrow::compute::kernels::cast;
 use arrow::datatypes::{
     ArrowNativeType, Float64Type, GenericBinaryType, Int64Type, UInt8Type, UInt16Type, UInt64Type,
 };
@@ -62,13 +62,13 @@ const MAX_U16_CARDINALITY: usize = 65535;
 ///
 /// # Future optimizations
 ///
-/// - TODO: Re-indexing probably should not be a separate operation we should decide
+/// - TODO: Re-indexing probably should not be a separate operation. We should decide
 /// within this function whether or not to do it and ensure it happens if required.
 /// This is deferred until we totally remove the old implementation in groups.rs
 /// due to interface incompatibility.
 ///
 /// - TODO: Consider using new_unchecked for record batch construction if we're
-/// confident in it. We mostly unwerap those opterations a lot, so skipping the
+/// confident in it. We mostly unwrap those operations a lot, so skipping the
 /// checks or moving similar checks to debug asserts may be reasonable.
 pub fn concatenate<const N: usize>(
     mut items: &mut [[Option<RecordBatch>; N]],
@@ -117,9 +117,9 @@ pub fn concatenate<const N: usize>(
     Ok(result)
 }
 
-// Convert the columns from one schema to another. The arguments deal in in
-// fields and columns rather than schemas and record batches so that this
-// code can work with either struct arrays or record batches.
+/// Convert the columns from one schema to another. The arguments deal in in
+/// fields and columns rather than schemas and record batches so that this
+/// code can work with either struct arrays or record batches.
 fn convert(
     columns: Vec<Arc<dyn Array>>,
     num_rows: usize,
@@ -192,8 +192,8 @@ fn convert(
     Ok(new_columns)
 }
 
-// Select a unified schema that will satisfy all fields in the
-// RecordIndex.
+/// Select a unified schema that will satisfy all fields in the
+/// RecordIndex.
 fn select_schema<'a>(index: &'a RecordIndex<'a>) -> Result<Schema> {
     let mut builder = SchemaBuilder::with_capacity(index.fields.len());
     for (field_name, field_info) in index.fields.iter() {
@@ -214,7 +214,7 @@ fn select_schema<'a>(index: &'a RecordIndex<'a>) -> Result<Schema> {
     Ok(builder.finish())
 }
 
-// Select the final data type for a struct field.
+/// Select the final data type for a struct field.
 fn select_struct_type<'a>(struct_index: &'a FieldIndex<'a>) -> Result<DataType> {
     let mut fields = Vec::with_capacity(struct_index.len());
     for (field_name, field_info) in struct_index.iter() {
@@ -283,8 +283,8 @@ struct FieldInfo<'a> {
     values: Vec<ArrayRef>,
 }
 
-// Create an index of fields while checking which type corresponds to each, that the
-// value types are compatible, and computing basic statistics for each field.
+/// Create an index of fields while checking which type corresponds to each, that the
+/// value types are compatible, and computing basic statistics for each field.
 fn index_records<'a>(
     batches: impl Iterator<Item = Option<&'a RecordBatch>>,
 ) -> Result<RecordIndex<'a>> {
@@ -324,7 +324,7 @@ fn index_records<'a>(
     Ok(index)
 }
 
-// Index the fields for some stream columns.
+/// Index the fields for some stream columns.
 fn index_fields<'a>(
     index: &mut FieldIndex<'a>,
     fields: impl Iterator<Item = (&'a FieldRef, &'a ArrayRef)>,
@@ -748,7 +748,6 @@ fn check_cardinality<'a>(
         return Some(Cardinality::WithinU16);
     }
 
-    // TODO: Should this be u8::MAX + 1?
     if max_possible_cardinality <= MAX_U8_CARDINALITY
         && info.smallest_key_type == Some(DataType::UInt8)
     {
@@ -1471,7 +1470,6 @@ mod index_tests {
 
     #[test]
     fn test_primitive_to_dictionary_upgrade_success() {
-        // Test the SUCCESS case: primitive can upgrade to dictionary when value types match
         let batch1 = record_batch!(("data", Int32, [100, 200, 300])).unwrap();
         let batch2 = record_batch!(("data", (UInt8, Int32), ([0, 1, 2], [100, 400, 500]))).unwrap();
 
@@ -1479,7 +1477,6 @@ mod index_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        // Should successfully upgrade to dictionary type
         let field = schema.field_with_name("data").unwrap();
         assert!(
             matches!(
