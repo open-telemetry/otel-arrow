@@ -339,13 +339,9 @@ jobs:
       fail-fast: false
     env:
       VALIDATION_LABEL: Validation
-    # Run if:
-    # - PR is marked ready_for_review, OR
-    # - The PR currently has the trigger label applied
     if: >
       github.event.action == 'ready_for_review' ||
       contains(github.event.pull_request.labels.*.name, env.VALIDATION_LABEL)
-
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
@@ -359,43 +355,3 @@ jobs:
       - name: cargo run pipeline validation
         run: cargo test run_validation_scenarios -- --ignored
         working-directory: ./rust/otap-dataflow/crate/validation
-        # Capture validation report written by run_validation_scenarios
-      - name: Capture validation report
-        if: ${{ always() }}
-        id: validation-report
-        run: |
-          REPORT_PATH=target/pipeline_validation_report.txt
-          if [ -f "$REPORT_PATH" ]; then
-            {
-              echo 'report<<EOF'
-              cat "$REPORT_PATH"
-              echo 'EOF'
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "report=Validation report not found (pipeline may have failed before writing it)." >> "$GITHUB_OUTPUT"
-          fi
-        working-directory: ./rust/otap-dataflow/crate/validation
-      # Find previous validation comment (always run so we can report success/failure)
-      - name: Find previous validation comment
-        if: ${{ always() }}
-        id: find
-        uses: peter-evans/find-comment@v3
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body-includes: '<!-- validation-status -->'
-
-      # Create or update sticky comment with the result
-      - name: Create or update validation result comment
-        if: ${{ always() }}
-        uses: peter-evans/create-or-update-comment@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-id: ${{ steps.find.outputs.comment-id }}
-          edit-mode: replace
-          body: |
-            <!-- validation-status -->
-            ${{ job.status == 'success' && '✅ Validation succeeded' || '❌ Validation failed' }}
-            - Report:
-            ```
-            ${{ steps.validation-report.outputs.report }}
