@@ -59,11 +59,13 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::OtapPayload;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::views::common::{AnyValueView, AttributeView, ValueType};
 use otap_df_pdata::views::logs::{LogsDataView, ResourceLogsView};
 use otap_df_pdata::views::metrics::{MetricsView, ResourceMetricsView};
+use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::views::otlp::bytes::metrics::RawMetricsData;
 use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
@@ -384,6 +386,31 @@ impl ResourceValidatorProcessor {
         Ok(())
     }
 
+    /// Validates all resources in Arrow logs data
+    fn validate_arrow_logs(
+        &self,
+        arrow_records: &OtapArrowRecords,
+        allowed_values: &HashSet<String>,
+    ) -> Result<(), (ValidationFailure, String)> {
+        let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+            let failure = ValidationFailure::MissingAttribute;
+            (failure, self.format_error_message(failure))
+        })?;
+
+        for resource_logs in logs_view.resources() {
+            if let Some(resource) = resource_logs.resource() {
+                if let Err(failure) = self.validate_resource_with_allowed(&resource, allowed_values)
+                {
+                    return Err((failure, self.format_error_message(failure)));
+                }
+            } else {
+                let failure = ValidationFailure::MissingAttribute;
+                return Err((failure, self.format_error_message(failure)));
+            }
+        }
+        Ok(())
+    }
+
     /// Formats an error message for the NACK response
     fn format_error_message(&self, failure: ValidationFailure) -> String {
         match failure {
@@ -470,13 +497,29 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                             Ok(())
                         }
                     },
-                    OtapPayload::OtapArrowRecords(_) => {
-                        // For Arrow records, we need to convert to OTLP bytes first
-                        // or implement direct Arrow-based validation
-                        // For now, pass through Arrow records (validation requires OTLP bytes)
-                        // TODO: Implement direct Arrow record validation
-                        Ok(())
-                    }
+                    OtapPayload::OtapArrowRecords(arrow_records) => match signal_type {
+                        SignalType::Logs => {
+                            self.validate_arrow_logs(arrow_records, &allowed_values)
+                        }
+                        // Metrics/Traces Arrow views not yet available - convert to OTLP
+                        SignalType::Metrics | SignalType::Traces => {
+                            match OtlpProtoBytes::try_from(arrow_records.clone()) {
+                                Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
+                                    let data = RawMetricsData::new(bytes.as_ref());
+                                    self.validate_metrics(&data, &allowed_values)
+                                }
+                                Ok(OtlpProtoBytes::ExportTracesRequest(bytes)) => {
+                                    let data = RawTraceData::new(bytes.as_ref());
+                                    self.validate_traces(&data, &allowed_values)
+                                }
+                                Ok(_) => Ok(()),
+                                Err(_) => {
+                                    let failure = ValidationFailure::MissingAttribute;
+                                    Err((failure, self.format_error_message(failure)))
+                                }
+                            }
+                        }
+                    },
                 };
 
                 // Update metrics
@@ -576,6 +619,28 @@ mod tests {
                 }
             }
             Err(ValidationFailure::MissingAttribute)
+        }
+
+        fn validate_arrow_logs(
+            &self,
+            arrow_records: &OtapArrowRecords,
+        ) -> Result<(), (ValidationFailure, String)> {
+            let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
+                let failure = ValidationFailure::MissingAttribute;
+                (failure, self.format_error_message(failure))
+            })?;
+
+            for resource_logs in logs_view.resources() {
+                if let Some(resource) = resource_logs.resource() {
+                    if let Err(failure) = self.validate_resource(&resource) {
+                        return Err((failure, self.format_error_message(failure)));
+                    }
+                } else {
+                    let failure = ValidationFailure::MissingAttribute;
+                    return Err((failure, self.format_error_message(failure)));
+                }
+            }
+            Ok(())
         }
 
         fn format_error_message(&self, failure: ValidationFailure) -> String {
@@ -773,5 +838,98 @@ mod tests {
         assert!(set.contains("value1"));
         assert!(set.contains("value2"));
         assert!(!set.contains("Value2"));
+    }
+
+    // Helper to create Arrow records from OTLP logs
+    fn create_arrow_logs_with_resource(attrs: Vec<KeyValue>) -> OtapArrowRecords {
+        let logs_bytes = create_logs_request_with_resource(attrs);
+        let otlp_bytes = OtlpProtoBytes::ExportLogsRequest(logs_bytes);
+        otlp_bytes.try_into().expect("Failed to convert to Arrow")
+    }
+
+    #[test]
+    fn test_validate_arrow_logs_with_valid_attribute() {
+        let arrow_records = create_arrow_logs_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/subscriptions/123/resourceGroups/test"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_arrow_logs(&arrow_records);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_arrow_logs_missing_attribute() {
+        let arrow_records = create_arrow_logs_with_resource(vec![KeyValue::new(
+            "other.attribute",
+            AnyValue::new_string("value"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_arrow_logs(&arrow_records);
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::MissingAttribute, _))
+        ));
+    }
+
+    #[test]
+    fn test_validate_arrow_logs_not_in_allowed_list() {
+        let arrow_records = create_arrow_logs_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/subscriptions/456/resourceGroups/other"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_arrow_logs(&arrow_records);
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::NotInAllowedList, _))
+        ));
+    }
+
+    #[test]
+    fn test_validate_arrow_logs_case_insensitive() {
+        let arrow_records = create_arrow_logs_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/Subscriptions/123/ResourceGroups/Test"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourcegroups/test".to_string());
+
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: true,
+        };
+
+        let result = validator.validate_arrow_logs(&arrow_records);
+        assert!(result.is_ok());
     }
 }
