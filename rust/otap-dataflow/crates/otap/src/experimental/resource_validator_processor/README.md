@@ -37,7 +37,7 @@ processors:
     # The resource attribute key that must be present (default: "microsoft.resourceId")
     required_attribute: "microsoft.resourceId"
 
-    # List of allowed values. If empty, only presence validation is performed.
+    # List of allowed values (required - empty list rejects all values)
     allowed_values:
       - "/subscriptions/xxx/resourceGroups/yyy/..."
       - "/subscriptions/aaa/resourceGroups/bbb/..."
@@ -51,7 +51,7 @@ processors:
 | Condition                                    | Result                    |
 | -------------------------------------------- | ------------------------- |
 | Attribute present with value in allowed list | Pass through              |
-| Attribute present, empty allowed_values list | Pass through (presence)   |
+| Attribute present, empty allowed_values list | Permanent NACK - HTTP 400 |
 | Attribute missing                            | Permanent NACK - HTTP 400 |
 | Attribute wrong type (not string)            | Permanent NACK - HTTP 400 |
 | Attribute value not in allowed list          | Permanent NACK - HTTP 400 |

@@ -76,6 +76,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::warn;
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
@@ -108,17 +109,6 @@ pub enum AllowedValuesSource {
 }
 
 impl AllowedValuesSource {
-    /// Returns true if validation should only check presence (no allowed list).
-    /// This is useful for future dynamic mode where we might want to check
-    /// if any allowed values are configured before attempting validation.
-    #[allow(dead_code)]
-    fn is_presence_only(&self) -> bool {
-        match self {
-            AllowedValuesSource::Static(values) => values.is_empty(),
-            AllowedValuesSource::Dynamic { fallback } => fallback.is_empty(),
-        }
-    }
-
     /// Gets the static/fallback allowed values set.
     fn get_static_values(&self) -> &HashSet<String> {
         match self {
@@ -137,6 +127,8 @@ pub enum ValidationFailure {
     InvalidAttributeType,
     /// The attribute value is not in the allowed list
     NotInAllowedList,
+    /// Internal error during format conversion (Arrow to OTLP)
+    ConversionError,
 }
 
 impl std::fmt::Display for ValidationFailure {
@@ -145,6 +137,7 @@ impl std::fmt::Display for ValidationFailure {
             ValidationFailure::MissingAttribute => write!(f, "missing"),
             ValidationFailure::InvalidAttributeType => write!(f, "invalid_type"),
             ValidationFailure::NotInAllowedList => write!(f, "not_allowed"),
+            ValidationFailure::ConversionError => write!(f, "conversion_error"),
         }
     }
 }
@@ -301,13 +294,10 @@ impl ResourceValidatorProcessor {
                 let str_value = std::str::from_utf8(str_bytes)
                     .map_err(|_| ValidationFailure::InvalidAttributeType)?;
 
-                // Skip allowed list check if no values are configured (presence-only validation)
-                if allowed_values.is_empty() {
-                    return Ok(());
-                }
-
-                // Check if value is in allowed list
-                // Use Cow to avoid allocation in the case-sensitive path
+                // Check if value is in allowed list.
+                // Empty allowed_values rejects all values.
+                // Case-sensitive: zero allocation with Cow::Borrowed.
+                // Case-insensitive: allocates via to_lowercase() for O(1) HashSet lookup.
                 let lookup_value: Cow<'_, str> = if self.case_insensitive {
                     Cow::Owned(str_value.to_lowercase())
                 } else {
@@ -394,7 +384,7 @@ impl ResourceValidatorProcessor {
         allowed_values: &HashSet<String>,
     ) -> Result<(), (ValidationFailure, String)> {
         let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
-            let failure = ValidationFailure::MissingAttribute;
+            let failure = ValidationFailure::ConversionError;
             (failure, self.format_error_message(failure))
         })?;
 
@@ -433,23 +423,31 @@ impl ResourceValidatorProcessor {
                     self.required_attribute
                 )
             }
+            ValidationFailure::ConversionError => {
+                "internal error: failed to convert telemetry format for validation".to_string()
+            }
         }
     }
 
-    /// Updates metrics based on validation result
+    /// Updates metrics and logs warnings based on validation result
     fn update_metrics(&mut self, result: &Result<(), (ValidationFailure, String)>) {
         match result {
             Ok(()) => {
                 self.metrics.batches_accepted.add(1);
             }
-            Err((failure, _)) => match failure {
-                ValidationFailure::MissingAttribute | ValidationFailure::InvalidAttributeType => {
-                    self.metrics.batches_rejected_missing.add(1);
+            Err((failure, msg)) => {
+                warn!(reason = %failure, "{}", msg);
+                match failure {
+                    ValidationFailure::MissingAttribute
+                    | ValidationFailure::InvalidAttributeType
+                    | ValidationFailure::ConversionError => {
+                        self.metrics.batches_rejected_missing.add(1);
+                    }
+                    ValidationFailure::NotInAllowedList => {
+                        self.metrics.batches_rejected_not_allowed.add(1);
+                    }
                 }
-                ValidationFailure::NotInAllowedList => {
-                    self.metrics.batches_rejected_not_allowed.add(1);
-                }
-            },
+            }
         }
     }
 }
@@ -516,7 +514,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                                 }
                                 Ok(_) => Ok(()),
                                 Err(_) => {
-                                    let failure = ValidationFailure::MissingAttribute;
+                                    let failure = ValidationFailure::ConversionError;
                                     Err((failure, self.format_error_message(failure)))
                                 }
                             }
@@ -603,10 +601,7 @@ mod tests {
                     let str_value = std::str::from_utf8(str_bytes)
                         .map_err(|_| ValidationFailure::InvalidAttributeType)?;
 
-                    if self.allowed_values.is_empty() {
-                        return Ok(());
-                    }
-
+                    // Empty allowed_values rejects all values
                     let lookup_value: Cow<'_, str> = if self.case_insensitive {
                         Cow::Owned(str_value.to_lowercase())
                     } else {
@@ -628,12 +623,46 @@ mod tests {
             arrow_records: &OtapArrowRecords,
         ) -> Result<(), (ValidationFailure, String)> {
             let logs_view = OtapLogsView::try_from(arrow_records).map_err(|_| {
-                let failure = ValidationFailure::MissingAttribute;
+                let failure = ValidationFailure::ConversionError;
                 (failure, self.format_error_message(failure))
             })?;
 
             for resource_logs in logs_view.resources() {
                 if let Some(resource) = resource_logs.resource() {
+                    if let Err(failure) = self.validate_resource(&resource) {
+                        return Err((failure, self.format_error_message(failure)));
+                    }
+                } else {
+                    let failure = ValidationFailure::MissingAttribute;
+                    return Err((failure, self.format_error_message(failure)));
+                }
+            }
+            Ok(())
+        }
+
+        fn validate_metrics(
+            &self,
+            data: &RawMetricsData<'_>,
+        ) -> Result<(), (ValidationFailure, String)> {
+            for resource_metrics in data.resources() {
+                if let Some(resource) = resource_metrics.resource() {
+                    if let Err(failure) = self.validate_resource(&resource) {
+                        return Err((failure, self.format_error_message(failure)));
+                    }
+                } else {
+                    let failure = ValidationFailure::MissingAttribute;
+                    return Err((failure, self.format_error_message(failure)));
+                }
+            }
+            Ok(())
+        }
+
+        fn validate_traces(
+            &self,
+            data: &RawTraceData<'_>,
+        ) -> Result<(), (ValidationFailure, String)> {
+            for resource_spans in data.resources() {
+                if let Some(resource) = resource_spans.resource() {
                     if let Err(failure) = self.validate_resource(&resource) {
                         return Err((failure, self.format_error_message(failure)));
                     }
@@ -664,6 +693,9 @@ mod tests {
                         "resource attribute '{}' value is not in the allowed list",
                         self.required_attribute
                     )
+                }
+                ValidationFailure::ConversionError => {
+                    "internal error: failed to convert telemetry format for validation".to_string()
                 }
             }
         }
@@ -782,7 +814,8 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_logs_empty_allowed_list_presence_only() {
+    fn test_validate_logs_empty_allowed_list_rejects_all() {
+        // Empty allowed_values rejects all values
         let logs_bytes = create_logs_request_with_resource(vec![KeyValue::new(
             "microsoft.resourceId",
             AnyValue::new_string("any-value"),
@@ -796,7 +829,10 @@ mod tests {
         };
 
         let result = validator.validate_logs(&data);
-        assert!(result.is_ok());
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::NotInAllowedList, _))
+        ));
     }
 
     #[test]
@@ -933,5 +969,163 @@ mod tests {
 
         let result = validator.validate_arrow_logs(&arrow_records);
         assert!(result.is_ok());
+    }
+
+    // ==================== Metrics/Traces OTLP Validation Tests ====================
+
+    fn create_metrics_request_with_resource(attrs: Vec<KeyValue>) -> Bytes {
+        use otap_df_pdata::proto::opentelemetry::{
+            collector::metrics::v1::ExportMetricsServiceRequest,
+            metrics::v1::{Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics},
+        };
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: attrs,
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: Some(InstrumentationScope::default()),
+                    metrics: vec![Metric {
+                        name: "test_metric".to_string(),
+                        data: Some(otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(Gauge {
+                            data_points: vec![NumberDataPoint {
+                                value: Some(otap_df_pdata::proto::opentelemetry::metrics::v1::number_data_point::Value::AsInt(42)),
+                                ..Default::default()
+                            }],
+                        })),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let mut buf = Vec::new();
+        request.encode(&mut buf).unwrap();
+        Bytes::from(buf)
+    }
+
+    fn create_traces_request_with_resource(attrs: Vec<KeyValue>) -> Bytes {
+        use otap_df_pdata::proto::opentelemetry::{
+            collector::trace::v1::ExportTraceServiceRequest,
+            trace::v1::{ResourceSpans, ScopeSpans, Span},
+        };
+
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: attrs,
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope::default()),
+                    spans: vec![Span {
+                        name: "test_span".to_string(),
+                        trace_id: vec![1u8; 16],
+                        span_id: vec![2u8; 8],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let mut buf = Vec::new();
+        request.encode(&mut buf).unwrap();
+        Bytes::from(buf)
+    }
+
+    #[test]
+    fn test_validate_metrics_with_valid_attribute() {
+        let metrics_bytes = create_metrics_request_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/subscriptions/123/resourceGroups/test"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let data = RawMetricsData::new(&metrics_bytes);
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_metrics(&data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_metrics_missing_attribute() {
+        let metrics_bytes = create_metrics_request_with_resource(vec![KeyValue::new(
+            "other.attribute",
+            AnyValue::new_string("value"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let data = RawMetricsData::new(&metrics_bytes);
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_metrics(&data);
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::MissingAttribute, _))
+        ));
+    }
+
+    #[test]
+    fn test_validate_traces_with_valid_attribute() {
+        let traces_bytes = create_traces_request_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/subscriptions/123/resourceGroups/test"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let data = RawTraceData::new(&traces_bytes);
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_traces(&data);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_traces_not_in_allowed_list() {
+        let traces_bytes = create_traces_request_with_resource(vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_string("/subscriptions/456/other"),
+        )]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let data = RawTraceData::new(&traces_bytes);
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_insensitive: false,
+        };
+
+        let result = validator.validate_traces(&data);
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::NotInAllowedList, _))
+        ));
     }
 }

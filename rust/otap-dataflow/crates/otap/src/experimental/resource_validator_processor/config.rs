@@ -30,7 +30,7 @@ pub struct Config {
     pub required_attribute: String,
 
     /// List of allowed values for the required attribute.
-    /// If empty, only presence validation is performed.
+    /// Empty list rejects all values.
     #[serde(default)]
     pub allowed_values: Vec<String>,
 
@@ -60,6 +60,11 @@ impl Config {
         if self.required_attribute.is_empty() {
             return Err(ConfigError::InvalidUserConfig {
                 error: "required_attribute cannot be empty".to_string(),
+            });
+        }
+        if self.allowed_values.is_empty() {
+            return Err(ConfigError::InvalidUserConfig {
+                error: "allowed_values cannot be empty (would reject all data)".to_string(),
             });
         }
         Ok(())
@@ -96,9 +101,30 @@ mod tests {
     fn test_validate_empty_attribute() {
         let config = Config {
             required_attribute: "".to_string(),
+            allowed_values: vec!["value".to_string()],
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_empty_allowed_values() {
+        let config = Config {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: vec![],
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let config = Config {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: vec!["/subscriptions/123".to_string()],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]
