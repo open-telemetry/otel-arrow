@@ -239,9 +239,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         accept_result = listener.accept() => {
                             match accept_result {
                                 Ok((socket, peer_addr)) => {
-                                    // Track active connections
-                                    self.metrics.borrow_mut().tcp_connections_active.inc();
-
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
@@ -260,7 +257,13 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
-                                        // Track this task for graceful shutdown
+                                        // If already shutting down, exit immediately (nothing to process yet)
+                                        if task_shutdown_flag.get() {
+                                            return;
+                                        }
+
+                                        // Now we're committed to handling this connection
+                                        metrics.borrow_mut().tcp_connections_active.inc();
                                         task_active_count.set(task_active_count.get() + 1);
 
                                         // Perform TLS handshake if configured, creating a unified reader type
