@@ -26,6 +26,7 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::durable_buffer_processor::DURABLE_BUFFER_URN;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use quiver::segment::SegmentReader;
@@ -380,13 +381,15 @@ where
     false
 }
 
-/// Count the total number of bundles across all segment files (.qseg) in a directory.
+/// Count the total number of signals (rows) in the primary signal table across all segment files.
 ///
-/// Opens each .qseg segment file and sums up the bundle counts.
-fn count_bundles_in_segments(segments_dir: &std::path::Path) -> usize {
+/// For logs, each row in the LOGS table = 1 log signal.
+/// Opens each .qseg segment file and sums row_count for streams matching the given payload type.
+fn count_signals_in_segments(segments_dir: &std::path::Path, payload_type: ArrowPayloadType) -> u64 {
     if !segments_dir.exists() {
         return 0;
     }
+    let slot_id_raw = payload_type as u16;
     std::fs::read_dir(segments_dir)
         .map(|entries| {
             entries
@@ -394,7 +397,14 @@ fn count_bundles_in_segments(segments_dir: &std::path::Path) -> usize {
                 .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
                 .map(|e| {
                     SegmentReader::open(e.path())
-                        .map(|reader| reader.bundle_count())
+                        .map(|reader| {
+                            reader
+                                .streams()
+                                .iter()
+                                .filter(|s| s.slot_id.raw() == slot_id_raw)
+                                .map(|s| s.row_count)
+                                .sum::<u64>()
+                        })
                         .unwrap_or(0)
                 })
                 .sum()
@@ -402,16 +412,17 @@ fn count_bundles_in_segments(segments_dir: &std::path::Path) -> usize {
         .unwrap_or(0)
 }
 
-/// Wait for at least `min_count` bundles to exist across all segment files in the directory.
+/// Wait for at least `min_count` signals to exist in the primary signal table across all segments.
 ///
 /// Returns `true` if the condition was met within `timeout`, `false` otherwise.
-fn wait_for_bundles_in_segments(
+fn wait_for_signals_in_segments(
     segments_dir: &std::path::Path,
-    min_count: usize,
+    payload_type: ArrowPayloadType,
+    min_count: u64,
     timeout: Duration,
 ) -> bool {
     wait_for_condition(
-        || count_bundles_in_segments(segments_dir) >= min_count,
+        || count_signals_in_segments(segments_dir, payload_type) >= min_count,
         timeout,
         Duration::from_millis(10),
     )
@@ -559,6 +570,7 @@ fn test_durable_buffer_recovery_after_outage() {
         .max_batch_size(5)
         .signals_per_second(Some(500))
         .use_error_exporter()
+        .otlp_handling("convert_to_arrow") // Use Arrow format for exact signal counting
         .retry_config(json!({
             "initial_retry_interval": "50ms",
             "max_retry_interval": "100ms",
@@ -574,19 +586,27 @@ fn test_durable_buffer_recovery_after_outage() {
         Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
     );
 
-    // Verify expected data was persisted to segment files.
+    // Verify data was persisted to segment files (not just the WAL).
     //
-    // With max_batch_size=5 and run1_signals=25, we expect 5 bundles (25/5=5).
-    // Wait for ALL bundles to be written to segments before proceeding to Run 2.
+    // We verify by counting actual signal rows in the LOGS table.
+    // Each row = 1 log signal, so we should see exactly 25 signals persisted.
     let segments_dir = buffer_path.join("core_0").join("segments");
-    let expected_bundles = (run1_signals as usize).div_ceil(5); // ceil(25/5) = 5 bundles
-    let bundles_exist =
-        wait_for_bundles_in_segments(&segments_dir, expected_bundles, Duration::from_secs(2));
-    let actual_bundles = count_bundles_in_segments(&segments_dir);
+    let signals_exist = wait_for_signals_in_segments(
+        &segments_dir,
+        ArrowPayloadType::Logs,
+        run1_signals,
+        Duration::from_secs(2),
+    );
+    let actual_signals = count_signals_in_segments(&segments_dir, ArrowPayloadType::Logs);
     assert!(
-        bundles_exist,
-        "Run 1 should have persisted {} bundles to segment files, found {}",
-        expected_bundles, actual_bundles
+        signals_exist,
+        "Run 1 should have persisted {} signals, found {}",
+        run1_signals, actual_signals
+    );
+    assert_eq!(
+        actual_signals, run1_signals,
+        "Run 1 should have persisted exactly {} signals, found {}",
+        run1_signals, actual_signals
     );
 
     // Run 2: Downstream healthy - verify recovery delivers all data
@@ -604,6 +624,7 @@ fn test_durable_buffer_recovery_after_outage() {
         .signals_per_second(Some(500)) // Fast generation
         .use_counting_exporter()
         .exporter_id(test_id)
+        .otlp_handling("convert_to_arrow") // Same format as Run 1
         .build(&pipeline_group_id, &pipeline_id);
 
     // Shut down once all data (recovered + new) is delivered
@@ -624,10 +645,10 @@ fn test_durable_buffer_recovery_after_outage() {
     // Validate data integrity:
     // Run 1 generated 25 signals (all NACKed, persisted)
     // Run 2 generated 10 new signals
-    // Total should be at least 35 (25 recovered + 10 new)
-    assert!(
-        delivered >= expected_total,
-        "Recovery should deliver at least {} items ({}+{}), got {}",
+    // Total should be exactly 35 (25 recovered + 10 new)
+    assert_eq!(
+        delivered, expected_total,
+        "Recovery should deliver exactly {} items ({}+{}), got {}",
         expected_total,
         run1_signals,
         run2_signals,
