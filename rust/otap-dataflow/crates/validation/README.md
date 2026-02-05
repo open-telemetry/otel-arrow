@@ -60,30 +60,30 @@ these define the `traffic-gen` and `validate` pipelines the values
 
 #### Traffic Generation Config
 
-- suv_exporter_type: The exporter to use to send messages to the `suv` pipeline
+- suv_exporter_type: Exporter to use to send messages to the `suv` pipeline
   - default = otlp
 - suv_endpoint: The endpoint to send messages to the `suv` pipeline
   - default = `http://127.0.0.1:4317`
-- control_exporter_type: The exporter to use to send messages to the `validate` pipeline
+- control_exporter_type: Exporter to use to send messages to the `validate` pipeline
   - default = otlp
-- control_endpoint: The endpoint to send messages to the `validate` pipeline
+- control_endpoint: Endpoint to send messages to the `validate` pipeline
   - default = `http://127.0.0.1:4316`
-- max_signal_count: The max signals to use for the validation
+- max_signal_count: Max signals to use for the validation
   - default = 2000
-- max_batch_size: The max batch size to use for signals
+- max_batch_size: Max batch size to use for signals
   - default = 100
 - signals_per_second: How often the signals are sent through the pipeline
   - default = 100
 
 #### Traffic Capture Config
 
-- suv_receiver_type: The receier to use to get messages from the `suv` pipeline
+- suv_receiver_type: Receiver to use to get messages from the `suv` pipeline
   - default = otlp
-- suv_listening_addr: The endpoint to get messages from the `suv` pipeline
+- suv_listening_addr: Endpoint to get messages from the `suv` pipeline
   - default = "127.0.0.1:4318"
-- control_receiver_type: The receier to use to get messages from the `traffic-gen` pipeline
+- control_receiver_type: Receiver to use to get messages from the `traffic-gen` pipeline
   - default = otlp
-- control_listening_addr: The endpoint to send messages to the `traffic-gen` pipeline
+- control_listening_addr: Endpoint to send messages to the `traffic-gen` pipeline
   - default = "127.0.0.1:4316"
 - transformative: Is the `suv` pipeline going to transform the data
   - default = false
