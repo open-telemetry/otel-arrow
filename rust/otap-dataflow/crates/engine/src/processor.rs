@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
@@ -57,6 +58,8 @@ pub enum ProcessorWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -79,6 +82,8 @@ pub enum ProcessorWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
 }
 
@@ -133,6 +138,7 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            extension_registry: None,
         }
     }
 
@@ -160,6 +166,19 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            extension_registry: None,
+        }
+    }
+
+    /// Sets the extension registry for this processor.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        match self {
+            ProcessorWrapper::Local {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
+            ProcessorWrapper::Shared {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
         }
     }
 
@@ -174,6 +193,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ProcessorWrapper::Local {
                 node_id,
@@ -185,6 +205,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
             ProcessorWrapper::Shared {
                 node_id,
@@ -195,6 +216,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ProcessorWrapper::Shared {
                 node_id,
@@ -206,6 +228,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
         }
     }
@@ -234,7 +257,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -257,6 +280,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
             ProcessorWrapper::Shared {
@@ -269,7 +293,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -292,6 +316,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
         }
@@ -311,6 +336,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                extension_registry,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -323,12 +349,15 @@ impl<PData> ProcessorWrapper<PData> {
                     })?,
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -342,6 +371,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                extension_registry,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -354,12 +384,15 @@ impl<PData> ProcessorWrapper<PData> {
                     })?),
                 );
                 let default_port = user_config.default_out_port.clone();
-                let effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,

@@ -1,37 +1,28 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trait and structures used to implement local exporters (!Send).
+//! Trait and structures used to implement local extensions (!Send).
 //!
-//! An exporter is an egress node that sends data from a pipeline to external systems, performing
-//! the necessary conversions from the internal pdata format to the format required by the external
-//! system.
+//! An extension is a special component that doesn't process pipeline data (pdata).
+//! Extensions provide auxiliary services to the pipeline, such as health checks,
+//! service discovery, or configuration management.
 //!
-//! Exporters can operate in various ways, including:
-//!
-//! 1. Sending telemetry data to remote endpoints via network protocols,
-//! 2. Writing data to files or databases,
-//! 3. Pushing data to message queues or event buses,
-//! 4. Or any other method of exporting telemetry data to external systems.
+//! Unlike receivers, processors, and exporters, extensions do not participate in
+//! the data flow - they only handle control messages and provide services.
 //!
 //! # Lifecycle
 //!
-//! 1. The exporter is instantiated and configured
-//! 2. The `start` method is called, which begins the exporter's operation
-//! 3. The exporter processes both internal control messages and pipeline data (pdata)
-//! 4. The exporter shuts down when it receives a `Shutdown` control message or encounters a fatal
+//! 1. The extension is instantiated and configured
+//! 2. The `start` method is called, which begins the extension's operation
+//! 3. The extension processes internal control messages
+//! 4. The extension shuts down when it receives a `Shutdown` control message or encounters a fatal
 //!    error
 //!
 //! # Thread Safety
 //!
 //! This implementation is designed to be used in a single-threaded environment.
-//! The `Exporter` trait does not require the `Send` bound, allowing for the use of non-thread-safe
+//! The `Extension` trait does not require the `Send` bound, allowing for the use of non-thread-safe
 //! types.
-//!
-//! # Scalability
-//!
-//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
-//! in parallel on different cores, each with its own exporter instance.
 
 use crate::control::{AckMsg, NackMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
@@ -49,35 +40,30 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A trait for egress exporters (!Send definition).
-#[async_trait( ? Send)]
-pub trait Exporter<PData> {
-    /// Starts the exporter and begins exporting incoming data.
+/// A trait for extensions (!Send definition).
+///
+/// Extensions are special components that don't process pipeline data.
+/// They provide auxiliary services to the pipeline.
+#[async_trait(?Send)]
+pub trait Extension<PData> {
+    /// Starts the extension and begins its operation.
     ///
-    /// The pipeline engine will call this function to start the exporter in a separate task.
-    /// Exporters are assigned their own dedicated task at pipeline initialization because their
-    /// primary function involves interacting with the external world, and the pipeline has no
-    /// prior knowledge of when these interactions will occur.
+    /// The pipeline engine will call this function to start the extension in a separate task.
+    /// Extensions are assigned their own dedicated task at pipeline initialization.
     ///
-    /// The exporter is taken as `Box<Self>` so the method takes ownership of the exporter once `start` is called.
+    /// The extension is taken as `Arc<Self>` so the method takes ownership of the extension once `start` is called.
     /// This lets it move into an independent task, after which the pipeline can only
     /// reach it through the control-message channel.
     ///
-    /// Because ownership is now exclusive, the code inside `start` can freely use
-    /// `&mut self` to update internal state without worrying about aliasing or
-    /// borrowing rules at the call-site. That keeps the public API simple (no
-    /// exterior `&mut` references to juggle) while still allowing the exporter to
-    /// mutate itself as much as it needs during its run loop.
+    /// Extensions are required to be wrapped in Arc because they are shared services
+    /// that can be accessed by other components through the extension registry.
     ///
-    /// Exporters are expected to process both internal control messages and pipeline data messages,
-    /// prioritizing control messages over data messages. This prioritization guarantee is ensured
-    /// by the `MessageChannel` implementation.
+    /// Extensions process control messages only - they do not receive or send pipeline data.
     ///
     /// # Parameters
     ///
-    /// - `msg_chan`: A channel to receive pdata or control messages. Control messages are
-    ///   prioritized over pdata messages.
-    /// - `effect_handler`: A handler to perform side effects such as network operations.
+    /// - `msg_chan`: A channel to receive control messages only (no pdata).
+    /// - `effect_handler`: A handler to perform side effects.
     ///
     /// # Errors
     ///
@@ -87,13 +73,13 @@ pub trait Exporter<PData> {
     ///
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
-        self: Box<Self>,
+        self: Arc<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
 }
 
-/// A `!Send` implementation of the EffectHandler.
+/// A `!Send` implementation of the EffectHandler for extensions.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
     pub(crate) core: EffectHandlerCore<PData>,
@@ -101,7 +87,7 @@ pub struct EffectHandler<PData> {
 }
 
 impl<PData> EffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given exporter node id and metrics
+    /// Creates a new local (!Send) `EffectHandler` with the given extension node id and metrics
     /// reporter.
     #[must_use]
     pub fn new(node_id: NodeId, metrics_reporter: MetricsReporter) -> Self {
@@ -111,9 +97,9 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
-    /// Returns the id of the exporter associated with this handler.
+    /// Returns the id of the extension associated with this handler.
     #[must_use]
-    pub fn exporter_id(&self) -> NodeId {
+    pub fn extension_id(&self) -> NodeId {
         self.core.node_id()
     }
 
@@ -124,8 +110,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Gets an extension trait implementation by extension name.
     ///
-    /// This allows exporters to look up capabilities provided by extensions,
-    /// such as authentication tokens or credentials.
+    /// This allows extensions to look up capabilities provided by other extensions.
     ///
     /// # Type Parameters
     ///
@@ -135,14 +120,6 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns `ExtensionError::NotFound` if no extension with that name exists.
     /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let token_provider: Arc<dyn BearerTokenProvider> = effect_handler
-    ///     .get_extension::<dyn BearerTokenProvider>("azure_auth")?;
-    /// let token = token_provider.get_token();
-    /// ```
     pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
         &self,
         name: &str,
@@ -155,7 +132,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Print an info message to stdout.
     ///
-    /// This method provides a standardized way for exporters to output
+    /// This method provides a standardized way for extensions to output
     /// informational messages without blocking the async runtime.
     pub async fn info(&self, message: &str) {
         self.core.info(message).await;
@@ -164,7 +141,7 @@ impl<PData> EffectHandler<PData> {
     /// Starts a cancellable periodic timer that emits TimerTick on the control channel.
     /// Returns a handle that can be used to cancel the timer.
     ///
-    /// Current limitation: Only one timer can be started by an exporter at a time.
+    /// Current limitation: Only one timer can be started by an extension at a time.
     pub async fn start_periodic_timer(
         &self,
         duration: Duration,
@@ -196,7 +173,7 @@ impl<PData> EffectHandler<PData> {
         self.core.route_nack(nack, cxf).await
     }
 
-    /// Reports metrics collected by the exporter.
+    /// Reports metrics collected by the extension.
     #[allow(dead_code)] // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) fn report_metrics<M: MetricSetHandler + 'static>(
         &mut self,
@@ -204,6 +181,4 @@ impl<PData> EffectHandler<PData> {
     ) -> Result<(), TelemetryError> {
         self.core.report_metrics(metrics)
     }
-
-    // More methods will be added in the future as needed.
 }

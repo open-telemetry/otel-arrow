@@ -95,6 +95,28 @@ impl fmt::Display for ProcessorErrorKind {
     }
 }
 
+/// High-level classification for extension failures to aid troubleshooting.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExtensionErrorKind {
+    /// Errors caused by invalid or incomplete configuration detected at runtime.
+    Configuration,
+    /// Errors raised while shutting down an extension.
+    Shutdown,
+    /// Catch-all for extension failures that do not fit other categories.
+    Other,
+}
+
+impl fmt::Display for ExtensionErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ExtensionErrorKind::Configuration => "configuration",
+            ExtensionErrorKind::Shutdown => "shutdown",
+            ExtensionErrorKind::Other => "other",
+        };
+        write!(f, "{label}")
+    }
+}
+
 /// Formats the source chain of an error into a single display string.
 #[must_use]
 pub fn format_error_sources(error: &(dyn std::error::Error + 'static)) -> String {
@@ -323,6 +345,36 @@ pub enum Error {
         plugin_urn: NodeUrn,
     },
 
+    /// The specified extension already exists in the pipeline.
+    #[error("The extension `{extension}` already exists")]
+    ExtensionAlreadyExists {
+        /// The name of the extension that already exists.
+        extension: NodeId,
+    },
+
+    /// A wrapper for the extension errors.
+    #[error("An extension error occurred in node {extension} ({kind}): {error}{source_detail}")]
+    ExtensionError {
+        /// The name of the extension that encountered the error.
+        extension: NodeId,
+
+        /// High-level classification for the extension failure.
+        kind: ExtensionErrorKind,
+
+        /// The error that occurred.
+        error: String,
+
+        /// Pre-formatted representation of the source chain used when rendering the error.
+        source_detail: String,
+    },
+
+    /// Unknown extension plugin.
+    #[error("Unknown extension plugin `{plugin_urn}`")]
+    UnknownExtension {
+        /// The name of the unknown extension plugin.
+        plugin_urn: NodeUrn,
+    },
+
     /// Unknown node.
     #[error("Unknown node `{node}`")]
     UnknownNode {
@@ -424,6 +476,8 @@ impl Error {
             Error::ConfigError(_) => "ConfigError",
             Error::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
             Error::ExporterError { .. } => "ExporterError",
+            Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
+            Error::ExtensionError { .. } => "ExtensionError",
             Error::InternalError { .. } => "InternalError",
             Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
             Error::IoError { .. } => "IoError",
@@ -443,6 +497,7 @@ impl Error {
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
+            Error::UnknownExtension { .. } => "UnknownExtension",
             Error::UnknownNode { .. } => "UnknownNode",
             Error::UnknownOutPort { .. } => "UnknownPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",

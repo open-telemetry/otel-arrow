@@ -35,6 +35,8 @@
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::Error;
+use crate::extensions::ExtensionTrait;
+use crate::extensions::registry::ExtensionError;
 use crate::message::Message;
 use crate::node::NodeId;
 use crate::shared::message::SharedReceiver;
@@ -46,6 +48,7 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{Sleep, sleep_until};
 
@@ -229,6 +232,42 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn exporter_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
+    }
+
+    /// Gets an extension trait implementation by extension name.
+    ///
+    /// This allows exporters to look up capabilities provided by extensions,
+    /// such as authentication tokens or credentials.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists.
+    /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let token_provider: Arc<dyn BearerTokenProvider> = effect_handler
+    ///     .get_extension::<dyn BearerTokenProvider>("azure_auth")?;
+    /// let token = token_provider.get_token();
+    /// ```
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Print an info message to stdout.

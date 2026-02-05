@@ -35,6 +35,8 @@
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
 use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
 use crate::error::{Error, TypedError};
+use crate::extensions::ExtensionTrait;
+use crate::extensions::registry::ExtensionError;
 use crate::message::{Message, Sender};
 use crate::node::NodeId;
 use async_trait::async_trait;
@@ -43,6 +45,7 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -130,6 +133,33 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn processor_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
+    }
+
+    /// Gets an extension trait implementation by extension name.
+    ///
+    /// This allows processors to look up capabilities provided by extensions.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists.
+    /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Returns the list of connected out ports for this processor.

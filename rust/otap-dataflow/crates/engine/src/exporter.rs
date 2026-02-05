@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ExporterErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::exporter as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -51,6 +52,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for looking up extension capabilities.
+        extension_registry: Option<ExtensionRegistry>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -70,6 +73,8 @@ pub enum ExporterWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for looking up extension capabilities.
+        extension_registry: Option<ExtensionRegistry>,
     },
 }
 
@@ -110,6 +115,7 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: LocalReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
+            extension_registry: None,
         }
     }
 
@@ -136,6 +142,19 @@ impl<PData> ExporterWrapper<PData> {
             control_receiver: SharedReceiver::mpsc(control_receiver),
             pdata_receiver: None, // This will be set later
             telemetry: None,
+            extension_registry: None,
+        }
+    }
+
+    /// Sets the extension registry for this exporter to use at runtime.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        match self {
+            ExporterWrapper::Local {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
+            ExporterWrapper::Shared {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
         }
     }
 
@@ -149,6 +168,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ExporterWrapper::Local {
                 node_id,
@@ -159,6 +179,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
             ExporterWrapper::Shared {
                 node_id,
@@ -168,6 +189,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_sender,
                 control_receiver,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ExporterWrapper::Shared {
                 node_id,
@@ -178,6 +200,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
         }
     }
@@ -205,7 +228,7 @@ impl<PData> ExporterWrapper<PData> {
                 exporter,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -227,6 +250,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
             ExporterWrapper::Shared {
@@ -238,7 +262,7 @@ impl<PData> ExporterWrapper<PData> {
                 exporter,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -260,6 +284,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
         }
@@ -278,11 +303,15 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
             ) => {
                 let mut effect_handler = local::EffectHandler::new(node_id, metrics_reporter);
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
@@ -302,11 +331,15 @@ impl<PData> ExporterWrapper<PData> {
                     exporter,
                     control_receiver,
                     pdata_receiver,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
             ) => {
                 let mut effect_handler = shared::EffectHandler::new(node_id, metrics_reporter);
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 let pdata_rx = pdata_receiver.ok_or_else(|| Error::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,

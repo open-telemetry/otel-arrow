@@ -14,6 +14,7 @@ use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
+use crate::extensions::ExtensionRegistry;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::receiver as local;
 use crate::message::{Receiver, Sender};
@@ -56,6 +57,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -78,6 +81,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
+        /// Extension registry for accessing extension traits.
+        extension_registry: Option<ExtensionRegistry>,
     },
 }
 
@@ -118,6 +123,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            extension_registry: None,
         }
     }
 
@@ -144,6 +150,19 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
+            extension_registry: None,
+        }
+    }
+
+    /// Sets the extension registry for this receiver.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        match self {
+            ReceiverWrapper::Local {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
+            ReceiverWrapper::Shared {
+                extension_registry, ..
+            } => *extension_registry = Some(registry),
         }
     }
 
@@ -158,6 +177,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -169,6 +189,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -179,6 +200,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
+                extension_registry,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -190,6 +212,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
+                extension_registry,
             },
         }
     }
@@ -218,7 +241,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -241,6 +264,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
             ReceiverWrapper::Shared {
@@ -253,7 +277,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                ..
+                extension_registry,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -276,6 +300,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
+                    extension_registry,
                 }
             }
         }
@@ -295,6 +320,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
@@ -311,13 +337,16 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
@@ -327,6 +356,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
+                    extension_registry,
                     ..
                 },
                 metrics_reporter,
@@ -343,13 +373,16 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_out_port.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                if let Some(registry) = extension_registry {
+                    effect_handler.set_extension_registry(registry);
+                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }

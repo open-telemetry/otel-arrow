@@ -46,8 +46,11 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+
+use crate::extensions::{ExtensionError, ExtensionTrait};
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -137,6 +140,26 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn receiver_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: crate::extensions::ExtensionRegistry) {
+        self.core.set_extension_registry(registry);
+    }
+
+    /// Returns an extension trait implementation by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`ExtensionError`] if the extension is not found or doesn't implement the trait.
+    pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        self.core.get_extension::<T>(name)
     }
 
     /// Returns the list of connected out ports for this receiver.

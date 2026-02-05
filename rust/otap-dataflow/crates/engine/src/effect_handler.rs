@@ -5,12 +5,15 @@
 
 use crate::control::{AckMsg, NackMsg, PipelineControlMsg, PipelineCtrlMsgSender};
 use crate::error::Error;
+use crate::extensions::ExtensionTrait;
+use crate::extensions::registry::{ExtensionError, ExtensionRegistry};
 use crate::node::NodeId;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, UdpSocket};
 
@@ -25,6 +28,8 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// Registry of extension traits for capability lookup.
+    pub(crate) extension_registry: Option<ExtensionRegistry>,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -34,6 +39,7 @@ impl<PData> EffectHandlerCore<PData> {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
+            extension_registry: None,
         }
     }
 
@@ -45,10 +51,51 @@ impl<PData> EffectHandlerCore<PData> {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
     }
 
+    /// Sets the extension registry for this effect handler.
+    pub fn set_extension_registry(&mut self, registry: ExtensionRegistry) {
+        self.extension_registry = Some(registry);
+    }
+
     /// Returns the id of the node associated with this effect handler.
     #[must_use]
     pub(crate) fn node_id(&self) -> NodeId {
         self.node_id.clone()
+    }
+
+    /// Gets an extension trait implementation by extension name.
+    ///
+    /// This allows components to look up capabilities provided by extensions.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `T` - The trait type (e.g., `dyn BearerTokenProvider`). Must implement `ExtensionTrait`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ExtensionError::NotFound` if no extension with that name exists or if the
+    /// extension registry has not been set.
+    /// Returns `ExtensionError::TraitNotImplemented` if the extension doesn't implement the trait.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let token_provider: Arc<dyn BearerTokenProvider> = effect_handler
+    ///     .get_extension::<dyn BearerTokenProvider>("azure_auth")?;
+    /// let token = token_provider.get_token();
+    /// ```
+    pub(crate) fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
+        &self,
+        name: &str,
+    ) -> Result<Arc<T>, ExtensionError>
+    where
+        Arc<T>: Send + Sync + Clone,
+    {
+        match &self.extension_registry {
+            Some(registry) => registry.get_trait::<T>(name),
+            None => Err(ExtensionError::NotFound {
+                name: name.to_string(),
+            }),
+        }
     }
 
     /// Print an info message to stdout.

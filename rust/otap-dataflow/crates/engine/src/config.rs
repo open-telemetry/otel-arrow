@@ -79,6 +79,18 @@ pub struct ExporterConfig {
     pub input_pdata_channel: PdataChannelConfig,
 }
 
+/// Generic configuration for an extension.
+///
+/// Extensions are special components that don't process pdata, so they only have
+/// a control channel configuration.
+#[derive(Clone, Debug)]
+pub struct ExtensionConfig {
+    /// Name of the extension.
+    pub name: NodeId,
+    /// Configuration for control channel.
+    pub control_channel: ControlChannelConfig,
+}
+
 impl ReceiverConfig {
     /// Creates a new receiver configuration with the given name and default channel capacity.
     pub fn new<T>(name: T) -> Self
@@ -133,6 +145,22 @@ impl ExporterConfig {
             },
             input_pdata_channel: PdataChannelConfig {
                 capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
+            },
+        }
+    }
+}
+
+impl ExtensionConfig {
+    /// Creates a new extension configuration with the given name and default channel capacity.
+    #[must_use]
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<NodeId>,
+    {
+        ExtensionConfig {
+            name: name.into(),
+            control_channel: ControlChannelConfig {
+                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
         }
     }
