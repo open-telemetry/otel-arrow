@@ -651,34 +651,22 @@ impl IDSeqs {
     }
 }
 
-// Check if any batch in the set uses UInt16 for ID columns.
-// If so, we need to cap batch sizes at u16::MAX to avoid overflow.
-fn requires_u16_cap<const N: usize>(batches: &[[Option<RecordBatch>; N]]) -> bool {
-    for batch_set in batches {
-        for batch in batch_set.iter().flatten() {
-            if let Some(id_col) = batch.column_by_name(consts::ID) {
-                if id_col.data_type() == &DataType::UInt16 {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 fn split_non_metric_batches<const N: usize>(
     max_items: NonZeroU64,
     batches: &[[Option<RecordBatch>; N]],
 ) -> Result<Vec<(usize, Range<usize>)>> {
-    let mut result = Vec::new();
-
-    // Determine effective max based on ID column type
+    // In the OTAP data model, logs and traces always use u16 IDs.
+    // Validate that max_items doesn't exceed u16::MAX to prevent ID overflow.
     let base_max: u64 = max_items.get();
-    let effective_max: u64 = if requires_u16_cap(batches) {
-        base_max.min(u16::MAX as u64)
-    } else {
-        base_max
-    };
+    if base_max > u16::MAX as u64 {
+        return Err(Error::BatchSizeTooLarge {
+            requested: base_max,
+            max_allowed: u16::MAX as u64,
+        });
+    }
+
+    let mut result = Vec::new();
+    let effective_max: u64 = base_max;
 
     debug_assert!(effective_max > 0, "effective_max must be positive");
 

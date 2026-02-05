@@ -171,6 +171,13 @@ pub enum Error {
     #[error("Mixed signals")]
     MixedSignals,
 
+    #[error(
+        "Batch size too large for u16 IDs: requested {}, maximum allowed {}",
+        requested,
+        max_allowed
+    )]
+    BatchSizeTooLarge { requested: u64, max_allowed: u64 },
+
     #[error("Encoding error: {}", error)]
     Encoding {
         #[from]
