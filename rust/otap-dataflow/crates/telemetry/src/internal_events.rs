@@ -50,10 +50,17 @@ macro_rules! otel_info {
 /// # Example:
 /// ```ignore
 /// use otap_df_telemetry::otel_warn;
-/// otel_warn!("channel.full", dropped_count = 10);
+/// otel_warn!("channel.full", "Channel is full, dropping messages", dropped_count = 10);   // With message and fields
+/// otel_warn!("channel.full", dropped_count = 10);                                         // no message, just fields
+/// otel_warn!("channel.full");                                                             // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
+    // With message literal as second argument
+    ($name:expr, $message:literal $(, $($fields:tt)*)?) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
+    };
+    // Without message - name only or name with key=value fields
     ($name:expr $(, $($fields:tt)*)?) => {
         $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };

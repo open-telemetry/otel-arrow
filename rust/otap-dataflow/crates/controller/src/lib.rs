@@ -198,10 +198,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             telemetry_config.logs.providers.uses_its_provider(),
         ) {
             (false, true) => {
-                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
+                otel_warn!(
+                    "its.config.mismatch",
+                    "ITS provider requested yet internal pipeline nodes not defined"
+                )
             }
             (true, false) => {
-                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+                otel_warn!(
+                    "its.config.mismatch",
+                    "Internal pipeline nodes defined yet ITS provider not requested"
+                )
             }
             _ => {}
         };
@@ -667,7 +673,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             // This is acceptable because the OS will still schedule the thread, but performance may be less predictable.
             otel_warn!(
                 "core_affinity.set_failed",
-                message = "Failed to set core affinity for pipeline thread. Performance may be less predictable."
+                "Failed to set core affinity for pipeline thread. Performance may be less predictable."
             );
         }
 

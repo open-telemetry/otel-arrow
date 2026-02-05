@@ -367,8 +367,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             if is_draining {
                                 otel_warn!(
                                     "pipeline.draining.ignored_delay_data",
-                                    node_id = node_id,
-                                    "Ignoring DelayData during shutdown draining"
+                                    "Ignoring DelayData during shutdown draining",
+                                    node_id = node_id
                                 );
                             } else {
                                 let delayed = Delayed { node_id, when, data };

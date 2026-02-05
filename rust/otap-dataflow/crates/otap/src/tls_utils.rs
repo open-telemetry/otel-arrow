@@ -71,7 +71,7 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     let mut pem_data = Vec::new();
 
     for error in &cert_res.errors {
-        otel_warn!("Error loading native cert", error = ?error);
+        otel_warn!("tls.native_cert.load_error", "Error loading native cert", error = ?error);
     }
 
     for cert in &cert_res.certs {
@@ -348,6 +348,7 @@ async fn add_system_trust_anchors_if_enabled(
                 let native = load_native_certs();
                 if !native.errors.is_empty() {
                     otel_warn!(
+                        "tls.native_certs.errors",
                         "Errors while loading native certificates",
                         count = native.errors.len(),
                         first = ?native.errors.first(),
@@ -407,11 +408,11 @@ where
                             Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
                             Ok(Err(e)) => {
                                 // TLS handshake failed - log and continue
-                                otel_warn!("TLS handshake failed", error = ?e);
+                                otel_warn!("tls.handshake.failed", "TLS handshake failed", error = ?e);
                                 None
                             }
                             Err(_) => {
-                                otel_warn!("TLS handshake timed out");
+                                otel_warn!("tls.handshake.timeout", "TLS handshake timed out");
                                 None
                             }
                         }
@@ -521,7 +522,7 @@ impl LazyReloadableCertResolver {
         let current_cert_mtime = match get_mtime(&self.cert_path) {
             Ok(m) => m,
             Err(e) => {
-                otel_warn!("Failed to check cert mtime", error = ?e);
+                otel_warn!("tls.cert.mtime_check_failed", "Failed to check cert mtime", error = ?e);
                 return false;
             }
         };
@@ -529,7 +530,7 @@ impl LazyReloadableCertResolver {
         let current_key_mtime = match get_mtime(&self.key_path) {
             Ok(m) => m,
             Err(e) => {
-                otel_warn!("Failed to check key mtime", error = ?e);
+                otel_warn!("tls.key.mtime_check_failed", "Failed to check key mtime", error = ?e);
                 return false;
             }
         };
@@ -661,7 +662,7 @@ impl CaWatcherState {
     fn handle_event(&self, res: Result<Event, notify::Error>) {
         match res {
             Ok(event) => self.process_event(event),
-            Err(e) => otel_warn!("File watcher error", error = ?e),
+            Err(e) => otel_warn!("tls.file_watcher.error", "File watcher error", error = ?e),
         }
     }
 
@@ -1059,7 +1060,7 @@ impl ReloadableClientCaVerifier {
                     is_reloading.store(false, Ordering::Release);
                 }
                 Err(e) => {
-                    otel_warn!("Poll watcher error", error = ?e);
+                    otel_warn!("tls.poll_watcher.error", "Poll watcher error", error = ?e);
                 }
             },
             config,
@@ -1164,11 +1165,11 @@ fn build_webpki_verifier(
     if include_system_cas {
         let system_certs = load_native_certs();
         for error in &system_certs.errors {
-            otel_warn!("Error loading native cert", error = ?error);
+            otel_warn!("tls.native_cert.load_error", "Error loading native cert", error = ?error);
         }
         for cert in system_certs.certs {
             if let Err(e) = roots.add(cert) {
-                otel_warn!("Failed to add system", error = ?e);
+                otel_warn!("tls.system_cert.add_failed", "Failed to add system cert", error = ?e);
             }
         }
     }
