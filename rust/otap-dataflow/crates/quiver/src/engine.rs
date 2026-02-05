@@ -3554,53 +3554,67 @@ mod tests {
     async fn wal_replay_skips_already_finalized_bundles() {
         let dir = tempdir().expect("tempdir");
 
-        // Use a small segment size to force finalization
+        // Use a small segment size to force finalization after a few bundles
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
             .segment(SegmentConfig {
-                target_size_bytes: NonZeroU64::new(1024).unwrap(), // 1KB - will trigger finalization
+                // Use a size that causes finalization every ~10 bundles
+                // We'll ingest 15 bundles to get 1 segment finalized + 5 in open segment
+                target_size_bytes: NonZeroU64::new(50_000).unwrap(), // 50KB
                 ..Default::default()
             })
             .build()
             .expect("config");
 
-        // First run: ingest enough to finalize some segments
+        // Track how many bundles end up in the open segment (not finalized)
+        let bundles_in_open_segment_before_shutdown;
+
+        // First run: ingest bundles - some will be finalized, some will remain in open segment
         {
             let engine = QuiverEngine::open(config.clone(), test_budget())
                 .await
                 .expect("engine");
 
-            // Ingest enough data to trigger segment finalization
-            for _ in 0..20 {
-                let bundle = DummyBundle::with_rows(50);
+            // Ingest 15 bundles with 100 rows each (~5KB per bundle = ~75KB total)
+            // With 50KB segment threshold, expect 1 segment finalized + some in open segment
+            let total_bundles = 15;
+            for _ in 0..total_bundles {
+                let bundle = DummyBundle::with_rows(100);
                 engine.ingest(&bundle).await.expect("ingest");
             }
 
-            // Verify segments were finalized
+            // Verify at least one segment was finalized
             let segments_written = engine.total_segments_written();
             assert!(
                 segments_written > 0,
                 "should have finalized at least one segment"
             );
+
+            // Record the exact count in open segment before shutdown
+            bundles_in_open_segment_before_shutdown = engine.open_segment.lock().bundle_count();
+            assert!(
+                bundles_in_open_segment_before_shutdown > 0,
+                "open segment should have at least one bundle to replay; \
+                 got 0 with {} segments finalized from {} bundles",
+                segments_written,
+                total_bundles
+            );
         }
 
-        // Second run: reopen and verify we don't re-replay finalized data
+        // Second run: reopen and verify we only replay the un-finalized bundles
         {
             let engine = QuiverEngine::open(config, test_budget())
                 .await
                 .expect("engine reopen");
 
-            // Open segment should NOT have the finalized bundles replayed again
-            // (cursor should have been advanced past them)
+            // Open segment should have EXACTLY the same count as before shutdown
+            // (only the un-finalized bundles are replayed)
             let open_segment_bundles = engine.open_segment.lock().bundle_count();
 
-            // Verify we don't get all 20 bundles (i.e., no double-replay)
-            // The exact count depends on timing, but it should be small
-            // (only bundles that were in WAL but not yet finalized)
-            assert!(
-                open_segment_bundles < 20,
-                "should not re-replay all bundles; got {} but expected < 20",
-                open_segment_bundles
+            assert_eq!(
+                open_segment_bundles, bundles_in_open_segment_before_shutdown,
+                "should replay exactly {} bundles (those not finalized to segments)",
+                bundles_in_open_segment_before_shutdown
             );
         }
     }
