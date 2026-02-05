@@ -24,7 +24,7 @@ use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -49,6 +49,9 @@ pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 /// Maximum time to wait before building an Arrow batch
 const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
+
+/// Maximum time to wait for spawned TCP tasks to drain during shutdown.
+const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone, Deserialize)]
@@ -189,6 +192,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                     );
                 }
 
+                // Flag to signal spawned connection tasks to flush and exit on shutdown
+                let shutdown_flag = Rc::new(Cell::new(false));
+                // Counter to track active connection tasks for graceful shutdown
+                let active_task_count = Rc::new(Cell::new(0usize));
+
                 loop {
                     tokio::select! {
                         biased; // Prioritize control messages over data
@@ -196,10 +204,23 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
+
+                                    // Wait for active tasks to finish flushing.
+                                    // Use 90% of remaining time (keeping 10% buffer for cleanup),
+                                    // capped at MAX_TASK_DRAIN_WAIT.
+                                    let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
+                                    let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
+                                    let _ = tokio::time::timeout(drain_wait, async {
+                                        while active_task_count.get() > 0 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }).await;
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -231,9 +252,17 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     #[cfg(feature = "experimental-tls")]
                                     let tls_handshake_timeout = maybe_handshake_timeout;
 
+                                    // Clone shutdown flag for the spawned task
+                                    let task_shutdown_flag = shutdown_flag.clone();
+                                    // Clone active task counter for the spawned task
+                                    let task_active_count = active_task_count.clone();
+
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
+                                        // Track this task for graceful shutdown
+                                        task_active_count.set(task_active_count.get() + 1);
+
                                         // Perform TLS handshake if configured, creating a unified reader type
                                         #[cfg(feature = "experimental-tls")]
                                         let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
@@ -258,6 +287,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     );
                                                     metrics.borrow_mut().tcp_connections_active.dec();
                                                     metrics.borrow_mut().tls_handshake_failures.inc();
+                                                    task_active_count.set(task_active_count.get() - 1);
                                                     return;
                                                 }
                                             }
@@ -279,6 +309,25 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
 
                                         loop {
+                                            // Check for shutdown signal (simple bool check - very cheap)
+                                            if task_shutdown_flag.get() {
+                                                if arrow_records_builder.len() > 0 {
+                                                    let items = u64::from(arrow_records_builder.len());
+                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                    let res = effect_handler.try_send_message_with_source_node(
+                                                        OtapPdata::new_todo_context(arrow_records.into())
+                                                    );
+                                                    let mut m = metrics.borrow_mut();
+                                                    match &res {
+                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                    }
+                                                }
+                                                metrics.borrow_mut().tcp_connections_active.dec();
+                                                task_active_count.set(task_active_count.get() - 1);
+                                                break;
+                                            }
+
                                             tokio::select! {
                                                 biased; // Prioritize incoming data over timeout
 
@@ -329,6 +378,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Decrement active connections on EOF
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break;
                                                         }
                                                         Ok(_) => {
@@ -405,6 +455,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Decrement active connections on read error
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break; // ToDo: Handle read error properly
                                                         }
                                                     }
@@ -464,10 +515,25 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+
+                                    // Flush any remaining records before shutdown
+                                    if arrow_records_builder.len() > 0 {
+                                        let items = u64::from(arrow_records_builder.len());
+                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                        let res = effect_handler.try_send_message_with_source_node(
+                                            OtapPdata::new_todo_context(arrow_records.into())
+                                        );
+                                        let mut m = self.metrics.borrow_mut();
+                                        match &res {
+                                            Ok(_) => m.received_logs_forwarded.add(items),
+                                            Err(_) => m.received_logs_forward_failed.add(items),
+                                        }
+                                    }
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -571,8 +637,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
         }
-
-        Ok(TerminalState::default())
     }
 }
 
