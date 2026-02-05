@@ -1450,7 +1450,7 @@ fn transform_keys(
         .as_ref()
         .and_then(|delete_plan| transform_ranges_to_keep_ranges(len, &delete_plan.ranges));
 
-    // TODO mess
+    // Get the list of transform_ranges w/out copying
     let transform_ranges = if let Cow::Owned(ranges) = transform_ranges {
         ranges
     } else {
@@ -1458,8 +1458,10 @@ fn transform_keys(
             (Some(replacement), None) => replacement.ranges,
             (None, Some(delete_plan)) => delete_plan.ranges,
             _ => {
-                // TODO - is it really?
-                unreachable!("")
+                // safety: if these were both None, we'd have returned early above, however if
+                // they were both `Some`, we'd already have combined the ranges into an owned
+                // `Cow` in `merge_transform_ranges` and taken it in the `if` branch above.
+                unreachable!("invalid transform ranges state")
             }
         }
     };
