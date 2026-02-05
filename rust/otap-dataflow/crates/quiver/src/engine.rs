@@ -3524,7 +3524,9 @@ mod tests {
         handle.ack();
 
         // Verify the subscriber can continue (no bundles left since all expired)
-        let result = engine.poll_next_bundle(&sub_id).expect("poll should succeed");
+        let result = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll should succeed");
         assert!(
             result.is_none(),
             "no bundles should remain after all segments expired"
@@ -3787,7 +3789,10 @@ mod tests {
             engine.flush().await.expect("flush");
 
             old_segments_created = engine.segment_store().segment_count();
-            assert!(old_segments_created >= 1, "should create at least one segment");
+            assert!(
+                old_segments_created >= 1,
+                "should create at least one segment"
+            );
         }
 
         // Wait for these segments to become "old" - use generous margin
