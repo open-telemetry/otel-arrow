@@ -36,10 +36,19 @@ nodes:
           - perf
         dispatch_strategy: round_robin
     config:
+      {%- if receiver_type == "otlp" %}
+      protocols:
+        grpc:
+          listening_addr: "{{ listen_addr }}"
+          {%- for k, v in extra_config.items() %}
+          {{ k }}: {{ v }}
+          {%- endfor %}
+      {%- else %}
       listening_addr: "{{ listen_addr }}"
       {%- for k, v in extra_config.items() %}
       {{ k }}: {{ v }}
       {%- endfor %}
+      {%- endif %}
     {%- else %}
     config:
       error: "{{ error_msg }}"
