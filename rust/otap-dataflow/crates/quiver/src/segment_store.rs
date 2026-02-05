@@ -18,6 +18,21 @@ use crate::budget::DiskBudget;
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
+/// Result of scanning the segment directory during startup.
+///
+/// Contains both the segments that were successfully loaded and the
+/// sequence numbers of segments that were deleted due to expiration.
+/// The deleted IDs are needed so the subscriber registry can mark them
+/// as completed, preventing subscribers from trying to read missing files.
+#[derive(Debug, Default)]
+pub struct ScanResult {
+    /// Segments that were found and registered, sorted by sequence number.
+    /// Each entry contains the segment sequence and its bundle count.
+    pub found: Vec<(SegmentSeq, u32)>,
+    /// Segment sequences that were deleted during scan (e.g., expired by max_age).
+    pub deleted: Vec<SegmentSeq>,
+}
+
 /// Type alias for subscriber-related results.
 type Result<T> = std::result::Result<T, SubscriberError>;
 
@@ -454,7 +469,7 @@ impl SegmentStore {
     /// # Errors
     ///
     /// Returns an error if directory scanning fails.
-    pub fn scan_existing(&self) -> Result<Vec<(SegmentSeq, u32)>> {
+    pub fn scan_existing(&self) -> Result<ScanResult> {
         self.scan_existing_with_max_age(None)
     }
 
@@ -474,11 +489,9 @@ impl SegmentStore {
     /// # Errors
     ///
     /// Returns an error if directory scanning fails.
-    pub fn scan_existing_with_max_age(
-        &self,
-        max_age: Option<Duration>,
-    ) -> Result<Vec<(SegmentSeq, u32)>> {
+    pub fn scan_existing_with_max_age(&self, max_age: Option<Duration>) -> Result<ScanResult> {
         let mut found = Vec::new();
+        let mut deleted = Vec::new();
         let now = SystemTime::now();
 
         let entries =
@@ -512,6 +525,7 @@ impl SegmentStore {
                                     max_age_secs = max_age.as_secs(),
                                     "deleted expired segment during startup scan"
                                 );
+                                deleted.push(seq);
                             }
                             continue;
                         }
@@ -534,8 +548,9 @@ impl SegmentStore {
 
         // Sort by sequence number
         found.sort_by_key(|(seq, _)| *seq);
+        deleted.sort();
 
-        Ok(found)
+        Ok(ScanResult { found, deleted })
     }
 
     /// Checks if a file is older than `max_age` based on its modification time.

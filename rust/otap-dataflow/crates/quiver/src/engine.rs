@@ -261,19 +261,32 @@ impl QuiverEngine {
         // Pass max_age to skip loading segments that are already expired -
         // they'll be deleted during scan without the overhead of parsing them.
         let mut next_segment_seq = 0u64;
+        let mut deleted_during_scan = Vec::new();
         match segment_store.scan_existing_with_max_age(config.retention.max_age) {
-            Ok(found_segments) => {
-                // scan_existing returns segments sorted by sequence, so last is highest
-                if let Some((seq, _bundle_count)) = found_segments.last() {
-                    next_segment_seq = seq.raw() + 1;
+            Ok(scan_result) => {
+                // Determine next sequence from the highest loaded OR deleted segment.
+                // This prevents sequence reuse when all segments are expired and deleted.
+                let highest_found = scan_result.found.last().map(|(seq, _)| seq.raw());
+                let highest_deleted = scan_result.deleted.last().map(|seq| seq.raw());
+                if let Some(highest) = highest_found.into_iter().chain(highest_deleted).max() {
+                    next_segment_seq = highest + 1;
                 }
-                if !found_segments.is_empty() {
+
+                if !scan_result.found.is_empty() {
                     tracing::info!(
-                        segment_count = found_segments.len(),
+                        segment_count = scan_result.found.len(),
                         next_segment_seq,
                         "recovered existing segments from previous run"
                     );
                 }
+                if !scan_result.deleted.is_empty() {
+                    tracing::info!(
+                        deleted_count = scan_result.deleted.len(),
+                        next_segment_seq,
+                        "deleted expired segments during startup scan"
+                    );
+                }
+                deleted_during_scan = scan_result.deleted;
             }
             Err(e) => {
                 tracing::warn!(
@@ -287,6 +300,13 @@ impl QuiverEngine {
         let registry_config = RegistryConfig::new(&config.data_dir);
         let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
             .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
+
+        // If any segments were deleted during scan, force-complete them in the
+        // registry so that subscribers restored from progress.json don't try to
+        // read from files that no longer exist.
+        if !deleted_during_scan.is_empty() {
+            registry.force_complete_segments(&deleted_during_scan);
+        }
 
         let engine = Arc::new(Self {
             config,
@@ -2929,8 +2949,11 @@ mod tests {
                 .expect("engine recreated");
 
             // Scan existing segments from previous run
-            let found = engine.segment_store.scan_existing().expect("scan existing");
-            assert!(!found.is_empty(), "should find segments from previous run");
+            let scan_result = engine.segment_store.scan_existing().expect("scan existing");
+            assert!(
+                !scan_result.found.is_empty(),
+                "should find segments from previous run"
+            );
 
             // Re-register the subscriber (should load from progress file)
             engine
@@ -3912,5 +3935,184 @@ mod tests {
             engine.expired_bundles() > 0,
             "expired_bundles should be incremented"
         );
+    }
+
+    /// Test that subscribers restored from progress.json don't fail when
+    /// expired segments are deleted during startup scan.
+    ///
+    /// If scan_existing_with_max_age deletes segments on disk, but
+    /// SubscriberRegistry::open restores subscriber state from progress.json
+    /// which references those deleted segments, ensure that the deleted
+    /// segments are force-completed in the registry to avoid
+    /// segment_not_found errors.
+    #[tokio::test]
+    async fn startup_expired_segments_force_completed_in_registry() {
+        let dir = tempdir().expect("tempdir");
+
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        // Phase 1: Create segments, register a subscriber, consume some bundles,
+        // then flush progress to disk.
+        let sub_id = SubscriberId::new("test-sub").expect("valid id");
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest data to create segments
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush");
+
+            let segment_count = engine.segment_store().segment_count();
+            assert!(segment_count >= 1, "should have at least one segment");
+
+            // Register and activate a subscriber
+            engine
+                .register_subscriber(sub_id.clone())
+                .expect("register");
+            engine.activate_subscriber(&sub_id).expect("activate");
+
+            // Consume one bundle to advance subscriber progress
+            let handle = engine
+                .poll_next_bundle(&sub_id)
+                .expect("poll")
+                .expect("bundle available");
+            handle.ack();
+
+            // Flush progress to disk so it persists across restart
+            let flushed = engine.flush_progress().await.expect("flush progress");
+            assert!(flushed > 0, "should have flushed subscriber progress");
+
+            // Engine dropped here (simulating shutdown)
+        }
+
+        // Wait for segments to become "old" enough
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Phase 2: Reopen with a very short max_age so all segments expire.
+        // The subscriber's progress.json still references the deleted segments.
+        // Without the fix, poll_next_bundle would fail with segment_not_found.
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine should open successfully");
+
+        // All segments should have been expired and deleted during scan
+        assert_eq!(
+            engine.segment_store().segment_count(),
+            0,
+            "all segments should be deleted"
+        );
+
+        // Re-register the subscriber (loads from progress.json)
+        engine
+            .register_subscriber(sub_id.clone())
+            .expect("re-register");
+        engine.activate_subscriber(&sub_id).expect("activate");
+
+        // This is the critical assertion: poll_next_bundle should return None
+        // (no bundles available) rather than failing with segment_not_found.
+        let result = engine
+            .poll_next_bundle(&sub_id)
+            .expect("poll should succeed, not error with segment_not_found");
+        assert!(
+            result.is_none(),
+            "no bundles should be available after all segments expired"
+        );
+    }
+
+    /// Test that next_segment_seq is monotonic even when all segments are deleted.
+    ///
+    /// If scan_existing_with_max_age deletes ALL segments, the sequence counter
+    /// must still continue from the highest deleted sequence to prevent reuse.
+    #[tokio::test]
+    async fn startup_sequence_continues_after_all_segments_deleted() {
+        let dir = tempdir().expect("tempdir");
+
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        // Phase 1: Create segments
+        let segments_created;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..5 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush");
+
+            segments_created = engine.segment_store().segment_count();
+            assert!(segments_created >= 1, "should have at least one segment");
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Phase 2: Reopen with short max_age to delete all segments
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_millis(10)),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        assert_eq!(engine.segment_store().segment_count(), 0);
+
+        // Ingest new data — new segments should have sequence numbers
+        // that don't overlap with the deleted ones
+        let bundle = DummyBundle::with_rows(50);
+        engine.ingest(&bundle).await.expect("ingest");
+        engine.flush().await.expect("flush");
+
+        let new_segments = engine.segment_store().segment_sequences();
+        assert!(!new_segments.is_empty(), "should have new segments");
+
+        for seq in &new_segments {
+            assert!(
+                seq.raw() >= segments_created as u64,
+                "new segment seq {} should be >= previous count {} to avoid reuse",
+                seq.raw(),
+                segments_created
+            );
+        }
     }
 }
