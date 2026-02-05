@@ -909,7 +909,7 @@ mod tests {
     {
         |_, exporter_result| {
             Box::pin(async move {
-                assert!(exporter_result.is_ok());
+                exporter_result.unwrap();
 
                 // check that the message was properly sent from the exporter
                 let logs_received = timeout(Duration::from_secs(3), receiver.recv())
