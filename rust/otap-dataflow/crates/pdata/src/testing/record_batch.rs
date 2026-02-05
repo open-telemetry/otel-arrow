@@ -39,9 +39,9 @@
 ///
 /// - TODO: Support for nullable arrays using [None, Some(1)]
 /// - TODO: Support for structs using something similar to:
-/// ("a", Struct, {
-///    ("b", Int32, [1, 2, 3]),
-/// })
+///   ("a", Struct, {
+///   ("b", Int32, [1, 2, 3]),
+///   })
 #[macro_export]
 macro_rules! record_batch {
     ($(($name:expr, $($rest:tt)*)),* $(,)?) => {
@@ -387,8 +387,8 @@ mod tests {
             .as_any()
             .downcast_ref::<BooleanArray>()
             .unwrap();
-        assert_eq!(enabled_array.value(0), true);
-        assert_eq!(enabled_array.value(1), false);
+        assert!(enabled_array.value(0));
+        assert!(!enabled_array.value(1));
 
         // Verify first dictionary column (string values)
         assert!(

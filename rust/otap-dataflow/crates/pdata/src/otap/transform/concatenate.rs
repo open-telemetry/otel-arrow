@@ -40,7 +40,7 @@ const MAX_U16_CARDINALITY: usize = 65535;
 ///
 ///   1. Remove the transport optimized encodings from the columns, if any
 ///   2. Reindex the ID columns so that the parent child relationships are
-///   consistent after the concatenation
+///      consistent after the concatenation
 ///
 /// These will be handled internally in the future as we refine the API, see
 /// https://github.com/open-telemetry/otel-arrow/issues/1926.
@@ -50,28 +50,28 @@ const MAX_U16_CARDINALITY: usize = 65535;
 /// Concatenating multiple OtapArrowRecords involves three steps:
 ///
 ///   1. Reindexing the ID columns so that the parent child relationships are
-///   consistent after the concatenation
+///      consistent after the concatenation
 ///   2. Selecting a common schema and converting every record batch to that
-///   schema. This includes several steps:
-///       a. Indexing all fields for the same ArrowPayloadType across every batch
-///       b. Estimating the cardinality for each dictionary field and selecting
-///       the key type.
-///       c. Determining nullability for each field in the final batch
+///      schema. This includes several steps:
+///         * Indexing all fields for the same ArrowPayloadType across every batch
+///         * Estimating the cardinality for each dictionary field and selecting
+///           the key type.
+///         * Determining nullability for each field in the final batch
 ///   3. Casting every record batch to the final schema, including casting individual
-///   arrays as well as reordering the columns to match the schema.
+///      arrays as well as reordering the columns to match the schema.
 ///
 /// # Future optimizations
 ///
 /// - TODO: Re-indexing probably should not be a separate operation. We should decide
-/// within this function whether or not to do it and ensure it happens if required.
-/// This is deferred until we totally remove the old implementation in groups.rs
-/// due to interface incompatibility.
+///   within this function whether or not to do it and ensure it happens if required.
+///   This is deferred until we totally remove the old implementation in groups.rs
+///   due to interface incompatibility.
 ///
 /// - TODO: Consider using new_unchecked for record batch construction if we're
-/// confident in it. We mostly unwrap those operations a lot, so skipping the
-/// checks or moving similar checks to debug asserts may be reasonable.
+///   confident in it. We mostly unwrap those operations a lot, so skipping the
+///   checks or moving similar checks to debug asserts may be reasonable.
 pub fn concatenate<const N: usize>(
-    mut items: &mut [[Option<RecordBatch>; N]],
+    items: &mut [[Option<RecordBatch>; N]],
 ) -> Result<[Option<RecordBatch>; N]> {
     let mut result = [const { None }; N];
     if items.is_empty() {
@@ -85,15 +85,16 @@ pub fn concatenate<const N: usize>(
         return Ok(result);
     }
 
+    #[allow(clippy::needless_range_loop)]
     for i in 0..N {
-        let index = index_records(select_all(&items, i))?;
+        let index = index_records(select_all(items, i))?;
         if index.batch_count == 0 {
             continue;
         }
 
         let new_schema = Arc::from(select_schema(&index)?);
         let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
-        for payload in select_all_mut(&mut items, i) {
+        for payload in select_all_mut(items, i) {
             let Some(rb) = payload.take() else {
                 continue;
             };
@@ -152,7 +153,7 @@ fn convert(
                         let struct_array = struct_array
                             .as_any()
                             .downcast_ref::<StructArray>()
-                            .unwrap()
+                            .expect("Struct array")
                             .clone();
 
                         let (struct_fields, struct_columns, nulls) = struct_array.into_parts();
@@ -214,7 +215,7 @@ fn select_schema<'a>(index: &'a RecordIndex<'a>) -> Result<Schema> {
         let mut typ = field_info.value_type.clone();
         if field_info.smallest_key_type.is_some() {
             assert!(field_info.struct_index.is_none());
-            typ = select_dictionary_type(&field_info)?
+            typ = select_dictionary_type(field_info)?
         } else if let Some(ref struct_index) = field_info.struct_index {
             typ = select_struct_type(struct_index)?;
         }
@@ -234,7 +235,7 @@ fn select_struct_type<'a>(struct_index: &'a FieldIndex<'a>) -> Result<DataType> 
         // Presence of smallest key type indicates dictionary
         let mut typ = field_info.value_type.clone();
         if field_info.smallest_key_type.is_some() {
-            typ = select_dictionary_type(&field_info)?
+            typ = select_dictionary_type(field_info)?
         }
 
         // This should have been detected by the indexing logic
@@ -322,7 +323,7 @@ fn index_records<'a>(
 
     // We need a final pass to see if any fields were not present in any batch
     // and similarly for structs to see if any struct fields were missing.
-    // When we coerce to the same schema, we have to appent nulls for missing fields.
+    // When we coerce to the same schema, we have to append nulls for missing fields.
     for field in index.fields.values_mut() {
         field.nullable = field.nullable || field.values.len() != index.batch_count;
         if let Some(struct_index) = field.struct_index.as_mut() {
@@ -346,7 +347,7 @@ fn index_fields<'a>(
     for (field, data) in fields {
         let (array, value_type, key_type) = match data.data_type() {
             DataType::Dictionary(k, v) => (
-                get_dictionary_values(&data)?,
+                get_dictionary_values(data)?,
                 v.as_ref(),
                 Some(k.as_ref().clone()),
             ),
@@ -375,7 +376,7 @@ fn index_fields<'a>(
             let _ = index.insert(
                 field.name().as_str(),
                 FieldInfo {
-                    value_type: value_type,
+                    value_type,
                     nullable: data.null_count() > 0,
                     smallest_key_type: key_type,
                     struct_index,
@@ -458,7 +459,7 @@ fn index_fields<'a>(
                     }
                 }
 
-                get_dictionary_values(&data)?
+                get_dictionary_values(data)?
             }
 
             (v1, v2) => {
@@ -473,7 +474,7 @@ fn index_fields<'a>(
             }
         };
 
-        let _ = existing.values.push(values.clone());
+        existing.values.push(values.clone());
         let values_count = values.len() - values.null_count();
         existing.nullable = existing.nullable || data.null_count() > 0;
         existing.total_element_count += data.len();
@@ -543,7 +544,7 @@ fn select_dictionary_type<'a>(info: &FieldInfo<'a>) -> Result<DataType> {
     }
 
     let value_type = info.value_type.clone();
-    let cardinality = estimate_cardinality(&info);
+    let cardinality = estimate_cardinality(info);
     match cardinality {
         Cardinality::WithinU8 => Ok(DataType::Dictionary(
             Box::new(DataType::UInt8),
@@ -595,8 +596,7 @@ fn estimate_cardinality<'a>(info: &FieldInfo<'a>) -> Cardinality {
             let iter = info
                 .values
                 .iter()
-                .map(|v| v.as_bytes::<GenericBinaryType<i64>>().iter().flatten())
-                .flatten();
+                .flat_map(|v| v.as_bytes::<GenericBinaryType<i64>>().iter().flatten());
             estimate_cardinality_generic(info, iter)
         }
         _ => unreachable!("Unexpected type: {:?}", info.value_type),
@@ -646,8 +646,7 @@ fn estimate_cardinality_string_type<'a, T: OffsetSizeTrait>(info: &FieldInfo<'a>
     let iter = info
         .values
         .iter()
-        .map(|v| v.as_string::<T>().iter().flatten().map(|s| s.as_bytes()))
-        .flatten();
+        .flat_map(|v| v.as_string::<T>().iter().flatten().map(|s| s.as_bytes()));
     estimate_cardinality_generic(info, iter)
 }
 
@@ -695,7 +694,7 @@ where
                 for (start, end) in nulls.valid_slices() {
                     let cardinality = visit_native_values(
                         &value_buf[start..end],
-                        &info,
+                        info,
                         &mut bitmap,
                         &mut visited_element_count,
                     );
@@ -706,7 +705,7 @@ where
             }
             None => {
                 let cardinality =
-                    visit_native_values(value_buf, &info, &mut bitmap, &mut visited_element_count);
+                    visit_native_values(value_buf, info, &mut bitmap, &mut visited_element_count);
                 if let Some(c) = cardinality {
                     return c;
                 }
@@ -1062,7 +1061,7 @@ mod schema_tests {
         );
 
         let batches = generate_batches_with_cardinality(cardinalities, value_type);
-        let batch_refs: Vec<Option<&RecordBatch>> = batches.iter().map(|b| Some(b)).collect();
+        let batch_refs: Vec<Option<&RecordBatch>> = batches.iter().map(Some).collect();
 
         // Test schema selection
         let index = index_records(batch_refs.into_iter())
