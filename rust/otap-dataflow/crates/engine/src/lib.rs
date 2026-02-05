@@ -1159,6 +1159,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "exporter.create.complete",
+            pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
             node_id = name.as_ref(),
