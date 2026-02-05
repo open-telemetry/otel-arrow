@@ -109,8 +109,8 @@ pub enum AllowedValuesSource {
 }
 
 impl AllowedValuesSource {
-    /// Gets the static/fallback allowed values set.
-    fn get_static_values(&self) -> &HashSet<String> {
+    /// Gets the allowed values set (static config or fallback for dynamic).
+    fn get_allowed_values(&self) -> &HashSet<String> {
         match self {
             AllowedValuesSource::Static(values) => values,
             AllowedValuesSource::Dynamic { fallback } => fallback,
@@ -137,7 +137,7 @@ impl std::fmt::Display for ValidationFailure {
             ValidationFailure::MissingAttribute => write!(f, "missing"),
             ValidationFailure::InvalidAttributeType => write!(f, "invalid_type"),
             ValidationFailure::NotInAllowedList => write!(f, "not_allowed"),
-            ValidationFailure::ConversionError => write!(f, "conversion_error"),
+            ValidationFailure::ConversionError => write!(f, "conversion_error(internal)"),
         }
     }
 }
@@ -263,7 +263,7 @@ impl ResourceValidatorProcessor {
     fn get_allowed_values(&self, _pdata: &OtapPdata) -> Cow<'_, HashSet<String>> {
         // Currently just returns the static/fallback values.
         // When auth context is available, this will check pdata.context().auth() first.
-        Cow::Borrowed(self.allowed_values_source.get_static_values())
+        Cow::Borrowed(self.allowed_values_source.get_allowed_values())
     }
 
     /// Validates a single resource's attributes against the provided allowed values.
@@ -556,6 +556,10 @@ mod tests {
     };
     use prost::Message as ProstMessage;
 
+    // TODO: Refactor tests to use the actual `ResourceValidatorProcessor` instead of `TestValidator`.
+    // Currently `TestValidator` reimplements validation logic, which means tests don't verify the
+    // production code path. This requires test infrastructure for `PipelineContext` (metrics registration).
+
     /// Test helper struct for validation testing without metrics
     struct TestValidator {
         required_attribute: String,
@@ -832,6 +836,28 @@ mod tests {
         assert!(matches!(
             result,
             Err((ValidationFailure::NotInAllowedList, _))
+        ));
+    }
+
+    #[test]
+    fn test_validate_logs_empty_resource_attributes() {
+        // Resource with no attributes at all
+        let logs_bytes = create_logs_request_with_resource(vec![]);
+
+        let mut allowed = HashSet::new();
+        let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
+
+        let data = RawLogsData::new(&logs_bytes);
+        let validator = TestValidator {
+            required_attribute: "microsoft.resourceId".to_string(),
+            allowed_values: allowed,
+            case_sensitive: true,
+        };
+
+        let result = validator.validate_logs(&data);
+        assert!(matches!(
+            result,
+            Err((ValidationFailure::MissingAttribute, _))
         ));
     }
 
