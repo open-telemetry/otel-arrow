@@ -100,8 +100,14 @@ jobs:
         - name: Run idle state performance tests
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/idle-state-docker.yaml
-            python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/idle-state-allcores-docker.yaml
+            ./scripts/run-idle-state-tests.sh --output-json results/idle-memory-scaling.json \
+              | tee idle-memory-scaling-report.txt
+            # Add memory scaling report to job summary
+            echo "### Idle State Memory Scaling Analysis" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract just the analysis section from the report
+            sed -n '/^=.*MEMORY SCALING/,/^=\{10,\}$/p' idle-memory-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
 
         - name: Run passthrough performance test
           run: |
@@ -131,6 +137,12 @@ jobs:
           with:
             name: benchmark-results-idle-state
             path: tools/pipeline_perf_test/results/idle_state*/gh-actions-benchmark/*.json
+
+        - name: Upload idle state memory scaling metrics
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: benchmark-results-idle-memory-scaling
+            path: tools/pipeline_perf_test/results/idle-memory-scaling.json
 
         - name: Upload benchmark results for processing (Passthrough)
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
