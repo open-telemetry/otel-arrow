@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770280996499,
+  "lastUpdate": 1770319690400,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4282,6 +4282,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11364124.388817286,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "56887295a09a2ba52bcd736ffba8852d9293227c",
+          "message": "Fanout Processor (#1878)\n\n## Fan-out Processor Implementation\n\nImplements all four discussed scenarios:\n\n| Scenario | Config | Description |\n|----------|--------|-------------|\n| 1 | `mode: parallel, await_ack: primary` | Duplicate to all, wait for\nprimary only |\n| 2 | `mode: parallel, await_ack: all` | Duplicate to all, wait for all\n(with per-destination timeout) |\n| 3 | `mode: sequential` | Send one-by-one, advance after ack |\n| 4 | `fallback_for: <port>` | Failover to backup on nack/timeout |\n\n### Why Stateful (not Stateless like Go collector)\n\nThe Go Collector's fanout is stateless because it uses **synchronous,\nblocking calls**:\n```go\nerr := consumer.ConsumeLogs(ctx, ld)  // blocks until complete, error returns directly\n```\n\nOur OTAP engine uses async message passing with explicit ack/nack\nrouting:\n\n```rust\neffect_handler.send_message_to(port, pdata).await?;  // returns immediately\n// ack arrives later as separate NodeControlMsg::Ack\n```\nI explored making scenarios 1 and 3 stateless but hit three blockers:\n\n1. **`subscribe_to()` mutates context** - Fanout must subscribe to\nreceive acks, which pushes a frame onto the context stack. For correct\nupstream routing, we need the *original* pdata (pre-subscription). We\ncannot use `ack.accepted` from downstream.\n\n2. **Downstream may mutate/drop payloads** - `into_parts()`,\ntransformers, and filters mean we can't rely on getting intact pdata\nback in ack/nack messages.\n\n3. **Sequential/fallback/timeout require coordination** - Need to know\nwhich destination is active, when to advance to the next, and when to\ntrigger fallbacks or finish.\n\nEven if downstream guaranteed returning intact payloads, we'd still need\nstate for `await_all` completion tracking, fallback chains, and\nsequential advancement. The only gain would be a minor memory\noptimization (not storing `original_pdata`), not true statelessness.\n\nAdopting Go's synchronous model would require fundamental engine\narchitecture changes, not just fanout changes.\n\n### Memory Optimizations\n\nWhile full statelessness isn't possible, I have implemented fast paths\nto minimize allocations for common configurations:\n\n| Configuration | Fast Path | State Per Request |\n\n|-----------------------------------------------------------|------------------|------------------------------------------------|\n| `await_ack: none` | Fire-and-forget | None (zero inflight tracking) |\n| `parallel + primary + no fallback + no timeout` | Slim primary |\nMinimal (`request_id → original_pdata`) |\n| All other configs | Full | Complete endpoint tracking |\n\n#### Fast Path Details\n\n- **Fire-and-forget (`await_ack: none`)**  \nBypasses all inflight state. Clone, send, and ACK upstream immediately.\n  Zero allocations per request.\n\n- **Slim primary path**  \nUses a tiny `HashMap<u64, OtapPdata>` instead of the full `Inflight`\nstruct with `EndpointVec`.\n  Ignores non-primary ACKs and NACKs.\n\n- **Full path**  \n  Required for:\n  - Sequential mode  \n  - `await_all`  \n  - Any fallback  \n  - Any timeout  \n\n  Tracks all endpoints and request state.\n\n### Code Structure\n\n`Inflight` holds per-request state:\n- `original_pdata` - pre-subscription pdata, used for all upstream\nacks/nacks\n- `endpoints[]` - per-destination status\n(`Acked`/`Nacked`/`InFlight`/`PendingSend`)\n- `next_send_queue` - drives sequential mode advancement\n- `completed_origins` - tracks completion for `await_ack: all`\n- `timeout_at` - per-destination deadlines for timeout/fallback\ntriggering\n\nNot all fields are used for every scenario, but the overhead is minimal\n- empty HashSets don't allocate, SmallVec is inline for ≤4 items, and\nclone cost is O(1) for `bytes::Bytes`.\n\n### Documentation\n\nSee\n[`crates/otap/src/fanout_processor/README.md`](crates/otap/src/fanout_processor/README.md)\nfor configuration examples and behavior details.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-02-05T17:31:50Z",
+          "tree_id": "8ed430a68b4bdcfaa58b83efa9911da2c181a023",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/56887295a09a2ba52bcd736ffba8852d9293227c"
+        },
+        "date": 1770319690018,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.199604034423828,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.18525098398337,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.58986465626448,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.60546875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 49.265625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 525654.9545052535,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 537217.281432214,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001763,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11495069.051917732,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11443743.469279978,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
