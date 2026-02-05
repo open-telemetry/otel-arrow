@@ -3678,11 +3678,18 @@ mod tests {
         // exceeds the segment size threshold
         let dir = tempdir().expect("tempdir");
 
+        // Segment threshold for replay: 5KB
+        // We'll ingest 20 bundles of 50 rows each (~1-2KB per bundle = ~20-40KB total)
+        // With 5KB threshold, expect 4-8 segments finalized during replay
+        let replay_segment_threshold = 5 * 1024; // 5KB
+        let bundles_to_ingest = 20;
+        let rows_per_bundle = 50;
+
         // Use a small segment size that will be exceeded by WAL replay
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
             .segment(SegmentConfig {
-                target_size_bytes: NonZeroU64::new(1024).unwrap(), // 1KB - will trigger finalization
+                target_size_bytes: NonZeroU64::new(replay_segment_threshold).unwrap(),
                 ..Default::default()
             })
             .build()
@@ -3699,14 +3706,15 @@ mod tests {
             .build()
             .expect("config");
 
+        let bundles_in_open_segment;
         {
             let engine = QuiverEngine::open(large_segment_config, test_budget())
                 .await
                 .expect("engine");
 
-            // Ingest enough data that will exceed 1KB when replayed
-            for _ in 0..20 {
-                let bundle = DummyBundle::with_rows(50);
+            // Ingest enough data that will exceed threshold when replayed
+            for _ in 0..bundles_to_ingest {
+                let bundle = DummyBundle::with_rows(rows_per_bundle);
                 engine.ingest(&bundle).await.expect("ingest");
             }
 
@@ -3715,6 +3723,12 @@ mod tests {
                 engine.total_segments_written(),
                 0,
                 "no segments should be finalized with large segment config"
+            );
+
+            bundles_in_open_segment = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                bundles_in_open_segment, bundles_to_ingest,
+                "all bundles should be in open segment"
             );
         }
 
@@ -3726,10 +3740,25 @@ mod tests {
 
             // Verify that segments were finalized during replay
             let segments_written = engine.total_segments_written();
+
+            // With 20 bundles of ~1-2KB each and 5KB threshold, expect at least 2 segments
+            // (conservative lower bound to account for varying bundle sizes)
             assert!(
-                segments_written > 0,
-                "WAL replay should have finalized at least one segment, but got {}",
+                segments_written >= 2,
+                "WAL replay should have finalized at least 2 segments with 5KB threshold, but got {}",
                 segments_written
+            );
+
+            // Also verify the math: segments written + bundles remaining = total ingested
+            let bundles_remaining = engine.open_segment.lock().bundle_count();
+            // The total bundles across all segments plus open segment should equal what we ingested
+            // Note: we can't easily count bundles in finalized segments, but we can verify
+            // that the open segment has fewer bundles than before (some were finalized)
+            assert!(
+                bundles_remaining < bundles_in_open_segment,
+                "open segment should have fewer bundles ({}) than before finalization ({})",
+                bundles_remaining,
+                bundles_in_open_segment
             );
         }
     }
@@ -3797,10 +3826,14 @@ mod tests {
             })
             .collect();
 
-        // We should have at least one rotated file given the small rotation target
+        // With 20 bundles of 50 rows each (~1-2KB per bundle) and 1KB rotation target,
+        // we should have at least 10 rotated files. Use a conservative minimum of 5
+        // to account for varying bundle sizes.
+        let rotated_count = rotated_files.len();
         assert!(
-            !rotated_files.is_empty(),
-            "should have at least one rotated WAL file, found {:?}",
+            rotated_count >= 5,
+            "should have at least 5 rotated WAL files with 1KB rotation target, found {}: {:?}",
+            rotated_count,
             fs::read_dir(&wal_dir)
                 .unwrap()
                 .filter_map(|e| e.ok())
