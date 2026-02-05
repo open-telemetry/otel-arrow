@@ -77,6 +77,7 @@ jobs:
 
           echo "disk usage after"
           df -h
+  
       - name: Free disk space (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -151,7 +152,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
         with:
-          toolchain: nightly
+          toolchain: stable
           components: rustfmt
       - name: cargo fmt ${{ matrix.folder }}
         run: cargo fmt --all -- --check
@@ -333,3 +334,21 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
           echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#micro-benchmarks)" >> $GITHUB_STEP_SUMMARY
+
+  pipeline_validation:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps: 
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          submodules: true
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561
+        with:
+          toolchain: stable
+      - name: run pipeline validation scenarios
+        run: |
+          cargo test run_validation_scenarios -- --ignored
+        working-directory: ./rust/otap-dataflow/crates/validation

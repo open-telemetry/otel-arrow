@@ -252,9 +252,6 @@ mod tests {
     use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
     use std::fs;
-    use std::path::PathBuf;
-
-    const REPORT_PATH: &str = "target/pipeline_validation_report.txt";
 
     fn make_metric_set(name: &str, metric_name: &str, value: u64) -> MetricSetSnapshot {
         MetricSetSnapshot {
@@ -333,6 +330,7 @@ mod tests {
         assert!(!validation_from_metrics(&snapshot));
     }
 
+    #[ignore]
     #[tokio::test]
     async fn run_validation_scenarios() {
         let file = fs::File::open(PIPELINE_CONFIG_YAML).expect("failed to open config file");
@@ -374,13 +372,6 @@ mod tests {
 
         // print out the report string
         println!("{report}");
-
-        // persist report for CI to surface
-        let report_path = PathBuf::from(REPORT_PATH);
-        if let Some(parent) = report_path.parent() {
-            fs::create_dir_all(parent).expect("failed to create report directory");
-        }
-        fs::write(&report_path, &report).expect("failed to write validation report");
 
         // trigger failed test if we encountered any failed results
         assert_eq!(failures, 0);
