@@ -71,7 +71,7 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     let mut pem_data = Vec::new();
 
     for error in &cert_res.errors {
-        otel_warn!("Error loading native cert", error = ?error);
+        otel_warn!("tls.native_cert.load_error", error = ?error, message = "Error loading native cert");
     }
 
     for cert in &cert_res.certs {
@@ -111,11 +111,11 @@ pub async fn load_server_tls_config(
     ) {
         (Some(cert_file), Some(key_file), _, _) => {
             let cert = read_file_with_limit_async(cert_file).await.map_err(|e| {
-                otel_error!("Failed to read cert file", cert_file = ?cert_file, error = ?e);
+                otel_error!("tls.cert_file.read_error", cert_file = ?cert_file, error = ?e, message = "Failed to read cert file", );
                 e
             })?;
             let key = read_file_with_limit_async(key_file).await.map_err(|e| {
-                otel_error!("Failed to read key file", key_file = ?key_file, error = ?e);
+                otel_error!("tls.key_file.read_error", key_file = ?key_file, error = ?e, message = "Failed to read key file");
                 e
             })?;
             (cert, key)
@@ -260,7 +260,7 @@ pub(crate) async fn load_client_tls_config(
     // Custom CA.
     if let Some(ca_file) = &config.ca_file {
         let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-            otel_error!("Failed to read CA file", ca_file = ?ca_file, error = ?e);
+            otel_error!("tls.ca_file.read_error", ca_file = ?ca_file, error = ?e, message = "Failed to read CA file");
             e
         })?;
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
@@ -292,25 +292,25 @@ pub(crate) async fn load_client_tls_config(
         ) {
             ((Some(cert_path), _), (Some(key_path), _)) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = %e);
+                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = %e, message = "Failed to read client cert file");
                     e
                 })?;
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
+                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key))
             }
             ((Some(cert_path), _), (None, Some(key_pem))) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = ?e);
+                    otel_error!("tls.client_cert_file.read_error", cert_path = ?cert_path, error = ?e, message = "Failed to read client cert file");
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
             }
             ((None, Some(cert_pem)), (Some(key_path), _)) => {
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
+                    otel_error!("tls.client_key_file.read_error", key_path = ?key_path, error = ?e, message = "Failed to read client key file");
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
@@ -348,9 +348,9 @@ async fn add_system_trust_anchors_if_enabled(
                 let native = load_native_certs();
                 if !native.errors.is_empty() {
                     otel_warn!(
-                        "Errors while loading native certificates",
                         count = native.errors.len(),
                         first = ?native.errors.first(),
+                        message = "Errors while loading native certificates",
                     );
                 }
                 native.certs
@@ -368,7 +368,7 @@ async fn add_system_trust_anchors_if_enabled(
         "loaded.system.ca.certificates",
         added = added,
         ignored = ignored,
-        "Loaded system CA certificates"
+        message = "Loaded system CA certificates"
     );
 
     Ok(tls.trust_anchors(store.roots))
@@ -412,11 +412,11 @@ where
                             Ok(Ok(stream)) => Some(Ok::<_, io::Error>(stream)),
                             Ok(Err(e)) => {
                                 // TLS handshake failed - log and continue
-                                otel_warn!("TLS handshake failed", error = ?e);
+                                otel_warn!("tls.handshake.failed", error = ?e, message = "TLS handshake failed");
                                 None
                             }
                             Err(_) => {
-                                otel_warn!("TLS handshake timed out");
+                                otel_warn!("tls.handshake.timeout", message = "TLS handshake timed out");
                                 None
                             }
                         }
@@ -526,7 +526,7 @@ impl LazyReloadableCertResolver {
         let current_cert_mtime = match get_mtime(&self.cert_path) {
             Ok(m) => m,
             Err(e) => {
-                otel_warn!("Failed to check cert mtime", error = ?e);
+                otel_warn!("tls.cert.mtime_check_failed", error = ?e, message = "Failed to check cert mtime");
                 return false;
             }
         };
@@ -534,7 +534,7 @@ impl LazyReloadableCertResolver {
         let current_key_mtime = match get_mtime(&self.key_path) {
             Ok(m) => m,
             Err(e) => {
-                otel_warn!("Failed to check key mtime", error = ?e);
+                otel_warn!("tls.key.mtime_check_failed", error = ?e, message = "Failed to check key mtime");
                 return false;
             }
         };
@@ -574,15 +574,17 @@ impl LazyReloadableCertResolver {
                     cert_mtime.store(current_cert_mtime, Ordering::Relaxed);
                     key_mtime.store(current_key_mtime, Ordering::Relaxed);
                     otel_info!(
-                        "TLS certificate reloaded asynchronously",
+                        "tls.cert_reloaded",
                         cert = ?cert_path,
                         key = ?key_path,
+                        message = "TLS certificate reloaded asynchronously",
                     );
                 }
                 Err(e) => {
                     otel_error!(
-                        "Failed to reload cert asynchronously (keeping current)",
+                        "tls.cert_reload_failed",
                         error = ?e,
+                        message = "Failed to reload cert asynchronously (keeping current)",
                     );
                 }
             }
@@ -666,13 +668,15 @@ impl CaWatcherState {
     fn handle_event(&self, res: Result<Event, notify::Error>) {
         match res {
             Ok(event) => self.process_event(event),
-            Err(e) => otel_warn!("File watcher error", error = ?e),
+            Err(e) => {
+                otel_warn!("tls.file_watcher.error", error = ?e, message = "File watcher error")
+            }
         }
     }
 
     /// Process a file system event, potentially triggering a reload.
     fn process_event(&self, event: Event) {
-        otel_debug!("tls.file_watcher.event", event = ?event, "File watcher event");
+        otel_debug!("tls.file_watcher.event", event = ?event, message = "File watcher event");
 
         // Filter out irrelevant event types early (before expensive path checks)
         if matches!(event.kind, notify::EventKind::Access(_)) {
@@ -685,7 +689,7 @@ impl CaWatcherState {
 
         otel_debug!(
             "tls.file_watcher.match",
-            "Event matches our CA file, proceeding with reload check"
+            message = "Event matches our CA file, proceeding with reload check"
         );
 
         // Small delay to allow filesystem operations to complete (e.g., atomic renames).
@@ -1086,7 +1090,7 @@ impl ReloadableClientCaVerifier {
                     is_reloading.store(false, Ordering::Release);
                 }
                 Err(e) => {
-                    otel_warn!("Poll watcher error", error = ?e);
+                    otel_warn!("tls.poll_watcher.error", error = ?e, message = "Poll watcher error");
                 }
             },
             config,
@@ -1191,11 +1195,11 @@ fn build_webpki_verifier(
     if include_system_cas {
         let system_certs = load_native_certs();
         for error in &system_certs.errors {
-            otel_warn!("Error loading native cert", error = ?error);
+            otel_warn!("tls.native_cert.load_error", error = ?error, message = "Error loading native cert");
         }
         for cert in system_certs.certs {
             if let Err(e) = roots.add(cert) {
-                otel_warn!("Failed to add system", error = ?e);
+                otel_warn!("tls.native_cert.add_error", error = ?e, message = "Failed to add system cert");
             }
         }
     }
@@ -1221,7 +1225,7 @@ fn build_webpki_verifier(
     otel_debug!(
         "tls.ca.verifier_built",
         count = count,
-        "Built verifier with CA certificates"
+        message = "Built verifier with CA certificates"
     );
 
     WebPkiClientVerifier::builder(roots.into())
@@ -1238,7 +1242,7 @@ fn reload_ca_verifier(
     otel_debug!(
         "tls.ca.reloaded",
         size_bytes = ca_pem.len(),
-        "Reloaded CA PEM"
+        message = "Reloaded CA PEM"
     );
     build_webpki_verifier(&ca_pem, include_system_cas)
 }
