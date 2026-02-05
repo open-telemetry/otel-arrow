@@ -58,7 +58,7 @@ mod schema;
 mod writer;
 
 #[allow(dead_code)]
-const PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
