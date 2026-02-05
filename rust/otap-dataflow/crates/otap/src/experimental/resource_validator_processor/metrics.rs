@@ -6,7 +6,11 @@
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
-/// Metrics collected by the Resource Validator Processor
+/// Metrics collected by the Resource Validator Processor.
+///
+/// Note: Metrics are counted at the batch level, not per telemetry item.
+/// This is intentional because validation is pass/fail for the entire batch -
+/// if any resource in a batch fails validation, the whole batch is NACKed.
 #[metric_set(name = "resource_validator.processor.metrics")]
 #[derive(Debug, Default, Clone)]
 pub struct ResourceValidatorMetrics {

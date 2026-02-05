@@ -8,7 +8,7 @@
 //! enabling clients to detect misconfiguration immediately rather than having data
 //! silently dropped.
 //!
-//! # Use Case
+//! # Example Use Case
 //!
 //! In multi-tenant Azure environments, telemetry includes a `microsoft.resourceId`
 //! resource attribute containing the Azure Resource Manager (ARM) resource ID.
@@ -307,13 +307,14 @@ impl ResourceValidatorProcessor {
                 }
 
                 // Check if value is in allowed list
-                let lookup_value = if self.case_insensitive {
-                    str_value.to_lowercase()
+                // Use Cow to avoid allocation in the case-sensitive path
+                let lookup_value: Cow<'_, str> = if self.case_insensitive {
+                    Cow::Owned(str_value.to_lowercase())
                 } else {
-                    str_value.to_string()
+                    Cow::Borrowed(str_value)
                 };
 
-                if allowed_values.contains(&lookup_value) {
+                if allowed_values.contains(lookup_value.as_ref()) {
                     return Ok(());
                 } else {
                     return Err(ValidationFailure::NotInAllowedList);
@@ -605,13 +606,13 @@ mod tests {
                         return Ok(());
                     }
 
-                    let lookup_value = if self.case_insensitive {
-                        str_value.to_lowercase()
+                    let lookup_value: Cow<'_, str> = if self.case_insensitive {
+                        Cow::Owned(str_value.to_lowercase())
                     } else {
-                        str_value.to_string()
+                        Cow::Borrowed(str_value)
                     };
 
-                    if self.allowed_values.contains(&lookup_value) {
+                    if self.allowed_values.contains(lookup_value.as_ref()) {
                         return Ok(());
                     } else {
                         return Err(ValidationFailure::NotInAllowedList);
