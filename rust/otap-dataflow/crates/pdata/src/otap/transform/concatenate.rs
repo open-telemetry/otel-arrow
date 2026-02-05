@@ -6,7 +6,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, OffsetSizeTrait, RecordBatch,
     StructArray,
 };
-use arrow::compute::kernels::cast;
+use arrow::compute::kernels::{cast, concat};
 use arrow::datatypes::{
     ArrowNativeType, Float64Type, GenericBinaryType, Int64Type, UInt8Type, UInt16Type, UInt64Type,
 };
@@ -22,8 +22,15 @@ use crate::schema::consts::metadata::COLUMN_ENCODING;
 use crate::schema::consts::metadata::encodings::PLAIN;
 use crate::schema::consts::{ID, PARENT_ID};
 
-const MAX_U8_CARDINALITY: usize = 256;
-const MAX_U16_CARDINALITY: usize = 65536;
+/// These are one less than the maximum cardinality of the key type. We should be
+/// able to go up to 256/65536 without overflow, but there is a bug in arrow-rs
+/// for some value types.
+///
+/// See:
+///     - https://github.com/apache/arrow-rs/issues/9366
+///     - github.com/open-telemetry/otel-arrow/issues/1971
+const MAX_U8_CARDINALITY: usize = 255;
+const MAX_U16_CARDINALITY: usize = 65535;
 
 /// Concatenate the provided OtapArrowRecords into a single batch.
 ///
@@ -85,7 +92,6 @@ pub fn concatenate<const N: usize>(
         }
 
         let new_schema = Arc::from(select_schema(&index)?);
-        // TODO: Use `concat::concat_batches()`
         let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
         for payload in select_all_mut(&mut items, i) {
             let Some(rb) = payload.take() else {
@@ -98,15 +104,12 @@ pub fn concatenate<const N: usize>(
             let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
                 .expect("Valid construction");
 
-            dbg!(&converted);
-
             batcher.push_batch(converted).expect("Compatible schemas");
         }
 
         batcher
             .finish_buffered_batch()
             .map_err(|e| Error::Batching { source: e })?;
-
         let batch = batcher.next_completed_batch().expect("complete batch");
         result[i] = Some(batch);
     }
@@ -419,7 +422,7 @@ fn index_fields<'a>(
             // as long as the value type matches.
             (v1, DataType::Dictionary(k2, v2)) => {
                 if **v1 != **v2 {
-                    return Err(Error::ColumnValueTypeMismatch {
+                    return Err(Error::DictionaryValueTypeMismatch {
                         name: field.name().clone(),
                         expect: (*v1).clone(),
                         actual: v2.as_ref().clone(),
@@ -942,22 +945,30 @@ mod schema_tests {
 
     #[test]
     fn test_cardinality_at_u16_boundary() {
-        test_cardinality_helper(&[30000, 35536], Some(DataType::UInt16));
+        // TODO: This should be [30000, 35536]
+        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
+        test_cardinality_helper(&[30000, 35535], Some(DataType::UInt16));
     }
 
     #[test]
     fn test_cardinality_above_u16_boundary() {
-        test_cardinality_helper(&[30000, 35537], None);
+        // TODO: This should be [30000, 35537]
+        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
+        test_cardinality_helper(&[30000, 35536], None);
     }
 
     #[test]
     fn test_cardinality_at_u8_boundary() {
-        test_cardinality_helper(&[128, 128], Some(DataType::UInt8));
+        // TODO: This should be [128, 128]
+        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
+        test_cardinality_helper(&[128, 127], Some(DataType::UInt8));
     }
 
     #[test]
     fn test_cardinality_just_above_u8_boundary() {
-        test_cardinality_helper(&[128, 128, 1], Some(DataType::UInt16));
+        // TODO: This should be [128, 128, 1]
+        // See: https://github.com/open-telemetry/otel-arrow/issues/1971
+        test_cardinality_helper(&[128, 128], Some(DataType::UInt16));
     }
 
     #[test]
@@ -1000,8 +1011,8 @@ mod schema_tests {
             types.push(DataType::Int16);
             types.push(DataType::Float16);
         }
-
-        // 4+ byte types
+        //
+        // // 4+ byte types
         types.push(DataType::UInt32);
         types.push(DataType::UInt64);
         types.push(DataType::Int32);
@@ -1228,7 +1239,6 @@ mod schema_tests {
                     })
                     .collect();
                 let buffer = Buffer::from_vec(values);
-                dbg!(buffer.len());
                 Arc::new(FixedSizeBinaryArray::try_new(16, buffer, None).unwrap())
             }
             // UTF-8 string
@@ -1348,7 +1358,7 @@ mod index_tests {
         let result = index_records(records.into_iter());
 
         match result {
-            Err(Error::ColumnValueTypeMismatch {
+            Err(Error::DictionaryValueTypeMismatch {
                 name,
                 expect,
                 actual,
@@ -1446,7 +1456,7 @@ mod index_tests {
         let result = index_records(records.into_iter());
 
         match result {
-            Err(Error::ColumnValueTypeMismatch {
+            Err(Error::DictionaryValueTypeMismatch {
                 name,
                 expect,
                 actual,
@@ -2344,7 +2354,6 @@ mod struct_field_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        // Both structs should be present
         assert!(schema.field_with_name("struct1").is_ok());
         assert!(schema.field_with_name("struct2").is_ok());
     }

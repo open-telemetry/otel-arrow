@@ -35,12 +35,12 @@ pub enum Error {
     },
 
     #[error(
-        "Column `{}` value type mismatch, expect: {}, actual: {}",
+        "Dictionary `{}` value type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual
     )]
-    ColumnValueTypeMismatch {
+    DictionaryValueTypeMismatch {
         name: String,
         expect: DataType,
         actual: DataType,
