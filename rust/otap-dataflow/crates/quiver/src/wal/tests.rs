@@ -3444,6 +3444,90 @@ async fn multi_file_reader_preserves_wal_positions_across_files() {
 }
 
 #[tokio::test]
+async fn multi_file_reader_wal_end_position_matches_last_entry() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos.wal");
+    let descriptor = logs_descriptor();
+
+    // Write entries to a single WAL file
+    let mut writer = open_test_writer(wal_path.clone(), [0xA8; 16]).await;
+    let _offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let _offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8, 9]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Verify wal_end_position matches the last entry's next_offset
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    assert_eq!(
+        end_position, offset3.next_offset,
+        "wal_end_position should equal the last entry's next_offset"
+    );
+}
+
+#[tokio::test]
+async fn multi_file_reader_wal_end_position_across_rotated_files() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos_rotated.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA9; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let _offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let _offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Verify wal_end_position matches last entry even with rotated files
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    assert_eq!(
+        end_position, offset3.next_offset,
+        "wal_end_position should equal the last entry's next_offset across rotated files"
+    );
+}
+
+#[tokio::test]
+async fn multi_file_reader_wal_end_position_empty_wal() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos_empty.wal");
+
+    // Create an empty WAL file (header only, no entries)
+    let _writer = open_test_writer(wal_path.clone(), [0xAA; 16]).await;
+    // Writer is dropped immediately without any writes
+
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    // Empty WAL should have end position at 0 (no data written after header)
+    assert_eq!(
+        end_position, 0,
+        "wal_end_position should be 0 for empty WAL"
+    );
+}
+
+#[tokio::test]
 async fn multi_file_reader_fails_when_no_wal_files_exist() {
     let dir = tempdir().expect("tempdir");
     let wal_path = dir.path().join("nonexistent.wal");

@@ -822,6 +822,17 @@ impl MultiFileWalReader {
         Ok(Self { files })
     }
 
+    /// Returns the end position of the WAL stream (exclusive).
+    ///
+    /// This is the position where the next entry would be written.
+    /// If the WAL is empty (header only), this returns 0.
+    pub fn wal_end_position(&self) -> u64 {
+        self.files
+            .last()
+            .map(|f| f.wal_position_end)
+            .unwrap_or(0)
+    }
+
     /// Returns an iterator that reads entries starting at the given WAL position.
     ///
     /// The iterator will read from the appropriate file(s) based on where the
