@@ -32,7 +32,16 @@
 /// let batch = record_batch!(
 ///     ("a", (UInt8, Utf8), (keys, values))
 /// ).unwrap();
+///
 /// ```
+///
+/// # Future enhancements:
+///
+/// - TODO: Support for nullable arrays using [None, Some(1)]
+/// - TODO: Support for structs using something similar to:
+/// ("a", Struct, {
+///    ("b", Int32, [1, 2, 3]),
+/// })
 #[macro_export]
 macro_rules! record_batch {
     ($(($name:expr, $($rest:tt)*)),* $(,)?) => {
