@@ -385,7 +385,10 @@ where
 ///
 /// For logs, each row in the LOGS table = 1 log signal.
 /// Opens each .qseg segment file and sums row_count for streams matching the given payload type.
-fn count_signals_in_segments(segments_dir: &std::path::Path, payload_type: ArrowPayloadType) -> u64 {
+fn count_signals_in_segments(
+    segments_dir: &std::path::Path,
+    payload_type: ArrowPayloadType,
+) -> u64 {
     if !segments_dir.exists() {
         return 0;
     }
@@ -649,10 +652,7 @@ fn test_durable_buffer_recovery_after_outage() {
     assert_eq!(
         delivered, expected_total,
         "Recovery should deliver exactly {} items ({}+{}), got {}",
-        expected_total,
-        run1_signals,
-        run2_signals,
-        delivered
+        expected_total, run1_signals, run2_signals, delivered
     );
 }
 
