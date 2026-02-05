@@ -503,6 +503,7 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                             self.validate_arrow_logs(arrow_records, &allowed_values)
                         }
                         // Metrics/Traces Arrow views not yet available - convert to OTLP
+                        // TODO: Implement OtapMetricsView/OtapTracesView to avoid clone + conversion
                         SignalType::Metrics | SignalType::Traces => {
                             match OtlpProtoBytes::try_from(arrow_records.clone()) {
                                 Ok(OtlpProtoBytes::ExportMetricsRequest(bytes)) => {
