@@ -813,7 +813,7 @@ mod tests {
         let err = std::io::Error::from_raw_os_error(5); // ERROR_ACCESS_DENIED
         assert!(!SegmentStore::is_sharing_violation(&err));
 
-        let err = std::io::Error::new(std::io::ErrorKind::Other, "generic error");
+        let err = std::io::Error::other("generic error");
         assert!(!SegmentStore::is_sharing_violation(&err));
     }
 
