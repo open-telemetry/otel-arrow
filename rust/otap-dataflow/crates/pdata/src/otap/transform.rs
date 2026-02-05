@@ -976,11 +976,6 @@ pub fn transform_attributes_impl(
 
             // TODO if there are any optional columns that now contain only null or default values,
             //  we should remove them here.
-
-            let keep_ranges = transform_ranges_to_keep_ranges(
-                attrs_record_batch.num_rows(),
-                &keys_transform_result.transform_ranges,
-            );
             let columns = attrs_record_batch
                 .columns()
                 .iter()
@@ -989,7 +984,7 @@ pub fn transform_attributes_impl(
                     if i == key_column_idx {
                         Ok(new_keys.clone() as ArrayRef)
                     } else {
-                        match keep_ranges.as_ref() {
+                        match keys_transform_result.keep_ranges.as_ref() {
                             Some(keep_ranges) => take_ranges_slice(col, keep_ranges),
                             None => Ok(col.clone()),
                         }
@@ -1229,6 +1224,8 @@ struct KeysTransformResult {
     /// applied transformation
     transform_ranges: Vec<KeyTransformRange>,
 
+    keep_ranges: Option<Vec<Range<usize>>>,
+
     /// Exact number of rows whose key was renamed (row-level replacements)
     replaced_rows: usize,
     /// Exact number of rows that were deleted due to delete rules (row-level deletions)
@@ -1275,6 +1272,7 @@ fn transform_keys(
         // if no modifications are being made to the array, we can just return the original
         return Ok(KeysTransformResult {
             new_keys: array.clone(),
+            keep_ranges: None,
             transform_ranges: Vec::new(),
             replaced_rows: 0,
             deleted_rows: 0,
@@ -1448,17 +1446,17 @@ fn transform_keys(
     #[allow(unsafe_code)]
     let new_keys = unsafe { StringArray::new_unchecked(new_offsets, new_values, None) };
 
+    let keep_ranges = delete_plan
+        .as_ref()
+        .and_then(|delete_plan| transform_ranges_to_keep_ranges(len, &delete_plan.ranges));
+
     // TODO mess
     let transform_ranges = if let Cow::Owned(ranges) = transform_ranges {
         ranges
     } else {
         match (replacement_plan, delete_plan) {
-            (Some(replacement), None) => {
-                replacement.ranges
-            },
-            (None, Some(delete_plan)) => {
-                delete_plan.ranges
-            },
+            (Some(replacement), None) => replacement.ranges,
+            (None, Some(delete_plan)) => delete_plan.ranges,
             _ => {
                 // TODO - is it really?
                 unreachable!("")
@@ -1469,6 +1467,7 @@ fn transform_keys(
     Ok(KeysTransformResult {
         new_keys,
         transform_ranges,
+        keep_ranges,
         replaced_rows: total_replacements,
         deleted_rows: total_deletions,
     })
@@ -1565,12 +1564,7 @@ where
         (rename_count, 0)
     };
 
-    let dict_values_keep_ranges = transform_ranges_to_keep_ranges(
-        dict_values.len(),
-        &dict_values_transform_result.transform_ranges,
-    );
-
-    if dict_values_keep_ranges.is_none() {
+    if dict_values_transform_result.keep_ranges.is_none() {
         // here there were no rows deleted from the values array, which means we can reuse
         // the dictionary keys without any transformations
         let new_dict_keys = dict_keys.clone();
@@ -1594,7 +1588,7 @@ where
     }
 
     // safety: we've checked above that this is not None
-    let dict_values_keep_ranges = dict_values_keep_ranges.expect("not none");
+    let dict_values_keep_ranges = dict_values_transform_result.keep_ranges.expect("not none");
 
     // create quick lookup for each dictionary key of whether it was kept and if so which
     // contiguous range of kept dictionary values the key points to. This will allow us to build
