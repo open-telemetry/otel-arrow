@@ -3452,49 +3452,67 @@ async fn multi_file_reader_fails_when_no_wal_files_exist() {
     assert!(result.is_err(), "should fail when no WAL files exist");
 }
 
-#[test]
-fn multi_file_reader_discovers_files_in_correct_order() {
-    // Create files out of order to ensure sorting works
-    let dir = tempdir().expect("tempdir");
-    let wal_path = dir.path().join("order_test.wal");
+#[tokio::test]
+async fn multi_file_reader_discovers_files_in_correct_order() {
+    // Test that files with out-of-order names (wal.5, wal.2, wal.8, wal.1) are
+    // read in the correct order based on wal_position_start, not filename.
+    let (_dir, wal_path) = temp_wal("order_test.wal");
+    let descriptor = logs_descriptor();
 
-    // Create rotated files with non-sequential IDs
-    let hash = [0xB1; 16];
-    for rotation_id in [5, 2, 8, 1] {
-        let rotated = rotated_path_for(&wal_path, rotation_id);
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&rotated)
-            .expect("create rotated file");
-        // Write valid header with wal_position_start based on rotation_id
-        // to simulate proper ordering
-        let mut header = WalHeader::new(hash);
-        header.wal_position_start = (rotation_id as u64 - 1) * 100;
-        header.write_to_sync(&mut file).expect("write header");
+    // Use rotation target of 1 byte to force rotation after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xB1; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    // Write 4 entries - each triggers a rotation, creating wal.1, wal.2, wal.3, wal.4
+    let mut expected_sequences = Vec::new();
+    for i in 0..4u8 {
+        let offset = writer
+            .append_bundle(&single_slot_bundle(&descriptor, i, &[i as i64]))
+            .await
+            .expect("append");
+        expected_sequences.push(offset.sequence);
+    }
+    drop(writer);
+
+    // Rename rotated files to simulate out-of-order discovery (wal.1 -> wal.5, etc.)
+    // The reader should still return entries in wal_position_start order, not filename order.
+    let renames = [(1, 10), (2, 5), (3, 20), (4, 2)];
+    for (old_id, new_id) in renames {
+        let old_path = rotated_path_for(&wal_path, old_id);
+        let new_path = rotated_path_for(&wal_path, new_id);
+        std::fs::rename(&old_path, &new_path).expect("rename rotated file");
     }
 
-    // Create active file
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&wal_path)
-            .expect("create active file");
-        let mut header = WalHeader::new(hash);
-        header.wal_position_start = 800; // After all rotated files
-        header.write_to_sync(&mut file).expect("write header");
-    }
-
+    // Read all entries - they should come back in original sequence order
+    // despite the files having scrambled names
     let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
-    // Just verify it opens successfully - internal ordering is validated by reading
     let entries: Vec<_> = reader
         .iter_from(0)
         .expect("iter")
         .collect::<Result<_, _>>()
         .expect("all entries");
-    // All files are empty (header only), so no entries expected
-    assert!(entries.is_empty());
+
+    assert_eq!(entries.len(), 4, "should read all 4 entries");
+
+    // Verify entries are in correct order (by sequence number)
+    let actual_sequences: Vec<_> = entries.iter().map(|e| e.sequence).collect();
+    assert_eq!(
+        actual_sequences, expected_sequences,
+        "entries should be in original write order despite scrambled filenames"
+    );
+
+    // Also verify WAL positions are monotonically increasing
+    for i in 1..entries.len() {
+        assert!(
+            entries[i].offset.position > entries[i - 1].offset.position,
+            "entry {} position {} should be > entry {} position {}",
+            i,
+            entries[i].offset.position,
+            i - 1,
+            entries[i - 1].offset.position
+        );
+    }
 }
+
