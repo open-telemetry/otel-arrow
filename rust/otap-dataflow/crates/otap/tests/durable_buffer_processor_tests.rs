@@ -399,6 +399,9 @@ fn count_signals_in_segments(
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
                 .map(|e| {
+                    // Errors are intentionally ignored here: this function polls for
+                    // segments that may be actively being written, so open failures
+                    // (incomplete header, locked file, etc.) are expected and transient.
                     SegmentReader::open(e.path())
                         .map(|reader| {
                             reader
