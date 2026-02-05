@@ -77,7 +77,7 @@ jobs:
 
           echo "disk usage after"
           df -h
-  
+
       - name: Free disk space (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -338,7 +338,7 @@ jobs:
   pipeline_validation:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    steps: 
+    steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           submodules: true
