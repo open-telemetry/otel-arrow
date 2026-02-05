@@ -8,7 +8,9 @@ nodes:
           - debug
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
   debug:
     kind: processor
     plugin_urn: "urn:otel:debug:processor"
@@ -27,4 +29,3 @@ nodes:
       compression_method: none
       arrow:
         payload_compression: none
-

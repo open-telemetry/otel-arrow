@@ -354,5 +354,5 @@ jobs:
           toolchain: stable
       - name: run pipeline validation scenarios
         run: |
-          cargo test run_validation_scenarios -- --ignored
+          cargo test run_validation_scenarios -- --ignored --show-output
         working-directory: ./rust/otap-dataflow/crates/validation

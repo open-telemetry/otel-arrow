@@ -58,8 +58,13 @@ pipeline_groups:
                   - validation_exporter
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "{{ suv_addr }}"
+              {% if suv_receiver_type == "otlp" -%}
+              protocols:                                                                                                                                                                        
+                grpc:                                                                                                                                                                           
+                  listening_addr: "{{ suv_addr }}"
+              {% endif %}
               {% if suv_receiver_type == "otap" -%}
+              listening_addr: "{{ suv_addr }}"
               response_stream_channel_size: 256
               {% endif %}
 
@@ -72,8 +77,13 @@ pipeline_groups:
                   - validation_exporter
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "{{ control_addr }}"
+              {% if control_receiver_type == "otlp" -%}
+              protocols:                                                                                                                                                                        
+                grpc:                                                                                                                                                                           
+                  listening_addr: "{{ control_addr }}"
+              {% endif %}
               {% if control_receiver_type == "otap" -%}
+              listening_addr: "{{ control_addr }}"
               response_stream_channel_size: 256
               {% endif %}
           validation_exporter:
@@ -112,7 +122,7 @@ pipeline_groups:
         nodes:
           receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            plugin_urn: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:

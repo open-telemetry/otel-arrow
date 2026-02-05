@@ -30,23 +30,64 @@ against each other to determine the validity of the `suv` pipeline
 
 Define your pipeline nodes in a yaml file, save the
 configuration under the `validation_pipelines` directory.
-When defining your pipeline have the receiver listen to
-`127.0.0.1:4317` and exporter export to `http://127.0.0.1:4318`
-After adding your pipeline update the `pipeline_validation_configs.yaml`
-file. There are already some pipelines defined in the
-`pipeline_validation_configs.yaml` file feel free to use
+After adding your pipeline update the `pipeline_validation_scenarios.yaml`
+file. There are already some validation scenarios defined in the
+`pipeline_validation_scenarios.yaml` file feel free to use
 these as a reference when making your additions.
-Below are what each required key is used for
+Here is an example scenario definition.
 
-- name -> Validation test name for your pipeline
-- pipeline_config_path -> Path to your pipeline config
-- loadgen_exporter_type -> What receiver type are you using (`otlp` or `otap`)
-- backend_receiver_type -> What exporter type are you using (`otlp` or `otap`)
-- transformative -> Does your pipeline modify or alter the data
+```yaml
+  - name: "Debug Processor"
+    scenario_config_path: ./validation_pipelines/debug-processor.yaml
+    traffic_generation_config:
+      suv_exporter_type: otlp
+      suv_endpoint: "http://127.0.0.1:4317"
+      control_exporter_type: otlp
+      control_endpoint: "http://127.0.0.1:4316"
+      max_signal_count: 2000
+      max_batch_size: 100
+      signals_per_second: 100
+    traffic_capture_config:
+      suv_receiver_type: otap
+      suv_listening_addr: "127.0.0.1:4318"
+      control_receiver_type: otlp
+      control_listening_addr: "127.0.0.1:4316"
+      transformative: false
+```
+
+notice the `traffic_generation_config` and `traffic_capture_config`
+these define the `traffic-gen` and `validate` pipelines the values
+
+#### Traffic Generation Config
+
+- suv_exporter_type: The exporter to use to send messages to the `suv` pipeline
+  - default = otlp
+- suv_endpoint: The endpoint to send messages to the `suv` pipeline
+  - default = "http://127.0.0.1:4317"
+- control_exporter_type: The exporter to use to send messages to the `validate` pipeline
+  - default = otlp
+- control_endpoint: The endpoint to send messages to the `validate` pipeline
+  - default = "http://127.0.0.1:4316"
+- max_signal_count: The max signals to use for the validation 
+  - default = 2000
+- max_batch_size: The max batch size to use for signals 
+  - default = 100
+- signals_per_second: How often the signals are sent through the pipeline 
+  - default = 100
+
+
+#### Traffic Capture Config
+
+- suv_receiver_type: The receier to use to get messages from the `suv` pipeline
+  - default = otlp
+- suv_listening_addr: The endpoint to get messages from the `suv` pipeline
+  - default = "127.0.0.1:4318"
+- control_receiver_type: The receier to use to get messages from the `traffic-gen` pipeline
+  - default = otlp
+- control_listening_addr: The endpoint to send messages to the `traffic-gen` pipeline
+  - default = "127.0.0.1:4316"
+- transformative: Is the `suv` pipeline going to transform the data
+  - default = false
 
 ## Future directions
-
-- Automatically trigger the validation process when a PR becomes "Ready for review".
-- Manually trigger the validation process when a comment containing
-  `@validation` is added to a PR (stretch goal).
 - Extend the validation exporter to support more complex validation procedure.
