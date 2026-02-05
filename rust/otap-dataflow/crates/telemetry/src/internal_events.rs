@@ -73,8 +73,8 @@ macro_rules! otel_warn {
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
+    ($name:expr, $message:expr $(, $($fields:tt)*)?) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
     };
 }
 

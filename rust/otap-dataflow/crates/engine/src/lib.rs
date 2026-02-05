@@ -998,6 +998,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "receiver.create.start",
+            "Creating receiver node...",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
@@ -1039,6 +1040,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "receiver.create.complete",
+            "Receiver node created successfully.",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
@@ -1062,6 +1064,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "processor.create.start",
+            "Creating processor node...",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
@@ -1103,6 +1106,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "processor.create.complete",
+            "Processor node created successfully.",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
@@ -1126,6 +1130,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "exporter.create.start",
+            "Creating exporter node...",
             pipeline_group_id = pipeline_group_id.as_ref(),
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
@@ -1159,7 +1164,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         otel_debug!(
             "exporter.create.complete",
-            pipeline_group_id = pipeline_group_id.as_ref(),
+            "Exporter node created successfully.",
             pipeline_id = pipeline_id.as_ref(),
             core_id = core_id,
             node_id = name.as_ref(),
@@ -1356,6 +1361,7 @@ where
                 })?;
             otel_debug!(
                 "pdata.sender.set",
+                "Setting pdata sender for source port...",
                 pipeline_group_id = pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_id.as_ref(),
                 core_id = core_id,
@@ -1372,6 +1378,7 @@ where
                 })?;
             otel_debug!(
                 "pdata.receiver.set",
+                "Setting pdata receiver for destination node...",
                 pipeline_group_id = pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_id.as_ref(),
                 core_id = core_id,

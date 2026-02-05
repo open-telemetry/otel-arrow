@@ -195,10 +195,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 msg
             } else if inflight_exports.is_empty() {
                 let msg = msg_chan.recv().await?;
-                otel_debug!(
-                    "exporter.receive",
-                    message = "Received message from pipeline"
-                );
+                otel_debug!("exporter.receive", "Received message from pipeline");
                 msg
             } else {
                 let completion_fut = inflight_exports.next_completion().fuse();
@@ -220,7 +217,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     msg = recv_fut => {
                         let msg = msg?;
-                        otel_debug!("exporter.receive", message = "Received message from pipeline");
+                        otel_debug!("exporter.receive", "Received message from pipeline");
                         msg
                     },
                 }
