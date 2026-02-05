@@ -193,7 +193,7 @@ async fn start_tls_logs_server() -> (
 ) {
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         // It's fine if the provider is already installed (e.g. by another test)
-        otel_debug!("rustls default provider installation failed in test", error = ?err);
+        otel_debug!("provider.installation.failed","rustls default provider installation failed in test", error = ?err);
     }
 
     let (ca, ca_issuer) = new_ca();
