@@ -3,15 +3,13 @@
 
 //! Tokio tracing subscriber initialization.
 //!
-//! This module handles the setup of the global tokio tracing subscriber,
-//! which is separate from OpenTelemetry SDK configuration. The tracing
-//! subscriber determines how log events are captured and routed.
+//! This module handles the setup of the global and per-thread tokio
+//! tracing subscriber. The tracing subscriber determines how log and
+//! trace events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord, RawLoggingLayer};
-use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_sdk::logs::SdkLoggerProvider;
-use otap_df_config::pipeline::service::telemetry::logs::LogLevel;
+use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::level_filters::LevelFilter;
 use tracing::{Dispatch, Event, Subscriber};
@@ -97,12 +95,6 @@ pub enum ProviderSetup {
         /// Reporter to send log events through.
         reporter: ObservedEventReporter,
     },
-
-    /// OpenTelemetry SDK logging via `OpenTelemetryTracingBridge`.
-    OpenTelemetry {
-        /// OpenTelemetry SDK logger provider.
-        logger_provider: SdkLoggerProvider,
-    },
 }
 
 impl ProviderSetup {
@@ -122,11 +114,6 @@ impl ProviderSetup {
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = ConsoleAsyncLayer::new(reporter, context_fn);
                 Dispatch::new(Registry::default().with(filter()).with(layer))
-            }
-
-            ProviderSetup::OpenTelemetry { logger_provider } => {
-                let sdk_layer = OpenTelemetryTracingBridge::new(logger_provider);
-                Dispatch::new(Registry::default().with(filter()).with(sdk_layer))
             }
         }
     }
@@ -186,7 +173,6 @@ mod tests {
     use crate::event::ObservedEvent;
     use crate::self_tracing::LogContext;
     use crate::{otel_debug, otel_error, otel_info, otel_warn};
-    use opentelemetry_sdk::logs::SdkLoggerProvider;
     use otap_df_config::observed_state::SendPolicy;
 
     fn test_reporter() -> (ObservedEventReporter, flume::Receiver<ObservedEvent>) {
@@ -199,6 +185,14 @@ mod tests {
         TracingSetup::new(p, l, LogContext::new)
     }
 
+    const ALL_LEVELS: [LogLevel; 5] = [
+        LogLevel::Off,
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warn,
+        LogLevel::Error,
+    ];
+
     #[test]
     fn noop_provider_runs() {
         let setup = test_setup(ProviderSetup::Noop, LogLevel::Info);
@@ -209,13 +203,7 @@ mod tests {
 
     #[test]
     fn noop_provider_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::Noop, level);
             setup.with_subscriber(|| {
                 otel_debug!("debug");
@@ -236,13 +224,7 @@ mod tests {
 
     #[test]
     fn console_direct_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::ConsoleDirect, level);
             setup.with_subscriber(|| {
                 otel_debug!("debug");
@@ -272,13 +254,7 @@ mod tests {
 
     #[test]
     fn console_async_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
+        for level in ALL_LEVELS {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
             setup.with_subscriber(|| {
@@ -298,39 +274,6 @@ mod tests {
                 LogLevel::Error => 1,
             };
             assert_eq!(cnt, expect);
-        }
-    }
-
-    #[test]
-    fn opentelemetry_provider_runs() {
-        let logger_provider = SdkLoggerProvider::builder().build();
-        let setup = test_setup(
-            ProviderSetup::OpenTelemetry { logger_provider },
-            LogLevel::Info,
-        );
-
-        setup.with_subscriber(|| {
-            otel_info!("otel_log");
-        });
-    }
-
-    #[test]
-    fn opentelemetry_provider_all_levels() {
-        for level in [
-            LogLevel::Off,
-            LogLevel::Debug,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-        ] {
-            let logger_provider = SdkLoggerProvider::builder().build();
-            let setup = test_setup(ProviderSetup::OpenTelemetry { logger_provider }, level);
-            setup.with_subscriber(|| {
-                otel_debug!("debug");
-                otel_info!("info");
-                otel_warn!("warn");
-                otel_error!("error");
-            });
         }
     }
 
@@ -450,15 +393,6 @@ mod tests {
             LogContext::new,
             || {
                 otel_info!("console_async");
-            },
-        );
-
-        let logger_provider = SdkLoggerProvider::builder().build();
-        ProviderSetup::OpenTelemetry { logger_provider }.with_subscriber(
-            LogLevel::Info,
-            LogContext::new,
-            || {
-                otel_info!("otel");
             },
         );
     }

@@ -6,7 +6,6 @@ use crate::syslog_cef_receiver::parser::{
 };
 use chrono::{DateTime, Datelike, Local, NaiveDateTime, TimeZone, Utc};
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
-use std::borrow::Cow;
 
 // Common attribute key constants for both RFC5424 and RFC3164 messages
 const SYSLOG_FACILITY: &str = "syslog.facility";
@@ -78,13 +77,13 @@ impl ParsedSyslogMessage<'_> {
     }
 
     /// Returns the original input received by the receiver
-    pub(crate) fn input(&self) -> Cow<'_, str> {
+    pub(crate) fn input(&self) -> &[u8] {
         match self {
-            ParsedSyslogMessage::Rfc5424(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::Rfc3164(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::Cef(msg) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::CefWithRfc3164(msg, _) => String::from_utf8_lossy(msg.input),
-            ParsedSyslogMessage::CefWithRfc5424(msg, _) => String::from_utf8_lossy(msg.input),
+            ParsedSyslogMessage::Rfc5424(msg) => msg.input,
+            ParsedSyslogMessage::Rfc3164(msg) => msg.input,
+            ParsedSyslogMessage::Cef(msg) => msg.input,
+            ParsedSyslogMessage::CefWithRfc3164(msg, _) => msg.input,
+            ParsedSyslogMessage::CefWithRfc5424(msg, _) => msg.input,
         }
     }
 
@@ -481,10 +480,10 @@ mod tests {
         let input = b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message";
         let result = parse(input).unwrap();
 
-        let input_str = result.input();
+        let input_bytes = result.input();
         assert_eq!(
-            input_str,
-            "<34>1 2003-10-11T22:14:15.003Z host app - - - Test message"
+            input_bytes,
+            b"<34>1 2003-10-11T22:14:15.003Z host app - - - Test message"
         );
     }
 
