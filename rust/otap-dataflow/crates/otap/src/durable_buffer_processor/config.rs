@@ -115,8 +115,11 @@ pub struct DurableBufferConfig {
     pub retention_size_cap: Byte,
 
     /// Maximum age of data to retain (e.g., "24h", "7d").
-    /// When set, data older than this will be eligible for removal.
-    /// TODO: This setting is currently a placeholder and is not yet enforced.
+    ///
+    /// When set, segments older than this duration are automatically deleted
+    /// during maintenance, regardless of whether they have been consumed.
+    /// When `None` (the default), segments are retained indefinitely until
+    /// consumed or evicted by size-based retention.
     #[serde(with = "humantime_serde", default)]
     pub max_age: Option<Duration>,
 

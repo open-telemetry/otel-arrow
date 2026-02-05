@@ -260,9 +260,8 @@ impl QuiverEngine {
         // Scan for existing segments from previous runs (recovery).
         // Pass max_age to skip loading segments that are already expired -
         // they'll be deleted during scan without the overhead of parsing them.
-        let max_age = Some(config.retention.max_age);
         let mut next_segment_seq = 0u64;
-        match segment_store.scan_existing_with_max_age(max_age) {
+        match segment_store.scan_existing_with_max_age(config.retention.max_age) {
             Ok(found_segments) => {
                 // scan_existing returns segments sorted by sequence, so last is highest
                 if let Some((seq, _bundle_count)) = found_segments.last() {
@@ -878,7 +877,10 @@ impl QuiverEngine {
     ///
     /// [`RetentionConfig::max_age`]: crate::config::RetentionConfig::max_age
     pub fn cleanup_expired_segments(&self) -> std::result::Result<usize, SubscriberError> {
-        let max_age = self.config.retention.max_age;
+        let Some(max_age) = self.config.retention.max_age else {
+            // max_age not configured, nothing to expire
+            return Ok(0);
+        };
         let expired_segments = self.segment_store.segments_older_than(max_age);
 
         if expired_segments.is_empty() {
@@ -3386,7 +3388,7 @@ mod tests {
 
         // Configure a short max_age for testing (1 second)
         let retention = RetentionConfig {
-            max_age: Duration::from_secs(1),
+            max_age: Some(Duration::from_secs(1)),
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -3443,7 +3445,7 @@ mod tests {
     async fn cleanup_expired_segments_handles_claimed_bundles() {
         let temp_dir = tempdir().expect("tempdir");
         let retention = RetentionConfig {
-            max_age: Duration::from_secs(1), // Very short max_age for testing
+            max_age: Some(Duration::from_secs(1)), // Very short max_age for testing
             ..RetentionConfig::default()
         };
         let config = QuiverConfig::builder()
@@ -3508,6 +3510,58 @@ mod tests {
         assert!(result.is_ok(), "poll should succeed after expired cleanup");
     }
 
+    /// Test that cleanup_expired_segments is a no-op when max_age is None (default).
+    #[tokio::test]
+    async fn cleanup_expired_segments_noop_when_disabled() {
+        let dir = tempdir().expect("tempdir");
+
+        // Use default config (max_age = None)
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        // Verify max_age is None by default
+        assert!(
+            config.retention.max_age.is_none(),
+            "max_age should be None by default"
+        );
+
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine");
+
+        // Ingest data to create segments
+        for _ in 0..3 {
+            let bundle = DummyBundle::with_rows(50);
+            engine.ingest(&bundle).await.expect("ingest");
+        }
+        engine.flush().await.expect("flush");
+
+        let initial_segment_count = engine.segment_store().segment_count();
+        assert!(
+            initial_segment_count >= 1,
+            "should have at least one segment"
+        );
+
+        // Wait some time (would normally cause expiration if max_age was set)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cleanup should be a no-op since max_age is not configured
+        let expired_count = engine.cleanup_expired_segments().expect("cleanup");
+
+        assert_eq!(expired_count, 0, "no segments should expire when max_age is None");
+        assert_eq!(
+            engine.segment_store().segment_count(),
+            initial_segment_count,
+            "all segments should remain when max_age is disabled"
+        );
+    }
+
     /// Test that cleanup_expired_segments preserves segments newer than max_age.
     #[tokio::test]
     async fn cleanup_expired_segments_preserves_recent_segments() {
@@ -3515,7 +3569,7 @@ mod tests {
 
         // Configure a long max_age (1 hour) so segments won't expire
         let retention = RetentionConfig {
-            max_age: Duration::from_secs(3600),
+            max_age: Some(Duration::from_secs(3600)),
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -3564,7 +3618,7 @@ mod tests {
 
         // Configure a short max_age for testing
         let retention = RetentionConfig {
-            max_age: Duration::from_secs(1),
+            max_age: Some(Duration::from_secs(1)),
             ..Default::default()
         };
         let config = QuiverConfig::builder()
@@ -3626,7 +3680,7 @@ mod tests {
             .data_dir(dir.path())
             .segment(segment_config.clone())
             .retention(RetentionConfig {
-                max_age: Duration::from_secs(3600), // 1 hour - won't expire yet
+                max_age: Some(Duration::from_secs(3600)), // 1 hour - won't expire yet
                 ..Default::default()
             })
             .build()
@@ -3657,7 +3711,7 @@ mod tests {
             .data_dir(dir.path())
             .segment(segment_config)
             .retention(RetentionConfig {
-                max_age: Duration::from_millis(10), // Very short - segments should be expired
+                max_age: Some(Duration::from_millis(10)), // Very short - segments should be expired
                 ..Default::default()
             })
             .build()
@@ -3681,7 +3735,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
 
         let retention = RetentionConfig {
-            max_age: Duration::from_secs(1),
+            max_age: Some(Duration::from_secs(1)),
             ..Default::default()
         };
         let config = QuiverConfig::builder()
