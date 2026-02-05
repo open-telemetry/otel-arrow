@@ -376,7 +376,7 @@ fn index_fields<'a>(
                 field.name().as_str(),
                 FieldInfo {
                     value_type: value_type,
-                    nullable: field.is_nullable(),
+                    nullable: data.null_count() > 0,
                     smallest_key_type: key_type,
                     struct_index,
                     total_element_count: data.len(),
@@ -475,7 +475,7 @@ fn index_fields<'a>(
 
         let _ = existing.values.push(values.clone());
         let values_count = values.len() - values.null_count();
-        existing.nullable = existing.nullable || field.is_nullable();
+        existing.nullable = existing.nullable || data.null_count() > 0;
         existing.total_element_count += data.len();
         existing.total_value_count += values_count;
         existing.largest_value_count = existing.largest_value_count.max(values_count);
@@ -1150,38 +1150,20 @@ mod schema_tests {
             .iter()
             .map(|&cardinality| {
                 let batch = if use_u16_keys {
-                    create_batch_u16_dict(offset, cardinality, value_type)
+                    let keys: Vec<u16> = (0..cardinality).map(|i| i as u16).collect();
+                    let values = generate_values_for_type(offset, cardinality, value_type);
+
+                    create_dict_batch("data", UInt16Array::from(keys), values, value_type.clone())
                 } else {
-                    create_batch_u8_dict(offset, cardinality, value_type)
+                    let keys: Vec<u8> = (0..cardinality).map(|i| i as u8).collect();
+                    let values = generate_values_for_type(offset, cardinality, value_type);
+
+                    create_dict_batch("data", UInt8Array::from(keys), values, value_type.clone())
                 };
                 offset += cardinality;
                 batch
             })
             .collect()
-    }
-
-    /// Create a batch with UInt8 dictionary keys
-    fn create_batch_u8_dict(
-        start_value: usize,
-        cardinality: usize,
-        value_type: &DataType,
-    ) -> RecordBatch {
-        let keys: Vec<u8> = (0..cardinality).map(|i| i as u8).collect();
-        let values = generate_values_for_type(start_value, cardinality, value_type);
-
-        create_dict_batch("data", UInt8Array::from(keys), values, value_type.clone())
-    }
-
-    /// Create a batch with UInt16 dictionary keys
-    fn create_batch_u16_dict(
-        start_value: usize,
-        cardinality: usize,
-        value_type: &DataType,
-    ) -> RecordBatch {
-        let keys: Vec<u16> = (0..cardinality).map(|i| i as u16).collect();
-        let values = generate_values_for_type(start_value, cardinality, value_type);
-
-        create_dict_batch("data", UInt16Array::from(keys), values, value_type.clone())
     }
 
     /// Generate an array of values for a specific type starting at a given offset
@@ -1258,19 +1240,16 @@ mod schema_tests {
                 let buffer = Buffer::from_vec(values);
                 Arc::new(FixedSizeBinaryArray::try_new(16, buffer, None).unwrap())
             }
-            // UTF-8 string
             DataType::Utf8 => Arc::new(StringArray::from(
                 (start..end)
                     .map(|i| format!("value_{}", i))
                     .collect::<Vec<_>>(),
             )),
-            // Large UTF-8 string (i64 offsets)
             DataType::LargeUtf8 => Arc::new(LargeStringArray::from(
                 (start..end)
                     .map(|i| format!("value_{}", i))
                     .collect::<Vec<_>>(),
             )),
-            // Large binary (i64 offsets)
             DataType::LargeBinary => {
                 use arrow::array::GenericBinaryBuilder;
                 let mut builder = GenericBinaryBuilder::<i64>::new();
@@ -1708,10 +1687,8 @@ mod nullability_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        // "name" is missing from batch2, so it should be nullable
         assert_field_nullable(&schema, "name", true);
-        // "id" is present in all batches
-        assert_field_nullable(&schema, "id", true); // Still nullable because field schema marks it nullable
+        assert_field_nullable(&schema, "id", false);
     }
 
     #[test]
@@ -1723,7 +1700,6 @@ mod nullability_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        // Field has null values, so it should be nullable
         assert_field_nullable(&schema, "value", true);
     }
 
@@ -1742,7 +1718,7 @@ mod nullability_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        assert_field_nullable(&schema, "a", true);
+        assert_field_nullable(&schema, "a", false);
         assert_field_nullable(&schema, "b", true);
         assert_field_nullable(&schema, "c", true);
     }
@@ -1759,6 +1735,7 @@ mod nullability_tests {
 
         // Struct "data" is missing from batch2, so it should be nullable
         assert_field_nullable(&schema, "data", true);
+        assert_field_nullable(&schema, "other", true);
 
         // Check the struct field itself
         let struct_field = schema.field_with_name("data").unwrap();
@@ -1808,14 +1785,8 @@ mod nullability_tests {
         let struct_field = schema.field_with_name("data").unwrap();
         if let DataType::Struct(fields) = struct_field.data_type() {
             assert_eq!(fields.len(), 2, "Should have 2 struct fields");
-            assert!(
-                fields.iter().any(|f| f.name() == "a"),
-                "Field 'a' should exist"
-            );
-            assert!(
-                fields.iter().any(|f| f.name() == "b"),
-                "Field 'b' should exist"
-            );
+            assert!(fields.iter().any(|f| f.name() == "a"),);
+            assert!(fields.iter().any(|f| f.name() == "b"),);
         } else {
             panic!("Expected Struct type for 'data' field");
         }
@@ -1823,38 +1794,29 @@ mod nullability_tests {
 
     #[test]
     fn test_struct_fields_accumulated_across_batches() {
-        // CRITICAL TEST: Verifies that when the same struct appears in multiple batches,
-        // the struct fields' values are properly accumulated (not just indexed once).
-        // This catches bugs where struct fields from first batch aren't updated when
-        // the same struct appears in subsequent batches.
-
-        // Batch 1: struct with fields "a" and "b"
-        let struct_fields1 = vec![
+        let struct_fields = vec![
             Field::new("a", DataType::Int32, false),
             Field::new("b", DataType::Int32, false),
         ];
         let struct_array1 = StructArray::from(vec![
             (
-                Arc::new(struct_fields1[0].clone()),
+                Arc::new(struct_fields[0].clone()),
                 Arc::new(Int32Array::from(vec![1])) as ArrayRef,
             ),
             (
-                Arc::new(struct_fields1[1].clone()),
+                Arc::new(struct_fields[1].clone()),
                 Arc::new(Int32Array::from(vec![2])) as ArrayRef,
             ),
         ]);
         let schema1 = Arc::new(Schema::new(vec![Field::new(
             "data",
-            DataType::Struct(struct_fields1.into()),
+            DataType::Struct(struct_fields.clone().into()),
             false,
         )]));
         let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array1)]).unwrap();
 
         // Batch 2: same struct schema with same fields "a" and "b"
-        let struct_fields2 = vec![
-            Field::new("a", DataType::Int32, false),
-            Field::new("b", DataType::Int32, false),
-        ];
+        let struct_fields2 = struct_fields.clone();
         let struct_array2 = StructArray::from(vec![
             (
                 Arc::new(struct_fields2[0].clone()),
@@ -1865,6 +1827,7 @@ mod nullability_tests {
                 Arc::new(Int32Array::from(vec![4])) as ArrayRef,
             ),
         ]);
+
         let schema2 = Arc::new(Schema::new(vec![Field::new(
             "data",
             DataType::Struct(struct_fields2.into()),
@@ -1877,11 +1840,7 @@ mod nullability_tests {
 
         // Verify internal state: struct fields should be accumulated
         if let Some(data_field_info) = index.fields.get("data") {
-            assert_eq!(
-                data_field_info.values.len(),
-                2,
-                "Parent struct field should have 2 values (one from each batch)"
-            );
+            assert_eq!(data_field_info.values.len(), 2,);
 
             if let Some(struct_index) = &data_field_info.struct_index {
                 for (name, field_info) in struct_index.iter() {
@@ -1906,14 +1865,8 @@ mod nullability_tests {
             let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
             let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
 
-            assert!(
-                !a_field.is_nullable(),
-                "Field 'a' should not be nullable (present in all struct instances)"
-            );
-            assert!(
-                !b_field.is_nullable(),
-                "Field 'b' should not be nullable (present in all struct instances)"
-            );
+            assert!(!a_field.is_nullable(),);
+            assert!(!b_field.is_nullable(),);
         } else {
             panic!("Expected Struct type for 'data' field");
         }
@@ -1979,42 +1932,20 @@ mod nullability_tests {
             let field_names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
 
             // All fields should be present
-            assert_eq!(
-                field_names.len(),
-                3,
-                "Should have 3 fields (a, b, c) in struct"
-            );
-            assert!(
-                field_names.contains(&"a"),
-                "Field 'a' should exist (present in both batches)"
-            );
-            assert!(
-                field_names.contains(&"b"),
-                "Field 'b' should exist (present in batch 1)"
-            );
-            assert!(
-                field_names.contains(&"c"),
-                "Field 'c' should exist (present in batch 2)"
-            );
+            assert_eq!(field_names.len(), 3,);
+            assert!(field_names.contains(&"a"),);
+            assert!(field_names.contains(&"b"),);
+            assert!(field_names.contains(&"c"),);
 
             // Fields b and c should be nullable since they don't appear in all struct instances
             let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
             let c_field = fields.iter().find(|f| f.name() == "c").expect("c exists");
-            assert!(
-                b_field.is_nullable(),
-                "Field 'b' should be nullable (missing from batch 2)"
-            );
-            assert!(
-                c_field.is_nullable(),
-                "Field 'c' should be nullable (missing from batch 1)"
-            );
+            assert!(b_field.is_nullable(),);
+            assert!(c_field.is_nullable(),);
 
             // Field a present in all instances should not be nullable
             let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
-            assert!(
-                !a_field.is_nullable(),
-                "Field 'a' should not be nullable (present in all instances)"
-            );
+            assert!(!a_field.is_nullable(),);
         } else {
             panic!("Expected Struct type for 'data' field");
         }
@@ -2285,7 +2216,6 @@ mod struct_field_tests {
         let index = index_records(records.into_iter()).unwrap();
         let schema = select_schema(&index).unwrap();
 
-        // Check struct field is Int32
         let struct_field = schema.field_with_name("data").unwrap();
         if let DataType::Struct(fields) = struct_field.data_type() {
             let value_field = fields
