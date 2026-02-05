@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770322785322,
+  "lastUpdate": 1770326074705,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3412,6 +3412,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7577,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "d.dahl@f5.com",
+            "name": "David Dahl",
+            "username": "daviddahl"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0824c0193edf0ff675fc33b5b0af470e254928b0",
+          "message": "Standardization of urns, validation and usage (#1948)\n\n# Change Summary\n\nStandardized otap-df-otap node URNs to the canonical\nurn:<namespace>:<id>:<kind> format, added strict parsing/normalization\n(including OTel shortcut support), updated component\nconstants/configs/templates/docs to match, and documented otelcol config\n  compatibility design and URN rules.\n\n  ## What issue does this PR close?\n\n  - Closes #1831\n\n  ## How are these changes tested?\n\n  - cargo test (per local confirmation)\n- Added unit/config tests for URN normalization and legacy URN rejection\nin otap_df_config\n\n  ## Are there any user-facing changes?\n\nYes. Configuration now enforces canonical URN format and accepts the\nOTel shortcut form; legacy URNs are rejected with a doc-linked\n  error message.",
+          "timestamp": "2026-02-05T18:53:12Z",
+          "tree_id": "012cb22877f7a9665f03d772d2537cfc4933b66d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/0824c0193edf0ff675fc33b5b0af470e254928b0"
+        },
+        "date": 1770326073480,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8931,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8315,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.7914,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5249,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7602,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
