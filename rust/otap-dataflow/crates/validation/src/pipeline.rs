@@ -245,75 +245,16 @@ fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
 }
 
 #[cfg(test)]
-use std::fs::File;
-
-const REPORT_PATH: &str = "target/pipeline_validation_report.txt";
-
-// ignore as we run this seperately in a different job
-#[ignore] 
-#[tokio::test]
-async fn run_validation_scenarios() {
-    let file = File::open(PIPELINE_CONFIG_YAML).expect("failed to open config file");
-    let config: ValidationScenarios =
-        serde_yaml::from_reader(file).expect("failed to serialize config from file");
-
-    println!("========== Running Pipeline Validation ===========");
-
-    let mut report = String::from("========== Pipeline Validation Results ===========\n");
-    let mut failures: usize = 0;
-
-    // loop through each test config
-    for mut config in config.scenarios {
-        // render the pipeline group yaml
-        match config.render_template(VALIDATION_TEMPLATE_PATH) {
-            // run the validation process on the pipeline group and get the result
-            // build a report string
-            Ok(rendered_template) => match config.validate(rendered_template).await {
-                Ok(result) => {
-                    report.push_str(&format!("Pipeline: {} => {}\n", config.name, result));
-                    // keep track of failed results
-                    if !result {
-                        failures += 1;
-                    }
-                }
-                Err(error) => {
-                    report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
-                    // keep track of failed results
-                    failures += 1;
-                }
-            },
-            Err(error) => {
-                report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
-                // keep track of failed results
-                failures += 1;
-            }
-        }
-    }
-
-    // print out the report string
-    println!("{report}");
-
-    // persist report for CI to surface
-    let report_path = PathBuf::from(REPORT_PATH);
-    if let Some(parent) = report_path.parent() {
-        fs::create_dir_all(parent).expect("failed to create report directory");
-    }
-    fs::write(&report_path, &report).expect("failed to write validation report");
-
-    // trigger failed test if we encountered any failed results
-    assert_eq!(failures, 0);
-}
-
-#[cfg(test)]
-mod unit_tests {
+mod tests {
     use super::*;
     use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
-    use crate::traffic::MessageType;
     use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
     use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
+
+    const REPORT_PATH: &str = "target/pipeline_validation_report.txt";
 
     fn make_metric_set(name: &str, metric_name: &str, value: u64) -> MetricSetSnapshot {
         MetricSetSnapshot {
@@ -390,5 +331,58 @@ mod unit_tests {
             metric_sets: vec![make_metric_set("validation.exporter.metrics", "valid", 0)],
         };
         assert!(!validation_from_metrics(&snapshot));
+    }
+
+    #[tokio::test]
+    async fn run_validation_scenarios() {
+        let file = fs::File::open(PIPELINE_CONFIG_YAML).expect("failed to open config file");
+        let config: ValidationScenarios =
+            serde_yaml::from_reader(file).expect("failed to serialize config from file");
+
+        println!("========== Running Pipeline Validation ===========");
+
+        let mut report = String::from("========== Pipeline Validation Results ===========\n");
+        let mut failures: usize = 0;
+
+        // loop through each test config
+        for mut config in config.scenarios {
+            // render the pipeline group yaml
+            match config.render_template(VALIDATION_TEMPLATE_PATH) {
+                // run the validation process on the pipeline group and get the result
+                // build a report string
+                Ok(rendered_template) => match config.validate(rendered_template).await {
+                    Ok(result) => {
+                        report.push_str(&format!("Pipeline: {} => {}\n", config.name, result));
+                        // keep track of failed results
+                        if !result {
+                            failures += 1;
+                        }
+                    }
+                    Err(error) => {
+                        report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                        // keep track of failed results
+                        failures += 1;
+                    }
+                },
+                Err(error) => {
+                    report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
+                    // keep track of failed results
+                    failures += 1;
+                }
+            }
+        }
+
+        // print out the report string
+        println!("{report}");
+
+        // persist report for CI to surface
+        let report_path = PathBuf::from(REPORT_PATH);
+        if let Some(parent) = report_path.parent() {
+            fs::create_dir_all(parent).expect("failed to create report directory");
+        }
+        fs::write(&report_path, &report).expect("failed to write validation report");
+
+        // trigger failed test if we encountered any failed results
+        assert_eq!(failures, 0);
     }
 }
