@@ -63,18 +63,17 @@ these define the `traffic-gen` and `validate` pipelines the values
 - suv_exporter_type: The exporter to use to send messages to the `suv` pipeline
   - default = otlp
 - suv_endpoint: The endpoint to send messages to the `suv` pipeline
-  - default = "http://127.0.0.1:4317"
+  - default = `http://127.0.0.1:4317`
 - control_exporter_type: The exporter to use to send messages to the `validate` pipeline
   - default = otlp
 - control_endpoint: The endpoint to send messages to the `validate` pipeline
-  - default = "http://127.0.0.1:4316"
-- max_signal_count: The max signals to use for the validation 
+  - default = `http://127.0.0.1:4316`
+- max_signal_count: The max signals to use for the validation
   - default = 2000
-- max_batch_size: The max batch size to use for signals 
+- max_batch_size: The max batch size to use for signals
   - default = 100
-- signals_per_second: How often the signals are sent through the pipeline 
+- signals_per_second: How often the signals are sent through the pipeline
   - default = 100
-
 
 #### Traffic Capture Config
 
@@ -90,4 +89,5 @@ these define the `traffic-gen` and `validate` pipelines the values
   - default = false
 
 ## Future directions
+
 - Extend the validation exporter to support more complex validation procedure.
