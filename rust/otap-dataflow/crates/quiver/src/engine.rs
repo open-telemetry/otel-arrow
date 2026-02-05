@@ -581,7 +581,7 @@ impl QuiverEngine {
         };
 
         let mut replayed_count = 0;
-        let mut skipped_corrupt = 0u64;
+        let mut stopped_at_corruption = false;
 
         for entry_result in iter {
             let entry = match entry_result {
@@ -602,7 +602,7 @@ impl QuiverEngine {
                     // Log prominently but continue - availability > perfect recovery.
                     // We can't safely read past corruption (entry boundaries unknown),
                     // so stop replay here.
-                    skipped_corrupt += 1;
+                    stopped_at_corruption = true;
                     tracing::error!(
                         error = %e,
                         replayed_so_far = replayed_count,
@@ -652,10 +652,10 @@ impl QuiverEngine {
             replayed_count += 1;
         }
 
-        if replayed_count > 0 || skipped_corrupt > 0 {
+        if replayed_count > 0 || stopped_at_corruption {
             tracing::info!(
                 replayed_count,
-                skipped_corrupt,
+                stopped_at_corruption,
                 cursor_position,
                 "WAL replay completed"
             );
