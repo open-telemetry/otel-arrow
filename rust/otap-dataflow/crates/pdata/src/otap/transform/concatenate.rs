@@ -85,6 +85,7 @@ pub fn concatenate<const N: usize>(
         }
 
         let new_schema = Arc::from(select_schema(&index)?);
+        // TODO: Use `concat::concat_batches()`
         let mut batcher = arrow::compute::BatchCoalescer::new(new_schema.clone(), index.row_count);
         for payload in select_all_mut(&mut items, i) {
             let Some(rb) = payload.take() else {
@@ -96,6 +97,8 @@ pub fn concatenate<const N: usize>(
                 convert(columns, num_rows, &curr_schema.fields, &new_schema.fields)?;
             let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
                 .expect("Valid construction");
+
+            dbg!(&converted);
 
             batcher.push_batch(converted).expect("Compatible schemas");
         }
@@ -840,52 +843,7 @@ mod schema_tests {
     }
 
     #[test]
-    fn test_cardinality_256() {
-        let values1: Vec<u32> = (0..128).collect();
-        let values2: Vec<u32> = (128..256).collect();
-        let keys: Vec<u8> = (0..128).collect();
-
-        let batch1 = record_batch!(("a", (UInt8, UInt32), (keys.clone(), values1))).unwrap();
-        let batch2 = record_batch!(("a", (UInt8, UInt32), (keys.clone(), values2))).unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-
-        let expected = Schema::new(vec![Field::new(
-            "a",
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32)),
-            false,
-        )]);
-
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index).unwrap();
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_select_schema_dictionary_uint8_selected() {
-        let batch1 = record_batch!(("status", (UInt8, Utf8), ([0, 1], ["a", "b"]))).unwrap();
-        #[rustfmt::skip]
-        let batch2 = record_batch!(
-            ("status", (UInt16, Utf8), ([0, 1, 2], ["a", "b", "c"]))
-        )
-        .unwrap();
-
-        let records = vec![Some(&batch1), Some(&batch2)];
-        let index = index_records(records.into_iter()).unwrap();
-        let actual = select_schema(&index).unwrap();
-
-        let expected = Schema::new(vec![Field::new(
-            "status",
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-            false,
-        )]);
-
-        validate_schema(&actual, &expected);
-    }
-
-    #[test]
-    fn test_many_batches_one_common_field() {
+    fn test_multiple_batches_one_common_field() {
         let batch1 = record_batch!(("common", Int32, [1]), ("a", Utf8, ["x"])).unwrap();
         let batch2 = record_batch!(("common", Int32, [2]), ("b", Utf8, ["y"])).unwrap();
         let batch3 = record_batch!(("common", Int32, [3]), ("c", Utf8, ["z"])).unwrap();
@@ -904,10 +862,8 @@ mod schema_tests {
         validate_schema(&actual, &expected);
     }
 
-    // Test 11: Mixed dictionary key types (UInt8 and UInt16)
     #[test]
     fn test_cardinality_mixed_key_types() {
-        // Mix of UInt8 and UInt16 dictionaries, should track smallest as UInt8
         let batch1 =
             record_batch!(("data", (UInt8, UInt16), ([0, 1, 2], [100u16, 200, 300]))).unwrap();
         let batch2 = record_batch!(("data", (UInt16, UInt16), ([0, 1], [100u16, 400]))).unwrap();
@@ -917,7 +873,6 @@ mod schema_tests {
         let index = index_records(records.into_iter()).unwrap();
         let actual = select_schema(&index).unwrap();
 
-        // Should select UInt8 as smallest_key_type was tracked
         let expected = Schema::new(vec![Field::new(
             "data",
             DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt16)),
@@ -980,6 +935,36 @@ mod schema_tests {
         batch
     }
 
+    #[test]
+    fn test_above_u16_below_u32() {
+        test_cardinality_helper(&[1000], Some(DataType::UInt16));
+    }
+
+    #[test]
+    fn test_cardinality_at_u16_boundary() {
+        test_cardinality_helper(&[30000, 35536], Some(DataType::UInt16));
+    }
+
+    #[test]
+    fn test_cardinality_above_u16_boundary() {
+        test_cardinality_helper(&[30000, 35537], None);
+    }
+
+    #[test]
+    fn test_cardinality_at_u8_boundary() {
+        test_cardinality_helper(&[128, 128], Some(DataType::UInt8));
+    }
+
+    #[test]
+    fn test_cardinality_just_above_u8_boundary() {
+        test_cardinality_helper(&[128, 128, 1], Some(DataType::UInt16));
+    }
+
+    #[test]
+    fn test_cardinality_mixed_batch_sizes() {
+        test_cardinality_helper(&[250, 10], Some(DataType::UInt16));
+    }
+
     /// Helper function to test cardinality selection with specified parameters
     /// Tests all supported value types automatically, skipping types that can't
     /// represent the required cardinality.
@@ -998,42 +983,33 @@ mod schema_tests {
         }
     }
 
-    /// Get the list of value types that can represent the given cardinality
+    /// Get the list of value types that can represent the given cardinality when
+    /// used as values. One and two byte types have to stick within their limits
     fn get_testable_value_types(cardinality: usize) -> Vec<DataType> {
         let mut types = vec![];
 
-        // 1-byte types: can represent up to 256 unique values
-        // Skip if at exact boundary to avoid overflow issues during concatenation
+        // 1 byte types
         if cardinality < MAX_U8_CARDINALITY {
             types.push(DataType::UInt8);
             types.push(DataType::Int8);
         }
 
-        // 2-byte types: can represent up to 65536 unique values
-        // Skip if at exact boundary to avoid overflow issues during concatenation
+        // 2 byte types
         if cardinality < MAX_U16_CARDINALITY {
             types.push(DataType::UInt16);
             types.push(DataType::Int16);
             types.push(DataType::Float16);
         }
 
-        // 4-byte types: can represent large cardinalities (up to 2^32)
+        // 4+ byte types
         types.push(DataType::UInt32);
-        types.push(DataType::Int32);
-        types.push(DataType::Float32);
-
-        // 8-byte types: can represent very large cardinalities
         types.push(DataType::UInt64);
+        types.push(DataType::Int32);
         types.push(DataType::Int64);
+        types.push(DataType::Float32);
         types.push(DataType::Float64);
-
-        // Fixed-size binary types - skip at exact boundaries due to Arrow concat limitations
-        if cardinality != MAX_U8_CARDINALITY && cardinality != MAX_U16_CARDINALITY {
-            types.push(DataType::FixedSizeBinary(8));
-            types.push(DataType::FixedSizeBinary(16));
-        }
-
-        // String and binary types
+        types.push(DataType::FixedSizeBinary(8));
+        types.push(DataType::FixedSizeBinary(16));
         types.push(DataType::Utf8);
         types.push(DataType::LargeUtf8);
         types.push(DataType::LargeBinary);
@@ -1188,81 +1164,62 @@ mod schema_tests {
     ) -> Arc<dyn Array> {
         use arrow::array::*;
 
+        let end = start + count;
         match value_type {
-            // 1-byte unsigned integer
             DataType::UInt8 => Arc::new(UInt8Array::from(
-                (start..start + count)
-                    .map(|i| (i % 256) as u8)
-                    .collect::<Vec<_>>(),
+                (start..end).map(|i| (i % 256) as u8).collect::<Vec<_>>(),
             )),
-            // 1-byte signed integer (-128 to 127)
             DataType::Int8 => Arc::new(Int8Array::from(
-                (start..start + count)
+                (start..end)
                     .map(|i| ((i % 256) as i16 - 128) as i8)
                     .collect::<Vec<_>>(),
             )),
-            // 2-byte unsigned integer
             DataType::UInt16 => Arc::new(UInt16Array::from(
-                (start..start + count)
-                    .map(|i| (i % 65536) as u16)
-                    .collect::<Vec<_>>(),
+                (start..end).map(|i| (i % 65536) as u16).collect::<Vec<_>>(),
             )),
-            // 2-byte signed integer
             DataType::Int16 => Arc::new(Int16Array::from(
-                (start..start + count)
+                (start..end)
                     .map(|i| ((i % 65536) as i32 - 32768) as i16)
                     .collect::<Vec<_>>(),
             )),
-            // 2-byte float (Float16)
             DataType::Float16 => {
                 use arrow::buffer::Buffer;
                 use arrow::datatypes::Float16Type;
                 // Generate unique Float16 values
-                let values: Vec<u16> = (start..start + count).map(|i| (i % 65536) as u16).collect();
+                let values: Vec<u16> = (start..end).map(|i| (i % 65536) as u16).collect();
                 let buffer = Buffer::from_slice_ref(&values);
                 Arc::new(PrimitiveArray::<Float16Type>::new(buffer.into(), None))
             }
-            // 4-byte unsigned integer
             DataType::UInt32 => Arc::new(UInt32Array::from(
-                (start..start + count).map(|i| i as u32).collect::<Vec<_>>(),
+                (start..end).map(|i| i as u32).collect::<Vec<_>>(),
             )),
-            // 4-byte signed integer
             DataType::Int32 => Arc::new(Int32Array::from(
-                (start..start + count).map(|i| i as i32).collect::<Vec<_>>(),
+                (start..end).map(|i| i as i32).collect::<Vec<_>>(),
             )),
-            // 4-byte float
             DataType::Float32 => Arc::new(Float32Array::from(
-                (start..start + count)
-                    .map(|i| i as f32 + 0.5)
-                    .collect::<Vec<_>>(),
+                (start..end).map(|i| i as f32 + 0.5).collect::<Vec<_>>(),
             )),
-            // 8-byte unsigned integer
             DataType::UInt64 => Arc::new(UInt64Array::from(
-                (start..start + count).map(|i| i as u64).collect::<Vec<_>>(),
+                (start..end).map(|i| i as u64).collect::<Vec<_>>(),
             )),
-            // 8-byte signed integer
             DataType::Int64 => Arc::new(Int64Array::from(
-                (start..start + count).map(|i| i as i64).collect::<Vec<_>>(),
+                (start..end).map(|i| i as i64).collect::<Vec<_>>(),
             )),
-            // 8-byte float
             DataType::Float64 => Arc::new(Float64Array::from(
-                (start..start + count)
-                    .map(|i| i as f64 + 0.5)
-                    .collect::<Vec<_>>(),
+                (start..end).map(|i| i as f64 + 0.5).collect::<Vec<_>>(),
             )),
-            // Fixed-size binary (8 bytes)
             DataType::FixedSizeBinary(8) => {
                 use arrow::buffer::Buffer;
-                let values: Vec<u8> = (start..start + count)
+                let values: Vec<u8> = (start..end)
                     .flat_map(|i| (i as u64).to_le_bytes())
                     .collect();
                 let buffer = Buffer::from_vec(values);
-                Arc::new(FixedSizeBinaryArray::try_new(8, buffer, None).unwrap())
+                let array = FixedSizeBinaryArray::try_new(8, buffer, None).unwrap();
+                Arc::new(array)
             }
-            // Fixed-size binary (16 bytes)
             DataType::FixedSizeBinary(16) => {
                 use arrow::buffer::Buffer;
-                let values: Vec<u8> = (start..start + count)
+                let values: Vec<u8> = (start..end)
                     .flat_map(|i| {
                         let mut bytes = [0u8; 16];
                         bytes[0..8].copy_from_slice(&(i as u64).to_le_bytes());
@@ -1271,17 +1228,18 @@ mod schema_tests {
                     })
                     .collect();
                 let buffer = Buffer::from_vec(values);
+                dbg!(buffer.len());
                 Arc::new(FixedSizeBinaryArray::try_new(16, buffer, None).unwrap())
             }
             // UTF-8 string
             DataType::Utf8 => Arc::new(StringArray::from(
-                (start..start + count)
+                (start..end)
                     .map(|i| format!("value_{}", i))
                     .collect::<Vec<_>>(),
             )),
             // Large UTF-8 string (i64 offsets)
             DataType::LargeUtf8 => Arc::new(LargeStringArray::from(
-                (start..start + count)
+                (start..end)
                     .map(|i| format!("value_{}", i))
                     .collect::<Vec<_>>(),
             )),
@@ -1289,7 +1247,7 @@ mod schema_tests {
             DataType::LargeBinary => {
                 use arrow::array::GenericBinaryBuilder;
                 let mut builder = GenericBinaryBuilder::<i64>::new();
-                for i in start..start + count {
+                for i in start..end {
                     let mut bytes = format!("binary_{}", i).into_bytes();
                     // Add index bytes to ensure uniqueness
                     bytes.extend_from_slice(&(i as u64).to_le_bytes());
@@ -1299,68 +1257,6 @@ mod schema_tests {
             }
             _ => panic!("Unsupported value type for test: {:?}", value_type),
         }
-    }
-
-    #[test]
-    fn test_cardinality_u8_boundary_at_255() {
-        // 255 unique values should select UInt8 dictionary
-        test_cardinality_helper(&[255], Some(DataType::UInt8));
-    }
-
-    #[test]
-    fn test_cardinality_u8_boundary_at_256() {
-        // 256 unique values should still select UInt8 dictionary
-        test_cardinality_helper(&[128, 128], Some(DataType::UInt8));
-    }
-
-    #[test]
-    fn test_cardinality_u8_boundary_at_257() {
-        // 257 unique values should select UInt16 dictionary
-        test_cardinality_helper(&[100, 100, 57], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_u16_boundary_below() {
-        // 1000 unique values should select UInt16 dictionary
-        test_cardinality_helper(&[1000], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_u16_boundary_at_65535() {
-        // 65535 unique values should select UInt16 dictionary
-        test_cardinality_helper(&[20000, 20000, 25535], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_u16_boundary_at_65536() {
-        // 65536 unique values should still select UInt16 dictionary
-        test_cardinality_helper(&[30000, 35536], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_u16_boundary_at_65537() {
-        // 65537 unique values should fall back to primitive type
-        test_cardinality_helper(&[30000, 35537], None);
-    }
-
-    // Additional boundary tests
-
-    #[test]
-    fn test_cardinality_at_u8_boundary() {
-        // 256 unique values at UInt8 boundary
-        test_cardinality_helper(&[128, 128], Some(DataType::UInt8));
-    }
-
-    #[test]
-    fn test_cardinality_just_above_u8_boundary() {
-        // 257 unique values just above UInt8 boundary
-        test_cardinality_helper(&[128, 128, 1], Some(DataType::UInt16));
-    }
-
-    #[test]
-    fn test_cardinality_mixed_batch_sizes() {
-        // Test with varying batch sizes near boundaries
-        test_cardinality_helper(&[250, 10], Some(DataType::UInt16));
     }
 }
 
@@ -1561,6 +1457,28 @@ mod index_tests {
             }
             _ => panic!("Expected ColumnValueTypeMismatch error, got: {:?}", result),
         }
+    }
+
+    #[test]
+    fn test_primitive_to_dictionary_upgrade_success() {
+        // Test the SUCCESS case: primitive can upgrade to dictionary when value types match
+        let batch1 = record_batch!(("data", Int32, [100, 200, 300])).unwrap();
+        let batch2 = record_batch!(("data", (UInt8, Int32), ([0, 1, 2], [100, 400, 500]))).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Should successfully upgrade to dictionary type
+        let field = schema.field_with_name("data").unwrap();
+        assert!(
+            matches!(
+                field.data_type(),
+                DataType::Dictionary(k, v) if **k == DataType::UInt8 && **v == DataType::Int32
+            ),
+            "Expected Dictionary(UInt8, Int32), got {:?}",
+            field.data_type()
+        );
     }
 
     #[test]
@@ -1872,6 +1790,104 @@ mod nullability_tests {
             assert!(
                 fields.iter().any(|f| f.name() == "b"),
                 "Field 'b' should exist"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_struct_fields_accumulated_across_batches() {
+        // CRITICAL TEST: Verifies that when the same struct appears in multiple batches,
+        // the struct fields' values are properly accumulated (not just indexed once).
+        // This catches bugs where struct fields from first batch aren't updated when
+        // the same struct appears in subsequent batches.
+
+        // Batch 1: struct with fields "a" and "b"
+        let struct_fields1 = vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ];
+        let struct_array1 = StructArray::from(vec![
+            (
+                Arc::new(struct_fields1[0].clone()),
+                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields1[1].clone()),
+                Arc::new(Int32Array::from(vec![2])) as ArrayRef,
+            ),
+        ]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields1.into()),
+            false,
+        )]));
+        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array1)]).unwrap();
+
+        // Batch 2: same struct schema with same fields "a" and "b"
+        let struct_fields2 = vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ];
+        let struct_array2 = StructArray::from(vec![
+            (
+                Arc::new(struct_fields2[0].clone()),
+                Arc::new(Int32Array::from(vec![3])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields2[1].clone()),
+                Arc::new(Int32Array::from(vec![4])) as ArrayRef,
+            ),
+        ]);
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields2.into()),
+            false,
+        )]));
+        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(struct_array2)]).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+
+        // Verify internal state: struct fields should be accumulated
+        if let Some(data_field_info) = index.fields.get("data") {
+            assert_eq!(
+                data_field_info.values.len(),
+                2,
+                "Parent struct field should have 2 values (one from each batch)"
+            );
+
+            if let Some(struct_index) = &data_field_info.struct_index {
+                for (name, field_info) in struct_index.iter() {
+                    assert_eq!(
+                        field_info.values.len(),
+                        2,
+                        "Struct field '{}' should have 2 values (accumulated from both batches), but has {}",
+                        name,
+                        field_info.values.len()
+                    );
+                }
+            }
+        }
+
+        let schema = select_schema(&index).unwrap();
+
+        // Both fields should be present and not nullable (present in all instances)
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            assert_eq!(fields.len(), 2, "Should have 2 struct fields");
+
+            let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
+            let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
+
+            assert!(
+                !a_field.is_nullable(),
+                "Field 'a' should not be nullable (present in all struct instances)"
+            );
+            assert!(
+                !b_field.is_nullable(),
+                "Field 'b' should not be nullable (present in all struct instances)"
             );
         } else {
             panic!("Expected Struct type for 'data' field");
