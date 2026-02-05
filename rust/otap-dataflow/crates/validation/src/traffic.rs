@@ -1,3 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! This module defines structs to describe the traffic being created and captured for validation
+
 use serde::{Deserialize, Serialize};
 /// Helps distinguish between the message types
 #[derive(Debug, Deserialize, Serialize)]
