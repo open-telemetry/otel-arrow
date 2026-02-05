@@ -3498,7 +3498,21 @@ mod tests {
 
         // Cleanup expired segments - should succeed even with claimed bundles
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
-        assert!(expired_count > 0, "should have deleted expired segments");
+        assert_eq!(
+            expired_count, initial_segment_count,
+            "all segments should have been deleted"
+        );
+        assert_eq!(
+            engine.segment_store().segment_count(),
+            0,
+            "segment store should be empty after cleanup"
+        );
+
+        // Verify the expired_bundles counter was incremented
+        assert!(
+            engine.expired_bundles() > 0,
+            "expired_bundles counter should be incremented"
+        );
 
         // The handle is now pointing to a deleted segment.
         // When we try to resolve it, the segment will already be force-completed
@@ -3509,10 +3523,12 @@ mod tests {
         // Ack the handle - this should be safe because the segment was force-completed
         handle.ack();
 
-        // Verify the subscriber can continue processing remaining bundles
-        // (though there may be none left if all segments were deleted)
-        let result = engine.poll_next_bundle(&sub_id);
-        assert!(result.is_ok(), "poll should succeed after expired cleanup");
+        // Verify the subscriber can continue (no bundles left since all expired)
+        let result = engine.poll_next_bundle(&sub_id).expect("poll should succeed");
+        assert!(
+            result.is_none(),
+            "no bundles should remain after all segments expired"
+        );
     }
 
     /// Test that cleanup_expired_segments is a no-op when max_age is None (default).
@@ -3734,6 +3750,103 @@ mod tests {
             engine2.segment_store().segment_count(),
             0,
             "expired segments should be deleted during startup, not loaded"
+        );
+    }
+
+    /// Test that startup scan deletes only expired segments, keeping fresh ones.
+    ///
+    /// This verifies `scan_existing_with_max_age()` correctly filters segments
+    /// by age - deleting old ones while loading recent ones.
+    #[tokio::test]
+    async fn startup_preserves_fresh_segments_deletes_expired() {
+        let dir = tempdir().expect("tempdir");
+
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(100).unwrap(),
+            ..Default::default()
+        };
+
+        // Phase 1: Create initial segments
+        let old_segments_created;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Create some segments
+            for _ in 0..3 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush");
+
+            old_segments_created = engine.segment_store().segment_count();
+            assert!(old_segments_created >= 1, "should create at least one segment");
+        }
+
+        // Wait for these segments to become "old" - use generous margin
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // Phase 2: Create fresh segments
+        let total_segments;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(segment_config.clone())
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Create more segments (these will be fresh)
+            for _ in 0..2 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+            engine.flush().await.expect("flush");
+
+            total_segments = engine.segment_store().segment_count();
+            assert!(
+                total_segments > old_segments_created,
+                "should have created additional segments"
+            );
+        }
+
+        // Phase 3: Reopen with max_age that expires old segments but not fresh ones
+        // Use 1 second - old segments (2s+ old) will expire, fresh ones won't
+        let config_with_max_age = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .retention(RetentionConfig {
+                max_age: Some(Duration::from_secs(1)),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let engine3 = QuiverEngine::open(config_with_max_age, test_budget())
+            .await
+            .expect("engine");
+
+        // Only the fresh segments should remain
+        let remaining = engine3.segment_store().segment_count();
+        assert!(
+            remaining > 0,
+            "some fresh segments should remain after startup"
+        );
+        assert!(
+            remaining < total_segments,
+            "some old segments should have been deleted: remaining={}, total={}",
+            remaining,
+            total_segments
         );
     }
 

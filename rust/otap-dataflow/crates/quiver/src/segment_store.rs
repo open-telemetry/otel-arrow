@@ -887,6 +887,35 @@ mod tests {
     }
 
     #[test]
+    fn delete_segment_file_releases_budget() {
+        use crate::budget::DiskBudget;
+        use crate::config::RetentionPolicy;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.qseg");
+        let file_content = "test data with some content";
+        std::fs::write(&file_path, file_content).unwrap();
+        let file_size = file_content.len() as u64;
+
+        // Create a budget and record the file's usage
+        let budget = Arc::new(DiskBudget::new(1024 * 1024, RetentionPolicy::Backpressure));
+        budget.record_existing(file_size);
+        let usage_before = budget.used();
+        assert_eq!(usage_before, file_size);
+
+        // Delete with budget tracking
+        SegmentStore::delete_segment_file(&file_path, &Some(budget.clone())).unwrap();
+        assert!(!file_path.exists());
+
+        // Budget should have released the bytes
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should release file size after deletion"
+        );
+    }
+
+    #[test]
     fn delete_segment_file_nonexistent_errors() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("nonexistent.qseg");

@@ -1740,4 +1740,34 @@ mod tests {
         next1.ack();
         next2.ack();
     }
+
+    #[test]
+    fn force_complete_segments_marks_dirty_for_persistence() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Claim and ack a bundle to advance progress
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        handle.ack();
+
+        // Flush to clear dirty state
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let flushed = rt.block_on(registry.flush_progress()).unwrap();
+        assert_eq!(flushed, 1, "should have flushed one dirty subscriber");
+
+        // Force-complete the segment - this should mark the subscriber dirty again
+        registry.force_complete_segments(&[SegmentSeq::new(1)]);
+
+        // Flushing again should find the subscriber dirty from force_complete
+        let flushed = rt.block_on(registry.flush_progress()).unwrap();
+        assert_eq!(
+            flushed, 1,
+            "subscriber should be dirty after force_complete_segments"
+        );
+    }
 }
