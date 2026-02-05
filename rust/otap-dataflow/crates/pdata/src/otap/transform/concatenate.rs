@@ -101,15 +101,22 @@ pub fn concatenate<const N: usize>(
             let (curr_schema, columns, num_rows) = rb.into_parts();
             let converted_columns =
                 convert(columns, num_rows, &curr_schema.fields, &new_schema.fields)?;
+
+            // safety: Unless we have a bug, we've satisfied all the preconditions
+            // for try_new and push_batch by converting everything to a unified
+            // schema.
             let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
                 .expect("Valid construction");
-
             batcher.push_batch(converted).expect("Compatible schemas");
         }
 
         batcher
             .finish_buffered_batch()
             .map_err(|e| Error::Batching { source: e })?;
+
+        // safety: If if finish_buffered_batch succeeded then we can expect
+        // next_completed_batch to succeed.
+        assert!(batcher.has_completed_batch());
         let batch = batcher.next_completed_batch().expect("complete batch");
         result[i] = Some(batch);
     }
@@ -160,6 +167,9 @@ fn convert(
                             target_struct_fields,
                         )?;
 
+                        // safety: Unless we have a bug, we've satisfied all
+                        // the preconditions laid out in this function and
+                        // the columns, schema, and row count are valid.
                         let struct_array = StructArray::try_new_with_length(
                             target_struct_fields.clone(),
                             struct_columns,
@@ -170,6 +180,9 @@ fn convert(
 
                         new_columns.push(Arc::new(struct_array))
                     } else {
+                        // safety: Unless we have a bug, we've satisfied all
+                        // the preconditions laid out in this function and
+                        // the columns, schema, and row count are valid.
                         let new_data = cast(columns[curr_idx].as_ref(), target_field.data_type())
                             .expect("Compatible types");
 
@@ -345,6 +358,7 @@ fn index_fields<'a>(
 
             // If this is a struct type, we need to index its fields
             let struct_index = if matches!(value_type, DataType::Struct(_)) {
+                // safety: we checked the type
                 let struct_array = data
                     .as_any()
                     .downcast_ref::<StructArray>()
@@ -397,6 +411,8 @@ fn index_fields<'a>(
                 // Recursively index this struct. This has a maximum depth of 1
                 // because we forbid nested structs since valid otap batches
                 // do not have them.
+                //
+                // safety: we checked the type
                 let struct_array = data
                     .as_any()
                     .downcast_ref::<StructArray>()
@@ -472,6 +488,7 @@ fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
     let values = match array.data_type() {
         DataType::Dictionary(k, _) => match k.as_ref() {
             DataType::UInt8 => {
+                // safety: we checked the type
                 let dict_col = array
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt8Type>>()
@@ -479,6 +496,7 @@ fn get_dictionary_values(array: &ArrayRef) -> Result<&ArrayRef> {
                 dict_col.values()
             }
             DataType::UInt16 => {
+                // safety: we checked the type
                 let dict_col = array
                     .as_any()
                     .downcast_ref::<DictionaryArray<UInt16Type>>()
