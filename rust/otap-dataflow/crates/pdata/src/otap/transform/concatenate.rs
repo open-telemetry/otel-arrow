@@ -672,6 +672,11 @@ where
                 }
             }
         }
+
+        // TODO: Consider when to call bitmap.optimize(). This seemed to regress
+        // things for high numbers of small batches. Maybe we can be smarter about
+        // calling this only under certain conditions.
+        // _ = bitmap.optimize();
     }
 
     Cardinality::from_exact(bitmap.len() as usize)
@@ -1035,9 +1040,6 @@ mod schema_tests {
             "[value_type={:?}, total_cardinality={}, cardinalities={:?}, expected_key={}]",
             value_type, total_cardinality, cardinalities, key_type_str
         );
-
-        // Print test progress
-        println!("  Testing {}", test_context);
 
         let batches = generate_batches_with_cardinality(cardinalities, value_type);
         let batch_refs: Vec<Option<&RecordBatch>> = batches.iter().map(|b| Some(b)).collect();
