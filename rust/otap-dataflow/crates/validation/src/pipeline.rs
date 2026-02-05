@@ -303,3 +303,92 @@ async fn run_validation_scenarios() {
     // trigger failed test if we encountered any failed results
     assert_eq!(failures, 0);
 }
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
+    use crate::traffic::MessageType;
+    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+    use otap_df_telemetry::metrics::MetricValue;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn make_metric_set(name: &str, metric_name: &str, value: u64) -> MetricSetSnapshot {
+        MetricSetSnapshot {
+            name: name.to_string(),
+            brief: String::new(),
+            attributes: HashMap::new(),
+            metrics: vec![MetricDataPoint {
+                name: metric_name.to_string(),
+                unit: String::new(),
+                brief: String::new(),
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+                value: MetricValue::U64(value),
+            }],
+        }
+    }
+
+    #[test]
+    fn loadgen_reached_limit_true_when_logs_produced_reaches_max() {
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set(
+                "fake_data_generator.receiver.metrics",
+                "logs.produced",
+                5,
+            )],
+        };
+        assert!(loadgen_reached_limit(&snapshot, 5));
+    }
+
+    #[test]
+    fn loadgen_reached_limit_false_when_below_threshold_or_missing() {
+        // below threshold
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set(
+                "fake_data_generator.receiver.metrics",
+                "logs.produced",
+                4,
+            )],
+        };
+        assert!(!loadgen_reached_limit(&snapshot, 5));
+
+        // metric set missing
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set("other.metrics", "foo", 10)],
+        };
+        assert!(!loadgen_reached_limit(&snapshot, 5));
+    }
+
+    #[test]
+    fn validation_from_metrics_true_when_valid_gauge_is_set() {
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set("validation.exporter.metrics", "valid", 1)],
+        };
+        assert!(validation_from_metrics(&snapshot));
+    }
+
+    #[test]
+    fn validation_from_metrics_false_when_missing_or_zero() {
+        // missing metric set
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set("other.metrics", "valid", 1)],
+        };
+        assert!(!validation_from_metrics(&snapshot));
+
+        // present but zero
+        let snapshot = MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![make_metric_set("validation.exporter.metrics", "valid", 0)],
+        };
+        assert!(!validation_from_metrics(&snapshot));
+    }
+}

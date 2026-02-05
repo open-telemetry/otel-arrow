@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 /// Helps distinguish between the message types
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageType {
     /// otlp type
@@ -15,7 +15,7 @@ pub enum MessageType {
 }
 
 /// Configuration describing how the traffic generator should emit signals.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Generator {
     /// Type to use for the system-under-validation exporter.
     #[serde(default = "default_message_type")]
@@ -41,7 +41,7 @@ pub struct Generator {
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
     #[serde(default = "default_message_type")]
@@ -94,4 +94,31 @@ fn default_control_endpoint() -> String {
 
 fn default_transformative() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generator_defaults_match_expected() {
+        let g: Generator = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(g.suv_exporter_type, MessageType::Otlp);
+        assert_eq!(g.suv_endpoint, "http://127.0.0.1:4317");
+        assert_eq!(g.control_exporter_type, MessageType::Otlp);
+        assert_eq!(g.control_endpoint, "http://127.0.0.1:4316");
+        assert_eq!(g.max_signal_count, 2000);
+        assert_eq!(g.max_batch_size, 100);
+        assert_eq!(g.signals_per_second, 100);
+    }
+
+    #[test]
+    fn capture_defaults_match_expected() {
+        let c: Capture = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(c.suv_receiver_type, MessageType::Otlp);
+        assert_eq!(c.suv_listening_addr, "127.0.0.1:4318");
+        assert_eq!(c.control_receiver_type, MessageType::Otlp);
+        assert_eq!(c.control_listening_addr, "127.0.0.1:4316");
+        assert!(!c.transformative);
+    }
 }

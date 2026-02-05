@@ -339,9 +339,7 @@ jobs:
       fail-fast: false
     env:
       VALIDATION_LABEL: validation
-    if: >
-      github.event.action == 'ready_for_review' ||
-      contains(github.event.pull_request.labels.*.name, env.VALIDATION_LABEL)
+    if: github.event_name == 'pull_request' && (github.event.action == 'ready_for_review' || contains(github.event.pull_request.labels.*.name, env.VALIDATION_LABEL))
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
