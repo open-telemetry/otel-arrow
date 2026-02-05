@@ -796,7 +796,7 @@ mod tests {
     #[test]
     fn is_sharing_violation_always_false_on_unix() {
         // On non-Windows, is_sharing_violation should always return false
-        let err = std::io::Error::new(std::io::ErrorKind::Other, "test error");
+        let err = std::io::Error::other("test error");
         assert!(!SegmentStore::is_sharing_violation(&err));
 
         #[cfg(not(windows))]
