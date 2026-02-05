@@ -327,6 +327,9 @@ impl SegmentStore {
 
             match std::fs::remove_file(&path) {
                 Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // File was already deleted externally since the call to path.exists(). Treat as success.
+                }
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // On Windows, the file may still be memory-mapped by outstanding
                     // BundleHandles. Add to pending deletes for retry later.
