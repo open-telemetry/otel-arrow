@@ -25,7 +25,7 @@ use otap_df_engine::{
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
 /// URN identifier for the processor
-pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:otel:recordset_kql:processor";
+pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:recordset_kql:processor";
 
 /// OTAP KQL Processor
 #[allow(unsafe_code)]
