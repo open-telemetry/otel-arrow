@@ -364,7 +364,12 @@ async fn add_system_trust_anchors_if_enabled(
     let mut store = RootCertStore::empty();
     // Best-effort: accept that some system certs might not parse.
     let (added, ignored) = store.add_parsable_certificates(roots);
-    otel_debug!("Loaded system CA certificates", added, ignored,);
+    otel_debug!(
+        "loaded.system.ca.certificates",
+        "Loaded system CA certificates",
+        added,
+        ignored,
+    );
 
     Ok(tls.trust_anchors(store.roots))
 }
@@ -667,7 +672,7 @@ impl CaWatcherState {
 
     /// Process a file system event, potentially triggering a reload.
     fn process_event(&self, event: Event) {
-        otel_debug!("File watcher event", event = ?event);
+        otel_debug!("tls.file_watcher.event", "File watcher event", event = ?event);
 
         // Filter out irrelevant event types early (before expensive path checks)
         if matches!(event.kind, notify::EventKind::Access(_)) {
@@ -678,7 +683,10 @@ impl CaWatcherState {
             return;
         }
 
-        otel_debug!("Event matches our CA file, proceeding with reload check");
+        otel_debug!(
+            "tls.file_watcher.match",
+            "Event matches our CA file, proceeding with reload check"
+        );
 
         // Small delay to allow filesystem operations to complete (e.g., atomic renames).
         // This blocks the notify thread briefly, but is acceptable because:
@@ -708,6 +716,7 @@ impl CaWatcherState {
 
         if !is_match {
             otel_debug!(
+                "tls.file_watcher.no_match",
                 "Event not for our file",
                 event_paths = ?event.paths,
                 watched_path = ?self.watched_path,
@@ -723,23 +732,34 @@ impl CaWatcherState {
         let current_identity = match get_file_identity(&self.reload_path) {
             Ok(id) => id,
             Err(e) => {
-                otel_debug!("Failed to get file identity, skipping reload", error = ?e);
+                otel_debug!("tls.file_watcher.identity_error", "Failed to get file identity, skipping reload", error = ?e);
                 return false;
             }
         };
 
         let prev_identity = self.last_identity.load(Ordering::Relaxed);
         if current_identity == prev_identity {
-            otel_debug!("File identity unchanged, skipping reload");
+            otel_debug!(
+                "tls.file_watcher.identity_unchanged",
+                "File identity unchanged, skipping reload"
+            );
             return false;
         }
-        otel_debug!("File identity changed", prev_identity, current_identity);
+        otel_debug!(
+            "tls.file_watcher.identity_changed",
+            "File identity changed",
+            prev_identity,
+            current_identity
+        );
 
         // Check debounce window
         let now = current_timestamp();
         let last = self.last_reload.load(Ordering::Relaxed);
         if now.saturating_sub(last) < CA_RELOAD_DEBOUNCE_SECS {
-            otel_debug!("Debouncing CA file change event");
+            otel_debug!(
+                "tls.file_watcher.debounce",
+                "Debouncing CA file change event"
+            );
             return false;
         }
 
@@ -749,7 +769,10 @@ impl CaWatcherState {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            otel_debug!("CA reload already in progress, skipping");
+            otel_debug!(
+                "tls.file_watcher.reload_in_progress",
+                "CA reload already in progress, skipping"
+            );
             return false;
         }
 
@@ -889,7 +912,11 @@ impl ReloadableClientCaVerifier {
     ) -> Result<Arc<Self>, io::Error> {
         // Initial load
         let ca_pem = read_file_with_limit_sync(&ca_file_path)?;
-        otel_debug!("Initial CA PEM size", size_bytes = ca_pem.len());
+        otel_debug!(
+            "tls.ca.initial_load",
+            "Initial CA PEM size",
+            size_bytes = ca_pem.len()
+        );
         let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
 
         let inner = Arc::new(ArcSwap::from_pointee(verifier));
@@ -1191,7 +1218,11 @@ fn build_webpki_verifier(
         ));
     }
 
-    otel_debug!("Built verifier with CA certificates", count);
+    otel_debug!(
+        "tls.ca.verifier_built",
+        "Built verifier with CA certificates",
+        count
+    );
 
     WebPkiClientVerifier::builder(roots.into())
         .build()
@@ -1204,7 +1235,11 @@ fn reload_ca_verifier(
     include_system_cas: bool,
 ) -> Result<Arc<dyn ClientCertVerifier>, io::Error> {
     let ca_pem = read_file_with_limit_sync(ca_path)?;
-    otel_debug!("Reloaded CA PEM", size_bytes = ca_pem.len());
+    otel_debug!(
+        "tls.ca.reloaded",
+        "Reloaded CA PEM",
+        size_bytes = ca_pem.len()
+    );
     build_webpki_verifier(&ca_pem, include_system_cas)
 }
 
@@ -1390,7 +1425,10 @@ async fn build_client_auth(
 
     if !has_ca_file && !has_ca_pem && !include_system_cas {
         // No client auth configured
-        otel_debug!("No client CA configured, disabling client authentication");
+        otel_debug!(
+            "tls.mtls.disabled",
+            "No client CA configured, disabling client authentication"
+        );
         return Ok(builder.with_no_client_auth());
     }
 

@@ -101,8 +101,8 @@ impl RecordsetKqlProcessor {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "processor.processing_logs",
+                    "Processing KQL query",
                     processor = "recordset_kql",
-                    message = "Processing KQL query",
                     input_items = input_items,
                 );
                 self.process_logs(bytes, signal)
@@ -125,6 +125,7 @@ impl RecordsetKqlProcessor {
 
                 otap_df_telemetry::otel_debug!(
                     "processor.success",
+                    "KQL processing succeeded",
                     processor = "recordset_kql",
                     input_items = input_items,
                     output_items = output_items,
@@ -139,9 +140,10 @@ impl RecordsetKqlProcessor {
                 let message = e.to_string();
                 otap_df_telemetry::otel_debug!(
                     "processor.failure",
+                    "KQL processing failed",
                     processor = "recordset_kql",
                     input_items = input_items,
-                    message = message,
+                    error = message,
                 );
 
                 effect_handler

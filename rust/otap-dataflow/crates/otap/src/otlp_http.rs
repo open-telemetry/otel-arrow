@@ -854,7 +854,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("http.connection_error", "Http connection error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {

@@ -244,6 +244,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
                                                         "tls.handshake.success",
+                                                        "TLS handshake succeeded",
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );

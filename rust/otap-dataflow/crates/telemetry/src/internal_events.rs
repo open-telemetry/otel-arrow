@@ -69,7 +69,7 @@ macro_rules! otel_warn {
 /// # Example:
 /// ```ignore
 /// use otap_df_telemetry::otel_debug;
-/// otel_debug!("processing.batch", batch_size = 100);
+/// otel_debug!("processing.batch", "Processing batch of items", batch_size = 100);
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
