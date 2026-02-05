@@ -196,7 +196,7 @@ mod tests {
     fn node_user_config_minimal_valid() {
         let json = r#"{
             "kind": "receiver",
-            "plugin_urn": "urn:example:receiver",
+            "plugin_urn": "urn:example:demo:receiver",
             "out_ports": {}
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
@@ -208,7 +208,7 @@ mod tests {
     fn test_yaml_node_config() {
         let yaml = r#"
 kind: processor
-plugin_urn: "urn:otap:processor:signal_type_router"
+plugin_urn: "urn:otel:type_router:processor"
 out_ports:
   logs:
     destinations:
