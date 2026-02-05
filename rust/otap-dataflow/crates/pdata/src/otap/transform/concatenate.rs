@@ -336,13 +336,29 @@ fn index_fields<'a>(
 
         let Some(existing) = index.get_mut(field.name().as_str()) else {
             let values_count = array.len() - array.null_count();
+
+            // If this is a struct type, we need to index its fields
+            let struct_index = if matches!(value_type, DataType::Struct(_)) {
+                let struct_array = data
+                    .as_any()
+                    .downcast_ref::<StructArray>()
+                    .expect("Struct array");
+
+                let mut struct_index = BTreeMap::new();
+                let iter = struct_array.fields().iter().zip(struct_array.columns());
+                index_fields(&mut struct_index, iter, Some(field.name().as_str()))?;
+                Some(struct_index)
+            } else {
+                None
+            };
+
             let _ = index.insert(
                 field.name().as_str(),
                 FieldInfo {
                     value_type: value_type,
                     nullable: field.is_nullable(),
                     smallest_key_type: key_type,
-                    struct_index: None,
+                    struct_index,
                     total_element_count: data.len(),
                     largest_value_count: values_count,
                     total_value_count: values_count,
@@ -1285,8 +1301,6 @@ mod schema_tests {
         }
     }
 
-    // Tests for u8 cardinality boundary (255 -> 256)
-
     #[test]
     fn test_cardinality_u8_boundary_at_255() {
         // 255 unique values should select UInt8 dictionary
@@ -1304,8 +1318,6 @@ mod schema_tests {
         // 257 unique values should select UInt16 dictionary
         test_cardinality_helper(&[100, 100, 57], Some(DataType::UInt16));
     }
-
-    // Tests for u16 cardinality boundary (65535 -> 65536)
 
     #[test]
     fn test_cardinality_u16_boundary_below() {
@@ -1702,5 +1714,622 @@ mod index_tests {
             "Field '{}': largest_value_count mismatch",
             field_name
         );
+    }
+}
+
+#[cfg(test)]
+mod nullability_tests {
+    use super::*;
+    use crate::record_batch;
+    use arrow::array::{Int32Array, StructArray};
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    /// Helper to assert a field's nullability in a schema
+    fn assert_field_nullable(schema: &Schema, field_name: &str, expected_nullable: bool) {
+        let field = schema
+            .field_with_name(field_name)
+            .unwrap_or_else(|_| panic!("Field '{}' not found in schema", field_name));
+        assert_eq!(
+            field.is_nullable(),
+            expected_nullable,
+            "Field '{}' nullability mismatch: expected {}, got {}",
+            field_name,
+            expected_nullable,
+            field.is_nullable()
+        );
+    }
+
+    /// Helper to create a simple struct batch
+    fn create_struct_batch(struct_name: &str, field_name: &str, values: Vec<i32>) -> RecordBatch {
+        let struct_field = Field::new(field_name, DataType::Int32, false);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(struct_field),
+            Arc::new(Int32Array::from(values)) as ArrayRef,
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            struct_name,
+            DataType::Struct(vec![Field::new(field_name, DataType::Int32, false)].into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    #[test]
+    fn test_field_nullable_when_missing_in_some_batches() {
+        let batch1 = record_batch!(("id", Int32, [1, 2]), ("name", Utf8, ["a", "b"])).unwrap();
+        let batch2 = record_batch!(("id", Int32, [3, 4])).unwrap();
+        let batch3 = record_batch!(("id", Int32, [5, 6]), ("name", Utf8, ["c", "d"])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // "name" is missing from batch2, so it should be nullable
+        assert_field_nullable(&schema, "name", true);
+        // "id" is present in all batches
+        assert_field_nullable(&schema, "id", true); // Still nullable because field schema marks it nullable
+    }
+
+    #[test]
+    fn test_field_nullable_with_null_values_in_array() {
+        let batch1 = record_batch!(("value", Int32, [Some(1), Some(2)])).unwrap();
+        let batch2 = record_batch!(("value", Int32, [Some(3), None])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Field has null values, so it should be nullable
+        assert_field_nullable(&schema, "value", true);
+    }
+
+    #[test]
+    fn test_multiple_fields_nullable_combinations() {
+        let batch1 = record_batch!(
+            ("a", Int32, [1, 2]),
+            ("b", Int32, [3, 4]),
+            ("c", Int32, [5, 6])
+        )
+        .unwrap();
+        let batch2 = record_batch!(("a", Int32, [7, 8]), ("b", Int32, [9, 10])).unwrap();
+        let batch3 = record_batch!(("a", Int32, [11, 12]), ("c", Int32, [13, 14])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_field_nullable(&schema, "a", true);
+        assert_field_nullable(&schema, "b", true);
+        assert_field_nullable(&schema, "c", true);
+    }
+
+    #[test]
+    fn test_struct_field_nullable_when_struct_missing_from_batches() {
+        let batch1 = create_struct_batch("data", "value", vec![1, 2, 3]);
+        let batch2 = record_batch!(("other", Int32, [1, 2])).unwrap();
+        let batch3 = create_struct_batch("data", "value", vec![4, 5, 6]);
+
+        let records = vec![Some(&batch1), Some(&batch2), Some(&batch3)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Struct "data" is missing from batch2, so it should be nullable
+        assert_field_nullable(&schema, "data", true);
+
+        // Check the struct field itself
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            let value_field = fields
+                .iter()
+                .find(|f| f.name() == "value")
+                .expect("value field should exist");
+            assert!(
+                value_field.is_nullable(),
+                "Struct field 'value' should be nullable when parent struct missing from batches"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_struct_field_nullability_basic() {
+        // Simple test with single batch containing struct with non-nullable fields
+        let struct_fields = vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ];
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(struct_fields[0].clone()),
+                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields[1].clone()),
+                Arc::new(Int32Array::from(vec![3, 4])) as ArrayRef,
+            ),
+        ]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields.into()),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
+
+        let records = vec![Some(&batch)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Verify struct fields are present
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            assert_eq!(fields.len(), 2, "Should have 2 struct fields");
+            assert!(
+                fields.iter().any(|f| f.name() == "a"),
+                "Field 'a' should exist"
+            );
+            assert!(
+                fields.iter().any(|f| f.name() == "b"),
+                "Field 'b' should exist"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_struct_field_union_behavior() {
+        // Test verifies that struct fields from different batches are properly unioned.
+        // When struct instances have different fields across batches, all fields should
+        // be included in the final schema and marked nullable when not present in all instances.
+
+        // Batch 1: struct with fields "a" and "b"
+        let struct_fields1 = vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ];
+        let struct_array1 = StructArray::from(vec![
+            (
+                Arc::new(struct_fields1[0].clone()),
+                Arc::new(Int32Array::from(vec![1])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields1[1].clone()),
+                Arc::new(Int32Array::from(vec![2])) as ArrayRef,
+            ),
+        ]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields1.into()),
+            false,
+        )]));
+        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array1)]).unwrap();
+
+        // Batch 2: struct with fields "a" and "c"
+        let struct_fields2 = vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ];
+        let struct_array2 = StructArray::from(vec![
+            (
+                Arc::new(struct_fields2[0].clone()),
+                Arc::new(Int32Array::from(vec![3])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields2[1].clone()),
+                Arc::new(Int32Array::from(vec![4])) as ArrayRef,
+            ),
+        ]);
+        let schema2 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields2.into()),
+            false,
+        )]));
+        let batch2 = RecordBatch::try_new(schema2, vec![Arc::new(struct_array2)]).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // All three fields (a, b, c) from both batches should be present
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            let field_names: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+
+            // All fields should be present
+            assert_eq!(
+                field_names.len(),
+                3,
+                "Should have 3 fields (a, b, c) in struct"
+            );
+            assert!(
+                field_names.contains(&"a"),
+                "Field 'a' should exist (present in both batches)"
+            );
+            assert!(
+                field_names.contains(&"b"),
+                "Field 'b' should exist (present in batch 1)"
+            );
+            assert!(
+                field_names.contains(&"c"),
+                "Field 'c' should exist (present in batch 2)"
+            );
+
+            // Fields b and c should be nullable since they don't appear in all struct instances
+            let b_field = fields.iter().find(|f| f.name() == "b").expect("b exists");
+            let c_field = fields.iter().find(|f| f.name() == "c").expect("c exists");
+            assert!(
+                b_field.is_nullable(),
+                "Field 'b' should be nullable (missing from batch 2)"
+            );
+            assert!(
+                c_field.is_nullable(),
+                "Field 'c' should be nullable (missing from batch 1)"
+            );
+
+            // Field a present in all instances should not be nullable
+            let a_field = fields.iter().find(|f| f.name() == "a").expect("a exists");
+            assert!(
+                !a_field.is_nullable(),
+                "Field 'a' should not be nullable (present in all instances)"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use crate::record_batch;
+    use crate::schema::consts::metadata::COLUMN_ENCODING;
+    use crate::schema::consts::metadata::encodings::PLAIN;
+    use crate::schema::consts::{ID, PARENT_ID};
+    use arrow::array::{Int32Array, StructArray};
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    /// Helper to assert field has expected metadata
+    fn assert_field_metadata(
+        schema: &Schema,
+        field_name: &str,
+        key: &str,
+        expected_value: Option<&str>,
+    ) {
+        let field = schema
+            .field_with_name(field_name)
+            .unwrap_or_else(|_| panic!("Field '{}' not found in schema", field_name));
+        let actual_value = field.metadata().get(key);
+        match (actual_value, expected_value) {
+            (Some(actual), Some(expected)) => {
+                assert_eq!(
+                    actual, expected,
+                    "Field '{}' metadata '{}' mismatch: expected '{}', got '{}'",
+                    field_name, key, expected, actual
+                );
+            }
+            (None, None) => {}
+            (Some(actual), None) => {
+                panic!(
+                    "Field '{}' has unexpected metadata '{}' = '{}'",
+                    field_name, key, actual
+                );
+            }
+            (None, Some(expected)) => {
+                panic!(
+                    "Field '{}' missing expected metadata '{}' = '{}'",
+                    field_name, key, expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_metadata_added_to_id_field() {
+        let batch1 = record_batch!(("id", Int32, [1, 2])).unwrap();
+        let batch2 = record_batch!(("id", Int32, [3, 4])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
+    }
+
+    #[test]
+    fn test_metadata_added_to_parent_id_field() {
+        let batch1 = record_batch!(("parent_id", Int32, [0, 1])).unwrap();
+        let batch2 = record_batch!(("parent_id", Int32, [2, 3])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
+    }
+
+    #[test]
+    fn test_metadata_not_added_to_regular_fields() {
+        let batch1 = record_batch!(("value", Int32, [1, 2]), ("name", Utf8, ["a", "b"])).unwrap();
+        let batch2 = record_batch!(("value", Int32, [3, 4]), ("name", Utf8, ["c", "d"])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_field_metadata(&schema, "value", COLUMN_ENCODING, None);
+        assert_field_metadata(&schema, "name", COLUMN_ENCODING, None);
+    }
+
+    #[test]
+    fn test_metadata_added_to_dictionary_id_field() {
+        let batch1 = record_batch!(("id", (UInt8, Int32), ([0, 1], [100, 200]))).unwrap();
+        let batch2 = record_batch!(("id", (UInt8, Int32), ([0, 1], [300, 400]))).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // ID field should get PLAIN metadata even when dictionary-encoded
+        assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
+    }
+
+    #[test]
+    fn test_metadata_added_to_struct_id_fields() {
+        // Test verifies that "id" and "parent_id" fields within structs also get PLAIN metadata,
+        // just like top-level fields with those names.
+
+        // Create struct with "id" and "value" fields
+        let struct_fields = vec![
+            Field::new(ID, DataType::Int32, false),
+            Field::new("value", DataType::Int32, false),
+        ];
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(struct_fields[0].clone()),
+                Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            ),
+            (
+                Arc::new(struct_fields[1].clone()),
+                Arc::new(Int32Array::from(vec![10, 20])) as ArrayRef,
+            ),
+        ]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(struct_fields.into()),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
+
+        let records = vec![Some(&batch)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Struct subfields named "id" should get PLAIN metadata
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            let id_field = fields
+                .iter()
+                .find(|f| f.name() == ID)
+                .expect("id field should exist");
+            let metadata_value = id_field.metadata().get(COLUMN_ENCODING);
+            assert_eq!(
+                metadata_value,
+                Some(&PLAIN.to_string()),
+                "Struct subfield 'id' should have PLAIN encoding metadata"
+            );
+
+            let value_field = fields
+                .iter()
+                .find(|f| f.name() == "value")
+                .expect("value field should exist");
+            let value_metadata = value_field.metadata().get(COLUMN_ENCODING);
+            assert_eq!(
+                value_metadata, None,
+                "Struct field 'value' should not have encoding metadata"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_metadata_on_both_id_and_parent_id() {
+        let batch1 = record_batch!(("id", Int32, [1, 2]), ("parent_id", Int32, [0, 1])).unwrap();
+        let batch2 = record_batch!(("id", Int32, [3, 4]), ("parent_id", Int32, [2, 3])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        assert_field_metadata(&schema, ID, COLUMN_ENCODING, Some(PLAIN));
+        assert_field_metadata(&schema, PARENT_ID, COLUMN_ENCODING, Some(PLAIN));
+    }
+}
+
+#[cfg(test)]
+mod struct_field_tests {
+    use super::*;
+    use crate::record_batch;
+    use arrow::array::{DictionaryArray, Int32Array, StringArray, StructArray, UInt8Array};
+    use arrow::datatypes::UInt8Type;
+    use arrow_schema::{Field, Schema};
+    use std::sync::Arc;
+
+    /// Helper to create a struct batch with a dictionary field
+    fn create_struct_with_dict_field(
+        struct_name: &str,
+        field_name: &str,
+        keys: Vec<u8>,
+        values: Vec<&str>,
+    ) -> RecordBatch {
+        let key_array = UInt8Array::from(keys);
+        let value_array = Arc::new(StringArray::from(values));
+        let dict_array = DictionaryArray::<UInt8Type>::new(key_array, value_array);
+
+        let struct_field = Field::new(
+            field_name,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            false,
+        );
+        let struct_array = StructArray::from(vec![(
+            Arc::new(struct_field.clone()),
+            Arc::new(dict_array) as ArrayRef,
+        )]);
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            struct_name,
+            DataType::Struct(vec![struct_field].into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    #[test]
+    fn test_struct_with_dictionary_field_u8() {
+        let batch1 = create_struct_with_dict_field("data", "status", vec![0, 1], vec!["a", "b"]);
+        let batch2 = create_struct_with_dict_field("data", "status", vec![0, 1], vec!["c", "d"]);
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Check struct field type
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            let status_field = fields
+                .iter()
+                .find(|f| f.name() == "status")
+                .expect("status field should exist");
+            assert!(
+                matches!(
+                    status_field.data_type(),
+                    DataType::Dictionary(k, v) if **k == DataType::UInt8 && **v == DataType::Utf8
+                ),
+                "Expected Dictionary(UInt8, Utf8), got {:?}",
+                status_field.data_type()
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_struct_with_primitive_field() {
+        // Create struct with simple Int32 field
+        let struct_field = Field::new("value", DataType::Int32, false);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(struct_field.clone()),
+            Arc::new(Int32Array::from(vec![1, 2, 3])) as ArrayRef,
+        )]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(vec![struct_field].into()),
+            false,
+        )]));
+        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array.clone())]).unwrap();
+        let batch2 = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "data",
+                DataType::Struct(vec![Field::new("value", DataType::Int32, false)].into()),
+                false,
+            )])),
+            vec![Arc::new(struct_array)],
+        )
+        .unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Check struct field is Int32
+        let struct_field = schema.field_with_name("data").unwrap();
+        if let DataType::Struct(fields) = struct_field.data_type() {
+            let value_field = fields
+                .iter()
+                .find(|f| f.name() == "value")
+                .expect("value field should exist");
+            assert_eq!(
+                value_field.data_type(),
+                &DataType::Int32,
+                "Expected Int32 type"
+            );
+        } else {
+            panic!("Expected Struct type for 'data' field");
+        }
+    }
+
+    #[test]
+    fn test_struct_completely_missing_from_batch() {
+        // Create struct batch
+        let struct_field = Field::new("value", DataType::Int32, false);
+        let struct_array = StructArray::from(vec![(
+            Arc::new(struct_field.clone()),
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        )]);
+        let schema1 = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            DataType::Struct(vec![struct_field].into()),
+            false,
+        )]));
+        let batch1 = RecordBatch::try_new(schema1, vec![Arc::new(struct_array)]).unwrap();
+
+        // Batch without struct
+        let batch2 = record_batch!(("other", Int32, [3, 4])).unwrap();
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Struct field should be nullable when missing from batch
+        let struct_field = schema.field_with_name("data").unwrap();
+        assert!(
+            struct_field.is_nullable(),
+            "Struct should be nullable when missing from some batches"
+        );
+    }
+
+    #[test]
+    fn test_multiple_struct_fields_in_schema() {
+        // Create batch with two different struct fields
+        let struct_field1 = Field::new("value", DataType::Int32, false);
+        let struct_array1 = StructArray::from(vec![(
+            Arc::new(struct_field1.clone()),
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        )]);
+
+        let struct_field2 = Field::new("name", DataType::Utf8, false);
+        let struct_array2 = StructArray::from(vec![(
+            Arc::new(struct_field2.clone()),
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        )]);
+
+        let schema1 = Arc::new(Schema::new(vec![
+            Field::new(
+                "struct1",
+                DataType::Struct(vec![struct_field1].into()),
+                false,
+            ),
+            Field::new(
+                "struct2",
+                DataType::Struct(vec![struct_field2].into()),
+                false,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema1,
+            vec![Arc::new(struct_array1), Arc::new(struct_array2)],
+        )
+        .unwrap();
+
+        let records = vec![Some(&batch)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index).unwrap();
+
+        // Both structs should be present
+        assert!(schema.field_with_name("struct1").is_ok());
+        assert!(schema.field_with_name("struct2").is_ok());
     }
 }
