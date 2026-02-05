@@ -17,16 +17,15 @@ use std::collections::HashSet;
 /// ```yaml
 /// processors:
 ///   resource_validator:
-///     required_attribute: "microsoft.resourceId"
+///     required_attribute: "cloud.resource_id"
 ///     allowed_values:
 ///       - "/subscriptions/xxx/resourceGroups/yyy/..."
-///     case_insensitive: true
+///     case_sensitive: false  # optional, defaults to true
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// The resource attribute key that must be present on all resources.
-    /// Default: "microsoft.resourceId"
-    #[serde(default = "default_required_attribute")]
+    /// This is a required field with no default.
     pub required_attribute: String,
 
     /// List of allowed values for the required attribute.
@@ -34,24 +33,14 @@ pub struct Config {
     #[serde(default)]
     pub allowed_values: Vec<String>,
 
-    /// Whether to perform case-insensitive comparison of attribute values.
-    /// Default: false
-    #[serde(default)]
-    pub case_insensitive: bool,
+    /// Whether to perform case-sensitive comparison of attribute values.
+    /// Default: true
+    #[serde(default = "default_case_sensitive")]
+    pub case_sensitive: bool,
 }
 
-fn default_required_attribute() -> String {
-    "microsoft.resourceId".to_string()
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            required_attribute: default_required_attribute(),
-            allowed_values: Vec::new(),
-            case_insensitive: false,
-        }
-    }
+fn default_case_sensitive() -> bool {
+    true
 }
 
 impl Config {
@@ -71,16 +60,16 @@ impl Config {
     }
 
     /// Returns a pre-processed set of allowed values for efficient lookup.
-    /// If case_insensitive is true, all values are lowercased.
+    /// If case_sensitive is false, all values are lowercased.
     #[must_use]
     pub fn allowed_values_set(&self) -> HashSet<String> {
-        if self.case_insensitive {
+        if self.case_sensitive {
+            self.allowed_values.iter().cloned().collect()
+        } else {
             self.allowed_values
                 .iter()
                 .map(|v| v.to_lowercase())
                 .collect()
-        } else {
-            self.allowed_values.iter().cloned().collect()
         }
     }
 }
@@ -89,12 +78,13 @@ impl Config {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_default_config() {
-        let config = Config::default();
-        assert_eq!(config.required_attribute, "microsoft.resourceId");
-        assert!(config.allowed_values.is_empty());
-        assert!(!config.case_insensitive);
+    /// Helper to create a config for testing
+    fn test_config(required_attribute: &str, allowed_values: Vec<&str>) -> Config {
+        Config {
+            required_attribute: required_attribute.to_string(),
+            allowed_values: allowed_values.into_iter().map(String::from).collect(),
+            case_sensitive: true,
+        }
     }
 
     #[test]
@@ -102,37 +92,29 @@ mod tests {
         let config = Config {
             required_attribute: "".to_string(),
             allowed_values: vec!["value".to_string()],
-            ..Default::default()
+            case_sensitive: true,
         };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_validate_empty_allowed_values() {
-        let config = Config {
-            required_attribute: "microsoft.resourceId".to_string(),
-            allowed_values: vec![],
-            ..Default::default()
-        };
+        let config = test_config("cloud.resource_id", vec![]);
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn test_validate_valid_config() {
-        let config = Config {
-            required_attribute: "microsoft.resourceId".to_string(),
-            allowed_values: vec!["/subscriptions/123".to_string()],
-            ..Default::default()
-        };
+        let config = test_config("cloud.resource_id", vec!["/subscriptions/123"]);
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn test_allowed_values_set_case_sensitive() {
         let config = Config {
+            required_attribute: "cloud.resource_id".to_string(),
             allowed_values: vec!["Value1".to_string(), "Value2".to_string()],
-            case_insensitive: false,
-            ..Default::default()
+            case_sensitive: true,
         };
         let set = config.allowed_values_set();
         assert!(set.contains("Value1"));
@@ -143,9 +125,9 @@ mod tests {
     #[test]
     fn test_allowed_values_set_case_insensitive() {
         let config = Config {
+            required_attribute: "cloud.resource_id".to_string(),
             allowed_values: vec!["Value1".to_string(), "VALUE2".to_string()],
-            case_insensitive: true,
-            ..Default::default()
+            case_sensitive: false,
         };
         let set = config.allowed_values_set();
         assert!(set.contains("value1"));
@@ -158,11 +140,11 @@ mod tests {
         let json = r#"{
             "required_attribute": "my.attribute",
             "allowed_values": ["val1", "val2"],
-            "case_insensitive": true
+            "case_sensitive": false
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.required_attribute, "my.attribute");
         assert_eq!(config.allowed_values, vec!["val1", "val2"]);
-        assert!(config.case_insensitive);
+        assert!(!config.case_sensitive);
     }
 }

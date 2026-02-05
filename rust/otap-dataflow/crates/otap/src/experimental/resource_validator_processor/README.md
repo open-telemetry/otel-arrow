@@ -7,8 +7,8 @@ misconfiguration immediately rather than having data silently dropped.
 
 ## Example Use Case
 
-In multi-tenant Azure environments, telemetry includes a `microsoft.resourceId`
-resource attribute containing the Azure Resource Manager (ARM) resource ID.
+In multi-tenant cloud environments, telemetry includes a resource attribute
+(e.g., `cloud.resource_id`) containing an identifier for the resource.
 The collector must:
 
 1. Validate the attribute exists on the Resource
@@ -34,16 +34,16 @@ to client.
 ```yaml
 processors:
   resource_validator:
-    # The resource attribute key that must be present (default: "microsoft.resourceId")
-    required_attribute: "microsoft.resourceId"
+    # The resource attribute key that must be present (required, no default)
+    required_attribute: "cloud.resource_id"
 
     # List of allowed values (required - empty list rejects all values)
     allowed_values:
       - "/subscriptions/xxx/resourceGroups/yyy/..."
       - "/subscriptions/aaa/resourceGroups/bbb/..."
 
-    # Case-insensitive comparison (default: false)
-    case_insensitive: true
+    # Case-sensitive comparison (default: true)
+    case_sensitive: false
 ```
 
 ## Behavior

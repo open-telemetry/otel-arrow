@@ -10,8 +10,8 @@
 //!
 //! # Example Use Case
 //!
-//! In multi-tenant Azure environments, telemetry includes a `microsoft.resourceId`
-//! resource attribute containing the Azure Resource Manager (ARM) resource ID.
+//! In multi-tenant cloud environments, telemetry includes a resource attribute
+//! (e.g., `cloud.resource_id`) containing an identifier for the resource.
 //! This processor validates:
 //! 1. The attribute exists on the Resource
 //! 2. The value is in the allowed list
@@ -22,10 +22,10 @@
 //! ```yaml
 //! processors:
 //!   resource_validator:
-//!     required_attribute: "microsoft.resourceId"
+//!     required_attribute: "cloud.resource_id"  # required, no default
 //!     allowed_values:
 //!       - "/subscriptions/xxx/resourceGroups/yyy/..."
-//!     case_insensitive: true
+//!     case_sensitive: false  # optional, defaults to true
 //! ```
 //!
 //! # Extensibility
@@ -92,7 +92,7 @@ pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:resource_validator:
 #[derive(Debug, Clone)]
 pub enum AllowedValuesSource {
     /// Static allowed values from configuration.
-    /// These are pre-normalized (lowercased if case_insensitive).
+    /// These are pre-normalized (lowercased if case_sensitive is false).
     Static(HashSet<String>),
 
     /// Dynamic allowed values from auth context (future).
@@ -159,8 +159,8 @@ pub struct ResourceValidatorProcessor {
     required_attribute: String,
     /// Source of allowed values (static config or dynamic auth)
     allowed_values_source: AllowedValuesSource,
-    /// Whether to perform case-insensitive comparison
-    case_insensitive: bool,
+    /// Whether to perform case-sensitive comparison
+    case_sensitive: bool,
     /// Telemetry metrics
     metrics: MetricSet<ResourceValidatorMetrics>,
 }
@@ -207,7 +207,7 @@ impl ResourceValidatorProcessor {
         Ok(Self {
             required_attribute: config.required_attribute.clone(),
             allowed_values_source: AllowedValuesSource::Static(config.allowed_values_set()),
-            case_insensitive: config.case_insensitive,
+            case_sensitive: config.case_sensitive,
             metrics,
         })
     }
@@ -218,14 +218,14 @@ impl ResourceValidatorProcessor {
     pub fn new(
         required_attribute: String,
         allowed_values: HashSet<String>,
-        case_insensitive: bool,
+        case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
         let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
         Self {
             required_attribute,
             allowed_values_source: AllowedValuesSource::Static(allowed_values),
-            case_insensitive,
+            case_sensitive,
             metrics,
         }
     }
@@ -298,10 +298,10 @@ impl ResourceValidatorProcessor {
                 // Empty allowed_values rejects all values.
                 // Case-sensitive: zero allocation with Cow::Borrowed.
                 // Case-insensitive: allocates via to_lowercase() for O(1) HashSet lookup.
-                let lookup_value: Cow<'_, str> = if self.case_insensitive {
-                    Cow::Owned(str_value.to_lowercase())
-                } else {
+                let lookup_value: Cow<'_, str> = if self.case_sensitive {
                     Cow::Borrowed(str_value)
+                } else {
+                    Cow::Owned(str_value.to_lowercase())
                 };
 
                 if allowed_values.contains(lookup_value.as_ref()) {
@@ -560,7 +560,7 @@ mod tests {
     struct TestValidator {
         required_attribute: String,
         allowed_values: HashSet<String>,
-        case_insensitive: bool,
+        case_sensitive: bool,
     }
 
     impl TestValidator {
@@ -602,10 +602,10 @@ mod tests {
                         .map_err(|_| ValidationFailure::InvalidAttributeType)?;
 
                     // Empty allowed_values rejects all values
-                    let lookup_value: Cow<'_, str> = if self.case_insensitive {
-                        Cow::Owned(str_value.to_lowercase())
-                    } else {
+                    let lookup_value: Cow<'_, str> = if self.case_sensitive {
                         Cow::Borrowed(str_value)
+                    } else {
+                        Cow::Owned(str_value.to_lowercase())
                     };
 
                     if self.allowed_values.contains(lookup_value.as_ref()) {
@@ -737,7 +737,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_logs(&data);
@@ -758,7 +758,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_logs(&data);
@@ -782,7 +782,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_logs(&data);
@@ -806,7 +806,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: true,
+            case_sensitive: false,
         };
 
         let result = validator.validate_logs(&data);
@@ -825,7 +825,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: HashSet::new(),
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_logs(&data);
@@ -849,7 +849,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_logs(&data);
@@ -864,14 +864,14 @@ mod tests {
         let json = r#"{
             "required_attribute": "my.custom.attribute",
             "allowed_values": ["value1", "Value2"],
-            "case_insensitive": true
+            "case_sensitive": false
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.required_attribute, "my.custom.attribute");
         assert_eq!(config.allowed_values, vec!["value1", "Value2"]);
-        assert!(config.case_insensitive);
+        assert!(!config.case_sensitive);
 
-        // allowed_values_set should lowercase values when case_insensitive
+        // allowed_values_set should lowercase values when case_sensitive is false
         let set = config.allowed_values_set();
         assert!(set.contains("value1"));
         assert!(set.contains("value2"));
@@ -898,7 +898,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_arrow_logs(&arrow_records);
@@ -918,7 +918,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_arrow_logs(&arrow_records);
@@ -941,7 +941,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_arrow_logs(&arrow_records);
@@ -964,7 +964,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: true,
+            case_sensitive: false,
         };
 
         let result = validator.validate_arrow_logs(&arrow_records);
@@ -1053,7 +1053,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_metrics(&data);
@@ -1074,7 +1074,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_metrics(&data);
@@ -1098,7 +1098,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_traces(&data);
@@ -1119,7 +1119,7 @@ mod tests {
         let validator = TestValidator {
             required_attribute: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
-            case_insensitive: false,
+            case_sensitive: true,
         };
 
         let result = validator.validate_traces(&data);
