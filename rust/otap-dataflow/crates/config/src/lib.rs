@@ -24,6 +24,8 @@ pub mod node;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
+/// Pipeline and engine settings.
+pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod urn;

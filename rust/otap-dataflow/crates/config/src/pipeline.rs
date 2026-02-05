@@ -9,6 +9,7 @@ use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
+use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -390,42 +391,6 @@ pub struct PipelineSettings {
     /// signals to external backends.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
-}
-
-/// Configuration for pipeline-internal telemetry capture.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TelemetrySettings {
-    /// Enable capture of per-pipeline internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub pipeline_metrics: bool,
-
-    /// Enable capture of Tokio runtime internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub tokio_metrics: bool,
-
-    /// Enable capture of channel-level metrics.
-    ///
-    /// When disabled, the engine does not report channel sender/receiver metrics.
-    #[serde(default = "default_true")]
-    pub channel_metrics: bool,
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-impl Default for TelemetrySettings {
-    fn default() -> Self {
-        Self {
-            pipeline_metrics: true,
-            tokio_metrics: true,
-            channel_metrics: true,
-        }
-    }
 }
 
 fn default_node_ctrl_msg_channel_size() -> usize {
