@@ -539,16 +539,28 @@ impl QuiverEngine {
         // Load cursor sidecar to find where we left off
         let cursor_path = CursorSidecar::path_for(&wal_path);
 
-        let cursor_position = match fs::read(&cursor_path) {
-            Ok(data) => CursorSidecar::decode(&data)
-                .map(|c| c.wal_position)
-                .unwrap_or(0),
+        // Track whether we're using a potentially stale/missing cursor that could cause duplicates
+        let mut cursor_may_cause_duplicates = false;
+
+        let cursor_position = match tokio::fs::read(&cursor_path).await {
+            Ok(data) => match CursorSidecar::decode(&data) {
+                Ok(c) => c.wal_position,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to decode cursor sidecar, replaying from beginning - duplicates may occur"
+                    );
+                    cursor_may_cause_duplicates = true;
+                    0
+                }
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "failed to read cursor sidecar, starting from beginning"
+                    "failed to read cursor sidecar, replaying from beginning - duplicates may occur"
                 );
+                cursor_may_cause_duplicates = true;
                 0
             }
         };
@@ -557,7 +569,7 @@ impl QuiverEngine {
         let reader = match MultiFileWalReader::open(&wal_path) {
             Ok(r) => r,
             Err(e) => {
-                // WAL file doesn't exist or is invalid - this is fine on first run
+                // WAL files don't exist or are invalid - this is fine on first run
                 tracing::debug!(
                     error = %e,
                     "no WAL files found for replay, starting fresh"
@@ -565,6 +577,27 @@ impl QuiverEngine {
                 return Ok(0);
             }
         };
+
+        // Clamp cursor_position to actual WAL bounds to handle stale/corrupted sidecar values
+        let wal_end = reader.wal_end_position();
+        let cursor_position = if cursor_position > wal_end {
+            tracing::warn!(
+                cursor_position,
+                wal_end,
+                "cursor sidecar position exceeds WAL bounds, clamping to WAL end"
+            );
+            wal_end
+        } else {
+            cursor_position
+        };
+
+        // Log warning if cursor was missing/corrupted and we're replaying from a non-zero position
+        if cursor_may_cause_duplicates && cursor_position > 0 {
+            tracing::warn!(
+                cursor_position,
+                "cursor sidecar was invalid, replaying from beginning - duplicates may have been written to segments"
+            );
+        }
 
         // Iterate from the cursor position (skip already-finalized entries)
         // The multi-file reader handles finding the right file(s) to start from
@@ -3969,6 +4002,159 @@ mod tests {
                 "should recover fewer bundles due to corruption; got {} but ingested {}",
                 recovered,
                 bundles_ingested
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_clamps_cursor_exceeding_wal_bounds() {
+        // Test that WAL replay handles a cursor sidecar with a position beyond the WAL end.
+        // This can happen if the WAL was truncated or the sidecar is stale.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Write a cursor sidecar with a position way beyond the actual WAL size
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        let bogus_cursor = CursorSidecar::new(999_999_999); // Way beyond WAL end
+        CursorSidecar::write_to_sync(&sidecar_path, &bogus_cursor).expect("write sidecar");
+
+        // Reopen engine - should clamp cursor to WAL end and replay nothing
+        // (since the clamped position is at the end of the WAL)
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite bogus cursor");
+
+            // Since cursor was clamped to WAL end, no entries should be replayed
+            // The open segment should be empty
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, 0,
+                "should replay zero bundles when cursor is clamped to WAL end; got {}",
+                recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_corrupted_cursor_sidecar() {
+        // Test that WAL replay handles a corrupted cursor sidecar gracefully.
+        // Should fall back to replaying from the beginning.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Corrupt the cursor sidecar file
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        // Write garbage data that won't decode as a valid sidecar
+        fs::write(&sidecar_path, b"corrupted garbage data").expect("write corrupt sidecar");
+
+        // Reopen engine - should fall back to position 0 and replay all entries
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite corrupted sidecar");
+
+            // Since cursor decode failed, should replay from position 0 (all entries)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, bundles_ingested,
+                "should replay all {} bundles when cursor is corrupted; got {}",
+                bundles_ingested, recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_missing_cursor_sidecar() {
+        // Test that WAL replay handles a missing cursor sidecar gracefully.
+        // Should replay from the beginning (position 0).
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Delete the cursor sidecar file if it exists
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        if sidecar_path.exists() {
+            fs::remove_file(&sidecar_path).expect("remove sidecar");
+        }
+
+        // Reopen engine - should replay from position 0 (all entries)
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open without sidecar");
+
+            // Since cursor sidecar is missing, should replay from position 0 (all entries)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, bundles_ingested,
+                "should replay all {} bundles when sidecar is missing; got {}",
+                bundles_ingested, recovered
             );
         }
     }
