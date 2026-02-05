@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770280993905,
+  "lastUpdate": 1770319688957,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6886,6 +6886,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.000884,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "56887295a09a2ba52bcd736ffba8852d9293227c",
+          "message": "Fanout Processor (#1878)\n\n## Fan-out Processor Implementation\n\nImplements all four discussed scenarios:\n\n| Scenario | Config | Description |\n|----------|--------|-------------|\n| 1 | `mode: parallel, await_ack: primary` | Duplicate to all, wait for\nprimary only |\n| 2 | `mode: parallel, await_ack: all` | Duplicate to all, wait for all\n(with per-destination timeout) |\n| 3 | `mode: sequential` | Send one-by-one, advance after ack |\n| 4 | `fallback_for: <port>` | Failover to backup on nack/timeout |\n\n### Why Stateful (not Stateless like Go collector)\n\nThe Go Collector's fanout is stateless because it uses **synchronous,\nblocking calls**:\n```go\nerr := consumer.ConsumeLogs(ctx, ld)  // blocks until complete, error returns directly\n```\n\nOur OTAP engine uses async message passing with explicit ack/nack\nrouting:\n\n```rust\neffect_handler.send_message_to(port, pdata).await?;  // returns immediately\n// ack arrives later as separate NodeControlMsg::Ack\n```\nI explored making scenarios 1 and 3 stateless but hit three blockers:\n\n1. **`subscribe_to()` mutates context** - Fanout must subscribe to\nreceive acks, which pushes a frame onto the context stack. For correct\nupstream routing, we need the *original* pdata (pre-subscription). We\ncannot use `ack.accepted` from downstream.\n\n2. **Downstream may mutate/drop payloads** - `into_parts()`,\ntransformers, and filters mean we can't rely on getting intact pdata\nback in ack/nack messages.\n\n3. **Sequential/fallback/timeout require coordination** - Need to know\nwhich destination is active, when to advance to the next, and when to\ntrigger fallbacks or finish.\n\nEven if downstream guaranteed returning intact payloads, we'd still need\nstate for `await_all` completion tracking, fallback chains, and\nsequential advancement. The only gain would be a minor memory\noptimization (not storing `original_pdata`), not true statelessness.\n\nAdopting Go's synchronous model would require fundamental engine\narchitecture changes, not just fanout changes.\n\n### Memory Optimizations\n\nWhile full statelessness isn't possible, I have implemented fast paths\nto minimize allocations for common configurations:\n\n| Configuration | Fast Path | State Per Request |\n\n|-----------------------------------------------------------|------------------|------------------------------------------------|\n| `await_ack: none` | Fire-and-forget | None (zero inflight tracking) |\n| `parallel + primary + no fallback + no timeout` | Slim primary |\nMinimal (`request_id → original_pdata`) |\n| All other configs | Full | Complete endpoint tracking |\n\n#### Fast Path Details\n\n- **Fire-and-forget (`await_ack: none`)**  \nBypasses all inflight state. Clone, send, and ACK upstream immediately.\n  Zero allocations per request.\n\n- **Slim primary path**  \nUses a tiny `HashMap<u64, OtapPdata>` instead of the full `Inflight`\nstruct with `EndpointVec`.\n  Ignores non-primary ACKs and NACKs.\n\n- **Full path**  \n  Required for:\n  - Sequential mode  \n  - `await_all`  \n  - Any fallback  \n  - Any timeout  \n\n  Tracks all endpoints and request state.\n\n### Code Structure\n\n`Inflight` holds per-request state:\n- `original_pdata` - pre-subscription pdata, used for all upstream\nacks/nacks\n- `endpoints[]` - per-destination status\n(`Acked`/`Nacked`/`InFlight`/`PendingSend`)\n- `next_send_queue` - drives sequential mode advancement\n- `completed_origins` - tracks completion for `await_ack: all`\n- `timeout_at` - per-destination deadlines for timeout/fallback\ntriggering\n\nNot all fields are used for every scenario, but the overhead is minimal\n- empty HashSets don't allocate, SmallVec is inline for ≤4 items, and\nclone cost is O(1) for `bytes::Bytes`.\n\n### Documentation\n\nSee\n[`crates/otap/src/fanout_processor/README.md`](crates/otap/src/fanout_processor/README.md)\nfor configuration examples and behavior details.\n\n---------\n\nCo-authored-by: Joshua MacDonald <jmacd@users.noreply.github.com>",
+          "timestamp": "2026-02-05T17:31:50Z",
+          "tree_id": "8ed430a68b4bdcfaa58b83efa9911da2c181a023",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/56887295a09a2ba52bcd736ffba8852d9293227c"
+        },
+        "date": 1770319688588,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.0905088628670078,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.11695684514067492,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 42.113839285714285,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 42.19921875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000888,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.5491124531969284,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.6387936353728787,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 172.79575892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 173.28515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00094,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2602894018393116,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.33649835330739297,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 93.04464285714286,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 93.22265625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001351,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.07952566266591664,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.08451729220222794,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 29.670200892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 29.7578125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000978,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.175038491281502,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.21230637979420017,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 61.02232142857143,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 61.1640625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.006283,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.062111618026823495,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.08590795270690729,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 27.392299107142858,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 27.5703125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001188,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
