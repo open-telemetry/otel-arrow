@@ -959,7 +959,12 @@ impl QuiverEngine {
         let deleted = self.cleanup_completed_segments()?;
         let expired = self.cleanup_expired_segments()?;
         let pending_deletes_cleared = self.segment_store.retry_pending_deletes();
-        Ok(MaintenanceStats { flushed, deleted, expired, pending_deletes_cleared })
+        Ok(MaintenanceStats {
+            flushed,
+            deleted,
+            expired,
+            pending_deletes_cleared,
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -3554,7 +3559,10 @@ mod tests {
         // Cleanup should be a no-op since max_age is not configured
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
 
-        assert_eq!(expired_count, 0, "no segments should expire when max_age is None");
+        assert_eq!(
+            expired_count, 0,
+            "no segments should expire when max_age is None"
+        );
         assert_eq!(
             engine.segment_store().segment_count(),
             initial_segment_count,
@@ -3764,7 +3772,10 @@ mod tests {
         engine.flush().await.expect("flush");
 
         let initial_segment_count = engine.segment_store().segment_count();
-        assert!(initial_segment_count >= 1, "should have at least one segment");
+        assert!(
+            initial_segment_count >= 1,
+            "should have at least one segment"
+        );
 
         // Wait for segments to exceed max_age
         tokio::time::sleep(Duration::from_secs(2)).await;

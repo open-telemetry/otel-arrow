@@ -611,11 +611,7 @@ impl SegmentStore {
             .filter_map(|(seq, handle)| {
                 // Calculate age since finalization
                 let age = now.duration_since(handle.finalized_at).ok()?;
-                if age > max_age {
-                    Some(*seq)
-                } else {
-                    None
-                }
+                if age > max_age { Some(*seq) } else { None }
             })
             .collect()
     }
@@ -852,7 +848,10 @@ mod tests {
 
         // Try to delete - should fail with sharing violation and add to pending
         let result = store.delete_segment(seq);
-        assert!(result.is_ok(), "delete_segment should not error on sharing violation");
+        assert!(
+            result.is_ok(),
+            "delete_segment should not error on sharing violation"
+        );
         assert_eq!(
             store.pending_delete_count(),
             1,
@@ -860,7 +859,10 @@ mod tests {
         );
 
         // File should still exist
-        assert!(path.exists(), "file should still exist after deferred delete");
+        assert!(
+            path.exists(),
+            "file should still exist after deferred delete"
+        );
 
         // Drop the handle to release the file
         drop(_held_handle);
