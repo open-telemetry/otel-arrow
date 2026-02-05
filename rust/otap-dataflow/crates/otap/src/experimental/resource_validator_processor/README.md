@@ -5,7 +5,7 @@ required resource attribute with a value from an allowed list. Requests that
 fail validation are permanently NACKed, enabling clients to detect
 misconfiguration immediately rather than having data silently dropped.
 
-## Use Case
+## Example Use Case
 
 In multi-tenant Azure environments, telemetry includes a `microsoft.resourceId`
 resource attribute containing the Azure Resource Manager (ARM) resource ID.
