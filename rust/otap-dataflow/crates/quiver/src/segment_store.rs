@@ -710,13 +710,19 @@ mod tests {
 
         // File just created, cutoff 1 hour ago - file is NOT before cutoff
         let cutoff_1hr_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
-        assert!(!SegmentStore::is_file_before_cutoff(&file_path, cutoff_1hr_ago));
+        assert!(!SegmentStore::is_file_before_cutoff(
+            &file_path,
+            cutoff_1hr_ago
+        ));
 
         // With a very short max_age and sleep, file should be before cutoff
         std::thread::sleep(Duration::from_millis(50));
         let later = SystemTime::now();
         let cutoff_10ms_ago = later.checked_sub(Duration::from_millis(10)).unwrap();
-        assert!(SegmentStore::is_file_before_cutoff(&file_path, cutoff_10ms_ago));
+        assert!(SegmentStore::is_file_before_cutoff(
+            &file_path,
+            cutoff_10ms_ago
+        ));
     }
 
     #[test]
