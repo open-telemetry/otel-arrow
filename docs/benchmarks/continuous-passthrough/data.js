@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770405944167,
+  "lastUpdate": 1770409255007,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -4954,6 +4954,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11631666.843621189,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e95eee989bfc60af479e1e780b82f76b0702a897",
+          "message": "Add WAL Replay support for crash recovery (#1954)\n\n# Change Summary\n\nAdd WAL replay support for crash recovery in Quiver. On engine startup,\n`QuiverEngine::open()` now replays any WAL entries that were written but\nnot yet finalized to segments, ensuring recover of data which had been\nwritten to the WAL, but not yet finalized in a segment file. The\nimplementation includes a new `MultiFileWalReader` that reads entries\nacross rotated WAL files in global position order, and a `ReplayBundle`\ntype that decodes WAL entries back into `RecordBundle` implementations\nfor replay through the normal ingest path. The replay logic respects the\npersisted cursor to skip already-finalized entries and handles edge\ncases like truncated entries (crash mid-write) and corrupted entries\n(CRC mismatch) by stopping replay at the first invalid entry rather than\nfailing startup.\n\n## What issue does this PR close?\n\n* Closes #1951 \n\n## How are these changes tested?\n\n- Added unit tests for MultiFileWalReader covering single-file reads,\nmulti-file iteration, mid-stream starts, and WAL position preservation\n- Added unit tests for ReplayBundle verifying IPC payload decoding,\nmulti-slot reconstruction, timestamp handling, and error cases\n- Added tests for end-to-end WAL replay scenarios including recovery of\nunfinalized bundles, cursor-based deduplication, empty/missing WAL\nhandling, segment finalization during replay, multi-file replay after\nrotation, and graceful recovery from truncated and corrupted WAL\nentries.\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-02-06T18:27:22Z",
+          "tree_id": "c1501e431944b21f5add24f80adca0c7d41ed4df",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e95eee989bfc60af479e1e780b82f76b0702a897"
+        },
+        "date": 1770409254372,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.8276596069335938,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.46367575201647,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.84699871365775,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.08216145833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 48.68359375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 536923.0619746747,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 546736.1880874949,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001267,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11739836.588009609,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11685413.648014259,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
