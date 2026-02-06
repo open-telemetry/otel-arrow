@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770418642876,
+  "lastUpdate": 1770422162913,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3898,6 +3898,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7182,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f64cf46c72dd774e9db42df5984c953f0d1bb22",
+          "message": "[otap-df-quiver] Implement time-based segment retention (max_age) for quiver & durable_buffer processor (#1961)\n\n# Change Summary\n\nThis PR implements time-based segment retention (`max_age`) for the\nquiver storage engine, allowing segments to be automatically deleted\nafter a configurable duration regardless of subscriber consumption\nstatus. The feature is *opt-in* (`max_age: None` by default) to avoid\nunexpected data loss. Segments are timestamped using file modification\ntime when finalized, and expired segments are cleaned up both during\nstartup (without loading them) and during periodic maintenance. The\nimplementation coordinates with the subscriber registry to\nforce-complete expired segments before deletion, ensuring subscribers\ndon't attempt to read from deleted files.\n\nAlso updates the `durable_buffer` processor to pass its existing\n`max_age` config option through to quiver, replacing the previous\nplaceholder implementation.\n\n## What issue does this PR close?\n\n* Closes #1960 \n\n## How are these changes tested?\n\nComprehensive unit tests cover the new functionality.\n\n## Are there any user-facing changes?\n\nAfter this change, the user-facing `max_age` setting on the\n`durable_buffer` processor will work as expected. (A `max_age` setting\nis being added to the Quiver configuration.)\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-02-06T20:54:27Z",
+          "tree_id": "c7bb1f7a35db4bcc99f0e94b8eadc099537e50c0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4f64cf46c72dd774e9db42df5984c953f0d1bb22"
+        },
+        "date": 1770422162385,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.8847,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8113,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.718,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5632,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7443,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
