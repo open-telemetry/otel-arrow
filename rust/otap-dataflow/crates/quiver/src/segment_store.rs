@@ -520,8 +520,9 @@ impl SegmentStore {
                     // Check if segment is expired before loading
                     if let Some(max_age) = max_age {
                         if Self::is_file_expired(&path, max_age, now) {
-                            // Delete expired segment without loading it
-                            if let Err(e) = Self::delete_segment_file(&path, &self.budget) {
+                            // Delete expired segment without loading it.
+                            // No budget release needed - file was never registered.
+                            if let Err(e) = Self::remove_readonly_file(&path) {
                                 tracing::warn!(
                                     path = %path.display(),
                                     error = %e,
@@ -573,21 +574,6 @@ impl SegmentStore {
             },
             Err(_) => false, // Can't read metadata, don't expire
         }
-    }
-
-    /// Deletes a segment file from disk without loading it.
-    ///
-    /// Used for cleaning up expired segments during scan without the overhead
-    /// of opening and parsing the segment.
-    fn delete_segment_file(path: &Path, budget: &Option<Arc<DiskBudget>>) -> std::io::Result<()> {
-        let file_size = Self::remove_readonly_file(path)?;
-
-        // Release bytes from budget
-        if let (Some(budget), Some(size)) = (budget, file_size) {
-            budget.release(size);
-        }
-
-        Ok(())
     }
 
     /// Parses a segment sequence number from a filename.
@@ -890,53 +876,91 @@ mod tests {
     }
 
     #[test]
-    fn delete_segment_file_helper() {
+    fn remove_readonly_file_returns_size() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.qseg");
-        std::fs::write(&file_path, "test data").unwrap();
-        assert!(file_path.exists());
+        let content = "test data with known length";
+        std::fs::write(&file_path, content).unwrap();
 
-        // Delete without budget
-        SegmentStore::delete_segment_file(&file_path, &None).unwrap();
+        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists());
+        assert_eq!(size, Some(content.len() as u64));
     }
 
     #[test]
-    fn delete_segment_file_releases_budget() {
-        use crate::budget::DiskBudget;
-        use crate::config::RetentionPolicy;
-
+    fn remove_readonly_file_empty_file() {
         let dir = tempdir().unwrap();
-        let file_path = dir.path().join("test.qseg");
-        let file_content = "test data with some content";
-        std::fs::write(&file_path, file_content).unwrap();
-        let file_size = file_content.len() as u64;
+        let file_path = dir.path().join("empty.qseg");
+        std::fs::write(&file_path, "").unwrap();
 
-        // Create a budget and record the file's usage
-        let budget = Arc::new(DiskBudget::new(1024 * 1024, RetentionPolicy::Backpressure));
-        budget.record_existing(file_size);
-        let usage_before = budget.used();
-        assert_eq!(usage_before, file_size);
-
-        // Delete with budget tracking
-        SegmentStore::delete_segment_file(&file_path, &Some(budget.clone())).unwrap();
+        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists());
+        assert_eq!(size, Some(0));
+    }
 
-        // Budget should have released the bytes
-        assert_eq!(
-            budget.used(),
-            0,
-            "budget should release file size after deletion"
+    #[test]
+    fn remove_readonly_file_handles_readonly() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("readonly.qseg");
+        let content = "readonly content";
+        std::fs::write(&file_path, content).unwrap();
+
+        // Make the file read-only
+        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        // Verify it's actually read-only
+        assert!(
+            std::fs::metadata(&file_path)
+                .unwrap()
+                .permissions()
+                .readonly()
         );
+
+        // Should still be able to delete it
+        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
+        assert!(!file_path.exists(), "read-only file should be deleted");
+        assert_eq!(size, Some(content.len() as u64));
+    }
+
+    /// On Windows, readonly files cannot be deleted without clearing the attribute first.
+    /// This test verifies that our function handles this correctly.
+    #[cfg(windows)]
+    #[test]
+    fn remove_readonly_file_required_on_windows() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("readonly_windows.qseg");
+        std::fs::write(&file_path, "windows test").unwrap();
+
+        // Make readonly
+        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        // Prove that std::fs::remove_file alone would fail
+        let direct_result = std::fs::remove_file(&file_path);
+        assert!(
+            direct_result.is_err(),
+            "on Windows, remove_file should fail on readonly files"
+        );
+        assert!(
+            file_path.exists(),
+            "file should still exist after failed delete"
+        );
+
+        // But our function succeeds
+        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
+        assert!(!file_path.exists(), "remove_readonly_file should succeed");
+        assert_eq!(size, Some(12)); // "windows test"
     }
 
     #[test]
-    fn delete_segment_file_nonexistent_errors() {
+    fn remove_readonly_file_nonexistent_errors() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("nonexistent.qseg");
 
-        // Deleting a non-existent file returns an error
-        let result = SegmentStore::delete_segment_file(&file_path, &None);
+        let result = SegmentStore::remove_readonly_file(&file_path);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
     }
