@@ -22,7 +22,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use tokio::sync::Mutex as TokioMutex;
@@ -659,11 +659,17 @@ impl QuiverEngine {
 
         // Compute max_age cutoff once before the loop so expired WAL entries
         // are not replayed into new segments only to be immediately cleaned up.
+        // If max_age is so large that it underflows past the epoch, clamp to
+        // UNIX_EPOCH (effectively disabling filtering, which is correct).
         let max_age_cutoff = self
             .config
             .retention
             .max_age
-            .and_then(|max_age| SystemTime::now().checked_sub(max_age));
+            .map(|max_age| {
+                SystemTime::now()
+                    .checked_sub(max_age)
+                    .unwrap_or(UNIX_EPOCH)
+            });
 
         for entry_result in iter {
             let entry = match entry_result {
