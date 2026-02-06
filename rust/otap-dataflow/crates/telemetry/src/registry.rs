@@ -76,7 +76,11 @@ impl TelemetryRegistryHandle {
             // TODO(#1907): This could benefit from logging a human-readable form
             // of the entity that we refer to later in the logs, instead of logging
             // every key/value in every line of console_async output.
-            otel_debug!("registry.define_entity", schema, definition);
+            otel_debug!(
+                "registry.define_entity",
+                schema = schema,
+                definition = definition
+            );
         }
         outcome.key()
     }
