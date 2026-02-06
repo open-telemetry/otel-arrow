@@ -697,6 +697,33 @@ impl QuiverEngine {
                 }
             };
 
+            // Skip WAL entries that are older than max_age — replaying them
+            // would effectively reset their age to zero and cause them to be
+            // retained longer than intended.
+            //
+            // Note: WAL entries are NOT assumed to be sorted by ingestion_time,
+            // so we check every entry individually rather than short-circuiting.
+            //
+            // We check the raw timestamp BEFORE decoding to a ReplayBundle to
+            // avoid spending cycles on IPC deserialization for expired entries.
+            if let Some(cutoff) = max_age_cutoff {
+                let entry_time = if entry.ingestion_ts_nanos >= 0 {
+                    UNIX_EPOCH + Duration::from_nanos(entry.ingestion_ts_nanos as u64)
+                } else {
+                    UNIX_EPOCH
+                };
+                if entry_time < cutoff {
+                    skipped_expired += 1;
+                    // Advance cursor past this entry so it won't be retried.
+                    let cursor = WalConsumerCursor::after(&entry);
+                    {
+                        let mut cp = self.segment_cursor.lock();
+                        *cp = cursor;
+                    }
+                    continue;
+                }
+            }
+
             // Decode WAL entry into a ReplayBundle
             let bundle = match ReplayBundle::from_wal_entry(&entry) {
                 Some(b) => b,
@@ -716,24 +743,6 @@ impl QuiverEngine {
                     continue;
                 }
             };
-
-            // Skip WAL entries that are older than max_age — replaying them
-            // would effectively reset their age to zero and cause them to be
-            // retained longer than intended.
-            // Note: WAL entries are NOT assumed to be sorted by ingestion_time,
-            // so we check every entry individually rather than short-circuiting.
-            if let Some(cutoff) = max_age_cutoff {
-                if bundle.ingestion_time() < cutoff {
-                    skipped_expired += 1;
-                    // Advance cursor past this entry so it won't be retried.
-                    let cursor = WalConsumerCursor::after(&entry);
-                    {
-                        let mut cp = self.segment_cursor.lock();
-                        *cp = cursor;
-                    }
-                    continue;
-                }
-            }
 
             // Replay through the normal ingest path (minus WAL write)
             let cursor = WalConsumerCursor::after(&entry);
