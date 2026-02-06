@@ -378,28 +378,20 @@ impl SegmentStore {
         }
     }
 
-    /// Removes a read-only file from disk, returning its size.
+    /// Removes a read-only file from disk.
     ///
     /// On non-Unix platforms, read-only files cannot be deleted directly, so this
     /// clears the read-only attribute first. On Unix, file deletion depends on
     /// directory write permissions, not file permissions, so this step is skipped.
-    ///
-    /// Returns the file size if metadata was readable, or `None` if it wasn't.
-    fn remove_readonly_file(path: &Path) -> std::io::Result<Option<u64>> {
-        let file_size = if let Ok(metadata) = std::fs::metadata(path) {
-            #[cfg(not(unix))]
-            {
-                let mut perms = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(path, perms);
-            }
-            Some(metadata.len())
-        } else {
-            None
-        };
-        std::fs::remove_file(path)?;
-        Ok(file_size)
+    fn remove_readonly_file(path: &Path) -> std::io::Result<()> {
+        #[cfg(not(unix))]
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut perms = metadata.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+        std::fs::remove_file(path)
     }
 
     /// Retries deletion of segments that previously failed due to sharing violations.
@@ -883,26 +875,14 @@ mod tests {
     }
 
     #[test]
-    fn remove_readonly_file_returns_size() {
+    fn remove_readonly_file_deletes_file() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.qseg");
-        let content = "test data with known length";
-        std::fs::write(&file_path, content).unwrap();
+        std::fs::write(&file_path, "test data").unwrap();
+        assert!(file_path.exists());
 
-        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
+        SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists());
-        assert_eq!(size, Some(content.len() as u64));
-    }
-
-    #[test]
-    fn remove_readonly_file_empty_file() {
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("empty.qseg");
-        std::fs::write(&file_path, "").unwrap();
-
-        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
-        assert!(!file_path.exists());
-        assert_eq!(size, Some(0));
     }
 
     #[test]
@@ -926,9 +906,8 @@ mod tests {
         );
 
         // Should still be able to delete it
-        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
+        SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists(), "read-only file should be deleted");
-        assert_eq!(size, Some(content.len() as u64));
     }
 
     /// On Windows, readonly files cannot be deleted without clearing the attribute first.
@@ -957,9 +936,8 @@ mod tests {
         );
 
         // But our function succeeds
-        let size = SegmentStore::remove_readonly_file(&file_path).unwrap();
+        SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists(), "remove_readonly_file should succeed");
-        assert_eq!(size, Some(12)); // "windows test"
     }
 
     #[test]
