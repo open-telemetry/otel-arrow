@@ -334,7 +334,6 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_timer",
                                     node_id = node_id,
-                                    "Ignoring StartTimer during shutdown draining"
                                 );
                             } else {
                                 self.tick_timers.start(node_id, duration);

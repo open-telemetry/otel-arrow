@@ -631,7 +631,7 @@ pub(crate) async fn connect_tcp_stream_with_proxy_config(
                 );
                 ProxyError::ProxyConnectionFailed(e)
             })?;
-        otel_debug!("proxy.connected");
+        otel_debug!("proxy.connected", host = proxy_host, port = proxy_port);
 
         // Apply socket options to the proxy connection
         let stream = apply_socket_options(

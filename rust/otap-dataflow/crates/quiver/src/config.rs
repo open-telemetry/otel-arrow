@@ -323,14 +323,19 @@ pub struct RetentionConfig {
     /// Policy applied when usage exceeds [`RetentionConfig::size_cap_bytes`].
     pub policy: RetentionPolicy,
     /// Optional maximum wall-clock retention irrespective of size.
-    pub max_age: Duration,
+    ///
+    /// When set, segments older than this duration are automatically deleted
+    /// during maintenance, regardless of whether subscribers have consumed them.
+    /// When `None` (the default), segments are retained indefinitely until
+    /// consumed by all subscribers or evicted by size-based retention.
+    pub max_age: Option<Duration>,
 }
 
 impl RetentionConfig {
     fn validate(&self) -> Result<()> {
-        if self.max_age.is_zero() {
+        if self.max_age.is_some_and(|d| d.is_zero()) {
             return Err(QuiverError::invalid_config(
-                "max_age must be greater than zero",
+                "max_age must be greater than zero when set",
             ));
         }
         Ok(())
@@ -342,7 +347,7 @@ impl Default for RetentionConfig {
         Self {
             size_cap_bytes: NonZeroU64::new(500 * 1024 * 1024 * 1024).expect("non-zero"),
             policy: RetentionPolicy::Backpressure,
-            max_age: Duration::from_secs(72 * 60 * 60),
+            max_age: None,
         }
     }
 }
@@ -365,7 +370,7 @@ mod tests {
     fn invalid_policy_is_rejected() {
         let cfg = QuiverConfig {
             retention: RetentionConfig {
-                max_age: Duration::ZERO,
+                max_age: Some(Duration::ZERO),
                 ..RetentionConfig::default()
             },
             ..QuiverConfig::default()
@@ -409,7 +414,7 @@ mod tests {
         let retention = RetentionConfig {
             size_cap_bytes: NonZeroU64::new(2048).unwrap(),
             policy: RetentionPolicy::DropOldest,
-            max_age: Duration::from_secs(1),
+            max_age: Some(Duration::from_secs(1)),
         };
 
         let cfg = QuiverConfig::builder()

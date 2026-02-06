@@ -522,12 +522,14 @@ impl DurableBuffer {
             total_size_cap = total_size_cap,
             per_core_size_cap = per_core_size_cap,
             policy = ?policy,
-            max_segment_open_duration = ?self.config.max_segment_open_duration
+            max_segment_open_duration = ?self.config.max_segment_open_duration,
+            max_age = ?self.config.max_age
         );
 
         // Create Quiver configuration with per-core data directory
         let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
         quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
+        quiver_config.retention.max_age = self.config.max_age;
 
         // Create disk budget with per-core share of the total cap
         let budget = Arc::new(DiskBudget::new(per_core_size_cap, policy));
