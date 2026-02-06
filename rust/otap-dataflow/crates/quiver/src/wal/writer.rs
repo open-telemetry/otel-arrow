@@ -848,7 +848,10 @@ impl ActiveWalFile {
         // Take ownership of the file temporarily. If already taken (shouldn't
         // happen in Drop), skip the sync.
         let Some(tokio_file) = self.file.take() else {
-            otel_warn!("quiver.wal.drop_flush_skipped_no_handle", "WAL drop flush skipped: file handle unavailable");
+            otel_warn!(
+                "quiver.wal.drop_flush_skipped_no_handle",
+                "WAL drop flush skipped: file handle unavailable"
+            );
             return;
         };
 
@@ -859,7 +862,10 @@ impl ActiveWalFile {
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
-                otel_warn!("quiver.wal.drop_flush_skipped_pending_ops", "WAL drop flush skipped: file has pending async operations");
+                otel_warn!(
+                    "quiver.wal.drop_flush_skipped_pending_ops",
+                    "WAL drop flush skipped: file has pending async operations"
+                );
                 return;
             }
         };

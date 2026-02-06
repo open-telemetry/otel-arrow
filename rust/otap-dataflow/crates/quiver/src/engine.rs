@@ -28,8 +28,8 @@ use parking_lot::Mutex;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
-use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::error::{QuiverError, Result};
+use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
 use crate::segment_store::SegmentStore;
@@ -374,7 +374,11 @@ impl QuiverEngine {
         // This uses the same ingest path as live ingestion (minus WAL writes)
         let replayed = engine.replay_wal().await?;
         if replayed > 0 {
-            otel_info!("quiver.engine.wal_replayed", replayed, "replayed WAL entries during startup");
+            otel_info!(
+                "quiver.engine.wal_replayed",
+                replayed,
+                "replayed WAL entries during startup"
+            );
         }
 
         Ok(engine)

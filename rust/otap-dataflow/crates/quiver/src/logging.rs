@@ -33,7 +33,7 @@
 //! otel_debug!("quiver.wal.replay_entry");
 //! ```
 
-#![allow(unused_macros)]
+#![allow(unused_macros, unused_macro_rules)]
 
 /// Macro for logging informational messages with a required event name.
 ///
