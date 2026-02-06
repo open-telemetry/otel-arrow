@@ -40,7 +40,19 @@ Exception rule (traces):
 
 All events MUST be emitted using the `otel_*` macros from the
 `otap_df_telemetry` crate. **Do not** use `tracing::info!`, `log::info!`, or
-`println!` directly.
+`println!` directly. This rule is enforced by
+`scripts/check-direct-telemetry-macros.sh` (run in CI).
+
+**Why wrappers instead of raw `tracing` macros?**
+
+- **Mandatory event name.** The first argument to every `otel_*!` macro is the
+  event name. Raw `tracing` macros do not require one, and their default name
+  includes the file path and line number — which is not durable and breaks
+  filtering, alerting, and dashboards whenever code is moved or reformatted.
+- **Automatic `target`.** The wrappers set the tracing `target` field to the
+  crate name (`env!("CARGO_PKG_NAME")`) automatically. With raw `tracing`
+  macros the default target is the module path, which is an internal
+  implementation detail and can change without notice.
 
 ### Available macros
 
