@@ -380,9 +380,13 @@ impl SegmentStore {
 
     /// Removes a read-only file from disk.
     ///
-    /// On non-Unix platforms, read-only files cannot be deleted directly, so this
-    /// clears the read-only attribute first. On Unix, file deletion depends on
-    /// directory write permissions, not file permissions, so this step is skipped.
+    /// On non-Unix platforms, defensively clears the read-only attribute before
+    /// deletion. On Unix, file deletion depends on directory write permissions,
+    /// not file permissions, so this step is skipped.
+    ///
+    /// Note: since Rust 1.85 (https://github.com/rust-lang/rust/pull/134679),
+    /// `std::fs::remove_file` natively handles readonly files on Windows, so
+    /// the attribute clearing is only needed for compatibility with older toolchains.
     fn remove_readonly_file(path: &Path) -> std::io::Result<()> {
         #[cfg(not(unix))]
         if let Ok(metadata) = std::fs::metadata(path) {
@@ -885,6 +889,11 @@ mod tests {
         assert!(!file_path.exists());
     }
 
+    /// Verifies that `remove_readonly_file` successfully deletes readonly files.
+    ///
+    /// Note: since Rust 1.85 (https://github.com/rust-lang/rust/pull/134679),
+    /// `std::fs::remove_file` natively handles readonly files on Windows, so
+    /// the attribute clearing is only needed for compatibility with older toolchains.
     #[test]
     fn remove_readonly_file_handles_readonly() {
         let dir = tempdir().unwrap();
@@ -908,36 +917,6 @@ mod tests {
         // Should still be able to delete it
         SegmentStore::remove_readonly_file(&file_path).unwrap();
         assert!(!file_path.exists(), "read-only file should be deleted");
-    }
-
-    /// On Windows, readonly files cannot be deleted without clearing the attribute first.
-    /// This test verifies that our function handles this correctly.
-    #[cfg(windows)]
-    #[test]
-    fn remove_readonly_file_required_on_windows() {
-        let dir = tempdir().unwrap();
-        let file_path = dir.path().join("readonly_windows.qseg");
-        std::fs::write(&file_path, "windows test").unwrap();
-
-        // Make readonly
-        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&file_path, perms).unwrap();
-
-        // Prove that std::fs::remove_file alone would fail
-        let direct_result = std::fs::remove_file(&file_path);
-        assert!(
-            direct_result.is_err(),
-            "on Windows, remove_file should fail on readonly files"
-        );
-        assert!(
-            file_path.exists(),
-            "file should still exist after failed delete"
-        );
-
-        // But our function succeeds
-        SegmentStore::remove_readonly_file(&file_path).unwrap();
-        assert!(!file_path.exists(), "remove_readonly_file should succeed");
     }
 
     #[test]
