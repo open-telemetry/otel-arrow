@@ -722,6 +722,8 @@ impl QuiverEngine {
 
             // Skip WAL entries that are older than max_age — replaying them
             // would create segments that are immediately eligible for expiry.
+            // Note: WAL entries are NOT assumed to be sorted by ingestion_time,
+            // so we check every entry individually rather than short-circuiting.
             if let Some(cutoff) = max_age_cutoff {
                 if bundle.ingestion_time() < cutoff {
                     skipped_expired += 1;
