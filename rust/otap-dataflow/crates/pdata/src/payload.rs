@@ -306,7 +306,8 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
                                                     count += gauge.data_points().count();
                                                 } else if let Some(sum) = data.as_sum() {
                                                     count += sum.data_points().count();
-                                                } else if let Some(histogram) = data.as_histogram() {
+                                                } else if let Some(histogram) = data.as_histogram()
+                                                {
                                                     count += histogram.data_points().count();
                                                 } else if let Some(exp_histogram) =
                                                     data.as_exponential_histogram()
@@ -1304,17 +1305,17 @@ mod test {
 
     #[test]
     fn test_otlp_proto_bytes_metrics_num_items() {
-        use crate::proto::opentelemetry::metrics::v1::{
-            metric::Data, AggregationTemporality, ExponentialHistogram,
-            ExponentialHistogramDataPoint, Gauge, Histogram, HistogramDataPoint, Metric,
-            NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, Summary, SummaryDataPoint,
-        };
+        use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+        use crate::proto::opentelemetry::common::v1::InstrumentationScope;
         use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
         use crate::proto::opentelemetry::metrics::v1::number_data_point::Value;
         use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+        use crate::proto::opentelemetry::metrics::v1::{
+            AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Gauge,
+            Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
+            Sum, Summary, SummaryDataPoint, metric::Data,
+        };
         use crate::proto::opentelemetry::resource::v1::Resource;
-        use crate::proto::opentelemetry::common::v1::InstrumentationScope;
-        use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
         use prost::Message;
 
         let metrics = ExportMetricsServiceRequest {
@@ -1357,8 +1358,8 @@ mod test {
                                             ..Default::default()
                                         },
                                     ],
-                                    aggregation_temporality:
-                                        AggregationTemporality::Cumulative.into(),
+                                    aggregation_temporality: AggregationTemporality::Cumulative
+                                        .into(),
                                     is_monotonic: true,
                                 })),
                                 ..Default::default()
@@ -1382,8 +1383,8 @@ mod test {
                                             ..Default::default()
                                         },
                                     ],
-                                    aggregation_temporality:
-                                        AggregationTemporality::Cumulative.into(),
+                                    aggregation_temporality: AggregationTemporality::Cumulative
+                                        .into(),
                                 })),
                                 ..Default::default()
                             },
@@ -1428,8 +1429,8 @@ mod test {
                                             ..Default::default()
                                         },
                                     ],
-                                    aggregation_temporality:
-                                        AggregationTemporality::Cumulative.into(),
+                                    aggregation_temporality: AggregationTemporality::Cumulative
+                                        .into(),
                                 })),
                                 ..Default::default()
                             },
@@ -1455,12 +1456,10 @@ mod test {
                                         SummaryDataPoint {
                                             count: 200,
                                             sum: 2000.0,
-                                            quantile_values: vec![
-                                                ValueAtQuantile {
-                                                    quantile: 0.5,
-                                                    value: 20.0,
-                                                },
-                                            ],
+                                            quantile_values: vec![ValueAtQuantile {
+                                                quantile: 0.5,
+                                                value: 20.0,
+                                            }],
                                             ..Default::default()
                                         },
                                     ],
