@@ -843,6 +843,40 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         to_drop
     }
+
+    /// Force-completes the specified segments for all subscribers.
+    ///
+    /// This should be called before deleting segment files to ensure subscribers
+    /// don't try to read from deleted segments. Unlike `force_drop_oldest_pending_segments`,
+    /// this method accepts an explicit list of segments to complete (e.g., expired segments).
+    ///
+    /// Any bundles that were claimed but not yet resolved will be abandoned.
+    /// Subscribers will see these segments as completed and move on.
+    pub fn force_complete_segments(&self, segments: &[SegmentSeq]) {
+        if segments.is_empty() {
+            return;
+        }
+
+        let subscribers = self.subscribers.read();
+
+        for state_lock in subscribers.values() {
+            let mut state = state_lock.write();
+            let mut any_completed = false;
+
+            for &segment_seq in segments {
+                if state.force_complete_segment(segment_seq) {
+                    any_completed = true;
+                }
+            }
+
+            if any_completed {
+                let id = state.id().clone();
+                drop(state);
+                let mut dirty_set = self.dirty_subscribers.lock();
+                let _ = dirty_set.insert(id);
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1549,5 +1583,191 @@ mod tests {
             .unwrap();
 
         assert!(result.is_some(), "should get bundle with uncancelled token");
+    }
+
+    #[test]
+    fn force_complete_segments_empty_list() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Force-completing an empty list should be a no-op
+        registry.force_complete_segments(&[]);
+
+        // Subscriber should still be able to get bundles
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
+        handle.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_marks_all_resolved() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+        provider.add_segment(2, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Force-complete segment 1
+        registry.force_complete_segments(&[SegmentSeq::new(1)]);
+
+        // Next bundle should skip segment 1 and go to segment 2
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(
+            handle.bundle_ref().segment_seq,
+            SegmentSeq::new(2),
+            "should skip force-completed segment"
+        );
+        handle.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_abandons_claimed_bundles() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+        provider.add_segment(2, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Claim a bundle from segment 1 (but don't resolve it yet)
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
+        assert_eq!(handle.bundle_ref().bundle_index, BundleIndex::new(0));
+
+        // Force-complete segment 1 while bundle is still claimed
+        registry.force_complete_segments(&[SegmentSeq::new(1)]);
+
+        // The claimed bundle is now abandoned (no longer in claimed set).
+        // Next poll should return from segment 2.
+        let handle2 = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(
+            handle2.bundle_ref().segment_seq,
+            SegmentSeq::new(2),
+            "should move to next segment after force-complete"
+        );
+        handle2.ack();
+
+        // Acking the original handle should be idempotent (segment already completed)
+        handle.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_multiple_segments() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 2);
+        provider.add_segment(2, 2);
+        provider.add_segment(3, 2);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Force-complete segments 1 and 2
+        registry.force_complete_segments(&[SegmentSeq::new(1), SegmentSeq::new(2)]);
+
+        // Next bundle should be from segment 3
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(3));
+        handle.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_unknown_segment_is_noop() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Force-complete a segment that doesn't exist in tracking
+        registry.force_complete_segments(&[SegmentSeq::new(999)]);
+
+        // Should still be able to get bundles from segment 1
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        assert_eq!(handle.bundle_ref().segment_seq, SegmentSeq::new(1));
+        handle.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_multiple_subscribers() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+        provider.add_segment(2, 2);
+
+        let id1 = SubscriberId::new("sub-1").unwrap();
+        let id2 = SubscriberId::new("sub-2").unwrap();
+
+        registry.register(id1.clone()).unwrap();
+        registry.register(id2.clone()).unwrap();
+        registry.activate(&id1).unwrap();
+        registry.activate(&id2).unwrap();
+
+        // Sub1 claims a bundle from segment 1
+        let handle1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        assert_eq!(handle1.bundle_ref().segment_seq, SegmentSeq::new(1));
+
+        // Sub2 claims a bundle from segment 1
+        let handle2 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        assert_eq!(handle2.bundle_ref().segment_seq, SegmentSeq::new(1));
+
+        // Force-complete segment 1 for ALL subscribers
+        registry.force_complete_segments(&[SegmentSeq::new(1)]);
+
+        // Both subscribers should now get bundles from segment 2
+        let next1 = registry.poll_next_bundle(&id1).unwrap().unwrap();
+        assert_eq!(next1.bundle_ref().segment_seq, SegmentSeq::new(2));
+
+        let next2 = registry.poll_next_bundle(&id2).unwrap().unwrap();
+        assert_eq!(next2.bundle_ref().segment_seq, SegmentSeq::new(2));
+
+        // Clean up
+        handle1.ack();
+        handle2.ack();
+        next1.ack();
+        next2.ack();
+    }
+
+    #[test]
+    fn force_complete_segments_marks_dirty_for_persistence() {
+        let (registry, _dir) = setup_registry();
+        let provider = registry.segment_provider.clone();
+        provider.add_segment(1, 3);
+
+        let id = SubscriberId::new("test-sub").unwrap();
+        registry.register(id.clone()).unwrap();
+        registry.activate(&id).unwrap();
+
+        // Claim and ack a bundle to advance progress
+        let handle = registry.poll_next_bundle(&id).unwrap().unwrap();
+        handle.ack();
+
+        // Flush to clear dirty state
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let flushed = rt.block_on(registry.flush_progress()).unwrap();
+        assert_eq!(flushed, 1, "should have flushed one dirty subscriber");
+
+        // Force-complete the segment - this should mark the subscriber dirty again
+        registry.force_complete_segments(&[SegmentSeq::new(1)]);
+
+        // Flushing again should find the subscriber dirty from force_complete
+        let flushed = rt.block_on(registry.flush_progress()).unwrap();
+        assert_eq!(
+            flushed, 1,
+            "subscriber should be dirty after force_complete_segments"
+        );
     }
 }
