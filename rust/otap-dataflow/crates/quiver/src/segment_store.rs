@@ -605,14 +605,22 @@ impl SegmentStore {
     #[must_use]
     pub fn segments_older_than(&self, max_age: Duration) -> Vec<SegmentSeq> {
         let now = SystemTime::now();
+
+        let Some(cutoff) = now.checked_sub(max_age) else {
+            // max_age exceeds time since UNIX_EPOCH - nothing can be expired
+            return Vec::new();
+        };
+
         let segments = self.segments.read();
 
         segments
             .iter()
             .filter_map(|(seq, handle)| {
-                // Calculate age since finalization
-                let age = now.duration_since(handle.finalized_at).ok()?;
-                if age > max_age { Some(*seq) } else { None }
+                if handle.finalized_at < cutoff {
+                    Some(*seq)
+                } else {
+                    None
+                }
             })
             .collect()
     }
