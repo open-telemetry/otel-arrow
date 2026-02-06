@@ -31,6 +31,7 @@ use crate::otlp::attributes::{AttributeValueType, parent_id::ParentId};
 use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
+pub mod concatenate;
 pub mod transport_optimize;
 
 pub fn remove_delta_encoding<T>(

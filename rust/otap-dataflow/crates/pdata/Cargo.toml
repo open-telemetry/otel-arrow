@@ -39,9 +39,14 @@ tonic-prost = { workspace = true }
 [dev-dependencies]
 tokio-stream = { workspace = true }
 prost = { workspace = true }
+criterion = { workspace = true }
 
 [lints]
 workspace = true
 
 [features]
 bench = []
+
+[[bench]]
+name = "concatenate"
+harness = false
