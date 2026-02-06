@@ -658,7 +658,8 @@ impl QuiverEngine {
         let mut stopped_at_corruption = false;
 
         // Compute max_age cutoff once before the loop so expired WAL entries
-        // are not replayed into new segments only to be immediately cleaned up.
+        // are not replayed into new segments, which would reset their age and
+        // cause them to be retained longer than intended.
         // If max_age is so large that it underflows past the epoch, clamp to
         // UNIX_EPOCH (effectively disabling filtering, which is correct).
         let max_age_cutoff = self
@@ -5072,7 +5073,8 @@ mod tests {
     #[tokio::test]
     async fn wal_replay_skips_expired_entries() {
         // Test that WAL replay filters out entries older than max_age,
-        // avoiding the creation of segments that would immediately expire.
+        // preventing expired data from being replayed into new segments
+        // (which would reset its age and retain it longer than intended).
         let dir = tempdir().expect("tempdir");
 
         let max_age = Duration::from_secs(60); // 1 minute
