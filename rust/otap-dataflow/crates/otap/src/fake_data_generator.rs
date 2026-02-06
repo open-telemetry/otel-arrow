@@ -354,7 +354,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                     otel_debug!(
                                         "rate_limit.sleep",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
-                                        message = "Sleeping to maintain configured signal rate"
+                                        "Sleeping to maintain configured signal rate"
                                     );
                                     sleep(remaining_time).await;
                                 }
@@ -362,7 +362,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             } else {
                                 otel_debug!(
                                     "rate_limit.uncapped",
-                                    message = "Rate limiting disabled, continuing immediately"
+                                    "Rate limiting disabled, continuing immediately"
                                 );
                             }
                         }

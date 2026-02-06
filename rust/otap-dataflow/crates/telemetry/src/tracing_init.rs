@@ -206,7 +206,7 @@ mod tests {
         for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::Noop, level);
             setup.with_subscriber(|| {
-                otel_debug!("debug");
+                otel_debug!("debug", "debug message");
                 otel_info!("info");
                 otel_warn!("warn");
                 otel_error!("error");
@@ -227,7 +227,7 @@ mod tests {
         for level in ALL_LEVELS {
             let setup = test_setup(ProviderSetup::ConsoleDirect, level);
             setup.with_subscriber(|| {
-                otel_debug!("debug");
+                otel_debug!("debug", "debug message");
                 otel_info!("info");
                 otel_warn!("warn");
                 otel_error!("error");
@@ -258,7 +258,7 @@ mod tests {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(ProviderSetup::InternalAsync { reporter }, level);
             setup.with_subscriber(|| {
-                otel_debug!("debug");
+                otel_debug!("debug", "debug message");
                 otel_info!("info");
                 otel_warn!("warn");
                 otel_error!("error");
@@ -283,7 +283,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Info);
 
         setup.with_subscriber(|| {
-            otel_debug!("filtered");
+            otel_debug!("filtered", "debug message filtered out");
         });
 
         assert!(
@@ -298,7 +298,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
 
         setup.with_subscriber(|| {
-            otel_debug!("filtered");
+            otel_debug!("filtered", "debug message filtered out");
             otel_info!("filtered");
             otel_warn!("not_filtered");
         });
@@ -315,7 +315,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Error);
 
         setup.with_subscriber(|| {
-            otel_debug!("filtered");
+            otel_debug!("filtered", "debug message filtered out");
             otel_info!("filtered");
             otel_warn!("filtered");
             otel_error!("not_filtered");
@@ -332,7 +332,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Off);
 
         setup.with_subscriber(|| {
-            otel_debug!("filtered");
+            otel_debug!("filtered", "debug message filtered out");
             otel_info!("filtered");
             otel_warn!("filtered");
             otel_error!("filtered");
@@ -347,7 +347,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Debug);
 
         setup.with_subscriber(|| {
-            otel_debug!("d");
+            otel_debug!("d", "debug message");
             otel_info!("i");
             otel_warn!("w");
             otel_error!("e");
@@ -403,7 +403,7 @@ mod tests {
         let setup = test_setup(ProviderSetup::InternalAsync { reporter }, LogLevel::Warn);
 
         setup.with_subscriber(|| {
-            otel_debug!("filtered");
+            otel_debug!("filtered", "debug message filtered out");
             otel_info!("filtered");
             otel_warn!("not_filtered");
             otel_error!("not_filtered");
