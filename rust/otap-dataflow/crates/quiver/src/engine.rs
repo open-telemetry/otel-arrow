@@ -717,7 +717,8 @@ impl QuiverEngine {
             };
 
             // Skip WAL entries that are older than max_age — replaying them
-            // would create segments that are immediately eligible for expiry.
+            // would effectively reset their age to zero and cause them to be
+            // retained longer than intended.
             // Note: WAL entries are NOT assumed to be sorted by ingestion_time,
             // so we check every entry individually rather than short-circuiting.
             if let Some(cutoff) = max_age_cutoff {
