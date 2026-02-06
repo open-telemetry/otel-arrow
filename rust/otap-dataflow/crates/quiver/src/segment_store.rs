@@ -572,16 +572,20 @@ impl SegmentStore {
     /// Used for cleaning up expired segments during scan without the overhead
     /// of opening and parsing the segment.
     fn delete_segment_file(path: &Path, budget: &Option<Arc<DiskBudget>>) -> std::io::Result<()> {
-        // Get file size for budget release before deleting
-        let file_size = std::fs::metadata(path).map(|m| m.len()).ok();
-
-        // Segment files are read-only after finalization, make writable first
-        if let Ok(metadata) = std::fs::metadata(path) {
-            let mut perms = metadata.permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(path, perms);
-        }
+        let file_size = if let Ok(metadata) = std::fs::metadata(path) {
+            // On non-Unix platforms, read-only files cannot be deleted directly.
+            // On Unix, this is unnecessary (delete requires dir write permission, not file).
+            #[cfg(not(unix))]
+            {
+                let mut perms = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+            Some(metadata.len())
+        } else {
+            None
+        };
 
         std::fs::remove_file(path)?;
 
