@@ -977,7 +977,8 @@ fn concatenate_emitter<const N: usize>(
     allowed_payloads: &[ArrowPayloadType],
     result: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
-    reindex(current, allowed_payloads)?;
+    super::transform::reindex::reindex(current)?;
+    // reindex(current, allowed_payloads)?;
     result.push(concatenate(current)?);
     assert_all_empty(current);
     current.clear();
@@ -1229,6 +1230,9 @@ impl<T> IDRange<T> {
                 let array = if do_sub_offset {
                     arrow::compute::kernels::numeric::sub_wrapping(array, &scalar)
                 } else {
+                    // Note: add_wrapping and sub_wrapping are infallible unary ops
+                    // which are vectorized better than the fallible counterparts
+                    // add and sub.
                     arrow::compute::kernels::numeric::add_wrapping(array, &scalar)
                 };
 

@@ -158,6 +158,24 @@ impl OtapArrowRecords {
     }
 }
 
+impl From<Logs> for OtapArrowRecords {
+    fn from(logs: Logs) -> Self {
+        Self::Logs(logs)
+    }
+}
+
+impl From<Metrics> for OtapArrowRecords {
+    fn from(metrics: Metrics) -> Self {
+        Self::Metrics(metrics)
+    }
+}
+
+impl From<Traces> for OtapArrowRecords {
+    fn from(traces: Traces) -> Self {
+        Self::Traces(traces)
+    }
+}
+
 /// The ArrowBatchStore helper trait is used to define a common interface for
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
@@ -169,6 +187,9 @@ pub trait OtapBatchStore: Default + Clone {
 
     /// The number of `RecordBatch`es needed for this kind of telemetry.
     const COUNT: usize;
+
+    /// The root payload type for the signal type represented by this OTAP batch
+    const ROOT_PAYLOAD_TYPE: ArrowPayloadType;
 
     /// The type of array used to store the record batches.
     type BatchArray;
@@ -323,6 +344,8 @@ impl OtapBatchStore for Logs {
 
     const COUNT: usize = 4;
 
+    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::Logs;
+
     type BatchArray = [Option<RecordBatch>; Logs::COUNT];
 
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
@@ -340,9 +363,9 @@ impl OtapBatchStore for Logs {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::Logs,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Logs,
             ArrowPayloadType::LogAttrs,
         ]
     }
@@ -414,6 +437,9 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 ];
 
 /// Fetch the number of items as defined by the batching system
+/// TODO [JD] we don't need a unifying function like this once we remove
+/// all the usages in to groups.rs. Instead we can have each batch store
+/// define these.
 #[must_use]
 fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
@@ -466,6 +492,8 @@ impl OtapBatchStore for Metrics {
 
     const COUNT: usize = 19;
 
+    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::UnivariateMetrics;
+
     type BatchArray = [Option<RecordBatch>; Metrics::COUNT];
 
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
@@ -482,10 +510,9 @@ impl OtapBatchStore for Metrics {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::MultivariateMetrics,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::UnivariateMetrics,
             ArrowPayloadType::NumberDataPoints,
             ArrowPayloadType::SummaryDataPoints,
             ArrowPayloadType::HistogramDataPoints,
@@ -500,6 +527,7 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::NumberDpExemplarAttrs,
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::MultivariateMetrics,
             ArrowPayloadType::MetricAttrs,
         ]
     }
@@ -700,6 +728,8 @@ impl OtapBatchStore for Traces {
 
     const COUNT: usize = 8;
 
+    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::Spans;
+
     type BatchArray = [Option<RecordBatch>; Traces::COUNT];
 
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
@@ -717,9 +747,9 @@ impl OtapBatchStore for Traces {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::Spans,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Spans,
             ArrowPayloadType::SpanAttrs,
             ArrowPayloadType::SpanEvents,
             ArrowPayloadType::SpanLinks,
@@ -829,7 +859,125 @@ impl OtapBatchStore for Traces {
     }
 }
 
+struct Relation {
+    key_col: &'static str,
+    child_types: &'static [ArrowPayloadType],
+}
+
+/// Get the foreign relations for the given payload type, the name of the id column
+/// for the parent and the corresponding id column for the child.
+/// TODO [JD]: Tests
+pub fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
+    match parent_type {
+        // Logs
+        ArrowPayloadType::Logs => &[
+            Relation {
+                key_col: "resource.id",
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: "scope.id",
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: "id",
+                child_types: &[ArrowPayloadType::LogAttrs],
+            },
+        ],
+        // Traces
+        ArrowPayloadType::Spans => &[
+            Relation {
+                key_col: "resource.id",
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: "scope.id",
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: "id",
+                child_types: &[
+                    ArrowPayloadType::SpanAttrs,
+                    ArrowPayloadType::SpanEvents,
+                    ArrowPayloadType::SpanLinks,
+                ],
+            },
+        ],
+        ArrowPayloadType::SpanEvents => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::SpanEventAttrs],
+        }],
+        ArrowPayloadType::SpanLinkAttrs => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::SpanEventAttrs],
+        }],
+
+        // Metrics
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
+            Relation {
+                key_col: "resource.id",
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: "scope.id",
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: "id",
+                child_types: &[
+                    ArrowPayloadType::MetricAttrs,
+                    ArrowPayloadType::NumberDataPoints,
+                    ArrowPayloadType::SummaryDataPoints,
+                    ArrowPayloadType::HistogramDataPoints,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                ],
+            },
+        ],
+
+        ArrowPayloadType::NumberDataPoints => &[Relation {
+            key_col: "id",
+            child_types: &[
+                ArrowPayloadType::NumberDpAttrs,
+                ArrowPayloadType::NumberDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::NumberDpExemplars => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
+        }],
+        ArrowPayloadType::SummaryDataPoints => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::SummaryDpAttrs],
+        }],
+        ArrowPayloadType::HistogramDataPoints => &[Relation {
+            key_col: "id",
+            child_types: &[
+                ArrowPayloadType::HistogramDpAttrs,
+                ArrowPayloadType::HistogramDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::HistogramDpExemplars => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
+        }],
+        ArrowPayloadType::ExpHistogramDataPoints => &[Relation {
+            key_col: "id",
+            child_types: &[
+                ArrowPayloadType::ExpHistogramDpAttrs,
+                ArrowPayloadType::ExpHistogramDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::ExpHistogramDpExemplars => &[Relation {
+            key_col: "id",
+            child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
+        }],
+
+        _ => &[],
+    }
+}
+
 /// Return the child payload types for the given payload type
+/// TODO [JD]: This is pretty much made obsolete by payload_relations
 #[must_use]
 pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {
@@ -3371,6 +3519,27 @@ mod test {
                 "Traces" => Traces::is_valid_type(payload_type),
                 "Metrics" => Metrics::is_valid_type(payload_type),
                 _ => unreachable!("Unknown service name"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_allowed_payload_type_consistency_with_lookup_table() {
+        let batches: &[OtapArrowRecords] = &[
+            Logs::new().into(),
+            Metrics::new().into(),
+            Traces::new().into(),
+        ];
+
+        for batch in batches {
+            let allowed_payload_types = batch.allowed_payload_types();
+            for payload_type in allowed_payload_types {
+                let idx = POSITION_LOOKUP[*payload_type as usize];
+                assert_eq!(
+                    allowed_payload_types[idx], *payload_type,
+                    "Payload type mismatch {}",
+                    idx
+                );
             }
         }
     }
