@@ -353,8 +353,8 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                 if remaining_time.as_secs_f64() > 0.0 {
                                     otel_debug!(
                                         "rate_limit.sleep",
-                                        "Sleeping to maintain configured signal rate",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
+                                        "Sleeping to maintain configured signal rate"
                                     );
                                     sleep(remaining_time).await;
                                 }

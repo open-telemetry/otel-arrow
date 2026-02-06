@@ -349,8 +349,8 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                             if is_draining {
                                 otel_debug!(
                                     "pipeline.draining.ignored_start_telemetry_timer",
-                                    "Ignoring StartTelemetryTimer during shutdown draining",
-                                    node_id = node_id
+                                    node_id = node_id,
+                                    "Ignoring StartTelemetryTimer during shutdown draining"
                                 );
                             } else {
                                 self.telemetry_timers.start(node_id, duration);

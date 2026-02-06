@@ -107,7 +107,7 @@ async fn test_mtls_client_cert_verification() {
         match tls_acceptor.accept(stream).await {
             Ok(_tls_stream) => true,
             Err(e) => {
-                otel_debug!("handshake.failed","Server handshake failed", error = ?e);
+                otel_debug!("handshake.failed", error = ?e, "Server handshake failed");
                 false
             }
         }

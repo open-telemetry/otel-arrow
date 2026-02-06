@@ -69,19 +69,79 @@ macro_rules! otel_warn {
 /// # Example:
 /// ```ignore
 /// use otap_df_telemetry::otel_debug;
-/// otel_debug!("processing.batch", "Processing batch of items", batch_size = 100);
+/// otel_debug!("processing.batch", batch_size = 100, "Processing batch of items");
 /// otel_debug!("processing.done", count = 5);  // no message, just fields
 /// otel_debug!("processing.start");            // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_debug {
-    // With message
-    ($name:expr, $message:literal $(, $($fields:tt)*)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
+    // Name only
+    ($name:expr) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { }, "");
     };
-    // Without message (uses empty string as message)
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::__otel_debug_impl!(@munch [$name] [] $($rest)+)
+    };
+}
+
+/// Internal helper macro for otel_debug! to parse fields with optional trailing message.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __otel_debug_impl {
+    // Terminal: trailing literal message only
+    (@munch [$name:expr] [$($fields:tt)*] $message:literal) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($fields)* }, $message);
+    };
+
+    // Terminal: no more tokens (no trailing message)
+    (@munch [$name:expr] [$($fields:tt)*]) => {
+        $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), { $($fields)* }, "");
+    };
+
+    // Munch: key = ?value, ... (debug format with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr, $($rest:tt)+) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = ?$val,] $($rest)+)
+    };
+    // Munch: key = ?value, (debug format with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr,) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = ?$val,])
+    };
+    // Munch: key = ?value (debug format, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = ?$val,])
+    };
+
+    // Munch: key = %value, ... (display format with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr, $($rest:tt)+) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = %$val,] $($rest)+)
+    };
+    // Munch: key = %value, (display format with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr,) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = %$val,])
+    };
+    // Munch: key = %value (display format, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = %$val,])
+    };
+
+    // Munch: key = value, ... (regular with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr, $($rest:tt)+) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = $val,] $($rest)+)
+    };
+    // Munch: key = value, (regular with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr,) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = $val,])
+    };
+    // Munch: key = value (regular, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr) => {
+        $crate::__otel_debug_impl!(@munch [$name] [$($acc)* $key = $val,])
     };
 }
 
@@ -182,8 +242,8 @@ mod tests {
     fn test_otel_debug_with_message_and_attributes() {
         otel_debug!(
             "debug.event.with_message_and_attributes",
-            "This is a debug message",
-            value = 42
+            value = 42,
+            "This is a debug message"
         );
     }
 }
