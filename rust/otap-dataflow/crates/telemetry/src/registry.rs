@@ -78,8 +78,8 @@ impl TelemetryRegistryHandle {
             // every key/value in every line of console_async output.
             otel_debug!(
                 "registry.define_entity",
-                schema = schema,
-                definition = definition
+                schema,
+                definition
             );
         }
         outcome.key()
