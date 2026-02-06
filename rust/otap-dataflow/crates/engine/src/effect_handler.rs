@@ -248,8 +248,14 @@ impl<PData> EffectHandlerCore<PData> {
             self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverAck { node_id, ack })
                 .await
                 .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
-                    error: e.to_string(),
+                .map_err(|e| {
+                    eprintln!(
+                        "[DEBUG] route_ack failed: node={:?} error={}",
+                        self.node_id, e
+                    );
+                    Error::PipelineControlMsgError {
+                        error: e.to_string(),
+                    }
                 })
         } else {
             Ok(())
@@ -273,8 +279,14 @@ impl<PData> EffectHandlerCore<PData> {
             self.send_pipeline_ctrl_msg(PipelineControlMsg::DeliverNack { node_id, nack })
                 .await
                 .map(|_| ())
-                .map_err(|e| Error::PipelineControlMsgError {
-                    error: e.to_string(),
+                .map_err(|e| {
+                    eprintln!(
+                        "[DEBUG] route_nack failed: node={:?} error={}",
+                        self.node_id, e
+                    );
+                    Error::PipelineControlMsgError {
+                        error: e.to_string(),
+                    }
                 })
         } else {
             Ok(())
@@ -331,5 +343,104 @@ impl<PData> TelemetryTimerCancelHandle<PData> {
                 _temp: std::marker::PhantomData,
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::control::{AckMsg, NackMsg, pipeline_ctrl_msg_channel};
+    use crate::testing::test_node;
+
+    /// Documents the current behavior of route_nack when the control channel is closed.
+    ///
+    /// This simulates the race condition that occurs during pipeline shutdown:
+    /// 1. A node receives data and starts processing (e.g., sending a NACK)
+    /// 2. During the async operation, upstream nodes complete and drop their channel clones
+    /// 3. The PipelineCtrlMsgManager exits when all senders are gone
+    /// 4. The NACK send fails because the channel receiver is gone
+    ///
+    /// Current behavior: Returns PipelineControlMsgError
+    ///
+    /// Trade-offs to consider:
+    /// - Returning error (current): Fail-fast, visible for debugging, caller can decide
+    /// - Returning Ok: ACKs/NACKs are best-effort, prevents cascade failures during shutdown
+    ///
+    /// This causes test flakiness in durable_buffer_processor_tests::test_durable_buffer_recovery_after_outage
+    /// when the error exporter tries to NACK data while the pipeline is shutting down.
+    #[tokio::test]
+    async fn test_route_nack_returns_error_when_channel_closed() {
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_reporter = metrics_system.reporter();
+        let node_id = test_node("test_node");
+
+        let mut effect_handler: EffectHandlerCore<String> =
+            EffectHandlerCore::new(node_id, metrics_reporter);
+
+        // Create a channel and immediately drop the receiver to simulate shutdown
+        let (tx, rx) = pipeline_ctrl_msg_channel::<String>(10);
+        effect_handler.set_pipeline_ctrl_msg_sender(tx);
+        drop(rx); // Simulate the PipelineCtrlMsgManager exiting
+
+        // Create a NACK message
+        let nack = NackMsg::new("test error", "test data".to_string());
+
+        // This transfer function always returns a recipient (node 0)
+        let transfer = |nack: NackMsg<String>| -> Option<(usize, NackMsg<String>)> {
+            Some((0, nack))
+        };
+
+        let result = effect_handler.route_nack(nack, transfer).await;
+
+        // Document current behavior: returns error when channel is closed
+        assert!(
+            result.is_err(),
+            "route_nack currently returns an error when channel is closed: {:?}",
+            result
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::PipelineControlMsgError { .. }),
+            "Expected PipelineControlMsgError, got: {:?}",
+            err
+        );
+    }
+
+    /// Documents the current behavior of route_ack when the control channel is closed.
+    /// See test_route_nack_returns_error_when_channel_closed for full context.
+    #[tokio::test]
+    async fn test_route_ack_returns_error_when_channel_closed() {
+        let metrics_system = otap_df_telemetry::InternalTelemetrySystem::default();
+        let metrics_reporter = metrics_system.reporter();
+        let node_id = test_node("test_node");
+
+        let mut effect_handler: EffectHandlerCore<String> =
+            EffectHandlerCore::new(node_id, metrics_reporter);
+
+        // Create a channel and immediately drop the receiver to simulate shutdown
+        let (tx, rx) = pipeline_ctrl_msg_channel::<String>(10);
+        effect_handler.set_pipeline_ctrl_msg_sender(tx);
+        drop(rx); // Simulate the PipelineCtrlMsgManager exiting
+
+        // Create an ACK message
+        let ack = AckMsg::new("test data".to_string());
+
+        // This transfer function always returns a recipient (node 0)
+        let transfer = |ack: AckMsg<String>| -> Option<(usize, AckMsg<String>)> { Some((0, ack)) };
+
+        let result = effect_handler.route_ack(ack, transfer).await;
+
+        // Document current behavior: returns error when channel is closed
+        assert!(
+            result.is_err(),
+            "route_ack currently returns an error when channel is closed: {:?}",
+            result
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, Error::PipelineControlMsgError { .. }),
+            "Expected PipelineControlMsgError, got: {:?}",
+            err
+        );
     }
 }

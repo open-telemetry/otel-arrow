@@ -291,7 +291,10 @@ impl<PData> PipelineCtrlMsgManager<PData> {
                 biased;
                 // Handle incoming control messages from nodes.
                 msg = self.pipeline_ctrl_msg_receiver.recv() => {
-                    let Some(msg) = msg.ok() else { break; };
+                    let Some(msg) = msg.ok() else {
+                        eprintln!("[DEBUG] PipelineCtrlMsgManager: channel closed, exiting. is_draining={}", is_draining);
+                        break;
+                    };
                     match msg {
                         PipelineControlMsg::Shutdown { deadline, reason } => {
                             // Ignore duplicate shutdown requests during draining

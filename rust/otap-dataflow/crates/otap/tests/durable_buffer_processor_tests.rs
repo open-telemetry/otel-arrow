@@ -312,10 +312,12 @@ fn run_pipeline_with_condition<F>(
         let start = Instant::now();
         loop {
             if start.elapsed() >= max_duration {
+                eprintln!("[DEBUG] Shutdown thread: max_duration {:?} reached", max_duration);
                 break;
             }
             if let Some(ref condition) = shutdown_condition {
                 if condition() {
+                    eprintln!("[DEBUG] Shutdown thread: condition met after {:?}", start.elapsed());
                     break;
                 }
             }
@@ -324,10 +326,11 @@ fn run_pipeline_with_condition<F>(
         let deadline = Instant::now() + shutdown_deadline;
         // Try to send shutdown request. If the channel is closed, the pipeline
         // has already terminated (e.g., data generator finished), which is fine.
-        let _ = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
+        let send_result = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
             deadline,
             reason: "test shutdown".to_owned(),
         });
+        eprintln!("[DEBUG] Shutdown thread: try_send result = {:?}", send_result);
     });
 
     let run_result = {
@@ -342,6 +345,7 @@ fn run_pipeline_with_condition<F>(
             pipeline_ctrl_rx,
         )
     };
+    eprintln!("[DEBUG] run_forever returned: {:?}", run_result);
 
     let _ = shutdown_handle.join();
     assert!(
