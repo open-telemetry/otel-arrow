@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770409251333,
+  "lastUpdate": 1770415341946,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3790,6 +3790,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7261,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "76450334+andborja@users.noreply.github.com",
+            "name": "Andres Borja",
+            "username": "andborja"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a9fbb0ed89ecc74f8a67e731a3186d45c589333a",
+          "message": "feat: Add message parameter to otel_debug macro (#1973)\n\n# Change Summary\n\nAdding \"message\" attribute to the otel_debug macro.\n\nPart of https://github.com/open-telemetry/otel-arrow/issues/1972\n\n## What issue does this PR close?\n\n\n* Closes NA\n\n## How are these changes tested?\n\nBuilding the package\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-02-06T20:47:49Z",
+          "tree_id": "778c0652dd59aaa67bce252e7ac30380fb815d86",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a9fbb0ed89ecc74f8a67e731a3186d45c589333a"
+        },
+        "date": 1770415341332,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.9085,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8377,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.7827,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.513,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7605,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
