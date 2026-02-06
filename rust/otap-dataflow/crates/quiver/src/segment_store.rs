@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 use parking_lot::{Mutex, RwLock};
 
 use crate::budget::DiskBudget;
+use crate::logging::{otel_debug, otel_info, otel_trace, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
@@ -340,7 +341,8 @@ impl SegmentStore {
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // On Windows, the file may still be memory-mapped by outstanding
                     // BundleHandles. Add to pending deletes for retry later.
-                    tracing::debug!(
+                    otel_debug!(
+                        "quiver.segment.delete_deferred",
                         segment = seq.raw(),
                         "Segment file in use, deferring deletion"
                     );
@@ -424,7 +426,8 @@ impl SegmentStore {
             match Self::remove_readonly_file(&path) {
                 Ok(_) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
-                    tracing::debug!(
+                    otel_debug!(
+                        "quiver.segment.deferred_delete_succeeded",
                         segment = seq.raw(),
                         "Successfully deleted previously deferred segment"
                     );
@@ -432,7 +435,8 @@ impl SegmentStore {
                 }
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // Still in use, keep in pending list
-                    tracing::trace!(
+                    otel_trace!(
+                        "quiver.segment.deferred_still_in_use",
                         segment = seq.raw(),
                         "Segment file still in use, will retry later"
                     );
@@ -440,7 +444,8 @@ impl SegmentStore {
                 Err(e) => {
                     // Other error - remove from pending and log
                     let _ = self.pending_deletes.lock().remove(&seq);
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.segment.deferred_delete_failed",
                         segment = seq.raw(),
                         error = %e,
                         "Failed to delete deferred segment"
@@ -522,13 +527,15 @@ impl SegmentStore {
                             // Delete expired segment without loading it.
                             // No budget release needed - file was never registered.
                             if let Err(e) = Self::remove_readonly_file(&path) {
-                                tracing::warn!(
+                                otel_warn!(
+                                    "quiver.segment.scan_expired_delete_failed",
                                     path = %path.display(),
                                     error = %e,
                                     "failed to delete expired segment during scan"
                                 );
                             } else {
-                                tracing::info!(
+                                otel_info!(
+                                    "quiver.segment.scan_expired_deleted",
                                     segment = seq.raw(),
                                     "deleted expired segment during startup scan"
                                 );
@@ -542,7 +549,8 @@ impl SegmentStore {
                         Ok(bundle_count) => found.push((seq, bundle_count)),
                         Err(e) => {
                             // Use debug level since this is expected during concurrent cleanup
-                            tracing::debug!(
+                            otel_debug!(
+                                "quiver.segment.scan_load_failed",
                                 path = %path.display(),
                                 error = %e,
                                 "failed to load segment, skipping"

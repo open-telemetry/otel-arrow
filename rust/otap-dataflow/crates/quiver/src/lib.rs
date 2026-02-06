@@ -108,6 +108,9 @@
 //! - `serde`: Enable serialization for configuration types
 //! - `otap-dataflow-integrations`: Enable integration with otap-dataflow types
 
+// Declare logging module first so macros are available to subsequent modules
+pub(crate) mod logging;
+
 pub mod budget;
 pub mod config;
 pub mod engine;
