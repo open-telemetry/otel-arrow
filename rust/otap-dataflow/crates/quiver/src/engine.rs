@@ -665,11 +665,7 @@ impl QuiverEngine {
             .config
             .retention
             .max_age
-            .map(|max_age| {
-                SystemTime::now()
-                    .checked_sub(max_age)
-                    .unwrap_or(UNIX_EPOCH)
-            });
+            .map(|max_age| SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH));
 
         for entry_result in iter {
             let entry = match entry_result {
