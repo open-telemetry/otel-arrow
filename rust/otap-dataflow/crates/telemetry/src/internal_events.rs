@@ -156,9 +156,16 @@ macro_rules! __otel_debug_impl {
 /// ```ignore
 /// use otap_df_telemetry::otel_error;
 /// otel_error!("export.failure", error_code = 500);
+/// otel_error!("processing.done", count = 5);      // no message, just fields
+/// otel_error!("processing.start");                // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_error {
+    // With message
+    ($name:expr, $message:literal $(, $($fields:tt)*)?) => {
+        $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
+    };
+     // Without message (uses empty string as message)
     ($name:expr $(, $($fields:tt)*)?) => {
         $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
     };

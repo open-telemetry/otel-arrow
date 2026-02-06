@@ -111,11 +111,11 @@ pub async fn load_server_tls_config(
     ) {
         (Some(cert_file), Some(key_file), _, _) => {
             let cert = read_file_with_limit_async(cert_file).await.map_err(|e| {
-                otel_error!("Failed to read cert file", cert_file = ?cert_file, error = ?e);
+                otel_error!("tls.cert.read_failed", "Failed to read cert file", cert_file = ?cert_file, error = ?e);
                 e
             })?;
             let key = read_file_with_limit_async(key_file).await.map_err(|e| {
-                otel_error!("Failed to read key file", key_file = ?key_file, error = ?e);
+                otel_error!("tls.key.read_failed", "Failed to read key file", key_file = ?key_file, error = ?e);
                 e
             })?;
             (cert, key)
@@ -260,7 +260,7 @@ pub(crate) async fn load_client_tls_config(
     // Custom CA.
     if let Some(ca_file) = &config.ca_file {
         let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-            otel_error!("Failed to read CA file", ca_file = ?ca_file, error = ?e);
+            otel_error!("tls.ca.read_failed", "Failed to read CA file", ca_file = ?ca_file, error = ?e);
             e
         })?;
         tls = tls.ca_certificate(Certificate::from_pem(ca_pem));
@@ -292,25 +292,25 @@ pub(crate) async fn load_client_tls_config(
         ) {
             ((Some(cert_path), _), (Some(key_path), _)) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = %e);
+                    otel_error!("tls.client_cert.read_failed", "Failed to read client cert file", cert_path = ?cert_path, error = %e);
                     e
                 })?;
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
+                    otel_error!("tls.client_key.read_failed", "Failed to read client key file", key_path = ?key_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key))
             }
             ((Some(cert_path), _), (None, Some(key_pem))) => {
                 let cert = read_file_with_limit_async(cert_path).await.map_err(|e| {
-                    otel_error!("Failed to read client cert file", cert_path = ?cert_path, error = ?e);
+                    otel_error!("tls.client_cert.read_failed", "Failed to read client cert file", cert_path = ?cert_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert, key_pem.as_bytes()))
             }
             ((None, Some(cert_pem)), (Some(key_path), _)) => {
                 let key = read_file_with_limit_async(key_path).await.map_err(|e| {
-                    otel_error!("Failed to read client key file", key_path = ?key_path, error = ?e);
+                    otel_error!("tls.client_key.read_failed", "Failed to read client key file", key_path = ?key_path, error = ?e);
                     e
                 })?;
                 tls.identity(Identity::from_pem(cert_pem.as_bytes(), key))
@@ -581,6 +581,7 @@ impl LazyReloadableCertResolver {
                 }
                 Err(e) => {
                     otel_error!(
+                        "tls.cert.reload_failed",
                         "Failed to reload cert asynchronously (keeping current)",
                         error = ?e,
                     );
@@ -802,6 +803,7 @@ impl CaWatcherState {
             }
             Err(e) => {
                 otel_error!(
+                    "tls.ca.reload_failed",
                     "Failed to reload CA certificates (keeping previous)",
                     error = ?e,
                 );
@@ -1077,6 +1079,7 @@ impl ReloadableClientCaVerifier {
                         }
                         Err(e) => {
                             otel_error!(
+                                "tls.ca.reload_failed",
                                 "Failed to reload CA certificates (keeping previous)",
                                 error = ?e,
                             );
