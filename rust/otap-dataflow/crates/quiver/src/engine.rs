@@ -5156,4 +5156,109 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn wal_replay_skips_all_entries_when_all_expired() {
+        // Edge case: every WAL entry is older than max_age.
+        // The engine should start with an empty open segment, the
+        // expired_bundles counter should reflect all entries, and the
+        // cursor should be persisted so subsequent restarts skip them.
+        let dir = tempdir().expect("tempdir");
+
+        let max_age = Duration::from_secs(60);
+        let total_bundles: usize = 5;
+
+        // Phase 1: Ingest bundles WITHOUT max_age, all with timestamps
+        // well beyond max_age.
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(SegmentConfig {
+                    target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                    ..Default::default()
+                })
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            let old_time = SystemTime::now() - Duration::from_secs(7200);
+            for _ in 0..total_bundles {
+                let bundle = TimestampedBundle::with_rows_and_time(10, old_time);
+                engine.ingest(&bundle).await.expect("ingest old");
+            }
+
+            assert_eq!(engine.open_segment.lock().bundle_count(), total_bundles);
+            // Drop without flush — simulates crash
+        }
+
+        // Phase 2: Reopen with max_age. All entries should be skipped.
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(SegmentConfig {
+                    target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                    ..Default::default()
+                })
+                .retention(RetentionConfig {
+                    max_age: Some(max_age),
+                    ..Default::default()
+                })
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Open segment should be empty — nothing was replayed
+            assert_eq!(
+                engine.open_segment.lock().bundle_count(),
+                0,
+                "open segment should be empty when all WAL entries are expired"
+            );
+
+            assert_eq!(
+                engine.expired_bundles(),
+                total_bundles as u64,
+                "expired_bundles counter should reflect all skipped entries"
+            );
+        }
+
+        // Phase 3: Reopen again to verify cursor was persisted — the engine
+        // should not re-process the expired entries (expired_bundles stays 0
+        // on this open because everything was already consumed).
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(SegmentConfig {
+                    target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                    ..Default::default()
+                })
+                .retention(RetentionConfig {
+                    max_age: Some(max_age),
+                    ..Default::default()
+                })
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            assert_eq!(
+                engine.open_segment.lock().bundle_count(),
+                0,
+                "open segment should still be empty on second reopen"
+            );
+
+            assert_eq!(
+                engine.expired_bundles(),
+                0,
+                "expired_bundles should be 0 — cursor was persisted, no re-processing"
+            );
+        }
+    }
 }
