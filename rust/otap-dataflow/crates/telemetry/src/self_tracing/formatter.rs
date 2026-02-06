@@ -209,9 +209,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
     let _ = w.write_all(callsite.target().as_bytes());
     let _ = w.write_all(b"::");
     let _ = w.write_all(callsite.name().as_bytes());
-    if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-        let _ = write!(w, " ({}:{})", file, line);
-    }
 }
 
 impl StyledBufWriter<'_> {
