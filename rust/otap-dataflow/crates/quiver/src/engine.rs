@@ -765,6 +765,14 @@ impl QuiverEngine {
             let _ = self
                 .expired_bundles
                 .fetch_add(skipped_expired, Ordering::Relaxed);
+
+            // If we only skipped entries (nothing replayed), persist the cursor
+            // so subsequent restarts don't re-scan the same expired WAL tail.
+            if replayed_count == 0 {
+                let cursor = *self.segment_cursor.lock();
+                let mut wal_writer = self.wal_writer.lock().await;
+                wal_writer.persist_cursor(&cursor).await?;
+            }
         }
 
         if replayed_count > 0 || stopped_at_corruption {
