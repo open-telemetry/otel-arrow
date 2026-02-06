@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 
+use crate::logging::otel_debug;
 use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
@@ -64,7 +65,8 @@ impl ReplayBundle {
             let batch = match decode_slot_payload(wal_slot) {
                 Some(b) => b,
                 None => {
-                    tracing::debug!(
+                    otel_debug!(
+                        "quiver.wal.slot_decode_failed",
                         slot_id = wal_slot.slot_id.raw(),
                         sequence = entry.sequence,
                         payload_len = wal_slot.payload_len,
@@ -89,7 +91,8 @@ impl ReplayBundle {
         } else {
             // Negative timestamps (before epoch) are likely clock skew or bugs.
             // Clamp to epoch and log for diagnostics.
-            tracing::debug!(
+            otel_debug!(
+                "quiver.wal.negative_timestamp_clamped",
                 sequence = entry.sequence,
                 timestamp_nanos = entry.ingestion_ts_nanos,
                 "WAL entry has negative timestamp, clamping to epoch"

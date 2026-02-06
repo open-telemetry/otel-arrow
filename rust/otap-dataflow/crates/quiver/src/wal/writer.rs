@@ -122,6 +122,7 @@ use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
 use crate::budget::DiskBudget;
+use crate::logging::otel_warn;
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -847,7 +848,7 @@ impl ActiveWalFile {
         // Take ownership of the file temporarily. If already taken (shouldn't
         // happen in Drop), skip the sync.
         let Some(tokio_file) = self.file.take() else {
-            tracing::warn!("WAL drop flush skipped: file handle unavailable");
+            otel_warn!("quiver.wal.drop_flush_skipped_no_handle", "WAL drop flush skipped: file handle unavailable");
             return;
         };
 
@@ -858,7 +859,7 @@ impl ActiveWalFile {
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
-                tracing::warn!("WAL drop flush skipped: file has pending async operations");
+                otel_warn!("quiver.wal.drop_flush_skipped_pending_ops", "WAL drop flush skipped: file has pending async operations");
                 return;
             }
         };
@@ -867,7 +868,7 @@ impl ActiveWalFile {
         #[cfg(test)]
         test_support::record_sync_data();
         if let Err(e) = std_file.sync_data() {
-            tracing::warn!(error = %e, "WAL drop flush failed during sync_data");
+            otel_warn!("quiver.wal.drop_flush_sync_failed", error = %e, "WAL drop flush failed during sync_data");
         }
 
         // Convert back to tokio::fs::File
@@ -1004,7 +1005,8 @@ impl WalCoordinator {
         // Memory impact: 100,000 entries × 8 bytes = 800KB (modest but worth monitoring)
         const ENTRY_BOUNDARIES_WARNING_THRESHOLD: usize = 100_000;
         if self.entry_boundaries.len() == ENTRY_BOUNDARIES_WARNING_THRESHOLD {
-            tracing::warn!(
+            otel_warn!(
+                "quiver.wal.entry_boundaries_large",
                 entry_count = self.entry_boundaries.len(),
                 rotation_target_bytes = self.options.rotation_target_bytes,
                 "entry_boundaries vector is large; consumer cursor may be stale or not advancing"

@@ -1,0 +1,365 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Crate-internal logging macros that enforce durable event names.
+//!
+//! These macros wrap `tracing` to enforce a `name:` parameter (the
+//! [OpenTelemetry Event name](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname))
+//! as the first argument. This ensures all log events have stable, machine-readable
+//! identifiers separate from human-readable messages.
+//!
+//! ## Note on Naming
+//!
+//! These macros use `otel_*` names to match the API of `otap_df_telemetry` macros,
+//! providing a familiar interface for developers working across the codebase.
+//! However, these are **crate-private** macros that do not depend on
+//! `otap_df_telemetry` - they are simple wrappers around `tracing` with
+//! enforced event names.
+//!
+//! ## Event Naming Convention
+//!
+//! Event names should follow the pattern: `quiver.<component>.<action>`
+//!
+//! Examples:
+//! - `quiver.wal.replay_complete`
+//! - `quiver.segment.recovered`
+//! - `quiver.subscriber.progress_load_failed`
+//!
+//! ## Usage
+//!
+//! ```ignore
+//! otel_info!("quiver.segment.recovered", segment_count = 5, "recovered segments from previous run");
+//! otel_warn!("quiver.wal.cursor_decode_failed", error = %e);
+//! otel_debug!("quiver.wal.replay_entry");
+//! ```
+
+#![allow(unused_macros)]
+
+/// Macro for logging informational messages with a required event name.
+///
+/// # Arguments
+/// - First argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs can be passed as attributes.
+/// - An optional trailing message literal.
+///
+/// # Example
+/// ```ignore
+/// otel_info!("quiver.engine.startup", version = "1.0.0");
+/// otel_info!("quiver.segment.finalized", segment_id = 42, "segment finalized successfully");
+/// ```
+macro_rules! otel_info {
+    // Name only
+    ($name:expr) => {
+        tracing::info!(name: $name, target: "quiver", { }, "");
+    };
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        tracing::info!(name: $name, target: "quiver", { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch info [$name] [] $($rest)+)
+    };
+}
+
+/// Macro for logging warning messages with a required event name.
+///
+/// # Arguments
+/// - First argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs can be passed as attributes.
+/// - An optional trailing message literal.
+///
+/// # Example
+/// ```ignore
+/// otel_warn!("quiver.wal.cursor_missing", "cursor file not found, starting from beginning");
+/// otel_warn!("quiver.segment.delete_failed", error = %e, segment_id = 42);
+/// ```
+macro_rules! otel_warn {
+    // Name only
+    ($name:expr) => {
+        tracing::warn!(name: $name, target: "quiver", { }, "");
+    };
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        tracing::warn!(name: $name, target: "quiver", { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch warn [$name] [] $($rest)+)
+    };
+}
+
+/// Macro for logging error messages with a required event name.
+///
+/// # Arguments
+/// - First argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs can be passed as attributes.
+/// - An optional trailing message literal.
+///
+/// # Example
+/// ```ignore
+/// otel_error!("quiver.wal.corruption_detected", error = %e, "WAL corruption during replay");
+/// ```
+macro_rules! otel_error {
+    // Name only
+    ($name:expr) => {
+        tracing::error!(name: $name, target: "quiver", { }, "");
+    };
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        tracing::error!(name: $name, target: "quiver", { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch error [$name] [] $($rest)+)
+    };
+}
+
+/// Macro for logging debug messages with a required event name.
+///
+/// # Arguments
+/// - First argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs can be passed as attributes.
+/// - An optional trailing message literal.
+///
+/// # Example
+/// ```ignore
+/// otel_debug!("quiver.wal.replay_started", cursor_position = 0);
+/// otel_debug!("quiver.segment.scan_entry", path = %path.display());
+/// ```
+macro_rules! otel_debug {
+    // Name only
+    ($name:expr) => {
+        tracing::debug!(name: $name, target: "quiver", { }, "");
+    };
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        tracing::debug!(name: $name, target: "quiver", { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch debug [$name] [] $($rest)+)
+    };
+}
+
+/// Macro for logging trace messages with a required event name.
+///
+/// # Arguments
+/// - First argument (required): The event name identifying the log event.
+/// - Additional optional key-value pairs can be passed as attributes.
+/// - An optional trailing message literal.
+///
+/// # Example
+/// ```ignore
+/// otel_trace!("quiver.segment.file_in_use", segment = seq.raw());
+/// ```
+macro_rules! otel_trace {
+    // Name only
+    ($name:expr) => {
+        tracing::trace!(name: $name, target: "quiver", { }, "");
+    };
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        tracing::trace!(name: $name, target: "quiver", { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch trace [$name] [] $($rest)+)
+    };
+}
+
+/// Internal helper macro to parse fields with optional trailing message.
+///
+/// This uses a "tt muncher" pattern to accumulate key=value pairs until
+/// we hit either a trailing literal message or end of input.
+#[doc(hidden)]
+macro_rules! __otel_log_impl {
+    // Terminal: trailing literal message only
+    (@munch $level:ident [$name:expr] [$($fields:tt)*] $message:literal) => {
+        tracing::$level!(name: $name, target: "quiver", { $($fields)* }, $message);
+    };
+
+    // Terminal: no more tokens (no trailing message)
+    (@munch $level:ident [$name:expr] [$($fields:tt)*]) => {
+        tracing::$level!(name: $name, target: "quiver", { $($fields)* }, "");
+    };
+
+    // Munch: key = ?value, ... (debug format with comma, more tokens follow)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = ?$val,] $($rest)+)
+    };
+    // Munch: key = ?value, (debug format with trailing comma, nothing follows)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr,) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = ?$val,])
+    };
+    // Munch: key = ?value (debug format, last field, no comma)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = ?$val,])
+    };
+
+    // Munch: key = %value, ... (display format with comma, more tokens follow)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = %$val,] $($rest)+)
+    };
+    // Munch: key = %value, (display format with trailing comma, nothing follows)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr,) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = %$val,])
+    };
+    // Munch: key = %value (display format, last field, no comma)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = %$val,])
+    };
+
+    // Munch: key = value, ... (regular with comma, more tokens follow)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = $val:expr, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = $val,] $($rest)+)
+    };
+    // Munch: key = value, (regular with trailing comma, nothing follows)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = $val:expr,) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = $val,])
+    };
+    // Munch: key = value (regular, last field, no comma)
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident = $val:expr) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key = $val,])
+    };
+
+    // Munch: shorthand field (key only), with comma, more tokens follow
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident, $($rest:tt)+) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key,] $($rest)+)
+    };
+    // Munch: shorthand field with trailing comma, nothing follows
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident,) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key,])
+    };
+    // Munch: shorthand field, last field, no comma
+    (@munch $level:ident [$name:expr] [$($acc:tt)*] $key:ident) => {
+        $crate::logging::__otel_log_impl!(@munch $level [$name] [$($acc)* $key,])
+    };
+}
+
+// Make macros available within this crate only (no #[macro_export])
+// Note: __otel_log_impl must be exported for $crate::logging:: path to work,
+// but callers only need to import the otel_* macros.
+pub(crate) use __otel_log_impl;
+pub(crate) use otel_debug;
+pub(crate) use otel_error;
+pub(crate) use otel_info;
+pub(crate) use otel_trace;
+pub(crate) use otel_warn;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_macros_compile() {
+        // These just verify the macros compile correctly with various argument patterns
+        otel_info!("quiver.test.info_only");
+        otel_info!("quiver.test.info_message", "a message");
+        otel_info!("quiver.test.info_fields", key = 42);
+        otel_info!("quiver.test.info_fields_message", key = 42, "with message");
+        otel_info!("quiver.test.info_debug_format", key = ?vec![1, 2, 3]);
+        otel_info!("quiver.test.info_display_format", key = %"display");
+
+        otel_warn!("quiver.test.warn_only");
+        otel_warn!("quiver.test.warn_message", "warning message");
+        otel_warn!("quiver.test.warn_fields", a = 1, b = 2);
+
+        otel_error!("quiver.test.error_only");
+        otel_error!("quiver.test.error_fields", error = %"some error");
+
+        otel_debug!("quiver.test.debug_only");
+        otel_debug!("quiver.test.debug_fields", count = 100);
+
+        otel_trace!("quiver.test.trace_only");
+        otel_trace!("quiver.test.trace_fields", detail = "fine-grained");
+    }
+
+    #[test]
+    fn test_shorthand_field() {
+        let replayed = 42;
+        otel_info!("quiver.test.shorthand", replayed, "replayed entries");
+    }
+
+    /// Ensures no source files use raw `tracing::` macros.
+    ///
+    /// All logging in quiver must use `otel_info!`, `otel_warn!`, etc. to
+    /// enforce durable event names. This test scans the source tree to
+    /// catch violations.
+    #[test]
+    fn no_raw_tracing_calls() {
+        use std::path::Path;
+
+        // Patterns indicating raw tracing macro usage
+        const RAW_PATTERNS: &[&str] = &[
+            "tracing::info!(",
+            "tracing::warn!(",
+            "tracing::error!(",
+            "tracing::debug!(",
+            "tracing::trace!(",
+        ];
+
+        fn scan_directory(dir: &Path, violations: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    scan_directory(&path, violations);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    // Skip this file (it defines the macros)
+                    if path.file_name().is_some_and(|name| name == "logging.rs") {
+                        continue;
+                    }
+
+                    let Ok(content) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+
+                    for (line_num, line) in content.lines().enumerate() {
+                        // Skip comments
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("//") {
+                            continue;
+                        }
+
+                        for pattern in RAW_PATTERNS {
+                            if line.contains(pattern) {
+                                violations.push(format!(
+                                    "{}:{}: {}",
+                                    path.display(),
+                                    line_num + 1,
+                                    trimmed
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find the src directory relative to this file's location
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let src_dir = Path::new(manifest_dir).join("src");
+
+        let mut violations = Vec::new();
+        scan_directory(&src_dir, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Raw tracing calls found - use otel_info!, otel_warn!, etc. instead:\n{}",
+            violations.join("\n")
+        );
+    }
+}
