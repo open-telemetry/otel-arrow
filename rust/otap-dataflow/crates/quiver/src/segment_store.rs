@@ -502,6 +502,9 @@ impl SegmentStore {
         let mut deleted = Vec::new();
         let now = SystemTime::now();
 
+        // Pre-compute cutoff time: segments modified before this are expired.
+        let cutoff = max_age.and_then(|age| now.checked_sub(age));
+
         let entries =
             std::fs::read_dir(&self.segment_dir).map_err(|e| SubscriberError::SegmentIo {
                 path: self.segment_dir.clone(),
@@ -518,8 +521,8 @@ impl SegmentStore {
             if path.extension().is_some_and(|ext| ext == "qseg") {
                 if let Some(seq) = Self::parse_segment_filename(&path) {
                     // Check if segment is expired before loading
-                    if let Some(max_age) = max_age {
-                        if Self::is_file_expired(&path, max_age, now) {
+                    if let Some(cutoff) = cutoff {
+                        if Self::is_file_before_cutoff(&path, cutoff) {
                             // Delete expired segment without loading it.
                             // No budget release needed - file was never registered.
                             if let Err(e) = Self::remove_readonly_file(&path) {
@@ -531,7 +534,6 @@ impl SegmentStore {
                             } else {
                                 tracing::info!(
                                     segment = seq.raw(),
-                                    max_age_secs = max_age.as_secs(),
                                     "deleted expired segment during startup scan"
                                 );
                                 deleted.push(seq);
@@ -562,14 +564,14 @@ impl SegmentStore {
         Ok(ScanResult { found, deleted })
     }
 
-    /// Checks if a file is older than `max_age` based on its modification time.
+    /// Checks if a file's modification time is before the cutoff time.
     ///
     /// Returns `true` if the file should be considered expired, or `false` if the
     /// metadata cannot be read (fail-safe: don't delete if we can't check).
-    fn is_file_expired(path: &Path, max_age: Duration, now: SystemTime) -> bool {
+    fn is_file_before_cutoff(path: &Path, cutoff: SystemTime) -> bool {
         match std::fs::metadata(path) {
             Ok(metadata) => match metadata.modified() {
-                Ok(mtime) => now.duration_since(mtime).is_ok_and(|age| age > max_age),
+                Ok(mtime) => mtime < cutoff,
                 Err(_) => false, // Can't determine age, don't expire
             },
             Err(_) => false, // Can't read metadata, don't expire
@@ -699,39 +701,30 @@ mod tests {
     }
 
     #[test]
-    fn is_file_expired_checks_mtime() {
+    fn is_file_before_cutoff_checks_mtime() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "test").unwrap();
 
         let now = SystemTime::now();
 
-        // File just created, should not be expired with 1 hour max_age
-        assert!(!SegmentStore::is_file_expired(
-            &file_path,
-            Duration::from_secs(3600),
-            now
-        ));
+        // File just created, cutoff 1 hour ago - file is NOT before cutoff
+        let cutoff_1hr_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+        assert!(!SegmentStore::is_file_before_cutoff(&file_path, cutoff_1hr_ago));
 
-        // With a very short max_age and sleep, it should be expired
+        // With a very short max_age and sleep, file should be before cutoff
         std::thread::sleep(Duration::from_millis(50));
         let later = SystemTime::now();
-        assert!(SegmentStore::is_file_expired(
-            &file_path,
-            Duration::from_millis(10),
-            later
-        ));
+        let cutoff_10ms_ago = later.checked_sub(Duration::from_millis(10)).unwrap();
+        assert!(SegmentStore::is_file_before_cutoff(&file_path, cutoff_10ms_ago));
     }
 
     #[test]
-    fn is_file_expired_nonexistent_file() {
+    fn is_file_before_cutoff_nonexistent_file() {
         // Non-existent file should not be considered expired (returns false)
         let nonexistent = Path::new("/nonexistent/file.txt");
-        assert!(!SegmentStore::is_file_expired(
-            nonexistent,
-            Duration::from_secs(1),
-            SystemTime::now()
-        ));
+        let cutoff = SystemTime::now();
+        assert!(!SegmentStore::is_file_before_cutoff(nonexistent, cutoff));
     }
 
     #[test]
@@ -975,23 +968,21 @@ mod tests {
 
     /// Test that future mtime (clock skew) does not cause spurious expiration.
     ///
-    /// If a file's mtime is in the future (e.g., due to clock skew during creation),
-    /// duration_since() will fail, and we should treat the file as NOT expired.
+    /// If a file's mtime is in the future relative to the cutoff time,
+    /// it should not be considered expired.
     #[test]
-    fn is_file_expired_future_mtime_not_expired() {
+    fn is_file_before_cutoff_future_mtime_not_expired() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "test").unwrap();
 
-        // Simulate a "now" that is before the file's actual mtime
-        // (as if the file was created with a clock that was ahead)
-        let past = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        // Use a cutoff time far in the past - the file's mtime will be after it
+        let ancient_cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
 
-        // Even with a tiny max_age, the file should NOT be considered expired
-        // because duration_since() will return Err when mtime > now
+        // File created recently should NOT be before the ancient cutoff
         assert!(
-            !SegmentStore::is_file_expired(&file_path, Duration::from_secs(1), past),
-            "file with mtime in the future should not be considered expired"
+            !SegmentStore::is_file_before_cutoff(&file_path, ancient_cutoff),
+            "file with mtime after cutoff should not be considered expired"
         );
     }
 }
