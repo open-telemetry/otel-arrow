@@ -332,16 +332,8 @@ impl SegmentStore {
         // Delete the file from disk
         let path = self.segment_path(seq);
         if path.exists() {
-            // Segment files are read-only after finalization, make writable first
-            if let Ok(metadata) = path.metadata() {
-                let mut perms = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(&path, perms);
-            }
-
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
+            match Self::remove_readonly_file(&path) {
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // File was already deleted externally since the call to path.exists(). Treat as success.
                 }
@@ -386,6 +378,30 @@ impl SegmentStore {
         }
     }
 
+    /// Removes a read-only file from disk, returning its size.
+    ///
+    /// On non-Unix platforms, read-only files cannot be deleted directly, so this
+    /// clears the read-only attribute first. On Unix, file deletion depends on
+    /// directory write permissions, not file permissions, so this step is skipped.
+    ///
+    /// Returns the file size if metadata was readable, or `None` if it wasn't.
+    fn remove_readonly_file(path: &Path) -> std::io::Result<Option<u64>> {
+        let file_size = if let Ok(metadata) = std::fs::metadata(path) {
+            #[cfg(not(unix))]
+            {
+                let mut perms = metadata.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                let _ = std::fs::set_permissions(path, perms);
+            }
+            Some(metadata.len())
+        } else {
+            None
+        };
+        std::fs::remove_file(path)?;
+        Ok(file_size)
+    }
+
     /// Retries deletion of segments that previously failed due to sharing violations.
     ///
     /// Returns the number of segments successfully deleted.
@@ -409,16 +425,8 @@ impl SegmentStore {
                 continue;
             }
 
-            // Try to make writable and delete
-            if let Ok(metadata) = path.metadata() {
-                let mut perms = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(&path, perms);
-            }
-
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
+            match Self::remove_readonly_file(&path) {
+                Ok(_) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
                     tracing::debug!(
                         segment = seq.raw(),
@@ -572,22 +580,7 @@ impl SegmentStore {
     /// Used for cleaning up expired segments during scan without the overhead
     /// of opening and parsing the segment.
     fn delete_segment_file(path: &Path, budget: &Option<Arc<DiskBudget>>) -> std::io::Result<()> {
-        let file_size = if let Ok(metadata) = std::fs::metadata(path) {
-            // On non-Unix platforms, read-only files cannot be deleted directly.
-            // On Unix, this is unnecessary (delete requires dir write permission, not file).
-            #[cfg(not(unix))]
-            {
-                let mut perms = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(path, perms);
-            }
-            Some(metadata.len())
-        } else {
-            None
-        };
-
-        std::fs::remove_file(path)?;
+        let file_size = Self::remove_readonly_file(path)?;
 
         // Release bytes from budget
         if let (Some(budget), Some(size)) = (budget, file_size) {
