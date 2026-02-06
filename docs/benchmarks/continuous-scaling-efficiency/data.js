@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770405940100,
+  "lastUpdate": 1770409251333,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3736,6 +3736,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7026,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e95eee989bfc60af479e1e780b82f76b0702a897",
+          "message": "Add WAL Replay support for crash recovery (#1954)\n\n# Change Summary\n\nAdd WAL replay support for crash recovery in Quiver. On engine startup,\n`QuiverEngine::open()` now replays any WAL entries that were written but\nnot yet finalized to segments, ensuring recover of data which had been\nwritten to the WAL, but not yet finalized in a segment file. The\nimplementation includes a new `MultiFileWalReader` that reads entries\nacross rotated WAL files in global position order, and a `ReplayBundle`\ntype that decodes WAL entries back into `RecordBundle` implementations\nfor replay through the normal ingest path. The replay logic respects the\npersisted cursor to skip already-finalized entries and handles edge\ncases like truncated entries (crash mid-write) and corrupted entries\n(CRC mismatch) by stopping replay at the first invalid entry rather than\nfailing startup.\n\n## What issue does this PR close?\n\n* Closes #1951 \n\n## How are these changes tested?\n\n- Added unit tests for MultiFileWalReader covering single-file reads,\nmulti-file iteration, mid-stream starts, and WAL position preservation\n- Added unit tests for ReplayBundle verifying IPC payload decoding,\nmulti-slot reconstruction, timestamp handling, and error cases\n- Added tests for end-to-end WAL replay scenarios including recovery of\nunfinalized bundles, cursor-based deduplication, empty/missing WAL\nhandling, segment finalization during replay, multi-file replay after\nrotation, and graceful recovery from truncated and corrupted WAL\nentries.\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-02-06T18:27:22Z",
+          "tree_id": "c1501e431944b21f5add24f80adca0c7d41ed4df",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/e95eee989bfc60af479e1e780b82f76b0702a897"
+        },
+        "date": 1770409250751,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.9086,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.7667,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.6896,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5395,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7261,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
