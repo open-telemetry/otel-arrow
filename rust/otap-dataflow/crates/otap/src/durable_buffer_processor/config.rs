@@ -116,6 +116,9 @@ pub struct DurableBufferConfig {
 
     /// Maximum age of data to retain (e.g., "24h", "7d").
     ///
+    /// Age is measured from when the segment was **finalized** (written to disk),
+    /// not from the timestamps within the telemetry data itself.
+    ///
     /// When set, segments older than this duration are automatically deleted
     /// during maintenance, regardless of whether they have been consumed.
     /// When `None` (the default), segments are retained indefinitely until
