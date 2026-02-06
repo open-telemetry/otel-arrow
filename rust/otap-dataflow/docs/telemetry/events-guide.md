@@ -47,7 +47,7 @@ All events MUST be emitted using the `otel_*` macros from the
 
 - **Mandatory event name.** The first argument to every `otel_*!` macro is the
   event name. Raw `tracing` macros do not require one, and their default name
-  includes the file path and line number — which is not durable and breaks
+  includes the file path and line number -- which is not durable and breaks
   filtering, alerting, and dashboards whenever code is moved or reformatted.
 - **Automatic `target`.** The wrappers set the tracing `target` field to the
   crate name (`env!("CARGO_PKG_NAME")`) automatically. With raw `tracing`
