@@ -22,7 +22,7 @@ pub enum Error {
 
     // ==================== Authentication Errors ====================
     /// Authentication/authorization error.
-    #[error("Auth error ({kind})")]
+    #[error("Auth error ({kind}){}", .source.as_ref().map(|e| format!(": {}", e)).unwrap_or_default())]
     Auth {
         /// The kind of authentication error.
         kind: AuthErrorKind,
@@ -337,7 +337,7 @@ mod tests {
         let error = Error::create_credential(AuthMethod::ManagedIdentity, azure_error);
         assert_eq!(
             error.to_string(),
-            "Auth error (create credential: ManagedIdentity)"
+            "Auth error (create credential: ManagedIdentity): managed identity not available"
         );
         assert!(error.source().is_some());
     }
@@ -349,7 +349,7 @@ mod tests {
             "token expired",
         );
         let error = Error::token_acquisition(azure_error);
-        assert_eq!(error.to_string(), "Auth error (token acquisition)");
+        assert_eq!(error.to_string(), "Auth error (token acquisition): token expired");
         assert!(error.source().is_some());
     }
 
