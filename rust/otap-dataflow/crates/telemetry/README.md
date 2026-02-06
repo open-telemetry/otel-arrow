@@ -67,7 +67,7 @@ For example:
 ```rust
 use otap_df_telemetry::otel_error;
 
-otel_error!("bad configuration", error = ?err);
+otel_error!("config.invalid", "Bad configuration", error = ?err);
 ```
 
 ## Internal telemetry collection
