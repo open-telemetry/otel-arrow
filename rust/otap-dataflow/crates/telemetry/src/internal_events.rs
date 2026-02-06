@@ -46,23 +46,85 @@ macro_rules! otel_info {
 /// - First argument (required): The OpenTelemetry Event name identifying the log event.
 ///   See [OpenTelemetry Event name specification](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname).
 /// - Additional optional key-value pairs can be passed as attributes.
+/// - Optional message literal as the LAST argument.
 ///
 /// # Example:
 /// ```ignore
 /// use otap_df_telemetry::otel_warn;
-/// otel_warn!("channel.full", "Channel is full, dropping messages", dropped_count = 10);   // With message and fields
+/// otel_warn!("channel.full", dropped_count = 10, "Channel is full, dropping messages");   // With fields and message
 /// otel_warn!("channel.full", dropped_count = 10);                                         // no message, just fields
+/// otel_warn!("channel.full", "Channel is full");                                          // message only, no fields
 /// otel_warn!("channel.full");                                                             // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
-    // With message literal as second argument
-    ($name:expr, $message:literal $(, $($fields:tt)*)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, $message);
+    // Name only
+    ($name:expr) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { }, "");
     };
-    // Without message - name only or name with key=value fields
-    ($name:expr $(, $($fields:tt)*)?) => {
-        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($($fields)*)? }, "");
+
+    // Name + bare literal message (no fields)
+    ($name:expr, $message:literal) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { }, $message);
+    };
+
+    // With fields (and optional trailing message) - delegate to helper
+    ($name:expr, $($rest:tt)+) => {
+        $crate::__otel_warn_impl!(@munch [$name] [] $($rest)+)
+    };
+}
+
+/// Internal helper macro for otel_warn! to parse fields with optional trailing message.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __otel_warn_impl {
+    // Terminal: trailing literal message only
+    (@munch [$name:expr] [$($fields:tt)*] $message:literal) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($fields)* }, $message);
+    };
+
+    // Terminal: no more tokens (no trailing message)
+    (@munch [$name:expr] [$($fields:tt)*]) => {
+        $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), { $($fields)* }, "");
+    };
+
+    // Munch: key = ?value, ... (debug format with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr, $($rest:tt)+) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = ?$val,] $($rest)+)
+    };
+    // Munch: key = ?value, (debug format with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr,) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = ?$val,])
+    };
+    // Munch: key = ?value (debug format, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = ?$val:expr) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = ?$val,])
+    };
+
+    // Munch: key = %value, ... (display format with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr, $($rest:tt)+) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = %$val,] $($rest)+)
+    };
+    // Munch: key = %value, (display format with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr,) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = %$val,])
+    };
+    // Munch: key = %value (display format, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = %$val:expr) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = %$val,])
+    };
+
+    // Munch: key = value, ... (regular with comma, more tokens follow)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr, $($rest:tt)+) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = $val,] $($rest)+)
+    };
+    // Munch: key = value, (regular with trailing comma, nothing follows)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr,) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = $val,])
+    };
+    // Munch: key = value (regular, last field, no comma)
+    (@munch [$name:expr] [$($acc:tt)*] $key:ident = $val:expr) => {
+        $crate::__otel_warn_impl!(@munch [$name] [$($acc)* $key = $val,])
     };
 }
 
