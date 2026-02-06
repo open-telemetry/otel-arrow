@@ -781,7 +781,7 @@ mod tests {
         // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event\n"
         );
 
         // Verify full OTLP encoding with known callsite
@@ -795,7 +795,7 @@ mod tests {
         assert!(decoded.severity_text.is_empty()); // Not coded
         assert_eq!(
             decoded.event_name,
-            "test_module::submodule::test_event (src/test.rs:123)"
+            "test_module::submodule::test_event"
         );
     }
 
