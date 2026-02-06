@@ -36,13 +36,77 @@ Exception rule (traces):
 - If you are recording an actual exception on a span, the regular event name
   MUST be `exception` and the standard exception attributes MUST be used.
 
-In this project, events are preferred to unstructured logs. Event names are
-codified (see below), and their attributes consist of the attributes of the
-relevant entity or entities (stable context), combined with event-specific
-attributes (dynamic context).
+## How to emit events in code
 
-Treat event names as schema identifiers. Evolution rules are defined in
-[Stability and Compatibility Guide](stability-compatibility-guide.md).
+All events MUST be emitted using the `otel_*` macros from the
+`otap_df_telemetry` crate. **Do not** use `tracing::info!`, `log::info!`, or
+`println!` directly.
+
+### Available macros
+
+| Macro | Severity |
+|---|---|
+| `otel_debug!` | DEBUG |
+| `otel_info!`  | INFO  |
+| `otel_warn!`  | WARN  |
+| `otel_error!` | ERROR |
+
+### Basic usage
+
+The first argument is always the **event name** (a string literal). Optional
+key-value pairs follow as structured attributes.
+
+```rust
+use otap_df_telemetry::otel_info;
+
+// Event name only (no attributes):
+otel_info!("pipeline.run.start");
+
+// Event name with attributes:
+otel_info!("receiver.grpc.start",
+    endpoint = %addr,
+);
+```
+
+### The `message` attribute
+
+Use an attribute named **`message`** when the event name alone is not sufficient
+to convey what happened. This value is mapped to the OTel LogRecord **body**,
+making it the primary text shown in log viewers, consoles, and observability UIs.
+
+Not every event needs a `message` — if the event name is self-explanatory,
+omit it. Avoid messages that just restate the event name; they add no value.
+
+```rust
+// Bad — message just restates the event name:
+otel_info!("pipeline.run.start",
+    message = "Pipeline run started",
+);
+
+// Good — event name says it all, no message needed:
+otel_info!("pipeline.run.start");
+
+// Good — message explains consequences beyond what the event name conveys:
+otel_warn!("core_affinity.set_failed",
+    message = "Failed to set core affinity for pipeline thread. Performance may be less predictable.",
+);
+```
+
+### Attribute formatting
+
+The macros support `tracing`-style formatting hints:
+
+- `%value` — Display formatting (`fmt::Display`)
+- `?value` — Debug formatting (`fmt::Debug`)
+- `value` — passed directly (integers, booleans, etc.)
+
+```rust
+otel_info!("node.connect",
+    endpoint = %addr,
+    config   = ?node_config,
+    count    = 42,
+);
+```
 
 ## Event naming
 
@@ -71,7 +135,8 @@ Where:
 - `<verb>` is the action or occurrence (e.g. `start`, `complete`, `fail`,
   `reload`, `shutdown`).
 
-Note: OpenTelemetry Events are represented as LogRecords with an event name.
+Note: OpenTelemetry Events are represented as LogRecords with an
+[event name](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname).
 In OTLP, this is carried in the LogRecord `event_name` field (not in the body).
 
 ## Attributes and context
