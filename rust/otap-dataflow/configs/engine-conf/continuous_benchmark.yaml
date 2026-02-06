@@ -29,7 +29,7 @@ pipeline_groups:
         nodes:
           receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            plugin_urn: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -63,7 +63,7 @@ pipeline_groups:
         nodes:
           receiver:
             kind: receiver
-            plugin_urn: "urn:otel:otap:fake_data_generator:receiver"
+            plugin_urn: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -104,8 +104,10 @@ pipeline_groups:
                   - router
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "127.0.0.1:4327"
-              wait_for_result: true
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4327"
+                  wait_for_result: true
           otlp_recv2:
             kind: receiver
             plugin_urn: "urn:otel:otlp:receiver"
@@ -115,12 +117,14 @@ pipeline_groups:
                   - router
                 dispatch_strategy: round_robin
             config:
-              listening_addr: "127.0.0.1:4337"
-              wait_for_result: true
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4337"
+                  wait_for_result: true
 
           router:
             kind: processor
-            plugin_urn: "urn:otap:processor:signal_type_router"
+            plugin_urn: "urn:otel:type_router:processor"
             out_ports:
               logs:
                 destinations:
@@ -187,7 +191,9 @@ pipeline_groups:
                   - perf_noop
                 dispatch_strategy: round_robin
             config:
-              listening_addr: 127.0.0.1:4328
+              protocols:
+                grpc:
+                  listening_addr: 127.0.0.1:4328
 
           perf_noop:
             kind: exporter

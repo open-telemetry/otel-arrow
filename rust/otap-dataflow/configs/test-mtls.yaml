@@ -21,24 +21,26 @@ nodes:
           - exporter
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4317"
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+          # Receiver mTLS configuration (server-side)
+          tls:
+            # Server identity (required for TLS)
+            cert_file: "./test-certs/server.crt"
+            key_file: "./test-certs/server.key"
 
-      # Receiver mTLS configuration (server-side)
-      tls:
-        # Server identity (required for TLS)
-        cert_file: "./test-certs/server.crt"
-        key_file: "./test-certs/server.key"
-
-        # Client certificate verification for mTLS
-        client_ca_file: "./test-certs/ca.crt"
-        include_system_ca_certs_pool: false
+            # Client certificate verification for mTLS
+            client_ca_file: "./test-certs/ca.crt"
+            include_system_ca_certs_pool: false
 
   exporter:
     kind: exporter
     plugin_urn: "urn:otel:otlp:exporter"
     config:
       # Send to another OTLP receiver with mTLS enabled
-      grpc_endpoint: "https://127.0.0.1:4318"
+      # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
+      grpc_endpoint: "https://127.0.0.1:4319"
 
       # Exporter mTLS configuration (client-side)
       tls:
