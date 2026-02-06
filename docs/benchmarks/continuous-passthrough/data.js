@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770418646542,
+  "lastUpdate": 1770422166377,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5206,6 +5206,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11544127.588000484,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f64cf46c72dd774e9db42df5984c953f0d1bb22",
+          "message": "[otap-df-quiver] Implement time-based segment retention (max_age) for quiver & durable_buffer processor (#1961)\n\n# Change Summary\n\nThis PR implements time-based segment retention (`max_age`) for the\nquiver storage engine, allowing segments to be automatically deleted\nafter a configurable duration regardless of subscriber consumption\nstatus. The feature is *opt-in* (`max_age: None` by default) to avoid\nunexpected data loss. Segments are timestamped using file modification\ntime when finalized, and expired segments are cleaned up both during\nstartup (without loading them) and during periodic maintenance. The\nimplementation coordinates with the subscriber registry to\nforce-complete expired segments before deletion, ensuring subscribers\ndon't attempt to read from deleted files.\n\nAlso updates the `durable_buffer` processor to pass its existing\n`max_age` config option through to quiver, replacing the previous\nplaceholder implementation.\n\n## What issue does this PR close?\n\n* Closes #1960 \n\n## How are these changes tested?\n\nComprehensive unit tests cover the new functionality.\n\n## Are there any user-facing changes?\n\nAfter this change, the user-facing `max_age` setting on the\n`durable_buffer` processor will work as expected. (A `max_age` setting\nis being added to the Quiver configuration.)\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-02-06T20:54:27Z",
+          "tree_id": "c7bb1f7a35db4bcc99f0e94b8eadc099537e50c0",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/4f64cf46c72dd774e9db42df5984c953f0d1bb22"
+        },
+        "date": 1770422165817,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.0832583904266357,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.38802464005384,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.75510517783805,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.408854166666664,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 47.77734375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 531721.4187402604,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 537481.335893452,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.000863,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11634670.779383808,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11584579.441520654,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
