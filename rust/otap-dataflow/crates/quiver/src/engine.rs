@@ -37,7 +37,9 @@ use crate::subscriber::{
     SubscriberId, SubscriberRegistry,
 };
 use crate::telemetry::PersistenceMetrics;
-use crate::wal::{WalConsumerCursor, WalWriter, WalWriterOptions};
+use crate::wal::{
+    CursorSidecar, MultiFileWalReader, ReplayBundle, WalConsumerCursor, WalWriter, WalWriterOptions,
+};
 
 /// WAL statistics for observability.
 #[cfg(test)]
@@ -280,6 +282,8 @@ impl QuiverEngine {
         let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
             .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
 
+        // Start with empty open segment and default cursor
+        // WAL replay will populate these through the normal ingest path
         let engine = Arc::new(Self {
             config,
             metrics: PersistenceMetrics::new(),
@@ -332,6 +336,13 @@ impl QuiverEngine {
             }
             used_before.saturating_sub(budget.used())
         });
+
+        // Replay WAL entries that weren't finalized to segments before shutdown/crash
+        // This uses the same ingest path as live ingestion (minus WAL writes)
+        let replayed = engine.replay_wal().await?;
+        if replayed > 0 {
+            tracing::info!(replayed, "replayed WAL entries during startup");
+        }
 
         Ok(engine)
     }
@@ -442,7 +453,7 @@ impl QuiverEngine {
         // Step 1: Append to WAL for durability (if enabled)
         // Note: WAL bytes are NOT tracked in budget - they're temporary and purged after
         // segment finalization. Only segment bytes are budget-tracked.
-        if self.config.durability == DurabilityMode::Wal {
+        let cursor = if self.config.durability == DurabilityMode::Wal {
             let wal_offset = self.append_to_wal_with_capacity_handling(bundle).await?;
 
             // Track cumulative WAL bytes for throughput measurement
@@ -451,15 +462,34 @@ impl QuiverEngine {
                 .cumulative_wal_bytes
                 .fetch_add(wal_entry_bytes, Ordering::Relaxed);
 
-            // Step 2: Update cursor to include this entry
-            let cursor = WalConsumerCursor::from_offset(&wal_offset);
-            {
-                let mut cp = self.segment_cursor.lock();
-                *cp = cursor;
-            }
+            Some(WalConsumerCursor::from_offset(&wal_offset))
+        } else {
+            None
+        };
+
+        // Step 2: Append to open segment and finalize if threshold exceeded
+        self.append_to_segment_and_maybe_finalize(bundle, cursor)
+            .await
+    }
+
+    /// Core ingest logic: appends a bundle to the open segment and finalizes if thresholds are met.
+    ///
+    /// This is the shared path used by both live ingestion and WAL replay.
+    /// During live ingestion, `cursor` is populated from the WAL offset.
+    /// During WAL replay, `cursor` is populated from the WAL entry being replayed.
+    #[inline]
+    async fn append_to_segment_and_maybe_finalize<B: RecordBundle>(
+        &self,
+        bundle: &B,
+        cursor: Option<WalConsumerCursor>,
+    ) -> Result<()> {
+        // Update cursor if provided (tracks WAL position for segment finalization)
+        if let Some(c) = cursor {
+            let mut cp = self.segment_cursor.lock();
+            *cp = c;
         }
 
-        // Step 3: Append to open segment accumulator
+        // Append to open segment accumulator
         let should_finalize = {
             let mut segment = self.open_segment.lock();
             let _manifest_entry = segment.append(bundle)?;
@@ -484,12 +514,187 @@ impl QuiverEngine {
             size_exceeded || time_exceeded || streams_exceeded
         };
 
-        // Step 4: Finalize segment if threshold exceeded
+        // Finalize segment if threshold exceeded
         if should_finalize {
             self.finalize_current_segment().await?;
         }
 
         Ok(())
+    }
+
+    /// Replays WAL entries that weren't finalized to segments before shutdown/crash.
+    ///
+    /// This method reads the WAL starting from the cursor position (entries already
+    /// finalized to segments are skipped), and replays the remaining entries through
+    /// the normal ingest path. This ensures consistent finalization behavior between
+    /// WAL replay and live ingestion.
+    ///
+    /// # Returns
+    ///
+    /// The number of WAL entries replayed.
+    #[must_use = "the replay count indicates recovery status and should be logged"]
+    async fn replay_wal(&self) -> Result<usize> {
+        let wal_path = wal_path(&self.config);
+
+        // Load cursor sidecar to find where we left off
+        let cursor_path = CursorSidecar::path_for(&wal_path);
+
+        // Track whether we're using a potentially stale/missing cursor that could cause duplicates
+        let mut cursor_may_cause_duplicates = false;
+
+        let cursor_position = match tokio::fs::read(&cursor_path).await {
+            Ok(data) => match CursorSidecar::decode(&data) {
+                Ok(c) => c.wal_position,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to decode cursor sidecar, replaying from beginning - duplicates may occur"
+                    );
+                    cursor_may_cause_duplicates = true;
+                    0
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to read cursor sidecar, replaying from beginning - duplicates may occur"
+                );
+                cursor_may_cause_duplicates = true;
+                0
+            }
+        };
+
+        // Try to open the multi-file WAL reader (handles both rotated and active files)
+        let reader = match MultiFileWalReader::open(&wal_path) {
+            Ok(r) => r,
+            Err(e) => {
+                // WAL files don't exist or are invalid - this is fine on first run
+                tracing::debug!(
+                    error = %e,
+                    "no WAL files found for replay, starting fresh"
+                );
+                return Ok(0);
+            }
+        };
+
+        // Clamp cursor_position to actual WAL bounds to handle stale/corrupted sidecar values
+        let wal_end = reader.wal_end_position();
+        let cursor_position = if cursor_position > wal_end {
+            tracing::warn!(
+                cursor_position,
+                wal_end,
+                "cursor sidecar position exceeds WAL bounds, clamping to WAL end"
+            );
+            wal_end
+        } else {
+            cursor_position
+        };
+
+        // Log warning if cursor was missing/corrupted and we're replaying from a non-zero position
+        if cursor_may_cause_duplicates && cursor_position > 0 {
+            tracing::warn!(
+                cursor_position,
+                "cursor sidecar was invalid, replaying from beginning - duplicates may have been written to segments"
+            );
+        }
+
+        // Iterate from the cursor position (skip already-finalized entries)
+        // The multi-file reader handles finding the right file(s) to start from
+        let iter = match reader.iter_from(cursor_position) {
+            Ok(iter) => iter,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    cursor_position,
+                    "failed to create WAL iterator, starting fresh"
+                );
+                return Ok(0);
+            }
+        };
+
+        let mut replayed_count = 0;
+        let mut stopped_at_corruption = false;
+
+        for entry_result in iter {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(crate::wal::WalError::UnexpectedEof(context)) => {
+                    // UnexpectedEof is expected during crash recovery - it means the
+                    // last write was incomplete when the process died. This is normal
+                    // and we should stop replay here (the partial entry is discarded).
+                    tracing::debug!(
+                        context,
+                        replayed_so_far = replayed_count,
+                        "WAL replay stopped at incomplete entry (expected after crash)"
+                    );
+                    break;
+                }
+                Err(e) => {
+                    // CRC mismatch, InvalidEntry, etc. indicate corruption.
+                    // Log prominently but continue - availability > perfect recovery.
+                    // We can't safely read past corruption (entry boundaries unknown),
+                    // so stop replay here.
+                    stopped_at_corruption = true;
+                    tracing::error!(
+                        error = %e,
+                        replayed_so_far = replayed_count,
+                        "WAL corruption detected during replay, stopping replay"
+                    );
+                    break;
+                }
+            };
+
+            // Decode WAL entry into a ReplayBundle
+            let bundle = match ReplayBundle::from_wal_entry(&entry) {
+                Some(b) => b,
+                None => {
+                    // Decode failure logged by from_wal_entry with slot details
+                    tracing::warn!(
+                        sequence = entry.sequence,
+                        slot_count = entry.slots.len(),
+                        "failed to decode WAL entry for replay, skipping"
+                    );
+                    // Still update cursor past this entry so we don't retry it
+                    let cursor = WalConsumerCursor::after(&entry);
+                    {
+                        let mut cp = self.segment_cursor.lock();
+                        *cp = cursor;
+                    }
+                    continue;
+                }
+            };
+
+            // Replay through the normal ingest path (minus WAL write)
+            let cursor = WalConsumerCursor::after(&entry);
+            if let Err(e) = self
+                .append_to_segment_and_maybe_finalize(&bundle, Some(cursor))
+                .await
+            {
+                // Log segment errors prominently - these could indicate disk issues
+                tracing::error!(
+                    error = %e,
+                    sequence = entry.sequence,
+                    "failed to replay WAL entry to segment"
+                );
+                // For critical errors like disk full, we should stop replay
+                // to avoid silent data loss. The next restart will retry.
+                return Err(e);
+            }
+
+            replayed_count += 1;
+        }
+
+        if replayed_count > 0 || stopped_at_corruption {
+            tracing::info!(
+                replayed_count,
+                stopped_at_corruption,
+                cursor_position,
+                "WAL replay completed"
+            );
+        }
+
+        Ok(replayed_count)
     }
 
     /// Appends a bundle to the WAL asynchronously, handling capacity errors transparently.
@@ -955,7 +1160,7 @@ mod tests {
         BundleDescriptor, PayloadRef, RecordBundle, SlotDescriptor, SlotId,
     };
     use crate::subscriber::SubscriberId;
-    use crate::wal::WalReader;
+    use crate::wal::{CURSOR_SIDECAR_FILENAME, WalReader};
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
@@ -1272,7 +1477,7 @@ mod tests {
         assert_eq!(payload.num_rows(), 10, "expected 10 rows in payload");
 
         // === Verify WAL cursor was advanced ===
-        let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
+        let sidecar_path = temp_dir.path().join("wal").join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // The cursor should be > 0 (advanced past the header)
@@ -1503,7 +1708,7 @@ mod tests {
         );
 
         // === Verify cursor is at or past the last finalized segment ===
-        let sidecar_path = temp_dir.path().join("wal").join("quiver.wal.cursor");
+        let sidecar_path = temp_dir.path().join("wal").join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Cursor should be > 0 (some segments were finalized)
@@ -1795,7 +2000,7 @@ mod tests {
 
         // === Verify WAL + cursor state ===
         let wal_dir = temp_dir.path().join("wal");
-        let sidecar_path = wal_dir.join("quiver.wal.cursor");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("read sidecar");
 
         // Count WAL files and sizes
@@ -3279,6 +3484,677 @@ mod tests {
                 unique_files.contains(original_file),
                 "original segment file {} should still exist after restart",
                 original_file
+            );
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // WAL Replay Tests
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn wal_replay_recovers_bundles_not_finalized_to_segments() {
+        let dir = tempdir().expect("tempdir");
+
+        // Use a LARGE segment size so nothing gets finalized to segments
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100MB
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        // First run: ingest some bundles (they go to WAL + open segment, but NOT finalized)
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Verify WAL has data
+            let wal_bytes = engine.wal_bytes_written();
+            assert!(wal_bytes > 0, "WAL should have data written");
+
+            // Verify NO segments were finalized (data only in open segment)
+            assert_eq!(
+                engine.total_segments_written(),
+                0,
+                "no segments should be finalized yet"
+            );
+
+            // Check open segment has our bundles
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                open_segment_bundles, bundles_ingested,
+                "open segment should have {} bundles",
+                bundles_ingested
+            );
+
+            // Engine dropped here - simulates crash/shutdown
+            // WAL cursor is NOT advanced (no segments finalized)
+        }
+
+        // Verify WAL file exists
+        let wal_path = dir.path().join("wal").join("quiver.wal");
+        assert!(wal_path.exists(), "WAL file should exist at {:?}", wal_path);
+
+        // Verify NO segment files exist on disk
+        let segments_dir = dir.path().join("segments");
+        if segments_dir.exists() {
+            let segment_files: Vec<_> = fs::read_dir(&segments_dir)
+                .expect("read segments dir")
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "seg"))
+                .collect();
+            assert!(
+                segment_files.is_empty(),
+                "no segment files should exist, but found: {:?}",
+                segment_files
+            );
+        }
+
+        // Second run: reopen engine and verify WAL replay
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            // Verify still no segments after recovery (data should be in open segment only)
+            assert_eq!(
+                engine.total_segments_written(),
+                0,
+                "no segments should exist after recovery"
+            );
+
+            // Check open segment has our replayed bundles
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                open_segment_bundles, bundles_ingested,
+                "open segment should have {} replayed bundles after recovery, got {}",
+                bundles_ingested, open_segment_bundles
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_skips_already_finalized_bundles() {
+        let dir = tempdir().expect("tempdir");
+
+        // Use a small segment size to force finalization after a few bundles
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                // Use a size that causes finalization every ~10 bundles
+                // We'll ingest 15 bundles to get 1 segment finalized + 5 in open segment
+                target_size_bytes: NonZeroU64::new(50_000).unwrap(), // 50KB
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        // Track how many bundles end up in the open segment (not finalized)
+        let bundles_in_open_segment_before_shutdown;
+
+        // First run: ingest bundles - some will be finalized, some will remain in open segment
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest 15 bundles with 100 rows each (~5KB per bundle = ~75KB total)
+            // With 50KB segment threshold, expect 1 segment finalized + some in open segment
+            let total_bundles = 15;
+            for _ in 0..total_bundles {
+                let bundle = DummyBundle::with_rows(100);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Verify at least one segment was finalized
+            let segments_written = engine.total_segments_written();
+            assert!(
+                segments_written > 0,
+                "should have finalized at least one segment"
+            );
+
+            // Record the exact count in open segment before shutdown
+            bundles_in_open_segment_before_shutdown = engine.open_segment.lock().bundle_count();
+            assert!(
+                bundles_in_open_segment_before_shutdown > 0,
+                "open segment should have at least one bundle to replay; \
+                 got 0 with {} segments finalized from {} bundles",
+                segments_written,
+                total_bundles
+            );
+        }
+
+        // Second run: reopen and verify we only replay the un-finalized bundles
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            // Open segment should have EXACTLY the same count as before shutdown
+            // (only the un-finalized bundles are replayed)
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+
+            assert_eq!(
+                open_segment_bundles, bundles_in_open_segment_before_shutdown,
+                "should replay exactly {} bundles (those not finalized to segments)",
+                bundles_in_open_segment_before_shutdown
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_empty_wal() {
+        let dir = tempdir().expect("tempdir");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+
+        // First run: create engine but don't ingest anything
+        {
+            let _engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+            // Engine dropped without any ingestion
+        }
+
+        // Second run: should open cleanly with empty WAL
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                open_segment_bundles, 0,
+                "open segment should be empty after reopening with empty WAL"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_missing_wal_file() {
+        let dir = tempdir().expect("tempdir");
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .build()
+            .expect("config");
+
+        // Don't create any engine first - just open directly
+        // This simulates a fresh start with no WAL file
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine should open even without existing WAL");
+
+        let open_segment_bundles = engine.open_segment.lock().bundle_count();
+        assert_eq!(
+            open_segment_bundles, 0,
+            "open segment should be empty on fresh start"
+        );
+    }
+
+    #[tokio::test]
+    async fn wal_replay_finalizes_segments_if_threshold_exceeded() {
+        // Test that WAL replay properly finalizes segments if the replayed data
+        // exceeds the segment size threshold
+        let dir = tempdir().expect("tempdir");
+
+        // Segment threshold for replay: 5KB
+        // We'll ingest 20 bundles of 50 rows each (~1-2KB per bundle = ~20-40KB total)
+        // With 5KB threshold, expect 4-8 segments finalized during replay
+        let replay_segment_threshold = 5 * 1024; // 5KB
+        let bundles_to_ingest = 20;
+        let rows_per_bundle = 50;
+
+        // Use a small segment size that will be exceeded by WAL replay
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(replay_segment_threshold).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        // First run: ingest bundles with a LARGE segment size so they stay in WAL
+        // but don't get finalized to segments
+        let large_segment_config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100MB
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_in_open_segment;
+        {
+            let engine = QuiverEngine::open(large_segment_config, test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest enough data that will exceed threshold when replayed
+            for _ in 0..bundles_to_ingest {
+                let bundle = DummyBundle::with_rows(rows_per_bundle);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Verify no segments were finalized (data only in WAL + open segment)
+            assert_eq!(
+                engine.total_segments_written(),
+                0,
+                "no segments should be finalized with large segment config"
+            );
+
+            bundles_in_open_segment = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                bundles_in_open_segment, bundles_to_ingest,
+                "all bundles should be in open segment"
+            );
+        }
+
+        // Second run: reopen with SMALL segment size - replay should trigger finalization
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            // Verify that segments were finalized during replay
+            let segments_written = engine.total_segments_written();
+
+            // With 20 bundles of ~1-2KB each and 5KB threshold, expect at least 2 segments
+            // (conservative lower bound to account for varying bundle sizes)
+            assert!(
+                segments_written >= 2,
+                "WAL replay should have finalized at least 2 segments with 5KB threshold, but got {}",
+                segments_written
+            );
+
+            // Also verify the math: segments written + bundles remaining = total ingested
+            let bundles_remaining = engine.open_segment.lock().bundle_count();
+            // The total bundles across all segments plus open segment should equal what we ingested
+            // Note: we can't easily count bundles in finalized segments, but we can verify
+            // that the open segment has fewer bundles than before (some were finalized)
+            assert!(
+                bundles_remaining < bundles_in_open_segment,
+                "open segment should have fewer bundles ({}) than before finalization ({})",
+                bundles_remaining,
+                bundles_in_open_segment
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_reads_from_rotated_files() {
+        // Test that WAL replay correctly reads entries from rotated WAL files
+        // This simulates a crash that happens after WAL rotation but before
+        // cursor advancement.
+        let dir = tempdir().expect("tempdir");
+
+        // Use a very small WAL rotation target to force rotation
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .wal(WalConfig {
+                rotation_target_bytes: NonZeroU64::new(1024).unwrap(), // 1KB - will trigger rotation
+                max_size_bytes: NonZeroU64::new(1024 * 1024).unwrap(), // 1MB total
+                max_rotated_files: 10,
+                ..Default::default()
+            })
+            .segment(SegmentConfig {
+                // Large segment size so nothing gets finalized to segments
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 20;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest enough bundles to trigger multiple WAL rotations
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Verify WAL has data
+            let wal_bytes = engine.wal_bytes_written();
+            assert!(wal_bytes > 0, "WAL should have data written");
+
+            // Verify NO segments were finalized
+            assert_eq!(
+                engine.total_segments_written(),
+                0,
+                "no segments should be finalized"
+            );
+
+            // Engine dropped here - simulates crash/shutdown
+        }
+
+        // Verify we have rotated WAL files
+        let wal_dir = dir.path().join("wal");
+        let rotated_files: Vec<_> = fs::read_dir(&wal_dir)
+            .expect("read wal dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("quiver.wal."))
+            })
+            .collect();
+
+        // With 20 bundles of 50 rows each (~1-2KB per bundle) and 1KB rotation target,
+        // we should have at least 10 rotated files. Use a conservative minimum of 5
+        // to account for varying bundle sizes.
+        let rotated_count = rotated_files.len();
+        assert!(
+            rotated_count >= 5,
+            "should have at least 5 rotated WAL files with 1KB rotation target, found {}: {:?}",
+            rotated_count,
+            fs::read_dir(&wal_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .collect::<Vec<_>>()
+        );
+
+        // Second run: reopen engine and verify WAL replay reads from ALL files
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine reopen");
+
+            // Check open segment has all replayed bundles
+            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                open_segment_bundles, bundles_ingested,
+                "open segment should have all {} replayed bundles after recovery from rotated files, got {}",
+                bundles_ingested, open_segment_bundles
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_truncated_entry() {
+        // Test that WAL replay gracefully handles a truncated entry (simulating crash mid-write).
+        // This is the expected case after a crash - the last write was incomplete.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_before_crash = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_before_crash {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Engine dropped - WAL has 5 complete entries
+        }
+
+        // Truncate the WAL file to simulate crash mid-write
+        let wal_path = dir.path().join("wal").join("quiver.wal");
+        let original_len = fs::metadata(&wal_path).expect("metadata").len();
+        // Truncate 20 bytes off the end (partial entry)
+        let truncated_len = original_len.saturating_sub(20);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&wal_path)
+            .expect("open wal")
+            .set_len(truncated_len)
+            .expect("truncate");
+
+        // Reopen engine - should recover gracefully, replaying complete entries only
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite truncated WAL");
+
+            // We should have recovered at least some bundles (the complete ones)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert!(
+                recovered > 0 && recovered <= bundles_before_crash,
+                "should recover some but not all bundles after truncation; got {}",
+                recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_corrupted_entry() {
+        // Test that WAL replay gracefully handles a corrupted entry (CRC mismatch).
+        // The engine should log the error but continue startup with partial recovery.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Corrupt the WAL file by flipping some bytes in the middle
+        let wal_path = dir.path().join("wal").join("quiver.wal");
+        let mut wal_data = fs::read(&wal_path).expect("read wal");
+        // Corrupt bytes in the middle of the file (after header, in entry data)
+        let corrupt_offset = wal_data.len() / 2;
+        for i in 0..8 {
+            if corrupt_offset + i < wal_data.len() {
+                wal_data[corrupt_offset + i] ^= 0xFF; // Flip all bits
+            }
+        }
+        fs::write(&wal_path, &wal_data).expect("write corrupted wal");
+
+        // Reopen engine - should recover gracefully with partial data
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite corrupted WAL");
+
+            // We should have recovered some bundles (before the corruption)
+            let recovered = engine.open_segment.lock().bundle_count();
+            // Corruption in the middle means we'll get entries before the corrupt one
+            assert!(
+                recovered < bundles_ingested,
+                "should recover fewer bundles due to corruption; got {} but ingested {}",
+                recovered,
+                bundles_ingested
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_clamps_cursor_exceeding_wal_bounds() {
+        // Test that WAL replay handles a cursor sidecar with a position beyond the WAL end.
+        // This can happen if the WAL was truncated or the sidecar is stale.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Write a cursor sidecar with a position way beyond the actual WAL size
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        let bogus_cursor = CursorSidecar::new(999_999_999); // Way beyond WAL end
+        CursorSidecar::write_to_sync(&sidecar_path, &bogus_cursor).expect("write sidecar");
+
+        // Reopen engine - should clamp cursor to WAL end and replay nothing
+        // (since the clamped position is at the end of the WAL)
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite bogus cursor");
+
+            // Since cursor was clamped to WAL end, no entries should be replayed
+            // The open segment should be empty
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, 0,
+                "should replay zero bundles when cursor is clamped to WAL end; got {}",
+                recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_corrupted_cursor_sidecar() {
+        // Test that WAL replay handles a corrupted cursor sidecar gracefully.
+        // Should fall back to replaying from the beginning.
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Corrupt the cursor sidecar file
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        // Write garbage data that won't decode as a valid sidecar
+        fs::write(&sidecar_path, b"corrupted garbage data").expect("write corrupt sidecar");
+
+        // Reopen engine - should fall back to position 0 and replay all entries
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open despite corrupted sidecar");
+
+            // Since cursor decode failed, should replay from position 0 (all entries)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, bundles_ingested,
+                "should replay all {} bundles when cursor is corrupted; got {}",
+                bundles_ingested, recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_handles_missing_cursor_sidecar() {
+        // Test that WAL replay handles a missing cursor sidecar gracefully.
+        // Should replay from the beginning (position 0).
+        let dir = tempdir().expect("tempdir");
+
+        // Use large segment size so nothing gets finalized
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(SegmentConfig {
+                target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                ..Default::default()
+            })
+            .build()
+            .expect("config");
+
+        let bundles_ingested = 5;
+        {
+            let engine = QuiverEngine::open(config.clone(), test_budget())
+                .await
+                .expect("engine");
+
+            for _ in 0..bundles_ingested {
+                let bundle = DummyBundle::with_rows(10);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+        }
+
+        // Delete the cursor sidecar file if it exists
+        let wal_dir = dir.path().join("wal");
+        let sidecar_path = wal_dir.join(CURSOR_SIDECAR_FILENAME);
+        if sidecar_path.exists() {
+            fs::remove_file(&sidecar_path).expect("remove sidecar");
+        }
+
+        // Reopen engine - should replay from position 0 (all entries)
+        {
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine should open without sidecar");
+
+            // Since cursor sidecar is missing, should replay from position 0 (all entries)
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, bundles_ingested,
+                "should replay all {} bundles when sidecar is missing; got {}",
+                bundles_ingested, recovered
             );
         }
     }
