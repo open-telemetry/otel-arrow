@@ -123,6 +123,9 @@ pub struct DurableBufferConfig {
     /// during maintenance, regardless of whether they have been consumed.
     /// When `None` (the default), segments are retained indefinitely until
     /// consumed or evicted by size-based retention.
+    /// 
+    /// To survive extended downstream outages without data loss,
+    /// set `max_age` longer than the maximum outage duration you need to tolerate.
     #[serde(with = "humantime_serde", default)]
     pub max_age: Option<Duration>,
 
