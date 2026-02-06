@@ -74,19 +74,19 @@ Use an attribute named **`message`** when the event name alone is not sufficient
 to convey what happened. This value is mapped to the OTel LogRecord **body**,
 making it the primary text shown in log viewers, consoles, and observability UIs.
 
-Not every event needs a `message` — if the event name is self-explanatory,
+Not every event needs a `message` -- if the event name is self-explanatory,
 omit it. Avoid messages that just restate the event name; they add no value.
 
 ```rust
-// Bad — message just restates the event name:
+// Bad -- message just restates the event name:
 otel_info!("pipeline.run.start",
     message = "Pipeline run started",
 );
 
-// Good — event name says it all, no message needed:
+// Good -- event name says it all, no message needed:
 otel_info!("pipeline.run.start");
 
-// Good — message explains consequences beyond what the event name conveys:
+// Good -- message explains consequences beyond what the event name conveys:
 otel_warn!("core_affinity.set_failed",
     message = "Failed to set core affinity for pipeline thread. Performance may be less predictable.",
 );
@@ -96,9 +96,9 @@ otel_warn!("core_affinity.set_failed",
 
 The macros support `tracing`-style formatting hints:
 
-- `%value` — Display formatting (`fmt::Display`)
-- `?value` — Debug formatting (`fmt::Debug`)
-- `value` — passed directly (integers, booleans, etc.)
+- `%value` -- Display formatting (`fmt::Display`)
+- `?value` -- Debug formatting (`fmt::Debug`)
+- `value` -- passed directly (integers, booleans, etc.)
 
 ```rust
 otel_info!("node.connect",
