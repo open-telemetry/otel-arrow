@@ -22,7 +22,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use parking_lot::Mutex;
 use tokio::sync::Mutex as TokioMutex;
@@ -654,7 +654,16 @@ impl QuiverEngine {
         };
 
         let mut replayed_count = 0;
+        let mut skipped_expired = 0u64;
         let mut stopped_at_corruption = false;
+
+        // Compute max_age cutoff once before the loop so expired WAL entries
+        // are not replayed into new segments only to be immediately cleaned up.
+        let max_age_cutoff = self
+            .config
+            .retention
+            .max_age
+            .and_then(|max_age| SystemTime::now().checked_sub(max_age));
 
         for entry_result in iter {
             let entry = match entry_result {
@@ -705,6 +714,21 @@ impl QuiverEngine {
                 }
             };
 
+            // Skip WAL entries that are older than max_age — replaying them
+            // would create segments that are immediately eligible for expiry.
+            if let Some(cutoff) = max_age_cutoff {
+                if bundle.ingestion_time() < cutoff {
+                    skipped_expired += 1;
+                    // Advance cursor past this entry so it won't be retried.
+                    let cursor = WalConsumerCursor::after(&entry);
+                    {
+                        let mut cp = self.segment_cursor.lock();
+                        *cp = cursor;
+                    }
+                    continue;
+                }
+            }
+
             // Replay through the normal ingest path (minus WAL write)
             let cursor = WalConsumerCursor::after(&entry);
             if let Err(e) = self
@@ -723,6 +747,16 @@ impl QuiverEngine {
             }
 
             replayed_count += 1;
+        }
+
+        if skipped_expired > 0 {
+            tracing::info!(
+                skipped_expired,
+                "skipped expired WAL entries during replay (max_age)"
+            );
+            let _ = self
+                .expired_bundles
+                .fetch_add(skipped_expired, Ordering::Relaxed);
         }
 
         if replayed_count > 0 || stopped_at_corruption {
@@ -1282,14 +1316,6 @@ mod tests {
     use arrow_array::builder::Int64Builder;
     use arrow_schema::{DataType, Field, Schema};
     use std::num::NonZeroU64;
-
-    /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
-    fn test_budget() -> Arc<DiskBudget> {
-        Arc::new(DiskBudget::new(
-            1024 * 1024 * 1024,
-            RetentionPolicy::Backpressure,
-        ))
-    }
     use std::sync::Arc;
     use tempfile::tempdir;
 
@@ -1346,8 +1372,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> std::time::SystemTime {
-            std::time::SystemTime::now()
+        fn ingestion_time(&self) -> SystemTime {
+            SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -1360,6 +1386,44 @@ mod tests {
                 None
             }
         }
+    }
+
+    /// A bundle wrapper that returns a fixed ingestion time instead of `now()`.
+    /// Used to test time-dependent behavior like max_age filtering during WAL replay.
+    struct TimestampedBundle {
+        inner: DummyBundle,
+        ingestion_time: SystemTime,
+    }
+
+    impl TimestampedBundle {
+        fn with_rows_and_time(num_rows: usize, ingestion_time: SystemTime) -> Self {
+            Self {
+                inner: DummyBundle::with_rows(num_rows),
+                ingestion_time,
+            }
+        }
+    }
+
+    impl RecordBundle for TimestampedBundle {
+        fn descriptor(&self) -> &BundleDescriptor {
+            self.inner.descriptor()
+        }
+
+        fn ingestion_time(&self) -> SystemTime {
+            self.ingestion_time
+        }
+
+        fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
+            self.inner.payload(slot)
+        }
+    }
+
+    /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
+    fn test_budget() -> Arc<DiskBudget> {
+        Arc::new(DiskBudget::new(
+            1024 * 1024 * 1024,
+            RetentionPolicy::Backpressure,
+        ))
     }
 
     #[tokio::test]
@@ -1986,8 +2050,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> std::time::SystemTime {
-            std::time::SystemTime::now()
+        fn ingestion_time(&self) -> SystemTime {
+            SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -2358,8 +2422,8 @@ mod tests {
             &self.descriptor
         }
 
-        fn ingestion_time(&self) -> std::time::SystemTime {
-            std::time::SystemTime::now()
+        fn ingestion_time(&self) -> SystemTime {
+            SystemTime::now()
         }
 
         fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -4988,6 +5052,91 @@ mod tests {
                 recovered, bundles_ingested,
                 "should replay all {} bundles when sidecar is missing; got {}",
                 bundles_ingested, recovered
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_replay_skips_expired_entries() {
+        // Test that WAL replay filters out entries older than max_age,
+        // avoiding the creation of segments that would immediately expire.
+        let dir = tempdir().expect("tempdir");
+
+        let max_age = Duration::from_secs(60); // 1 minute
+
+        // Phase 1: Ingest bundles WITHOUT max_age, using timestamps that
+        // straddle the max_age boundary. Large segment size prevents
+        // finalization so everything stays in the WAL.
+        let old_bundles = 3;
+        let fresh_bundles = 2;
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(SegmentConfig {
+                    target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                    ..Default::default()
+                })
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Ingest bundles with a timestamp well beyond max_age (2 hours ago)
+            let old_time = SystemTime::now() - Duration::from_secs(7200);
+            for _ in 0..old_bundles {
+                let bundle = TimestampedBundle::with_rows_and_time(10, old_time);
+                engine.ingest(&bundle).await.expect("ingest old");
+            }
+
+            // Ingest bundles with a recent timestamp (well within max_age)
+            let fresh_time = SystemTime::now();
+            for _ in 0..fresh_bundles {
+                let bundle = TimestampedBundle::with_rows_and_time(10, fresh_time);
+                engine.ingest(&bundle).await.expect("ingest fresh");
+            }
+
+            // Verify all bundles are in the open segment
+            let total = engine.open_segment.lock().bundle_count();
+            assert_eq!(total, old_bundles + fresh_bundles);
+
+            // Drop engine without flushing — simulates crash
+        }
+
+        // Phase 2: Reopen with max_age enabled. WAL replay should skip
+        // the old entries and only replay the fresh ones.
+        {
+            let config = QuiverConfig::builder()
+                .data_dir(dir.path())
+                .segment(SegmentConfig {
+                    target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                    ..Default::default()
+                })
+                .retention(RetentionConfig {
+                    max_age: Some(max_age),
+                    ..Default::default()
+                })
+                .build()
+                .expect("config");
+
+            let engine = QuiverEngine::open(config, test_budget())
+                .await
+                .expect("engine");
+
+            // Only the fresh bundles should have been replayed
+            let recovered = engine.open_segment.lock().bundle_count();
+            assert_eq!(
+                recovered, fresh_bundles,
+                "expected {} fresh bundles after replay, got {} (old entries should be skipped)",
+                fresh_bundles, recovered
+            );
+
+            // The expired_bundles counter should reflect the skipped entries
+            assert_eq!(
+                engine.expired_bundles(),
+                old_bundles as u64,
+                "expired_bundles counter should track skipped WAL entries"
             );
         }
     }
