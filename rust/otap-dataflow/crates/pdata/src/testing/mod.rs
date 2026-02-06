@@ -5,4 +5,5 @@
 
 pub mod equiv;
 pub mod fixtures;
+pub mod record_batch;
 pub mod round_trip;
