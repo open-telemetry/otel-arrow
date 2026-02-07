@@ -3,7 +3,6 @@
 
 use serde::Serialize;
 
-use super::AZURE_MONITOR_EXPORTER_URN;
 use super::config::ApiConfig;
 use super::error::Error;
 use chrono::Utc;
@@ -35,11 +34,20 @@ struct HeartbeatRow {
     #[serde(rename = "Version")]
     version: String,
 
+    #[serde(rename = "Category")]
+    category: String,
+
+    #[serde(rename = "OSType")]
+    os_type: String,
+
     #[serde(rename = "OSName")]
     os_name: String,
 
     #[serde(rename = "Computer")]
     computer: String,
+
+    #[serde(rename = "ComputerEnvironment")]
+    computer_environment: String,
 
     #[serde(rename = "OSMajorVersion")]
     os_major_version: String,
@@ -96,15 +104,38 @@ fn parse_os_version() -> (String, String) {
 
 #[inline]
 fn default_heartbeat_os_major_version() -> String {
-    std::env::var("POD_NAME").unwrap_or_else(|_| {
-        let (major, _) = parse_os_version();
-        major
-    })
+    let (major, _) = parse_os_version();
+    major
+}
+
+/// Detect OS type: "Windows" or "Linux" (matching Azure Monitor Heartbeat table values).
+/// macOS and other Unix-like systems are reported as "Linux" since the table only supports
+/// these two values.
+#[inline]
+fn default_heartbeat_os_type() -> String {
+    if std::env::consts::OS == "windows" {
+        "Windows".to_string()
+    } else {
+        "Linux".to_string()
+    }
+}
+
+/// Detect whether the host is running in Azure.
+/// Returns "Azure" if Azure-specific environment indicators are present, otherwise "Non-Azure".
+#[inline]
+fn default_heartbeat_computer_environment() -> String {
+    // ARM_RESOURCE_ID is set on Azure VMs, AKS, and other Azure compute resources
+    if std::env::var("ARM_RESOURCE_ID").is_ok() {
+        "Azure".to_string()
+    } else {
+        "Non-Azure".to_string()
+    }
 }
 
 #[inline]
 fn default_heartbeat_os_minor_version() -> String {
-    AZURE_MONITOR_EXPORTER_URN.to_string()
+    let (_, minor) = parse_os_version();
+    minor
 }
 
 impl Heartbeat {
@@ -128,8 +159,11 @@ impl Heartbeat {
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
                 version: default_heartbeat_version(),
+                category: "Direct Agent".to_string(),
+                os_type: default_heartbeat_os_type(),
                 os_name: default_heartbeat_os_name(),
                 computer: default_heartbeat_computer(),
+                computer_environment: default_heartbeat_computer_environment(),
                 os_major_version: default_heartbeat_os_major_version(),
                 os_minor_version: default_heartbeat_os_minor_version(),
             },
@@ -147,8 +181,11 @@ impl Heartbeat {
             heartbeat_row: HeartbeatRow {
                 time: Utc::now().to_rfc3339(),
                 version: "test-version".to_string(),
+                category: "Direct Agent".to_string(),
+                os_type: "Linux".to_string(),
                 os_name: "test-os".to_string(),
                 computer: "test-computer".to_string(),
+                computer_environment: "Non-Azure".to_string(),
                 os_major_version: "1".to_string(),
                 os_minor_version: "0".to_string(),
             },
@@ -165,6 +202,7 @@ impl Heartbeat {
     pub async fn send(&mut self) -> Result<(), Error> {
         self.heartbeat_row.time = Utc::now().to_rfc3339();
         let payload = serde_json::json!([self.heartbeat_row]);
+        // println!("Sending heartbeat payload: {}", payload);
         let response = self
             .client
             .post(&self.endpoint)
@@ -237,8 +275,11 @@ mod tests {
         let row = HeartbeatRow {
             time: "2026-01-22T10:00:00Z".to_string(),
             version: "1.0.0".to_string(),
+            category: "Direct Agent".to_string(),
+            os_type: "Linux".to_string(),
             os_name: "Linux".to_string(),
             computer: "test-computer".to_string(),
+            computer_environment: "Non-Azure".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
         };
@@ -247,8 +288,11 @@ mod tests {
 
         assert_eq!(json["Time"], "2026-01-22T10:00:00Z");
         assert_eq!(json["Version"], "1.0.0");
+        assert_eq!(json["Category"], "Direct Agent");
+        assert_eq!(json["OSType"], "Linux");
         assert_eq!(json["OSName"], "Linux");
         assert_eq!(json["Computer"], "test-computer");
+        assert_eq!(json["ComputerEnvironment"], "Non-Azure");
         assert_eq!(json["OSMajorVersion"], "22");
         assert_eq!(json["OSMinorVersion"], "04");
     }
@@ -258,8 +302,11 @@ mod tests {
         let row = HeartbeatRow {
             time: "".to_string(),
             version: "".to_string(),
+            category: "".to_string(),
+            os_type: "".to_string(),
             os_name: "".to_string(),
             computer: "".to_string(),
+            computer_environment: "".to_string(),
             os_major_version: "".to_string(),
             os_minor_version: "".to_string(),
         };
@@ -269,8 +316,11 @@ mod tests {
         // Verify PascalCase field names
         assert!(json.contains("\"Time\""));
         assert!(json.contains("\"Version\""));
+        assert!(json.contains("\"Category\""));
+        assert!(json.contains("\"OSType\""));
         assert!(json.contains("\"OSName\""));
         assert!(json.contains("\"Computer\""));
+        assert!(json.contains("\"ComputerEnvironment\""));
         assert!(json.contains("\"OSMajorVersion\""));
         assert!(json.contains("\"OSMinorVersion\""));
 
@@ -285,8 +335,11 @@ mod tests {
         let row = HeartbeatRow {
             time: "2026-01-22T10:00:00Z".to_string(),
             version: "1.0.0".to_string(),
+            category: "Direct Agent".to_string(),
+            os_type: "Linux".to_string(),
             os_name: "Linux".to_string(),
             computer: "test".to_string(),
+            computer_environment: "Non-Azure".to_string(),
             os_major_version: "22".to_string(),
             os_minor_version: "04".to_string(),
         };
