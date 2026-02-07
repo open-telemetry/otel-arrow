@@ -110,6 +110,18 @@ jobs:
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/otelcol-docker.yaml
 
+        - name: Run saturation/scaling performance test suite
+          run: |
+            cd tools/pipeline_perf_test
+            ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+              | tee saturation-scaling-report.txt
+            # Add scaling report to job summary
+            echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract just the analysis section from the report
+            sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+
         - name: Upload syslog results for processing
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
@@ -139,6 +151,18 @@ jobs:
           with:
             name: filter-otelcol-results
             path: tools/pipeline_perf_test/results/otelcol_filter/gh-actions-benchmark/*.json
+
+        - name: Upload saturation results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: saturation-nightly-results
+            path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
+
+        - name: Upload scaling efficiency metrics
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+          with:
+            name: scaling-efficiency-nightly-results
+            path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
         - name: Add benchmark link to job summary
           run: |
@@ -192,6 +216,19 @@ jobs:
               merge-multiple: true
               path: filter_otelcol_results
 
+          - name: Download saturation artifacts
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              pattern: saturation-nightly-results*
+              merge-multiple: true
+              path: saturation_results
+
+          - name: Download scaling efficiency metrics
+            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+            with:
+              name: scaling-efficiency-nightly-results
+              path: scaling_efficiency_results
+
           - name: Consolidate syslog benchmark data
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh syslog_results syslog_output.json
@@ -211,6 +248,10 @@ jobs:
           - name: Consolidate otelcol filter benchmark data
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh filter_otelcol_results filter_otelcol_output.json
+
+          - name: Consolidate saturation benchmark data
+            run: |
+              bash ./.github/workflows/scripts/consolidate-benchmarks.sh saturation_results saturation_output.json
 
           - name: Update benchmark data
             uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
@@ -269,6 +310,30 @@ jobs:
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
               benchmark-data-dir-path: "docs/benchmarks/nightly/filter"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update saturation benchmark data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: saturation_output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/saturation"
+              auto-push: true
+              save-data-file: true
+
+          - name: Update scaling efficiency data
+            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
+            with:
+              tool: "customBiggerIsBetter"
+              output-file-path: scaling_efficiency_results/scaling-efficiency.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/nightly/scaling-efficiency"
               auto-push: true
               save-data-file: true
 

@@ -10,7 +10,7 @@ use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
     MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
-use crate::otel_info;
+use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::new_key_type;
@@ -76,7 +76,7 @@ impl TelemetryRegistryHandle {
             // TODO(#1907): This could benefit from logging a human-readable form
             // of the entity that we refer to later in the logs, instead of logging
             // every key/value in every line of console_async output.
-            otel_info!("registry.define_entity", schema, definition);
+            otel_debug!("registry.define_entity", schema, definition);
         }
         outcome.key()
     }

@@ -85,18 +85,6 @@ jobs:
             cd tools/pipeline_perf_test
             python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-        - name: Run pipeline performance test log suite - Saturation
-          run: |
-            cd tools/pipeline_perf_test
-            ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
-              | tee saturation-scaling-report.txt
-            # Add scaling report to job summary
-            echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            # Extract just the analysis section from the report
-            sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-
         - name: Run idle state performance tests
           run: |
             cd tools/pipeline_perf_test
@@ -119,18 +107,6 @@ jobs:
           with:
             name: benchmark-results-pipeline
             path: tools/pipeline_perf_test/results/integration/gh-actions-benchmark/*.json
-
-        - name: Upload benchmark results for processing (Saturation)
-          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-          with:
-            name: benchmark-results-saturation
-            path: tools/pipeline_perf_test/results/continuous_saturation*/gh-actions-benchmark/*.json
-
-        - name: Upload scaling efficiency metrics
-          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-          with:
-            name: benchmark-results-scaling-efficiency
-            path: tools/pipeline_perf_test/results/scaling-efficiency.json
 
         - name: Upload benchmark results for processing (Idle State)
           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -173,19 +149,6 @@ jobs:
               merge-multiple: true
               path: results-pipeline
 
-          - name: Download benchmark artifacts (Saturation)
-            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-            with:
-              pattern: benchmark-results-saturation*
-              merge-multiple: true
-              path: results-saturation
-
-          - name: Download scaling efficiency metrics
-            uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-            with:
-              name: benchmark-results-scaling-efficiency
-              path: results-scaling-efficiency
-
           - name: Download benchmark artifacts (Idle State)
             uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
             with:
@@ -204,10 +167,6 @@ jobs:
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-pipeline output-pipeline.json
 
-          - name: Consolidate saturation benchmark data
-            run: |
-              bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-saturation output-saturation.json
-
           - name: Consolidate idle state benchmark data
             run: |
               bash ./.github/workflows/scripts/consolidate-benchmarks.sh results-idle-state output-idle-state.json
@@ -225,30 +184,6 @@ jobs:
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
               benchmark-data-dir-path: "docs/benchmarks/continuous"
-              auto-push: true
-              save-data-file: true
-
-          - name: Update saturation benchmark data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customSmallerIsBetter"
-              output-file-path: output-saturation.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous-saturation"
-              auto-push: true
-              save-data-file: true
-
-          - name: Update scaling efficiency data and deploy to GitHub Pages
-            uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
-            with:
-              tool: "customBiggerIsBetter"
-              output-file-path: results-scaling-efficiency/scaling-efficiency.json
-              gh-pages-branch: benchmarks
-              max-items-in-chart: 100
-              github-token: ${{ secrets.GITHUB_TOKEN }}
-              benchmark-data-dir-path: "docs/benchmarks/continuous-scaling-efficiency"
               auto-push: true
               save-data-file: true
 
@@ -280,7 +215,5 @@ jobs:
             run: |
               echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
               echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
-              echo "[View the saturation benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-saturation/)" >> $GITHUB_STEP_SUMMARY
-              echo "[View the scaling efficiency results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-scaling-efficiency/)" >> $GITHUB_STEP_SUMMARY
               echo "[View the idle state benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-idle-state/)" >> $GITHUB_STEP_SUMMARY
               echo "[View the passthrough benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-passthrough/)" >> $GITHUB_STEP_SUMMARY
