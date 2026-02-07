@@ -67,6 +67,60 @@ fn format_metric_value(value: &MetricValue) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+
+    #[test]
+    fn format_attribute_and_metric_values_cover_variants() {
+        assert_eq!(
+            format_attribute_value(&AttributeValue::String("abc".into())),
+            "abc"
+        );
+        assert_eq!(format_attribute_value(&AttributeValue::Int(-5)), "-5");
+        assert_eq!(format_attribute_value(&AttributeValue::UInt(5)), "5");
+        assert_eq!(format_attribute_value(&AttributeValue::Double(1.5)), "1.5");
+        assert_eq!(
+            format_attribute_value(&AttributeValue::Boolean(true)),
+            "true"
+        );
+
+        assert_eq!(format_metric_value(&MetricValue::U64(42)), "42");
+        assert_eq!(format_metric_value(&MetricValue::F64(3.14)), "3.14");
+    }
+
+    #[test]
+    fn display_formats_snapshot_readably() {
+        let snapshot = MetricsSnapshot {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            metric_sets: vec![MetricSetSnapshot {
+                name: "fake_data_generator.receiver.metrics".into(),
+                brief: "loadgen metrics".into(),
+                attributes: HashMap::from([(
+                    "role".into(),
+                    AttributeValue::String("generator".into()),
+                )]),
+                metrics: vec![MetricDataPoint {
+                    name: "logs.produced".into(),
+                    unit: "{log}".into(),
+                    brief: "produced logs".into(),
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Cumulative),
+                    value_type: MetricValueType::U64,
+                    value: MetricValue::U64(123),
+                }],
+            }],
+        };
+
+        let rendered = format!("{snapshot}");
+        assert!(rendered.contains("timestamp: 2024-01-01T00:00:00Z"));
+        assert!(rendered.contains("metric_set: fake_data_generator.receiver.metrics"));
+        assert!(rendered.contains("logs.produced [{log}]")); // unit shows up in brackets
+        assert!(rendered.contains("value=123"));
+    }
+}
+
 /// A single metric set emitted by the telemetry subsystem.
 #[derive(Debug, Deserialize)]
 pub struct MetricSetSnapshot {

@@ -11,82 +11,46 @@ we comparing the input and output to check that they are equivalent.
 
 ## Pipeline Validation
 
-To validate pipelines we create a pipeline group that
-has three pipelines:
+To validate pipelines we create a pipeline group that has three pipelines:
 
-- traffic-gen -> Generate traffic to use for validation
-- suv -> System under validation the pipeline being validated
-- validate -> Validate the messages received from the suv
+- `traffic-gen` generates traffic for the validation.
+- `suv` is the system under validation (the pipeline being tested).
+- `validate` compares control vs. suv outputs using the validation exporter.
 
-The `traffic-gen` pipeline has a fan out processor that will
-send message via two exporters one that connects to the `suv`
-pipeline and one that connects to the `validate` pipeline.
-The `validate` pipeline has a fan in connection with two
-receivers which will take in messages from both the `suv`
-pipeline and `traffic-gen` pipeline and compare both messages
-against each other to determine the validity of the `suv` pipeline
+The framework now prefers programmatic scenarios defined in tests; it handles wiring ports and running the group end-to-end.
 
-### Adding pipelines to the validation process
+### How to validate your pipelines
 
-Define your pipeline nodes in a yaml file, save the
-configuration under the `validation_pipelines` directory.
-After adding your pipeline update the `pipeline_validation_scenarios.yaml`
-file. There are already some validation scenarios defined in the
-`pipeline_validation_scenarios.yaml` file feel free to use
-these as a reference when making your additions.
-Here is an example scenario definition.
+You can define scenarios directly inside your Rust tests by utilizing the validation framework.
 
-```yaml
-  - name: "Debug Processor"
-    scenario_config_path: ./validation_pipelines/debug-processor.yaml
-    traffic_generation_config:
-      suv_exporter_type: otlp
-      suv_endpoint: "http://127.0.0.1:4317"
-      control_exporter_type: otlp
-      control_endpoint: "http://127.0.0.1:4316"
-      max_signal_count: 2000
-      max_batch_size: 100
-      signals_per_second: 100
-    traffic_capture_config:
-      suv_receiver_type: otap
-      suv_listening_addr: "127.0.0.1:4318"
-      control_receiver_type: otlp
-      control_listening_addr: "127.0.0.1:4316"
-      transformative: false
+- `Pipeline` — loads a pipeline YAML and lets you wire logical endpoints (receiver/exporter) that will be rewritten to free ports for each test run.
+- `Scenario` — orchestrates the end-to-end run: rewires the pipeline, spins up the validation group, drives traffic, waits for metrics, and returns Ok on success
+
+Example (adapted from `src/lib.rs`):
+
+```rust
+use otap_df_validation::{pipeline::Pipeline, scenario::Scenario, traffic};
+use std::time::Duration;
+
+#[test]
+fn no_processor() {
+    Scenario::new()
+        .pipeline(
+            Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                .expect("failed to read in pipeline yaml")
+                .wire_otlp_grpc_receiver("receiver")
+                .wire_otlp_grpc_exporter("exporter"),
+        )
+        .input(traffic::Generator::logs().fixed_count(500).otlp_grpc())
+        .observe(traffic::Capture::default().otlp_grpc())
+        .expect_within(Duration::from_secs(140))
+        .run()
+        .expect("validation scenario failed");
+}
 ```
 
-notice the `traffic_generation_config` and `traffic_capture_config`
-these define the `traffic-gen` and `validate` pipelines the values
-
-#### Traffic Generation Config
-
-- suv_exporter_type: Exporter to use to send messages to the `suv` pipeline
-  - default = otlp
-- suv_endpoint: The endpoint to send messages to the `suv` pipeline
-  - default = `http://127.0.0.1:4317`
-- control_exporter_type: Exporter to use to send messages to the `validate` pipeline
-  - default = otlp
-- control_endpoint: Endpoint to send messages to the `validate` pipeline
-  - default = `http://127.0.0.1:4316`
-- max_signal_count: Max signals to use for the validation
-  - default = 2000
-- max_batch_size: Max batch size to use for signals
-  - default = 100
-- signals_per_second: How often the signals are sent through the pipeline
-  - default = 100
-
-#### Traffic Capture Config
-
-- suv_receiver_type: Receiver to use to get messages from the `suv` pipeline
-  - default = otlp
-- suv_listening_addr: Endpoint to get messages from the `suv` pipeline
-  - default = "127.0.0.1:4318"
-- control_receiver_type: Receiver to use to get messages from the `traffic-gen` pipeline
-  - default = otlp
-- control_listening_addr: Endpoint to send messages to the `traffic-gen` pipeline
-  - default = "127.0.0.1:4316"
-- transformative: Is the `suv` pipeline going to transform the data
-  - default = false
+The wired nodes (e.g., `receiver`, `exporter`) are automatically rewritten to free ports by the
+framework.
 
 ## Future directions
 

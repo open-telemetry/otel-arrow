@@ -1,7 +1,8 @@
 # Engine-wide settings
+{% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
 settings:
   http_admin:
-    bind_address: 127.0.0.1:8085
+    bind_address: {{ admin_bind_address }}
 {% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
 {% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
 {% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
@@ -12,27 +13,18 @@ settings:
 {% if suv_exporter_type == "otap" -%}
   {% set suv_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
 {% endif -%}
-{% set control_receiver_type = control_receiver_type | default("otlp") -%}
-{% set control_exporter_type = control_exporter_type | default("otlp") -%}
-{% set control_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
-{% if control_receiver_type == "otap" -%}
-  {% set control_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
-{% endif -%}
-{% set control_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
-{% if control_exporter_type == "otap" -%}
-  {% set control_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
-{% endif -%}
-{% set expect_failure = transformative | default(false) -%}
 {% set suv_pipeline = pipeline_config | default("nodes:") -%}
 {% set max_signal_count = max_signal_count | default(2000) -%}
 {% set max_batch_size = max_batch_size | default(100) -%}
 {% set signals_per_second = signals_per_second | default(100) -%}
+{% set metric_weight = metric_weight | default(0) -%}
+{% set trace_weight = trace_weight | default(0) -%}
+{% set log_weight = log_weight | default(100) -%}
 
 {% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
 {% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
 {% set control_addr = control_addr | default("127.0.0.1:4316") -%}
 {% set control_endpoint = control_endpoint | default("http://127.0.0.1:4316") -%}
-
 
 pipeline_groups:
   validation_test:
@@ -70,27 +62,22 @@ pipeline_groups:
 
           control_receiver:
             kind: receiver
-            plugin_urn: "{{ control_receiver_plugin_urn }}"
+            plugin_urn: "urn:otel:otlp:receiver"
             out_ports:
               out_port:
                 destinations:
                   - validation_exporter
                 dispatch_strategy: round_robin
             config:
-              {% if control_receiver_type == "otlp" -%}
               protocols:                                                                                                                                                                        
                 grpc:                                                                                                                                                                           
                   listening_addr: "{{ control_addr }}"
-              {% endif %}
-              {% if control_receiver_type == "otap" -%}
-              listening_addr: "{{ control_addr }}"
-              response_stream_channel_size: 256
-              {% endif %}
+
           validation_exporter:
             kind: exporter
             plugin_urn: "urn:otel:validation:exporter"
             config:
-                expect_failure: {{ expect_failure }}
+                expect_failure: false
                 control_input: control_receiver
                 suv_input: suv_receiver
 
@@ -133,9 +120,9 @@ pipeline_groups:
                 max_signal_count: {{ max_signal_count }}
                 max_batch_size: {{ max_batch_size }}
                 signals_per_second: {{ signals_per_second }}
-                metric_weight: 0
-                trace_weight: 0
-                log_weight: 100
+                metric_weight: {{ metric_weight }}
+                trace_weight: {{ trace_weight }}
+                log_weight: {{ log_weight }}
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
           fanout:
@@ -164,11 +151,6 @@ pipeline_groups:
 
           control_exporter:
             kind: exporter
-            plugin_urn: "{{ control_exporter_plugin_urn }}"
+            plugin_urn: "urn:otel:otlp:exporter"
             config:
               grpc_endpoint: "{{ control_endpoint }}"
-              {% if control_exporter_type == "otap" -%}
-              compression_method: none
-              arrow:
-                payload_compression: none
-              {% endif %}

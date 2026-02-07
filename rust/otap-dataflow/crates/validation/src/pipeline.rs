@@ -1,379 +1,355 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Validation test module to validate pipelines for otap/otlp messages
+//! Pipeline wiring helpers for validation scenarios.
+
 #![cfg_attr(not(test), allow(dead_code))]
 
-use crate::traffic::{Capture, Generator};
-use minijinja::{Environment, context};
-use otap_df_config::engine::EngineConfig;
-use otap_df_controller::Controller;
-use otap_df_otap::OTAP_PIPELINE_FACTORY;
-use reqwest::Client;
-use serde::Deserialize;
-use std::fs;
-use std::path::PathBuf;
-use std::time::Instant;
-use tokio::time::{Duration, sleep};
-
 use crate::error::ValidationError;
-use crate::metrics_types::MetricsSnapshot;
+use serde_yaml::Value;
+use std::fs;
 
-const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
-const ADMIN_ENDPOINT: &str = "http://127.0.0.1:8085";
-const READY_MAX_ATTEMPTS: usize = 10;
-const READY_BACKOFF_SECS: u64 = 3;
-
-const METRICS_POLL_SECS: u64 = 2;
-const LOADGEN_TIMEOUT_SECS: u64 = 70;
-const PROPAGATION_DELAY_SECS: u64 = 10;
-
-/// Default location of the YAML file that lists pipeline validation scenarios.
-pub const PIPELINE_CONFIG_YAML: &str = "pipeline_validation_scenarios.yaml";
-
-#[derive(Debug, Deserialize)]
-struct ValidationScenarios {
-    pub scenarios: Vec<Scenario>,
+/// Pipeline configuration wrapper that supports rewiring logical endpoints.
+pub struct Pipeline {
+    pub(crate) suv_yaml: Value,
+    pub(crate) input_wire: Option<EndpointWire>,
+    pub(crate) output_wire: Option<EndpointWire>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Scenario {
-    name: String,
-    scenario_config_path: PathBuf,
-    traffic_generation_config: Generator,
-    traffic_capture_config: Capture,
-}
-
-/// struct to simulate a pipeline running, reads a config and starts a pipeline to send and receive data
-pub struct PipelineSimulator {
-    engine_config: EngineConfig,
-}
-
-impl PipelineSimulator {
-    /// creates a new simulator from a pipeline yaml configuration
-    pub fn new(yaml: &str) -> Result<Self, ValidationError> {
-        let engine_config =
-            EngineConfig::from_yaml(yaml).map_err(|e| ValidationError::Config(e.to_string()))?;
-        Ok(Self { engine_config })
+impl Pipeline {
+    /// Load a pipeline from a YAML file path.
+    pub fn from_file(path: &str) -> Result<Self, ValidationError> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
+        Ok(Self::from_yaml(&content))
     }
 
-    /// runs the pipeline
-    pub fn run(&self) {
-        // create controller and run
-        let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-        let engine_config = self.engine_config.clone();
-        let _ = controller.run_till_shutdown(engine_config);
+    /// Load a pipeline from a YAML string slice.
+    pub fn from_yaml(yaml: &str) -> Self {
+        let suv_yaml: Value = serde_yaml::from_str(yaml).expect("invalid pipeline yaml");
+        Self {
+            suv_yaml,
+            input_wire: None,
+            output_wire: None,
+        }
     }
-}
 
-impl Scenario {
-    /// validates a pipeline, returns true if valid, false if not
-    pub async fn validate(&self, pipeline: String) -> Result<bool, ValidationError> {
-        let base = ADMIN_ENDPOINT;
-        let max_signals_sent = self.traffic_generation_config.max_signal_count as u64;
-        let metric_poll_cooldown = METRICS_POLL_SECS;
-        let pipeline_delay_sec = PROPAGATION_DELAY_SECS;
-        let pipeline_simulator = PipelineSimulator::new(pipeline.as_str())?;
-
-        // start pipeline groups in the background
-        let _pipeline_handle = std::thread::spawn(move || {
-            pipeline_simulator.run();
+    /// Wire a node's OTLP gRPC receiver to a logical endpoint label.
+    #[must_use]
+    pub fn wire_otlp_grpc_receiver(mut self, node_name: impl Into<String>) -> Self {
+        self.input_wire = Some(EndpointWire {
+            node: node_name.into(),
+            kind: EndpointKind::OtlpGrpcReceiver,
         });
+        self
+    }
 
-        let admin_client = Client::new();
+    /// Wire a node's OTLP gRPC exporter to a logical endpoint label.
+    #[must_use]
+    pub fn wire_otlp_grpc_exporter(mut self, node_name: impl Into<String>) -> Self {
+        self.output_wire = Some(EndpointWire {
+            node: node_name.into(),
+            kind: EndpointKind::OtlpGrpcExporter,
+        });
+        self
+    }
 
-        // wait for ready signal if no ready signal is reached then we error out
-        wait_for_ready(&admin_client, base, READY_MAX_ATTEMPTS, READY_BACKOFF_SECS).await?;
+    /// Wire a node's OTAP gRPC receiver to a logical endpoint label.
+    #[must_use]
+    pub fn wire_otap_grpc_receiver(mut self, node_name: impl Into<String>) -> Self {
+        self.input_wire = Some(EndpointWire {
+            node: node_name.into(),
+            kind: EndpointKind::OtapGrpcReceiver,
+        });
+        self
+    }
 
-        // wait for loadgen to send all msgs
-        let loadgen_deadline = Instant::now() + Duration::from_secs(LOADGEN_TIMEOUT_SECS);
-        loop {
-            let snapshot = fetch_metrics(&admin_client, base).await?;
-            if loadgen_reached_limit(&snapshot, max_signals_sent) {
-                break;
+    /// Wire a node's OTAP gRPC exporter to a logical endpoint label.
+    #[must_use]
+    pub fn wire_otap_grpc_exporter(mut self, node_name: impl Into<String>) -> Self {
+        self.output_wire = Some(EndpointWire {
+            node: node_name.into(),
+            kind: EndpointKind::OtapGrpcExporter,
+        });
+        self
+    }
+
+    /// Serialize the current pipeline configuration into a YAML string.
+    pub fn to_yaml_string(&self) -> Result<String, ValidationError> {
+        serde_yaml::to_string(&self.suv_yaml)
+            .map_err(|e| ValidationError::Config(format!("failed to serialize pipeline yaml: {e}")))
+    }
+
+    pub(crate) fn update_pipeline(
+        &mut self,
+        input_addr: &str,
+        output_endpoint: &str,
+    ) -> Result<(), ValidationError> {
+        let wire = self
+            .input_wire
+            .clone()
+            .ok_or_else(|| ValidationError::Config("no input wire configured".into()))?;
+        match wire.kind {
+            EndpointKind::OtlpGrpcReceiver => self.set_otlp_receiver_addr(input_addr)?,
+            EndpointKind::OtapGrpcReceiver => self.set_otap_receiver_addr(input_addr)?,
+            _ => {
+                return Err(ValidationError::Config(
+                    "input wire is not a receiver".into(),
+                ));
             }
-            if Instant::now() >= loadgen_deadline {
-                return Err(ValidationError::Ready(format!(
-                    "load generator did not reach {max_signals_sent} signals before timeout"
-                )));
-            }
-            sleep(Duration::from_secs(metric_poll_cooldown)).await;
         }
 
-        // wait sometime to allow msgs to propogate through the pipelines
-        sleep(Duration::from_secs(pipeline_delay_sec)).await;
-
-        // get metrics to check the validation exporter and retrieve the result
-        let assert_snapshot = fetch_metrics(&admin_client, base).await?;
-        let result = validation_from_metrics(&assert_snapshot);
-
-        // shutdown the pipeline
-        let _ = admin_client
-            .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
-            .send()
-            .await
-            .map_err(|e| ValidationError::Http(e.to_string()))?
-            .error_for_status()
-            .map_err(|e| ValidationError::Http(e.to_string()))?;
-        Ok(result)
+        let out_wire = self
+            .output_wire
+            .clone()
+            .ok_or_else(|| ValidationError::Config("no output wire configured".into()))?;
+        match out_wire.kind {
+            EndpointKind::OtlpGrpcExporter | EndpointKind::OtapGrpcExporter => {
+                self.set_exporter_endpoint(output_endpoint)
+            }
+            _ => Err(ValidationError::Config(
+                "output wire is not an exporter".into(),
+            )),
+        }
     }
 
-    /// render_template generates the validation pipeline group with the pipeline that will be validated
-    pub fn render_template(&mut self, template_path: &str) -> Result<String, ValidationError> {
-        // get suv pipeline defintion
-        let pipeline_config = fs::read_to_string(&self.scenario_config_path).map_err(|_| {
-            ValidationError::Io(format!(
-                "Failed to read in from {}",
-                &self.scenario_config_path.display()
+    fn set_otlp_receiver_addr(&mut self, addr: &str) -> Result<(), ValidationError> {
+        let node = self
+            .input_wire
+            .as_ref()
+            .filter(|w| matches!(w.kind, EndpointKind::OtlpGrpcReceiver))
+            .map(|w| w.node.clone())
+            .ok_or_else(|| ValidationError::Config("input wire is not an OTLP receiver".into()))?;
+        let nodes = self
+            .suv_yaml
+            .get_mut("nodes")
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
+        let node_cfg = nodes
+            .get_mut(&node)
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
+        let config = node_cfg
+            .entry(Value::from("config"))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let config_map = config.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!("config section for node {node} is not a mapping"))
+        })?;
+        let protocols = config_map
+            .entry(Value::from("protocols"))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let protocols_map = protocols.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!(
+                "protocols section for node {node} is not a mapping"
             ))
         })?;
-        // get pipeline group template to run validation test
-        let template = fs::read_to_string(template_path)
-            .map_err(|_| ValidationError::Io(format!("Failed to read in from {template_path}")))?;
-        let mut env = Environment::new();
-        env.add_template("template", template.as_str())
-            .map_err(|e| ValidationError::Template(e.to_string()))?;
-        let tmpl = env
-            .get_template("template")
-            .map_err(|e| ValidationError::Template(e.to_string()))?;
-        // pass the context variables
-        let traffic_gen = &self.traffic_generation_config;
-        let traffic_cap = &self.traffic_capture_config;
-        let ctx = context! {
-            suv_receiver_type => &traffic_cap.suv_receiver_type,
-            suv_exporter_type => &traffic_gen.suv_exporter_type,
-            control_receiver_type => &traffic_cap.control_receiver_type,
-            control_exporter_type => &traffic_gen.control_exporter_type,
-            expect_failure => traffic_cap.transformative,
-            max_signal_count => traffic_gen.max_signal_count,
-            max_batch_size => traffic_gen.max_batch_size,
-            signals_per_second => traffic_gen.signals_per_second,
-            suv_addr => &traffic_cap.suv_listening_addr,
-            suv_endpoint => &traffic_gen.suv_endpoint,
-            control_addr => &traffic_cap.control_listening_addr,
-            control_endpoint => &traffic_gen.control_endpoint,
-            pipeline_config => pipeline_config,
-        };
-        let rendered = tmpl
-            .render(ctx)
-            .map_err(|e| ValidationError::Template(e.to_string()))?;
-        Ok(rendered)
+        let grpc = protocols_map
+            .entry(Value::from("grpc"))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let grpc_map = grpc.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!("grpc section for node {node} is not a mapping"))
+        })?;
+        let _ = grpc_map.insert(Value::from("listening_addr"), Value::from(addr.to_string()));
+        Ok(())
+    }
+
+    fn set_otap_receiver_addr(&mut self, addr: &str) -> Result<(), ValidationError> {
+        let node = self
+            .input_wire
+            .as_ref()
+            .filter(|w| matches!(w.kind, EndpointKind::OtapGrpcReceiver))
+            .map(|w| w.node.clone())
+            .ok_or_else(|| ValidationError::Config("input wire is not an OTAP receiver".into()))?;
+        let nodes = self
+            .suv_yaml
+            .get_mut("nodes")
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
+        let node_cfg = nodes
+            .get_mut(&node)
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
+        let config = node_cfg
+            .entry(Value::from("config"))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let config_map = config.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!("config section for node {node} is not a mapping"))
+        })?;
+        let _ = config_map.insert(Value::from("listening_addr"), Value::from(addr.to_string()));
+        Ok(())
+    }
+
+    fn set_exporter_endpoint(&mut self, endpoint: &str) -> Result<(), ValidationError> {
+        let node = self
+            .output_wire
+            .as_ref()
+            .map(|w| w.node.clone())
+            .ok_or_else(|| ValidationError::Config("output wire missing".into()))?;
+        let nodes = self
+            .suv_yaml
+            .get_mut("nodes")
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
+        let node_cfg = nodes
+            .get_mut(&node)
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
+        let config = node_cfg
+            .entry(Value::from("config"))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let config_map = config.as_mapping_mut().ok_or_else(|| {
+            ValidationError::Config(format!("config section for node {node} is not a mapping"))
+        })?;
+        let _ = config_map.insert(
+            Value::from("grpc_endpoint"),
+            Value::from(endpoint.to_string()),
+        );
+        Ok(())
     }
 }
 
-/// wait_for_ready probes the ready endpoint until it reaches success or used up all retry attempts
-async fn wait_for_ready(
-    client: &Client,
-    base: &str,
-    max_retry: usize,
-    retry_cooldown: u64,
-) -> Result<(), ValidationError> {
-    let readyz_url = format!("{base}/readyz");
-    let mut last_error: Option<String> = None;
-    for _attempt in 0..max_retry {
-        match client.get(&readyz_url).send().await {
-            Ok(resp) if resp.status().is_success() => return Ok(()),
-            Ok(resp) => match resp.text().await {
-                Ok(body) => last_error = Some(format!("pipeline is not ready: {body}")),
-                Err(err) => last_error = Some(format!("pipeline is not ready: {err}")),
-            },
-            Err(err) => {
-                last_error = Some(format!("pipeline is not ready: {err}"));
-            }
-        }
-
-        sleep(Duration::from_secs(retry_cooldown)).await;
-    }
-
-    Err(ValidationError::Ready(
-        last_error.unwrap_or_else(|| "readyz timeout".to_string()),
-    ))
+/// Internal wiring descriptor connecting a pipeline node to an endpoint rewrite.
+#[derive(Clone)]
+pub struct EndpointWire {
+    /// Node id in the pipeline YAML.
+    pub node: String,
+    /// Kind of endpoint to rewrite.
+    pub kind: EndpointKind,
 }
 
-/// fetch_metric fetches metrics from the metric endpoint and returns them as a serialized struct
-async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
-    client
-        .get(format!("{base}/telemetry/metrics"))
-        .query(&[("reset", false), ("keep_all_zeroes", false)])
-        .send()
-        .await
-        .map_err(|_| ValidationError::Http(format!("No Response from {base}/telemetry/metrics")))?
-        .error_for_status()
-        .map_err(|e| ValidationError::Http(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| ValidationError::Http(e.to_string()))
-}
-
-/// loadgen_reached checks the metric for the fake_data_generator metrics
-/// and returns true if the max signal count has been reached
-fn loadgen_reached_limit(snapshot: &MetricsSnapshot, max_signals: u64) -> bool {
-    // Prefer the fake data generator metrics if present.
-    if let Some(v) = snapshot
-        .metric_sets
-        .iter()
-        .find(|set| set.name == "fake_data_generator.receiver.metrics")
-        .and_then(|set| {
-            set.metrics
-                .iter()
-                .find(|m| m.name == "logs.produced")
-                .map(|m| m.value.to_u64_lossy())
-        })
-    {
-        return v >= max_signals;
-    }
-    false
-}
-
-/// validation_from_metrics checks the metrics for the validation metrics
-/// returns true if validation passed
-fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
-    if let Some(v) = snapshot
-        .metric_sets
-        .iter()
-        .find(|set| set.name == "validation.exporter.metrics")
-        .and_then(|set| {
-            set.metrics
-                .iter()
-                .find(|m| m.name == "valid")
-                .map(|m| m.value.to_u64_lossy())
-        })
-    {
-        return v >= 1;
-    }
-    false
+/// Types of endpoints that can be rewired in validation pipelines.
+#[derive(Clone, Copy)]
+pub enum EndpointKind {
+    /// OTLP gRPC receiver listening address.
+    OtlpGrpcReceiver,
+    /// OTLP gRPC exporter destination.
+    OtlpGrpcExporter,
+    /// OTAP gRPC receiver listening address.
+    OtapGrpcReceiver,
+    /// OTAP gRPC exporter destination.
+    OtapGrpcExporter,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
-    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
-    use otap_df_telemetry::metrics::MetricValue;
-    use std::collections::HashMap;
-    use std::fs;
 
-    fn make_metric_set(name: &str, metric_name: &str, value: u64) -> MetricSetSnapshot {
-        MetricSetSnapshot {
-            name: name.to_string(),
-            brief: String::new(),
-            attributes: HashMap::new(),
-            metrics: vec![MetricDataPoint {
-                name: metric_name.to_string(),
-                unit: String::new(),
-                brief: String::new(),
-                instrument: Instrument::Counter,
-                temporality: Some(Temporality::Cumulative),
-                value_type: MetricValueType::U64,
-                value: MetricValue::U64(value),
-            }],
-        }
+    fn sample_yaml() -> &'static str {
+        r#"
+nodes:
+  receiver:
+    config:
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+  exporter:
+    config:
+      grpc_endpoint: "http://default-export"
+  otap_recv:
+    config:
+      listening_addr: "0.0.0.0:4420"
+  otap_exp:
+    config:
+      grpc_endpoint: "http://default-otap-export"
+"#
     }
 
     #[test]
-    fn loadgen_reached_limit_true_when_logs_produced_reaches_max() {
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set(
-                "fake_data_generator.receiver.metrics",
-                "logs.produced",
-                5,
-            )],
-        };
-        assert!(loadgen_reached_limit(&snapshot, 5));
+    fn otlp_wiring_rewrites_addresses() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml())
+            .wire_otlp_grpc_receiver("receiver")
+            .wire_otlp_grpc_exporter("exporter");
+        pipeline
+            .update_pipeline("127.0.0.1:5555", "http://127.0.0.1:7777")
+            .expect("update should succeed");
+        let rendered = pipeline
+            .to_yaml_string()
+            .expect("serialization should succeed");
+
+        let doc: Value = serde_yaml::from_str(&rendered).unwrap();
+        let nodes = doc.get("nodes").and_then(Value::as_mapping).unwrap();
+        let recv = nodes
+            .get(&Value::from("receiver"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let recv_cfg = recv
+            .get(&Value::from("config"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let protocols = recv_cfg
+            .get(&Value::from("protocols"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let grpc = protocols
+            .get(&Value::from("grpc"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert_eq!(
+            grpc.get(&Value::from("listening_addr")),
+            Some(&Value::from("127.0.0.1:5555"))
+        );
+
+        let exp = nodes
+            .get(&Value::from("exporter"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let exp_cfg = exp
+            .get(&Value::from("config"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert_eq!(
+            exp_cfg.get(&Value::from("grpc_endpoint")),
+            Some(&Value::from("http://127.0.0.1:7777"))
+        );
     }
 
     #[test]
-    fn loadgen_reached_limit_false_when_below_threshold_or_missing() {
-        // below threshold
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set(
-                "fake_data_generator.receiver.metrics",
-                "logs.produced",
-                4,
-            )],
-        };
-        assert!(!loadgen_reached_limit(&snapshot, 5));
+    fn otap_wiring_rewrites_addresses() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml())
+            .wire_otap_grpc_receiver("otap_recv")
+            .wire_otap_grpc_exporter("otap_exp");
+        pipeline
+            .update_pipeline("127.0.0.1:6000", "http://127.0.0.1:7000")
+            .expect("update should succeed");
+        let rendered = pipeline
+            .to_yaml_string()
+            .expect("serialization should succeed");
 
-        // metric set missing
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set("other.metrics", "foo", 10)],
-        };
-        assert!(!loadgen_reached_limit(&snapshot, 5));
+        let doc: Value = serde_yaml::from_str(&rendered).unwrap();
+        let nodes = doc.get("nodes").and_then(Value::as_mapping).unwrap();
+        let recv = nodes
+            .get(&Value::from("otap_recv"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let recv_cfg = recv
+            .get(&Value::from("config"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert_eq!(
+            recv_cfg.get(&Value::from("listening_addr")),
+            Some(&Value::from("127.0.0.1:6000"))
+        );
+
+        let exp = nodes
+            .get(&Value::from("otap_exp"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        let exp_cfg = exp
+            .get(&Value::from("config"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert_eq!(
+            exp_cfg.get(&Value::from("grpc_endpoint")),
+            Some(&Value::from("http://127.0.0.1:7000"))
+        );
     }
 
     #[test]
-    fn validation_from_metrics_true_when_valid_gauge_is_set() {
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set("validation.exporter.metrics", "valid", 1)],
-        };
-        assert!(validation_from_metrics(&snapshot));
-    }
-
-    #[test]
-    fn validation_from_metrics_false_when_missing_or_zero() {
-        // missing metric set
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set("other.metrics", "valid", 1)],
-        };
-        assert!(!validation_from_metrics(&snapshot));
-
-        // present but zero
-        let snapshot = MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![make_metric_set("validation.exporter.metrics", "valid", 0)],
-        };
-        assert!(!validation_from_metrics(&snapshot));
-    }
-
-    #[ignore]
-    #[tokio::test]
-    async fn run_validation_scenarios() {
-        let file = fs::File::open(PIPELINE_CONFIG_YAML).expect("failed to open config file");
-        let config: ValidationScenarios =
-            serde_yaml::from_reader(file).expect("failed to serialize config from file");
-
-        println!("========== Running Pipeline Validation ===========");
-
-        let mut report = String::from("========== Pipeline Validation Results ===========\n");
-        let mut failures: usize = 0;
-
-        // loop through each test config
-        for mut config in config.scenarios {
-            // render the pipeline group yaml
-            match config.render_template(VALIDATION_TEMPLATE_PATH) {
-                // run the validation process on the pipeline group and get the result
-                // build a report string
-                Ok(rendered_template) => match config.validate(rendered_template).await {
-                    Ok(result) => {
-                        report.push_str(&format!("Pipeline: {} => {}\n", config.name, result));
-                        // keep track of failed results
-                        if !result {
-                            failures += 1;
-                        }
-                    }
-                    Err(error) => {
-                        report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
-                        // keep track of failed results
-                        failures += 1;
-                    }
-                },
-                Err(error) => {
-                    report.push_str(&format!("Pipeline: {} => ERROR {error}\n", config.name));
-                    // keep track of failed results
-                    failures += 1;
-                }
-            }
-        }
-
-        // print out the report string
-        println!("{report}");
-
-        // trigger failed test if we encountered any failed results
-        assert_eq!(failures, 0);
+    fn missing_output_wire_errors() {
+        let mut pipeline = Pipeline::from_yaml(sample_yaml()).wire_otlp_grpc_receiver("receiver");
+        let err = pipeline
+            .update_pipeline("127.0.0.1:5555", "http://127.0.0.1:7777")
+            .unwrap_err();
+        assert!(matches!(err, ValidationError::Config(_)));
     }
 }

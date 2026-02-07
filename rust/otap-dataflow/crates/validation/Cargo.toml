@@ -13,15 +13,17 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-async-trait = "0.1"
-linkme = "0.3"
-serde = { version = "1.0.228", features = ["derive", "rc"] }
-serde_yaml = "0.9.34-deprecated" 
-serde_json = "1"
-reqwest = { version = "0.12", features = ["json"] }
-minijinja = "1"
+async-trait = { workspace = true }
+linkme = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
+portpicker = { workspace = true }
+
+minijinja = "1"
+reqwest = { version = "0.12", features = ["json"] }
 
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
@@ -37,3 +39,6 @@ otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
 otap-df-controller = { path = "../controller" }
+
+[dev-dependencies]
+tempfile = "3"
