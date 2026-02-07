@@ -16,6 +16,14 @@
 //! `otap_df_telemetry` - they are simple wrappers around `tracing` with
 //! enforced event names.
 //!
+//! ## Keeping in Sync with `otap_df_telemetry`
+//!
+//! The macro implementations here should stay aligned with
+//! [`otap_df_telemetry::internal_events`](../../telemetry/src/internal_events.rs).
+//! If the telemetry crate changes how it invokes `tracing` (e.g., field
+//! wrapping, target strategy), apply the same changes here so that quiver
+//! log output is consistent with the rest of the engine.
+//!
 //! ## Event Naming Convention
 //!
 //! Event names should follow the pattern: `quiver.<component>.<action>`
