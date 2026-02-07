@@ -35,6 +35,12 @@ pub struct Scenario {
     runtime: Duration,
 }
 
+impl Default for Scenario {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scenario {
     /// Start a new scenario builder with sensible defaults.
     #[must_use]

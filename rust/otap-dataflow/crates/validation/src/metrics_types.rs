@@ -87,7 +87,7 @@ mod tests {
         );
 
         assert_eq!(format_metric_value(&MetricValue::U64(42)), "42");
-        assert_eq!(format_metric_value(&MetricValue::F64(3.14)), "3.14");
+        assert_eq!(format_metric_value(&MetricValue::F64(4.1)), "4.1");
     }
 
     #[test]

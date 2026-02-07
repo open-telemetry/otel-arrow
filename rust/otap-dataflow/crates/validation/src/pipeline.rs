@@ -25,6 +25,7 @@ impl Pipeline {
     }
 
     /// Load a pipeline from a YAML string slice.
+    #[must_use]
     pub fn from_yaml(yaml: &str) -> Self {
         let suv_yaml: Value = serde_yaml::from_str(yaml).expect("invalid pipeline yaml");
         Self {
@@ -269,36 +270,36 @@ nodes:
         let doc: Value = serde_yaml::from_str(&rendered).unwrap();
         let nodes = doc.get("nodes").and_then(Value::as_mapping).unwrap();
         let recv = nodes
-            .get(&Value::from("receiver"))
+            .get(Value::from("receiver"))
             .and_then(Value::as_mapping)
             .unwrap();
         let recv_cfg = recv
-            .get(&Value::from("config"))
+            .get(Value::from("config"))
             .and_then(Value::as_mapping)
             .unwrap();
         let protocols = recv_cfg
-            .get(&Value::from("protocols"))
+            .get(Value::from("protocols"))
             .and_then(Value::as_mapping)
             .unwrap();
         let grpc = protocols
-            .get(&Value::from("grpc"))
+            .get(Value::from("grpc"))
             .and_then(Value::as_mapping)
             .unwrap();
         assert_eq!(
-            grpc.get(&Value::from("listening_addr")),
+            grpc.get(Value::from("listening_addr")),
             Some(&Value::from("127.0.0.1:5555"))
         );
 
         let exp = nodes
-            .get(&Value::from("exporter"))
+            .get(Value::from("exporter"))
             .and_then(Value::as_mapping)
             .unwrap();
         let exp_cfg = exp
-            .get(&Value::from("config"))
+            .get(Value::from("config"))
             .and_then(Value::as_mapping)
             .unwrap();
         assert_eq!(
-            exp_cfg.get(&Value::from("grpc_endpoint")),
+            exp_cfg.get(Value::from("grpc_endpoint")),
             Some(&Value::from("http://127.0.0.1:7777"))
         );
     }
@@ -318,28 +319,28 @@ nodes:
         let doc: Value = serde_yaml::from_str(&rendered).unwrap();
         let nodes = doc.get("nodes").and_then(Value::as_mapping).unwrap();
         let recv = nodes
-            .get(&Value::from("otap_recv"))
+            .get(Value::from("otap_recv"))
             .and_then(Value::as_mapping)
             .unwrap();
         let recv_cfg = recv
-            .get(&Value::from("config"))
+            .get(Value::from("config"))
             .and_then(Value::as_mapping)
             .unwrap();
         assert_eq!(
-            recv_cfg.get(&Value::from("listening_addr")),
+            recv_cfg.get(Value::from("listening_addr")),
             Some(&Value::from("127.0.0.1:6000"))
         );
 
         let exp = nodes
-            .get(&Value::from("otap_exp"))
+            .get(Value::from("otap_exp"))
             .and_then(Value::as_mapping)
             .unwrap();
         let exp_cfg = exp
-            .get(&Value::from("config"))
+            .get(Value::from("config"))
             .and_then(Value::as_mapping)
             .unwrap();
         assert_eq!(
-            exp_cfg.get(&Value::from("grpc_endpoint")),
+            exp_cfg.get(Value::from("grpc_endpoint")),
             Some(&Value::from("http://127.0.0.1:7000"))
         );
     }
