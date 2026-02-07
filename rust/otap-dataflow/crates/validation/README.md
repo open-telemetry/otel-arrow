@@ -17,16 +17,20 @@ To validate pipelines we create a pipeline group that has three pipelines:
 - `suv` is the system under validation (the pipeline being tested).
 - `validate` compares control vs. suv outputs using the validation exporter.
 
-The framework now prefers programmatic scenarios defined in tests; it handles wiring ports and running the group end-to-end.
+The framework now prefers programmatic scenarios defined in tests; it handles
+wiring ports and running the group end-to-end.
 
 ### How to validate your pipelines
 
-You can define scenarios directly inside your Rust tests by utilizing the validation framework.
+You can define scenarios directly inside your Rust tests by utilizing the
+validation framework.
 
-- `Pipeline` — loads a pipeline YAML and lets you wire logical endpoints (receiver/exporter) that will be rewritten to free ports for each test run.
-- `Scenario` — orchestrates the end-to-end run: rewires the pipeline, spins up the validation group, drives traffic, waits for metrics, and returns Ok on success
+- `Pipeline` — loads a pipeline YAML and lets you wire logical endpoints
+(receiver/exporter) that will be rewritten to free ports for each test run.
+- `Scenario` — orchestrates the end-to-end run: rewires the pipeline, spins up
+the validation group, drives traffic, waits for metrics, and returns Ok on success
 
-Example (adapted from `src/lib.rs`):
+Example:
 
 ```rust
 use otap_df_validation::{pipeline::Pipeline, scenario::Scenario, traffic};
@@ -49,8 +53,8 @@ fn no_processor() {
 }
 ```
 
-The wired nodes (e.g., `receiver`, `exporter`) are automatically rewritten to free ports by the
-framework.
+The wired nodes (e.g., `receiver`, `exporter`) are automatically rewritten to
+free ports by the framework.
 
 ## Future directions
 
