@@ -3,18 +3,10 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-// ToDo: Add support to simulate a pipeline with various processors
-// ToDo: Move the validation process to it's own CICD job (outside of the tests)
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
 use otap_df_pdata::{Consumer, Producer};
-use weaver_common::result::WResult;
-use weaver_common::vdir::VirtualDirectoryPath;
-use weaver_forge::registry::ResolvedRegistry;
-use weaver_resolver::SchemaResolver;
-use weaver_semconv::registry::SemConvRegistry;
-use weaver_semconv::registry_repo::RegistryRepo;
 
 /// struct to simulate the otel arrow protocol, uses a producer and consumer to encode and decode a otlp request
 pub struct OtelProtoSimulator {
@@ -24,15 +16,24 @@ pub struct OtelProtoSimulator {
 
 impl OtelProtoSimulator {
     /// Takes the Otlp request message and encodes it and decodes it via producer -> consumer
-    pub fn simulate_proto(&mut self, proto_message: &OtlpProtoMessage) -> OtlpProtoMessage {
+    pub fn simulate_proto(
+        &mut self,
+        proto_message: &OtlpProtoMessage,
+    ) -> Result<OtlpProtoMessage, String> {
         // take otlp proto message
         // convert to otap arrow records which we can pass to the producer
         let mut otap_message = otlp_to_otap(proto_message);
         // convert to batch arrow records
         // converg batch arrow records
         // convert msg to proto bytes?
-        let mut bar = self.producer.produce_bar(&mut otap_message).unwrap();
-        let records = self.consumer.consume_bar(&mut bar).unwrap();
+        let mut bar = self
+            .producer
+            .produce_bar(&mut otap_message)
+            .map_err(|e| e.to_string())?;
+        let records = self
+            .consumer
+            .consume_bar(&mut bar)
+            .map_err(|e| e.to_string())?;
         let otap_message = match proto_message {
             OtlpProtoMessage::Logs(_) => OtapArrowRecords::Logs(from_record_messages(records)),
             OtlpProtoMessage::Metrics(_) => {
@@ -40,15 +41,8 @@ impl OtelProtoSimulator {
             }
             OtlpProtoMessage::Traces(_) => OtapArrowRecords::Traces(from_record_messages(records)),
         };
-        otap_to_otlp(&otap_message)
+        Ok(otap_to_otlp(&otap_message))
     }
-
-    // ToDo: add function to simulate pipeline
-    // if pipeline alters the data via a processor that performs some transofmration we should expect the equivalent assert to fail
-    // otherwise the assert should succeed
-    // pub fn simulate_pipeline(proto_message: OtlpProtoMessage) -> OtlpProtoMessage {
-    //     // todo: run a pipeline
-    // }
 }
 
 impl Default for OtelProtoSimulator {
@@ -63,10 +57,16 @@ impl Default for OtelProtoSimulator {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::fake_data_generator::semconv_signal::{
+    use otap_df_otap::fake_data_generator::semconv_signal::{
         semconv_otlp_logs, semconv_otlp_metrics, semconv_otlp_traces,
     };
     use otap_df_pdata::testing::equiv::assert_equivalent;
+    use weaver_common::result::WResult;
+    use weaver_common::vdir::VirtualDirectoryPath;
+    use weaver_forge::registry::ResolvedRegistry;
+    use weaver_resolver::SchemaResolver;
+    use weaver_semconv::registry::SemConvRegistry;
+    use weaver_semconv::registry_repo::RegistryRepo;
 
     const LOG_SIGNAL_COUNT: usize = 100;
     const METRIC_SIGNAL_COUNT: usize = 100;
@@ -126,17 +126,23 @@ mod test {
         for _ in 0..ITERATIONS {
             // generate data and simulate the protocol and compare result
             let logs = OtlpProtoMessage::Logs(semconv_otlp_logs(LOG_SIGNAL_COUNT, &registry));
-            let logs_output = otel_proto_simulator.simulate_proto(&logs);
+            let logs_output = otel_proto_simulator
+                .simulate_proto(&logs)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[logs], &[logs_output]);
 
             let metrics =
                 OtlpProtoMessage::Metrics(semconv_otlp_metrics(METRIC_SIGNAL_COUNT, &registry));
-            let metrics_output = otel_proto_simulator.simulate_proto(&metrics);
+            let metrics_output = otel_proto_simulator
+                .simulate_proto(&metrics)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[metrics], &[metrics_output]);
 
             let traces =
                 OtlpProtoMessage::Traces(semconv_otlp_traces(TRACE_SIGNAL_COUNT, &registry));
-            let traces_output = otel_proto_simulator.simulate_proto(&traces);
+            let traces_output = otel_proto_simulator
+                .simulate_proto(&traces)
+                .expect("failed to encode deocde proto");
             assert_equivalent(&[traces], &[traces_output]);
         }
     }

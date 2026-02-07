@@ -14,14 +14,14 @@ use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality
 use crate::entity::EntityRegistry;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
 /// Numeric metric value (integer or floating-point).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
