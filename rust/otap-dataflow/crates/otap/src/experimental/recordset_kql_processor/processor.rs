@@ -102,8 +102,8 @@ impl RecordsetKqlProcessor {
                 otap_df_telemetry::otel_debug!(
                     "processor.processing_logs",
                     processor = "recordset_kql",
-                    message = "Processing KQL query",
                     input_items = input_items,
+                    "Processing KQL query"
                 );
                 self.process_logs(bytes, signal)
             }
@@ -141,7 +141,7 @@ impl RecordsetKqlProcessor {
                     "processor.failure",
                     processor = "recordset_kql",
                     input_items = input_items,
-                    message = message,
+                    error = message,
                 );
 
                 effect_handler

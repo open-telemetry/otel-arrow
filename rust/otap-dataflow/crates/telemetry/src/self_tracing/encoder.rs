@@ -645,7 +645,7 @@ mod tests {
             .event_name;
 
         // Test for the event name prefix to avoid a hard-coded line number.
-        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding "));
+        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding"));
 
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),

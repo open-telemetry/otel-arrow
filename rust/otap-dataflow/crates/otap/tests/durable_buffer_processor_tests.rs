@@ -26,8 +26,10 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_otap::durable_buffer_processor::DURABLE_BUFFER_URN;
 use otap_df_otap::fake_data_generator::OTAP_FAKE_DATA_GENERATOR_URN;
 use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use quiver::segment::SegmentReader;
 use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -342,8 +344,16 @@ fn run_pipeline_with_condition<F>(
     };
 
     let _ = shutdown_handle.join();
+    // Accept either Ok or a "Channel is closed" error during shutdown.
+    // When an always-NACK exporter races with shutdown, the exporter may try to
+    // send a NACK after the control channel has closed. This is expected behavior
+    // for this test scenario (error_exporter + time-based shutdown).
+    let is_acceptable_shutdown = match &run_result {
+        Ok(_) => true,
+        Err(e) => e.to_string().contains("Channel is closed"),
+    };
     assert!(
-        run_result.is_ok(),
+        is_acceptable_shutdown,
         "pipeline failed to shut down cleanly: {:?}",
         run_result
     );
@@ -377,6 +387,59 @@ where
         std::thread::sleep(poll_interval);
     }
     false
+}
+
+/// Count the total number of signals (rows) in the primary signal table across all segment files.
+///
+/// For logs, each row in the LOGS table = 1 log signal.
+/// Opens each .qseg segment file and sums row_count for streams matching the given payload type.
+fn count_signals_in_segments(
+    segments_dir: &std::path::Path,
+    payload_type: ArrowPayloadType,
+) -> u64 {
+    if !segments_dir.exists() {
+        return 0;
+    }
+    let slot_id_raw = payload_type as u16;
+    std::fs::read_dir(segments_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "qseg"))
+                .map(|e| {
+                    // Errors are intentionally ignored here: this function polls for
+                    // segments that may be actively being written, so open failures
+                    // (incomplete header, locked file, etc.) are expected and transient.
+                    SegmentReader::open(e.path())
+                        .map(|reader| {
+                            reader
+                                .streams()
+                                .iter()
+                                .filter(|s| s.slot_id.raw() == slot_id_raw)
+                                .map(|s| s.row_count)
+                                .sum::<u64>()
+                        })
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Wait for at least `min_count` signals to exist in the primary signal table across all segments.
+///
+/// Returns `true` if the condition was met within `timeout`, `false` otherwise.
+fn wait_for_signals_in_segments(
+    segments_dir: &std::path::Path,
+    payload_type: ArrowPayloadType,
+    min_count: u64,
+    timeout: Duration,
+) -> bool {
+    wait_for_condition(
+        || count_signals_in_segments(segments_dir, payload_type) >= min_count,
+        timeout,
+        Duration::from_millis(10),
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -502,11 +565,26 @@ fn test_durable_buffer_recovery_after_outage() {
     let run1_signals = 25u64;
 
     // Run 1: Downstream failing (all NACKs) - data persists to Quiver
+    //
+    // Key timing considerations for reliable segment persistence:
+    // - max_segment_open_duration: 50ms (from TestConfigBuilder default)
+    // - poll_interval: 20ms (timer tick that triggers flush)
+    // - signals_per_second: 500 (generates all 25 signals in ~50ms)
+    //
+    // The pipeline needs enough time for:
+    // 1. Data generation (~50ms for 25 signals at 500/sec)
+    // 2. At least one timer tick to trigger segment flush (poll_interval: 20ms)
+    // 3. max_segment_open_duration to elapse so flush actually finalizes (50ms)
+    // 4. Graceful shutdown to complete flush and engine shutdown
+    //
+    // Run for 300ms to ensure multiple flush opportunities, with a generous
+    // shutdown deadline to ensure the engine properly finalizes segments.
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(run1_signals))
         .max_batch_size(5)
         .signals_per_second(Some(500))
         .use_error_exporter()
+        .otlp_handling("convert_to_arrow") // Use Arrow format for exact signal counting
         .retry_config(json!({
             "initial_retry_interval": "50ms",
             "max_retry_interval": "100ms",
@@ -514,21 +592,35 @@ fn test_durable_buffer_recovery_after_outage() {
         }))
         .build(&pipeline_group_id, &pipeline_id);
 
-    // Run 1 with error exporter - we can't detect delivery (all NACKs), but
-    // at 500 signals/sec, 25 signals should be generated in ~50ms. Use a short
-    // run duration just long enough to generate and persist the data.
     run_pipeline(
         config,
         &pipeline_group_id,
         &pipeline_id,
-        Duration::from_millis(150), // Just enough time to generate 25 signals
-        Duration::from_millis(200),
+        Duration::from_millis(300), // Allow time for segment flush cycles
+        Duration::from_secs(1),     // Generous shutdown deadline for segment finalization
     );
 
-    // Verify data was persisted
+    // Verify data was persisted to segment files (not just the WAL).
+    //
+    // We verify by counting actual signal rows in the LOGS table.
+    // Each row = 1 log signal, so we should see exactly 25 signals persisted.
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    let signals_exist = wait_for_signals_in_segments(
+        &segments_dir,
+        ArrowPayloadType::Logs,
+        run1_signals,
+        Duration::from_secs(2),
+    );
+    let actual_signals = count_signals_in_segments(&segments_dir, ArrowPayloadType::Logs);
     assert!(
-        buffer_path.join("core_0").exists(),
-        "Run 1 should have created Quiver data directory"
+        signals_exist,
+        "Run 1 should have persisted {} signals, found {}",
+        run1_signals, actual_signals
+    );
+    assert_eq!(
+        actual_signals, run1_signals,
+        "Run 1 should have persisted exactly {} signals, found {}",
+        run1_signals, actual_signals
     );
 
     // Run 2: Downstream healthy - verify recovery delivers all data
@@ -546,6 +638,7 @@ fn test_durable_buffer_recovery_after_outage() {
         .signals_per_second(Some(500)) // Fast generation
         .use_counting_exporter()
         .exporter_id(test_id)
+        .otlp_handling("convert_to_arrow") // Same format as Run 1
         .build(&pipeline_group_id, &pipeline_id);
 
     // Shut down once all data (recovered + new) is delivered
@@ -566,14 +659,11 @@ fn test_durable_buffer_recovery_after_outage() {
     // Validate data integrity:
     // Run 1 generated 25 signals (all NACKed, persisted)
     // Run 2 generated 10 new signals
-    // Total should be at least 35 (25 recovered + 10 new)
-    assert!(
-        delivered >= expected_total,
-        "Recovery should deliver at least {} items ({}+{}), got {}",
-        expected_total,
-        run1_signals,
-        run2_signals,
-        delivered
+    // Total should be exactly 35 (25 recovered + 10 new)
+    assert_eq!(
+        delivered, expected_total,
+        "Recovery should deliver exactly {} items ({}+{}), got {}",
+        expected_total, run1_signals, run2_signals, delivered
     );
 }
 
