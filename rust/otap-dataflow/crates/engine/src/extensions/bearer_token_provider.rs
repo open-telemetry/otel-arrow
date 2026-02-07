@@ -129,7 +129,7 @@ impl BearerToken {
 /// }
 /// ```
 #[async_trait]
-pub trait BearerTokenProvider: Send + Sync {
+pub trait BearerTokenProvider: Send {
     /// Returns an authentication token.
     ///
     /// # Errors

@@ -48,7 +48,6 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{Sleep, sleep_until};
 
@@ -256,17 +255,14 @@ impl<PData> EffectHandler<PData> {
     /// # Example
     ///
     /// ```ignore
-    /// let token_provider: Arc<dyn BearerTokenProvider> = effect_handler
+    /// let token_provider: &dyn BearerTokenProvider = effect_handler
     ///     .get_extension::<dyn BearerTokenProvider>("azure_auth")?;
     /// let token = token_provider.get_token();
     /// ```
     pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
         &self,
         name: &str,
-    ) -> Result<Arc<T>, ExtensionError>
-    where
-        Arc<T>: Send + Sync + Clone,
-    {
+    ) -> Result<&T, ExtensionError> {
         self.core.get_extension::<T>(name)
     }
 

@@ -4,7 +4,7 @@
 //! Extension traits and registry for capability-based lookups.
 //!
 //! This module provides:
-//! - [`ExtensionBundle`](registry::ExtensionBundle) - A collection of trait implementations for a single extension
+//! - [`ExtensionTraits`](registry::ExtensionTraits) - Cast functions for an extension's traits
 //! - [`ExtensionRegistry`](registry::ExtensionRegistry) - A registry to look up extension traits by name
 //! - Common extension traits like [`BearerTokenProvider`](bearer_token_provider::BearerTokenProvider)
 //!
@@ -18,7 +18,10 @@
 pub mod registry;
 
 // Re-export commonly used types
-pub use registry::{ExtensionBundle, ExtensionError, ExtensionRegistry, ExtensionRegistryBuilder};
+pub use registry::{
+    CastFn, ExtensionError, ExtensionRegistry, ExtensionRegistryBuilder, ExtensionTraits, TraitId,
+    raw_to_trait_ref, trait_ref_to_raw,
+};
 
 /// Extension traits that components can implement to expose capabilities.
 pub mod bearer_token_provider;
@@ -41,7 +44,13 @@ mod private {
 /// - External crates CANNOT create new traits usable with `ExtensionBundle`
 ///
 /// This ensures the extension system only supports well-defined, documented capabilities.
-pub trait ExtensionTrait: private::Sealed + Send + Sync {}
+///
+/// # Thread Safety
+///
+/// Extension traits only require `Send`, not `Sync`. The caster-based registry
+/// stores boxed instances and returns borrowed references, avoiding the Arc/Rc
+/// requirement that would force `Sync` on trait objects.
+pub trait ExtensionTrait: private::Sealed + Send {}
 
 // Implement ExtensionTrait for each extension trait's dyn type.
 // This is the ONLY place where ExtensionTrait can be implemented.

@@ -21,7 +21,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::extension::ExtensionWrapper;
 use otap_df_engine::extensions::BearerTokenProvider;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::{ExtensionFactory, extension_bundle};
+use otap_df_engine::{ExtensionFactory, extension_traits};
 use serde_json;
 use std::sync::Arc;
 
@@ -64,15 +64,15 @@ pub static AZURE_IDENTITY_AUTH_EXTENSION: ExtensionFactory<OtapPdata> = Extensio
             })?;
 
         // Create the extension
-        let extension = Arc::new(AzureIdentityAuthExtension::new(cfg).map_err(|e| {
+        let extension = AzureIdentityAuthExtension::new(cfg).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             }
-        })?);
+        })?;
 
         Ok(ExtensionWrapper::local(
-            extension.clone(),
-            extension_bundle!(extension => BearerTokenProvider),
+            extension,
+            extension_traits!(AzureIdentityAuthExtension => BearerTokenProvider),
             node,
             node_config,
             extension_config,

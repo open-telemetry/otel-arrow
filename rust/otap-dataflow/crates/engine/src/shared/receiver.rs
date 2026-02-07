@@ -46,7 +46,6 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -155,10 +154,7 @@ impl<PData> EffectHandler<PData> {
     pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
         &self,
         name: &str,
-    ) -> Result<Arc<T>, ExtensionError>
-    where
-        Arc<T>: Send + Sync + Clone,
-    {
+    ) -> Result<&T, ExtensionError> {
         self.core.get_extension::<T>(name)
     }
 

@@ -37,7 +37,6 @@ use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// A trait for extensions (!Send definition).
@@ -51,12 +50,9 @@ pub trait Extension<PData> {
     /// The pipeline engine will call this function to start the extension in a separate task.
     /// Extensions are assigned their own dedicated task at pipeline initialization.
     ///
-    /// The extension is taken as `Arc<Self>` so the method takes ownership of the extension once `start` is called.
+    /// The extension is taken as `Box<Self>` so the method takes ownership of the extension once `start` is called.
     /// This lets it move into an independent task, after which the pipeline can only
     /// reach it through the control-message channel.
-    ///
-    /// Extensions are required to be wrapped in Arc because they are shared services
-    /// that can be accessed by other components through the extension registry.
     ///
     /// Extensions process control messages only - they do not receive or send pipeline data.
     ///
@@ -73,7 +69,7 @@ pub trait Extension<PData> {
     ///
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
-        self: Arc<Self>,
+        self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
@@ -123,10 +119,7 @@ impl<PData> EffectHandler<PData> {
     pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
         &self,
         name: &str,
-    ) -> Result<Arc<T>, ExtensionError>
-    where
-        Arc<T>: Send + Sync + Clone,
-    {
+    ) -> Result<&T, ExtensionError> {
         self.core.get_extension::<T>(name)
     }
 

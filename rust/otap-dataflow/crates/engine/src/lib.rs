@@ -559,12 +559,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let edges = collect_hyper_edges_runtime(&receivers, &processors);
 
         // Build extension registry from extension traits
-        let mut registry_builder = extensions::ExtensionRegistryBuilder::new();
+        // Note: Extension trait lookups through the registry are not yet implemented.
+        // The traits are collected but need an instance to work with.
+        // TODO: Refactor extension ownership so registry can provide trait references.
+        let registry_builder = extensions::ExtensionRegistryBuilder::new();
         for extension in &mut extensions {
-            let name = extension.node_id().name.to_string();
-            if let Some(bundle) = extension.take_extension_traits() {
-                registry_builder.register(name, bundle);
-            }
+            let _name = extension.node_id().name.to_string();
+            let _traits = extension.take_extension_traits();
+            // registry_builder.register(name, ???, traits);
         }
         let extension_registry = registry_builder.build();
 

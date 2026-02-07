@@ -143,7 +143,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
         create_extension: F,
     ) -> (ExtensionWrapper<PData>, TestContext<PData>)
     where
-        F: FnOnce(CtrlMsgCounters) -> Arc<dyn crate::local::extension::Extension<PData>>,
+        F: FnOnce(CtrlMsgCounters) -> Box<dyn crate::local::extension::Extension<PData>>,
     {
         let counters = CtrlMsgCounters::new();
         let extension = create_extension(counters.clone());
@@ -164,7 +164,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
             user_config,
             runtime_config: config,
             extension,
-            extension_traits: Some(crate::extensions::registry::ExtensionBundle::new()),
+            extension_traits: Some(crate::extensions::registry::ExtensionTraits::new()),
             control_sender: LocalSender::mpsc(control_tx.clone()),
             control_receiver: LocalReceiver::mpsc(control_rx),
             telemetry: None,
@@ -186,7 +186,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
         create_extension: F,
     ) -> (ExtensionWrapper<PData>, TestContext<PData>)
     where
-        F: FnOnce(CtrlMsgCounters) -> Arc<dyn crate::shared::extension::Extension<PData> + Send>,
+        F: FnOnce(CtrlMsgCounters) -> Box<dyn crate::shared::extension::Extension<PData> + Send>,
     {
         let counters = CtrlMsgCounters::new();
         let extension = create_extension(counters.clone());
@@ -206,7 +206,7 @@ impl<PData: 'static + Debug + Clone> TestRuntime<PData> {
             user_config,
             runtime_config: config,
             extension,
-            extension_traits: Some(crate::extensions::registry::ExtensionBundle::new()),
+            extension_traits: Some(crate::extensions::registry::ExtensionTraits::new()),
             control_sender: SharedSender::mpsc(control_tx.clone()),
             control_receiver: SharedReceiver::mpsc(control_rx),
             telemetry: None,

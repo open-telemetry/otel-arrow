@@ -38,7 +38,6 @@ use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::{Sleep, sleep_until};
 
@@ -46,14 +45,11 @@ use tokio::time::{Sleep, sleep_until};
 ///
 /// Extensions are special components that don't process pipeline data.
 /// They provide auxiliary services to the pipeline.
-///
-/// Extensions are required to be wrapped in Arc because they are shared services
-/// that can be accessed by other components through the extension registry.
 #[async_trait]
 pub trait Extension<PData> {
     /// Similar to local::extension::Extension::start, but operates in a Send context.
     async fn start(
-        self: Arc<Self>,
+        self: Box<Self>,
         msg_chan: MessageChannel<PData>,
         effect_handler: EffectHandler<PData>,
     ) -> Result<TerminalState, Error>;
@@ -211,10 +207,7 @@ impl<PData> EffectHandler<PData> {
     pub fn get_extension<T: ExtensionTrait + ?Sized + 'static>(
         &self,
         name: &str,
-    ) -> Result<Arc<T>, ExtensionError>
-    where
-        Arc<T>: Send + Sync + Clone,
-    {
+    ) -> Result<&T, ExtensionError> {
         self.core.get_extension::<T>(name)
     }
 

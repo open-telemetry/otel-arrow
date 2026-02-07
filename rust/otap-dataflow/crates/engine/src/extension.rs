@@ -15,7 +15,7 @@ use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::Error;
 use crate::extensions::ExtensionRegistry;
-use crate::extensions::registry::ExtensionBundle;
+use crate::extensions::registry::ExtensionTraits;
 use crate::local::extension as local;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message;
@@ -43,11 +43,11 @@ pub enum ExtensionWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
-        /// The extension instance wrapped in Arc (required for shared access via registry).
-        extension: Arc<dyn local::Extension<PData>>,
-        /// Extension traits that this extension provides.
+        /// The extension instance.
+        extension: Box<dyn local::Extension<PData>>,
+        /// Cast functions for this extension's trait implementations.
         /// Taken during pipeline initialization to build the central registry.
-        extension_traits: Option<ExtensionBundle>,
+        extension_traits: Option<ExtensionTraits>,
         /// A sender for control messages.
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -65,11 +65,11 @@ pub enum ExtensionWrapper<PData> {
         user_config: Arc<NodeUserConfig>,
         /// The runtime configuration for the extension.
         runtime_config: ExtensionConfig,
-        /// The extension instance wrapped in Arc (required for shared access via registry).
-        extension: Arc<dyn shared::Extension<PData>>,
-        /// Extension traits that this extension provides.
+        /// The extension instance.
+        extension: Box<dyn shared::Extension<PData> + Send>,
+        /// Cast functions for this extension's trait implementations.
         /// Taken during pipeline initialization to build the central registry.
-        extension_traits: Option<ExtensionBundle>,
+        extension_traits: Option<ExtensionTraits>,
         /// A sender for control messages.
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
@@ -100,14 +100,14 @@ impl<PData> ExtensionWrapper<PData> {
     ///
     /// # Arguments
     ///
-    /// * `extension` - The extension instance wrapped in Arc (required for shared access via registry)
-    /// * `extension_traits` - The extension traits bundle for registry lookups
+    /// * `extension` - The extension instance
+    /// * `extension_casters` - The extension traits bundle for registry lookups
     /// * `node_id` - The node identifier
     /// * `user_config` - The user configuration
     /// * `config` - The extension runtime configuration
     pub fn local<E>(
-        extension: Arc<E>,
-        extension_traits: ExtensionBundle,
+        extension: E,
+        extension_traits: ExtensionTraits,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExtensionConfig,
@@ -122,7 +122,7 @@ impl<PData> ExtensionWrapper<PData> {
             node_id,
             user_config,
             runtime_config: config.clone(),
-            extension,
+            extension: Box::new(extension),
             extension_traits: Some(extension_traits),
             control_sender: LocalSender::mpsc(control_sender),
             control_receiver: LocalReceiver::mpsc(control_receiver),
@@ -136,20 +136,20 @@ impl<PData> ExtensionWrapper<PData> {
     ///
     /// # Arguments
     ///
-    /// * `extension` - The extension instance wrapped in Arc (required for shared access via registry)
-    /// * `extension_traits` - The extension traits bundle for registry lookups
+    /// * `extension` - The extension instance
+    /// * `extension_casters` - The extension traits bundle for registry lookups
     /// * `node_id` - The node identifier
     /// * `user_config` - The user configuration
     /// * `config` - The extension runtime configuration
     pub fn shared<E>(
-        extension: Arc<E>,
-        extension_traits: ExtensionBundle,
+        extension: E,
+        extension_traits: ExtensionTraits,
         node_id: NodeId,
         user_config: Arc<NodeUserConfig>,
         config: &ExtensionConfig,
     ) -> Self
     where
-        E: shared::Extension<PData> + 'static,
+        E: shared::Extension<PData> + Send + 'static,
     {
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
@@ -158,7 +158,7 @@ impl<PData> ExtensionWrapper<PData> {
             node_id,
             user_config,
             runtime_config: config.clone(),
-            extension,
+            extension: Box::new(extension),
             extension_traits: Some(extension_traits),
             control_sender: SharedSender::mpsc(control_sender),
             control_receiver: SharedReceiver::mpsc(control_receiver),
@@ -367,11 +367,11 @@ impl<PData> ExtensionWrapper<PData> {
         }
     }
 
-    /// Takes the extension traits bundle from this wrapper, leaving `None` in its place.
+    /// Takes the extension traits from this wrapper, leaving `None` in its place.
     ///
     /// This is called during pipeline initialization to collect all extension traits
     /// into the central registry.
-    pub fn take_extension_traits(&mut self) -> Option<ExtensionBundle> {
+    pub fn take_extension_traits(&mut self) -> Option<ExtensionTraits> {
         match self {
             ExtensionWrapper::Local {
                 extension_traits, ..
@@ -429,7 +429,7 @@ mod tests {
     use crate::config::ExtensionConfig;
     use crate::control::NodeControlMsg;
     use crate::extension::{Error, ExtensionWrapper};
-    use crate::extensions::registry::ExtensionBundle;
+    use crate::extensions::registry::ExtensionTraits;
     use crate::local::extension as local;
     use crate::message;
     use crate::message::Message;
@@ -458,7 +458,7 @@ mod tests {
     #[async_trait(?Send)]
     impl local::Extension<TestMsg> for TestExtension {
         async fn start(
-            self: Arc<Self>,
+            self: Box<Self>,
             mut msg_chan: message::MessageChannel<TestMsg>,
             _effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
@@ -493,7 +493,7 @@ mod tests {
     #[test]
     fn test_local_extension_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
-        let extension = Arc::new(TestExtension::new(counter));
+        let extension = TestExtension::new(counter);
         let node_id = test_node("test_extension");
         let user_config = Arc::new(NodeUserConfig::with_user_config(
             NodeKind::Receiver, // Extension is not a config kind yet
@@ -504,7 +504,7 @@ mod tests {
 
         let wrapper = ExtensionWrapper::local(
             extension,
-            ExtensionBundle::new(),
+            ExtensionTraits::new(),
             node_id,
             user_config,
             &config,
@@ -527,7 +527,7 @@ mod tests {
     #[async_trait]
     impl shared::Extension<TestMsg> for SharedTestExtension {
         async fn start(
-            self: Arc<Self>,
+            self: Box<Self>,
             mut msg_chan: shared::MessageChannel<TestMsg>,
             _effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<TerminalState, Error> {
@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn test_shared_extension_wrapper_creation() {
         let counter = CtrlMsgCounters::new();
-        let extension = Arc::new(SharedTestExtension::new(counter));
+        let extension = SharedTestExtension::new(counter);
         let node_id = test_node("test_extension");
         let user_config = Arc::new(NodeUserConfig::with_user_config(
             NodeKind::Receiver, // Extension is not a config kind yet
@@ -568,7 +568,7 @@ mod tests {
 
         let wrapper = ExtensionWrapper::shared(
             extension,
-            ExtensionBundle::new(),
+            ExtensionTraits::new(),
             node_id,
             user_config,
             &config,

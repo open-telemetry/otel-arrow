@@ -229,7 +229,7 @@ impl BearerTokenProvider for AzureIdentityAuthExtension {
 impl Extension<OtapPdata> for AzureIdentityAuthExtension {
     #[allow(clippy::print_stdout)]
     async fn start(
-        self: Arc<Self>,
+        self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
