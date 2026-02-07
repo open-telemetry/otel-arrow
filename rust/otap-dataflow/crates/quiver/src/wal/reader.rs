@@ -65,6 +65,7 @@ use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
 
+use crate::logging::otel_warn;
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 use super::header::WalHeader;
@@ -775,7 +776,8 @@ impl MultiFileWalReader {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.wal.rotated_file_open_failed",
                         path = %path.display(),
                         rotation_id,
                         error = %e,
@@ -798,7 +800,8 @@ impl MultiFileWalReader {
                     });
                 }
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.wal.active_file_open_failed",
                         path = %base_path.display(),
                         error = %e,
                         "failed to open active WAL file"
@@ -929,7 +932,8 @@ impl Iterator for MultiFileWalIter {
                         // Seek to appropriate position within this file
                         let seek_pos = self.start_position.max(file_info.wal_position_start);
                         if let Err(e) = reader.seek_to_position(seek_pos) {
-                            tracing::warn!(
+                            otel_warn!(
+                                "quiver.wal.seek_failed",
                                 path = %file_info.path.display(),
                                 error = %e,
                                 "failed to seek in WAL file, skipping"
@@ -940,7 +944,8 @@ impl Iterator for MultiFileWalIter {
                         self.current_reader = Some(reader);
                     }
                     Err(e) => {
-                        tracing::warn!(
+                        otel_warn!(
+                            "quiver.wal.iterate_file_open_failed",
                             path = %file_info.path.display(),
                             error = %e,
                             "failed to open WAL file during iteration, skipping"
