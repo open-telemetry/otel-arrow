@@ -545,7 +545,7 @@ impl QuiverEngine {
         };
 
         // Step 2: Append to open segment and finalize if threshold exceeded
-        self.append_to_segment_and_maybe_finalize(bundle, cursor)
+        self.append_to_segment_and_maybe_finalize(bundle, cursor, false)
             .await
     }
 
@@ -554,11 +554,18 @@ impl QuiverEngine {
     /// This is the shared path used by both live ingestion and WAL replay.
     /// During live ingestion, `cursor` is populated from the WAL offset.
     /// During WAL replay, `cursor` is populated from the WAL entry being replayed.
+    ///
+    /// When `during_replay` is `true`, segment finalization bypasses the normal
+    /// budget reservation (`try_reserve`). This prevents a transient double-charge
+    /// where both WAL bytes (already counted at startup) and the new segment bytes
+    /// are reserved simultaneously, which would exceed the budget cap under
+    /// `Backpressure` policy before the WAL bytes can be released.
     #[inline]
     async fn append_to_segment_and_maybe_finalize<B: RecordBundle>(
         &self,
         bundle: &B,
         cursor: Option<WalConsumerCursor>,
+        during_replay: bool,
     ) -> Result<()> {
         // Update cursor if provided (tracks WAL position for segment finalization)
         if let Some(c) = cursor {
@@ -593,7 +600,7 @@ impl QuiverEngine {
 
         // Finalize segment if threshold exceeded
         if should_finalize {
-            self.finalize_current_segment().await?;
+            self.finalize_segment_impl(during_replay).await?;
         }
 
         Ok(())
@@ -803,7 +810,7 @@ impl QuiverEngine {
             // Replay through the normal ingest path (minus WAL write)
             let cursor = WalConsumerCursor::after(&entry);
             if let Err(e) = self
-                .append_to_segment_and_maybe_finalize(&bundle, Some(cursor))
+                .append_to_segment_and_maybe_finalize(&bundle, Some(cursor), true)
                 .await
             {
                 // Log segment errors prominently - these could indicate disk issues
@@ -879,7 +886,7 @@ impl QuiverEngine {
                     "quiver.wal.backpressure",
                     message = "finalizing segment to free space before retry",
                 );
-                self.finalize_current_segment().await?;
+                self.finalize_segment_impl(false).await?;
 
                 // Retry the append after finalization freed space
                 let mut writer = self.wal_writer.lock().await;
@@ -905,7 +912,7 @@ impl QuiverEngine {
     ///
     /// Returns an error if segment finalization fails.
     pub async fn flush(&self) -> Result<()> {
-        self.finalize_current_segment().await
+        self.finalize_segment_impl(false).await
     }
 
     /// Gracefully shuts down the engine, finalizing any open segment.
@@ -921,7 +928,7 @@ impl QuiverEngine {
     ///
     /// Returns an error if segment finalization fails.
     pub async fn shutdown(&self) -> Result<()> {
-        let result = self.finalize_current_segment().await;
+        let result = self.finalize_segment_impl(false).await;
         if let Err(ref e) = result {
             if self.config.durability == DurabilityMode::Wal {
                 otel_warn!(
@@ -951,7 +958,16 @@ impl QuiverEngine {
     /// Finalizes the current open segment and writes it to disk asynchronously.
     ///
     /// Uses async I/O for segment writing and WAL cursor persistence.
-    async fn finalize_current_segment(&self) -> Result<()> {
+    ///
+    /// When `during_replay` is `true`, the normal budget reservation via
+    /// `try_reserve` is skipped. During WAL replay the budget already accounts
+    /// for the WAL bytes that this segment is being built from; reserving again
+    /// would transiently double-charge those bytes, exceeding the cap under
+    /// `Backpressure` policy before `persist_cursor` can release the WAL bytes.
+    /// Instead the segment bytes are recorded with `record_existing` after the
+    /// write completes, and the subsequent `persist_cursor → purge_rotated_files`
+    /// releases the now-superseded WAL bytes, converging to the correct total.
+    async fn finalize_segment_impl(&self, during_replay: bool) -> Result<()> {
         // First, check if there's anything to finalize (without swapping)
         let estimated_size = {
             let segment_guard = self.open_segment.lock();
@@ -961,9 +977,14 @@ impl QuiverEngine {
             segment_guard.estimated_size_bytes() as u64
         };
 
-        // Reserve budget BEFORE swapping out the segment
-        // This prevents data loss if reservation fails
-        let pending = self.budget.try_reserve(estimated_size)?;
+        // Reserve budget BEFORE swapping out the segment.
+        // During replay we skip this to avoid the WAL/segment double-charge
+        // (see method-level doc comment).
+        let pending = if during_replay {
+            None
+        } else {
+            Some(self.budget.try_reserve(estimated_size)?)
+        };
 
         // Now safe to swap out the segment and cursor
         let (segment, cursor) = {
@@ -1009,8 +1030,15 @@ impl QuiverEngine {
             .cumulative_segment_bytes
             .fetch_add(bytes_written, Ordering::Relaxed);
 
-        // Commit reservation with actual bytes written
-        pending.commit(bytes_written);
+        // Commit reservation with actual bytes written, or record directly
+        // during replay where we skipped reservation.
+        if let Some(p) = pending {
+            p.commit(bytes_written);
+        } else {
+            // During replay: the WAL bytes will be released by persist_cursor
+            // below; record the segment bytes so the budget stays accurate.
+            self.budget.record_existing(bytes_written);
+        }
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
@@ -5393,5 +5421,130 @@ mod tests {
                 "expired_bundles should be 0 — cursor was persisted, no re-processing"
             );
         }
+    }
+
+    /// Regression test: WAL replay must not deadlock under Backpressure policy
+    /// when the budget is tight.
+    ///
+    /// Before the fix, at startup the budget was charged for both existing WAL
+    /// bytes (`WalWriter::open → record_existing`) and existing segment bytes
+    /// (`SegmentStore::scan_existing`). When `replay_wal` triggered
+    /// `finalize_segment_impl`, `try_reserve` tried to add segment bytes
+    /// *on top of* the already-counted WAL bytes, causing a transient
+    /// double-charge that exceeded the cap and returned `StorageAtCapacity`.
+    ///
+    /// The fix bypasses `try_reserve` during replay, using `record_existing`
+    /// instead, since the WAL bytes will be released by `persist_cursor` right
+    /// after the segment is written.
+    #[tokio::test]
+    async fn wal_replay_under_tight_backpressure_budget_succeeds() {
+        let dir = tempdir().expect("tempdir");
+
+        // Segment target large enough that a single bundle doesn't trigger
+        // finalization, but several bundles together do.
+        let segment_target: u64 = 4 * 1024; // 4 KB
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(segment_target).expect("non-zero"),
+            ..Default::default()
+        };
+        let wal_config = WalConfig::default();
+
+        let config = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config.clone())
+            .wal(wal_config.clone())
+            .build()
+            .expect("config valid");
+
+        // Phase 1: Ingest with a generous budget.
+        // We want some segments finalized on disk AND some un-finalized WAL
+        // entries that will trigger finalization during replay.
+        //
+        // Each bundle of 50 rows ≈ 1–2 KB.  With target = 4 KB we need
+        // ~3-4 bundles to trigger finalization. Ingesting 12 bundles should
+        // produce ~2-3 segments and leave a tail of un-finalized entries.
+        let generous_budget = Arc::new(DiskBudget::new(
+            100 * 1024 * 1024, // 100 MB
+            RetentionPolicy::Backpressure,
+        ));
+
+        {
+            let engine = QuiverEngine::open(config.clone(), generous_budget)
+                .await
+                .expect("engine");
+
+            for _ in 0..12 {
+                let bundle = DummyBundle::with_rows(50);
+                engine.ingest(&bundle).await.expect("ingest");
+            }
+
+            // Intentionally do NOT call shutdown so any un-finalized bundles
+            // remain only in the WAL and must be replayed.
+        }
+
+        // Measure what's on disk (segments + WAL).
+        let segment_dir = dir.path().join("segments");
+        let mut disk_segment_bytes: u64 = 0;
+        if segment_dir.exists() {
+            for entry in fs::read_dir(&segment_dir).expect("read segment dir") {
+                let entry = entry.expect("entry");
+                disk_segment_bytes += entry.metadata().expect("metadata").len();
+            }
+        }
+
+        let wal_dir = dir.path().join("wal");
+        let mut disk_wal_bytes: u64 = 0;
+        for entry in fs::read_dir(&wal_dir).expect("read wal dir") {
+            let entry = entry.expect("entry");
+            disk_wal_bytes += entry.metadata().expect("metadata").len();
+        }
+
+        // Sanity: we should have BOTH segments and WAL data.
+        assert!(
+            disk_segment_bytes > 0,
+            "expected finalized segments on disk"
+        );
+        assert!(disk_wal_bytes > 0, "expected WAL data on disk");
+
+        // Phase 2: Reopen with a tight Backpressure budget.
+        //
+        // Set cap = exact disk usage.  At startup, `record_existing` charges
+        // the full amount so used == cap.  Any `try_reserve` call would then
+        // fail with StorageAtCapacity — exactly the bug the reviewer described.
+        //
+        // With the fix, replay uses `record_existing` (which permits exceeding
+        // the cap) instead of `try_reserve`, so open() succeeds.
+        let disk_total = disk_segment_bytes + disk_wal_bytes;
+        let min_budget = segment_target * 2; // QuiverEngine::open requires cap >= 2 * segment_size
+        let tight_cap = disk_total.max(min_budget);
+        let tight_budget = Arc::new(DiskBudget::new(
+            tight_cap,
+            RetentionPolicy::Backpressure,
+        ));
+
+        let config2 = QuiverConfig::builder()
+            .data_dir(dir.path())
+            .segment(segment_config)
+            .wal(wal_config)
+            .build()
+            .expect("config valid");
+
+        // This open() must succeed.  Before the fix it would fail with
+        // StorageAtCapacity during WAL replay finalization.
+        let engine = QuiverEngine::open(config2, tight_budget.clone())
+            .await
+            .expect(
+                "engine open with tight budget should succeed; \
+                 WAL replay must not double-charge the budget",
+            );
+
+        // The engine should have replayed and finalized at least one segment
+        // that was not present before restart.
+        assert!(
+            engine.total_segments_written() > 0,
+            "expected at least one segment from WAL replay"
+        );
+
+        engine.shutdown().await.expect("shutdown");
     }
 }
