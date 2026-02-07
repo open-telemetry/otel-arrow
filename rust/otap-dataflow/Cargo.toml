@@ -32,6 +32,7 @@ path = "src/main.rs"
 [dependencies]
 otap-df-config.workspace = true
 otap-df-controller.workspace = true
+otap-df-engine.workspace = true
 otap-df-otap.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
@@ -48,6 +49,7 @@ otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
+otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-telemetry = { path = "crates/telemetry" }
@@ -203,7 +205,7 @@ wiremock = "0.6.5"
 [features]
 # ToDo When jemalloc is enabled, we could use jemalloc_pprof to profile where memory is allocated. See https://crates.io/crates/jemalloc_pprof
 default = ["jemalloc"]
-jemalloc = ["dep:tikv-jemallocator"]
+jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
