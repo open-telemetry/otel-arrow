@@ -25,9 +25,9 @@ wiring ports and running the group end-to-end.
 You can define scenarios directly inside your Rust tests by utilizing the
 validation framework.
 
-- `Pipeline` — loads a pipeline YAML and lets you wire logical endpoints
+- `Pipeline`: loads a pipeline YAML and lets you wire logical endpoints
 (receiver/exporter) that will be rewritten to free ports for each test run.
-- `Scenario` — orchestrates the end-to-end run: rewires the pipeline, spins up
+- `Scenario`: orchestrates the end-to-end run: rewires the pipeline, spins up
 the validation group, drives traffic, waits for metrics, and returns Ok on success
 
 Example:
