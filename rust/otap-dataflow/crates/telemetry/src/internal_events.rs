@@ -49,11 +49,15 @@ macro_rules! otel_info {
 /// - First argument (required): The OpenTelemetry Event name identifying the log event.
 ///   See [OpenTelemetry Event name specification](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname).
 /// - Additional optional key-value pairs can be passed as attributes.
+/// - Optional message literal as the LAST argument.
 ///
 /// # Example:
 /// ```ignore
 /// use otap_df_telemetry::otel_warn;
-/// otel_warn!("channel.full", dropped_count = 10);
+/// otel_warn!("channel.full", dropped_count = 10, "Channel is full, dropping messages");   // With fields and message
+/// otel_warn!("channel.full", dropped_count = 10);                                         // no message, just fields
+/// otel_warn!("channel.full", "Channel is full");                                          // message only, no fields
+/// otel_warn!("channel.full");                                                             // event name only
 /// ```
 #[macro_export]
 macro_rules! otel_warn {
