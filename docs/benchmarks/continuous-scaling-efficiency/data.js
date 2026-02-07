@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770422162913,
+  "lastUpdate": 1770425479460,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -3952,6 +3952,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "otlp_scaling_efficiency_avg",
             "value": 0.7443,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d8dc2c6eaf0ee1d288655d3736deb3b9e32ec4d",
+          "message": "Fix internal logging macros (#1985)\n\nReverting https://github.com/open-telemetry/otel-arrow/pull/1973\nFixing the empty \"\" from our internal macros, that caused the\n`message=\"user friendly message here\"` from being omitted in stdout!\n\nTaking\nhttps://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/controller/src/lib.rs#L668-L671\nas example\n```rust\notel_warn!(\n                \"core_affinity.set_failed\",\n                message = \"Failed to set core affinity for pipeline thread. Performance may be less predictable.\"\n            );\n```\n\nBefore\n```txt\n2026-02-06T22:15:09.891Z  WARN  otap-df-controller::core_affinity.set_failed (crates/controller/src/lib.rs:668): \n```\n(Missing message!)\n\nAfter (i.e with this PR)\n```txt\n2026-02-06T22:11:19.095Z  WARN  otap-df-controller::core_affinity.set_failed (crates/controller/src/lib.rs:668): Failed to set core affinity for pipeline thread. Performance may be less predictable.\n```\n(Message is back)\n\n\"message\" is already special cased in this repo, OTel Rust repo, and\n`tracing` itself. Passing user friendly string as an attribute named\n\"message\" is\n*[faster](https://github.com/open-telemetry/opentelemetry-rust/pull/2001/changes)*\ntoo!\n\nAlso, we avoid the less friendly syntax -\nhttps://github.com/open-telemetry/otel-arrow/pull/1981#discussion_r2776145173",
+          "timestamp": "2026-02-06T22:38:34Z",
+          "tree_id": "6f81ba35d91815c876bae0ba2c7845703f8d0e82",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d8dc2c6eaf0ee1d288655d3736deb3b9e32ec4d"
+        },
+        "date": 1770425478425,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.9145,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8488,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.6996,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.5443,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.7518,
             "unit": "",
             "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
