@@ -483,15 +483,22 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let grpc_enabled = self.config.protocols.grpc.is_some();
-        let http_enabled = self.config.protocols.http.is_some();
         let both_enabled = self.config.protocols.has_both();
 
-        otap_df_telemetry::otel_info!(
-            "receiver.start",
-            message = "Starting OTLP Receiver",
-            grpc_enabled = grpc_enabled,
-            http_enabled = http_enabled
-        );
+        if let Some(grpc) = &self.config.protocols.grpc {
+            otap_df_telemetry::otel_info!(
+                "otlp.receiver.grpc.start",
+                message = "Starting OTLP gRPC receiver",
+                endpoint = %grpc.listening_addr
+            );
+        }
+        if let Some(http) = &self.config.protocols.http {
+            otap_df_telemetry::otel_info!(
+                "otlp.receiver.http.start",
+                message = "Starting OTLP HTTP receiver",
+                endpoint = %http.listening_addr
+            );
+        }
 
         // Determine per-protocol concurrency limits. These are tuned in
         // `tune_max_concurrent_requests()` to not exceed downstream capacity.
