@@ -26,19 +26,33 @@
 //!
 //! ## Event Naming Convention
 //!
-//! Event names should follow the pattern: `quiver.<component>.<action>`
+//! Event names should follow the pattern: `quiver.<component>.<operation>`
+//!
+//! Names describe the **operation**, not the outcome. Use attributes for
+//! outcome details (e.g., `reason`, `phase`, `scope`, `status`):
+//!
+//! - `reason`: Why the operation happened (`"expired"`, `"force_drop"`, `"completed"`)
+//! - `phase`: When it happened (`"deferred"`, `"scan"`, `"runtime"`)
+//! - `scope`: What was affected (`"entry"`, `"slot"`)
+//! - `status`: Outcome detail (`"stopped_incomplete"`)
+//!
+//! The log level carries success vs failure (info = success, warn/error = failure).
 //!
 //! Examples:
-//! - `quiver.wal.replay_complete`
-//! - `quiver.segment.recovered`
-//! - `quiver.subscriber.progress_load_failed`
+//! - `quiver.wal.replay` — all WAL replay events (level + fields distinguish outcomes)
+//! - `quiver.segment.delete` — all segment deletion (reason + phase attrs differentiate)
+//! - `quiver.segment.scan` — startup segment scanning
+//! - `quiver.wal.cursor_load` — cursor sidecar loading (reason attr for failure type)
+//! - `quiver.wal.file_open` — WAL file open/seek (file_type attr for variant)
+//! - `quiver.wal.drop_flush` — drop-time flush (reason attr for skip/failure cause)
+//! - `quiver.subscriber.progress_load` — subscriber progress file loading
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! otel_info!("quiver.segment.recovered", segment_count = 5, "recovered segments from previous run");
-//! otel_warn!("quiver.wal.cursor_decode_failed", error = %e);
-//! otel_debug!("quiver.wal.replay_entry");
+//! otel_info!("quiver.segment.delete", segment = 5, reason = "expired", "Deleted expired segment");
+//! otel_warn!("quiver.wal.cursor_load", error = %e, reason = "decode_failed");
+//! otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 //! ```
 
 #![allow(unused_macros, unused_macro_rules)]

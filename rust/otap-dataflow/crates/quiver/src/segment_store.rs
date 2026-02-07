@@ -342,8 +342,9 @@ impl SegmentStore {
                     // On Windows, the file may still be memory-mapped by outstanding
                     // BundleHandles. Add to pending deletes for retry later.
                     otel_debug!(
-                        "quiver.segment.delete_deferred",
+                        "quiver.segment.delete",
                         segment = seq.raw(),
+                        phase = "deferred",
                         "Segment file in use, deferring deletion"
                     );
                     let _ = self.pending_deletes.lock().insert(seq);
@@ -427,8 +428,9 @@ impl SegmentStore {
                 Ok(_) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
                     otel_debug!(
-                        "quiver.segment.deferred_delete_succeeded",
+                        "quiver.segment.delete",
                         segment = seq.raw(),
+                        phase = "deferred",
                         "Successfully deleted previously deferred segment"
                     );
                     deleted += 1;
@@ -436,8 +438,9 @@ impl SegmentStore {
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // Still in use, keep in pending list
                     otel_trace!(
-                        "quiver.segment.deferred_still_in_use",
+                        "quiver.segment.delete",
                         segment = seq.raw(),
+                        phase = "deferred",
                         "Segment file still in use, will retry later"
                     );
                 }
@@ -445,9 +448,10 @@ impl SegmentStore {
                     // Other error - remove from pending and log
                     let _ = self.pending_deletes.lock().remove(&seq);
                     otel_warn!(
-                        "quiver.segment.deferred_delete_failed",
+                        "quiver.segment.delete",
                         segment = seq.raw(),
                         error = %e,
+                        phase = "deferred",
                         "Failed to delete deferred segment"
                     );
                 }
@@ -528,14 +532,14 @@ impl SegmentStore {
                             // No budget release needed - file was never registered.
                             if let Err(e) = Self::remove_readonly_file(&path) {
                                 otel_warn!(
-                                    "quiver.segment.scan_expired_delete_failed",
+                                    "quiver.segment.scan",
                                     path = %path.display(),
                                     error = %e,
                                     "failed to delete expired segment during scan"
                                 );
                             } else {
                                 otel_info!(
-                                    "quiver.segment.scan_expired_deleted",
+                                    "quiver.segment.scan",
                                     segment = seq.raw(),
                                     "deleted expired segment during startup scan"
                                 );
@@ -550,7 +554,7 @@ impl SegmentStore {
                         Err(e) => {
                             // Use debug level since this is expected during concurrent cleanup
                             otel_debug!(
-                                "quiver.segment.scan_load_failed",
+                                "quiver.segment.scan",
                                 path = %path.display(),
                                 error = %e,
                                 "failed to load segment, skipping"

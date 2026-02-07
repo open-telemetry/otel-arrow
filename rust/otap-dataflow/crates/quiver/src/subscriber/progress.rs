@@ -656,7 +656,7 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
                 Ok(id) => subscriber_ids.push(id),
                 Err(e) => {
                     otel_warn!(
-                        "quiver.subscriber.invalid_progress_file",
+                        "quiver.subscriber.progress_scan",
                         file = %name,
                         error = %e,
                         "ignoring progress file with invalid subscriber ID"

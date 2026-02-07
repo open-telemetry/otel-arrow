@@ -66,10 +66,11 @@ impl ReplayBundle {
                 Some(b) => b,
                 None => {
                     otel_debug!(
-                        "quiver.wal.slot_decode_failed",
+                        "quiver.wal.entry_decode",
                         slot_id = wal_slot.slot_id.raw(),
                         sequence = entry.sequence,
                         payload_len = wal_slot.payload_len,
+                        scope = "slot",
                         "failed to decode WAL slot payload"
                     );
                     return None;
@@ -92,9 +93,10 @@ impl ReplayBundle {
             // Negative timestamps (before epoch) are likely clock skew or bugs.
             // Clamp to epoch and log for diagnostics.
             otel_debug!(
-                "quiver.wal.negative_timestamp_clamped",
+                "quiver.wal.entry_decode",
                 sequence = entry.sequence,
                 timestamp_nanos = entry.ingestion_ts_nanos,
+                scope = "timestamp",
                 "WAL entry has negative timestamp, clamping to epoch"
             );
             UNIX_EPOCH

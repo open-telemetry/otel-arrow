@@ -777,10 +777,11 @@ impl MultiFileWalReader {
                 }
                 Err(e) => {
                     otel_warn!(
-                        "quiver.wal.rotated_file_open_failed",
+                        "quiver.wal.file_open",
                         path = %path.display(),
                         rotation_id,
                         error = %e,
+                        file_type = "rotated",
                         "failed to open rotated WAL file, skipping"
                     );
                 }
@@ -801,9 +802,10 @@ impl MultiFileWalReader {
                 }
                 Err(e) => {
                     otel_warn!(
-                        "quiver.wal.active_file_open_failed",
+                        "quiver.wal.file_open",
                         path = %base_path.display(),
                         error = %e,
+                        file_type = "active",
                         "failed to open active WAL file"
                     );
                     // If we have no files at all, return the error
@@ -933,9 +935,10 @@ impl Iterator for MultiFileWalIter {
                         let seek_pos = self.start_position.max(file_info.wal_position_start);
                         if let Err(e) = reader.seek_to_position(seek_pos) {
                             otel_warn!(
-                                "quiver.wal.seek_failed",
+                                "quiver.wal.file_open",
                                 path = %file_info.path.display(),
                                 error = %e,
+                                file_type = "iteration",
                                 "failed to seek in WAL file, skipping"
                             );
                             self.current_idx += 1;
@@ -945,9 +948,10 @@ impl Iterator for MultiFileWalIter {
                     }
                     Err(e) => {
                         otel_warn!(
-                            "quiver.wal.iterate_file_open_failed",
+                            "quiver.wal.file_open",
                             path = %file_info.path.display(),
                             error = %e,
+                            file_type = "iteration",
                             "failed to open WAL file during iteration, skipping"
                         );
                         self.current_idx += 1;

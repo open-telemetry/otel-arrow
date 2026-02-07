@@ -122,7 +122,7 @@ use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
 use crate::budget::DiskBudget;
-use crate::logging::otel_warn;
+use crate::logging::{otel_debug, otel_info, otel_warn};
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -498,6 +498,16 @@ impl WalWriter {
             budget.record_existing(coordinator.aggregate_bytes);
         }
 
+        otel_info!(
+            "quiver.wal.open",
+            is_new_file,
+            rotated_file_count = coordinator.rotated_files.len(),
+            cursor_position = coordinator.cursor_state.wal_position,
+            next_sequence,
+            aggregate_bytes = coordinator.aggregate_bytes,
+            "WAL writer initialized"
+        );
+
         Ok(Self {
             active_file,
             coordinator,
@@ -849,7 +859,8 @@ impl ActiveWalFile {
         // happen in Drop), skip the sync.
         let Some(tokio_file) = self.file.take() else {
             otel_warn!(
-                "quiver.wal.drop_flush_skipped_no_handle",
+                "quiver.wal.drop_flush",
+                reason = "no_handle",
                 "WAL drop flush skipped: file handle unavailable"
             );
             return;
@@ -863,7 +874,8 @@ impl ActiveWalFile {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
                 otel_warn!(
-                    "quiver.wal.drop_flush_skipped_pending_ops",
+                    "quiver.wal.drop_flush",
+                    reason = "pending_async_ops",
                     "WAL drop flush skipped: file has pending async operations"
                 );
                 return;
@@ -874,7 +886,7 @@ impl ActiveWalFile {
         #[cfg(test)]
         test_support::record_sync_data();
         if let Err(e) = std_file.sync_data() {
-            otel_warn!("quiver.wal.drop_flush_sync_failed", error = %e, "WAL drop flush failed during sync_data");
+            otel_warn!("quiver.wal.drop_flush", error = %e, reason = "sync_data_failed", "WAL drop flush failed during sync_data");
         }
 
         // Convert back to tokio::fs::File
@@ -1032,6 +1044,14 @@ impl WalCoordinator {
             > self.options.rotation_target_bytes;
 
         if will_rotate && self.rotated_files.len() >= self.options.max_rotated_files {
+            otel_warn!(
+                "quiver.wal.capacity",
+                reason = "rotated_files_cap",
+                rotated_file_count = self.rotated_files.len(),
+                max_rotated_files = self.options.max_rotated_files,
+                aggregate_bytes = self.aggregate_bytes,
+                "rotated WAL file cap reached during preflight"
+            );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
             ));
@@ -1045,6 +1065,14 @@ impl WalCoordinator {
         }
 
         if projected > self.options.max_wal_size {
+            otel_warn!(
+                "quiver.wal.capacity",
+                reason = "max_wal_size",
+                projected_bytes = projected,
+                max_wal_size = self.options.max_wal_size,
+                aggregate_bytes = self.aggregate_bytes,
+                "WAL size cap exceeded during preflight"
+            );
             return Err(WalError::WalAtCapacity(
                 "wal size cap exceeded; advance cursor to reclaim space",
             ));
@@ -1259,6 +1287,14 @@ impl WalCoordinator {
 
     async fn rotate_active_file(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
         if self.rotated_files.len() >= self.options.max_rotated_files {
+            otel_warn!(
+                "quiver.wal.capacity",
+                reason = "rotated_files_cap",
+                rotated_file_count = self.rotated_files.len(),
+                max_rotated_files = self.options.max_rotated_files,
+                aggregate_bytes = self.aggregate_bytes,
+                "rotated WAL file cap reached"
+            );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
             ));
@@ -1328,6 +1364,15 @@ impl WalCoordinator {
         // Clear entry boundaries index - new file has no entries yet
         self.entry_boundaries.clear();
         self.rotation_count = self.rotation_count.saturating_add(1);
+
+        otel_info!(
+            "quiver.wal.rotate",
+            rotation_id,
+            rotated_file_bytes = old_len,
+            rotated_file_count = self.rotated_files.len(),
+            aggregate_bytes = self.aggregate_bytes,
+            "WAL file rotated"
+        );
 
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await?;
         Ok(())
@@ -1436,6 +1481,14 @@ impl WalCoordinator {
                 if let Some(ref budget) = self.options.budget {
                     budget.release(purged_bytes);
                 }
+
+                otel_debug!(
+                    "quiver.wal.purge",
+                    purged_bytes,
+                    remaining_rotated_files = self.rotated_files.len().saturating_sub(1),
+                    aggregate_bytes = self.aggregate_bytes,
+                    "purged consumed rotated WAL file"
+                );
 
                 self.purge_count = self.purge_count.saturating_add(1);
                 let _ = self.rotated_files.pop_front();

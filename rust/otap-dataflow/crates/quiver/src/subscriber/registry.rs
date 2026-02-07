@@ -43,7 +43,7 @@ use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
 
-use crate::logging::otel_warn;
+use crate::logging::{otel_info, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
 use super::error::{Result, SubscriberError};
@@ -163,7 +163,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     }
                     Err(e) => {
                         otel_warn!(
-                            "quiver.subscriber.progress_load_failed",
+                            "quiver.subscriber.progress_load",
                             subscriber_id = %sub_id,
                             error = %e,
                             "failed to load progress file, subscriber will start fresh"
@@ -209,7 +209,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Create new state wrapped in per-subscriber lock
         let state = SubscriberState::new(id.clone());
-        let _ = subscribers.insert(id, Arc::new(RwLock::new(state)));
+        let _ = subscribers.insert(id.clone(), Arc::new(RwLock::new(state)));
+
+        otel_info!(
+            "quiver.subscriber.lifecycle",
+            subscriber_id = %id,
+            action = "register",
+            "subscriber registered"
+        );
 
         Ok(())
     }
@@ -245,6 +252,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         }
 
         state.activate();
+
+        otel_info!(
+            "quiver.subscriber.lifecycle",
+            subscriber_id = %id,
+            action = "activate",
+            "subscriber activated"
+        );
+
         Ok(())
     }
 
@@ -267,6 +282,14 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         let mut state = state_lock.write();
         state.deactivate();
+
+        otel_info!(
+            "quiver.subscriber.lifecycle",
+            subscriber_id = %id,
+            action = "deactivate",
+            "subscriber deactivated"
+        );
+
         Ok(())
     }
 
@@ -296,6 +319,13 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
         // Delete progress file
         delete_progress_file(&self.config.data_dir, id).await?;
+
+        otel_info!(
+            "quiver.subscriber.lifecycle",
+            subscriber_id = %id,
+            action = "unregister",
+            "subscriber unregistered and progress file deleted"
+        );
 
         Ok(())
     }
@@ -751,6 +781,12 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     // Re-add to dirty set for retry
                     let mut dirty_set = self.dirty_subscribers.lock();
                     let _ = dirty_set.insert(sub_id.clone());
+                    otel_warn!(
+                        "quiver.subscriber.progress_flush",
+                        subscriber_id = %sub_id,
+                        error = %e,
+                        "failed to flush subscriber progress, will retry"
+                    );
                     // Keep the first error, continue with remaining subscribers
                     if first_error.is_none() {
                         first_error = Some(e);
