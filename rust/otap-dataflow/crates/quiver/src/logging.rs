@@ -56,10 +56,10 @@
 /// ```
 macro_rules! otel_info {
     ($name:expr, $($fields:tt)+) => {
-        tracing::info!(name: $name, target: "quiver", $($fields)+);
+        tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
     ($name:expr) => {
-        tracing::info!(name: $name, target: "quiver", "");
+        tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
 }
 
@@ -76,10 +76,10 @@ macro_rules! otel_info {
 /// ```
 macro_rules! otel_warn {
     ($name:expr, $($fields:tt)+) => {
-        tracing::warn!(name: $name, target: "quiver", $($fields)+);
+        tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
     ($name:expr) => {
-        tracing::warn!(name: $name, target: "quiver", "");
+        tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
 }
 
@@ -95,10 +95,10 @@ macro_rules! otel_warn {
 /// ```
 macro_rules! otel_error {
     ($name:expr, $($fields:tt)+) => {
-        tracing::error!(name: $name, target: "quiver", $($fields)+);
+        tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
     ($name:expr) => {
-        tracing::error!(name: $name, target: "quiver", "");
+        tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
 }
 
@@ -115,10 +115,10 @@ macro_rules! otel_error {
 /// ```
 macro_rules! otel_debug {
     ($name:expr, $($fields:tt)+) => {
-        tracing::debug!(name: $name, target: "quiver", $($fields)+);
+        tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
     ($name:expr) => {
-        tracing::debug!(name: $name, target: "quiver", "");
+        tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
 }
 
@@ -134,10 +134,10 @@ macro_rules! otel_debug {
 /// ```
 macro_rules! otel_trace {
     ($name:expr, $($fields:tt)+) => {
-        tracing::trace!(name: $name, target: "quiver", $($fields)+);
+        tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
     };
     ($name:expr) => {
-        tracing::trace!(name: $name, target: "quiver", "");
+        tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
     };
 }
 
