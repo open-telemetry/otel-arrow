@@ -69,10 +69,10 @@ the impact of batch size on CPU, memory, and network efficiency.
 
 #### 6. Saturation and Scaling
 
-**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/continuous-saturation/>
+**URL:** <https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/saturation/>
 
 Tests performance at saturation across different CPU configurations: 1, 2, 4, 8,
-and 16 cores.
+and 16 cores. Runs nightly to validate scaling characteristics.
 
 *TODO: Update test output to include scalability ratios in addition to raw
 throughput numbers.*

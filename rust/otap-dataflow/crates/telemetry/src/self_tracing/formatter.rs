@@ -209,9 +209,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
     let _ = w.write_all(callsite.target().as_bytes());
     let _ = w.write_all(b"::");
     let _ = w.write_all(callsite.name().as_bytes());
-    if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-        let _ = write!(w, " ({}:{})", file, line);
-    }
 }
 
 impl StyledBufWriter<'_> {
@@ -784,7 +781,7 @@ mod tests {
         // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event\n"
         );
 
         // Verify full OTLP encoding with known callsite
@@ -796,10 +793,7 @@ mod tests {
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
         assert!(decoded.severity_text.is_empty()); // Not coded
-        assert_eq!(
-            decoded.event_name,
-            "test_module::submodule::test_event (src/test.rs:123)"
-        );
+        assert_eq!(decoded.event_name, "test_module::submodule::test_event");
     }
 
     #[test]
