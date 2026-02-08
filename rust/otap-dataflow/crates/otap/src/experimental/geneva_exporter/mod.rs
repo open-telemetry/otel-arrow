@@ -153,10 +153,6 @@ struct ExporterMetrics {
     /// Total number of batches considered successfully uploaded.
     #[metric(unit = "{batch}")]
     pub batches_uploaded: Counter<u64>,
-
-    /// Total number of export attempts that failed (per PData message).
-    #[metric(unit = "{msg}")]
-    pub exports_failed: Counter<u64>,
 }
 
 /// Geneva exporter that sends OTAP data to Geneva backend
@@ -335,17 +331,17 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded = self
+                        let batches_uploaded = self
                             .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
                             "geneva_exporter.upload",
-                            count = batches.len(),
+                            count = batches_uploaded,
                             message = "Successfully uploaded log batches to Geneva (OTAP fallback)"
                         );
 
-                        Ok(batches_encoded)
+                        Ok(batches_uploaded)
                     }
                     OtapArrowRecords::Traces(otap_records) => {
                         // TODO: Zero-copy view path for future optimization (when TracesView is ready)
@@ -375,18 +371,18 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded = self
+                        let batches_uploaded = self
                             .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
                             "geneva_exporter.upload",
-                            count = batches.len(),
+                            count = batches_uploaded,
                             message =
                                 "Successfully uploaded trace batches to Geneva (OTAP fallback)"
                         );
 
-                        Ok(batches_encoded)
+                        Ok(batches_uploaded)
                     }
                     OtapArrowRecords::Metrics(_) => {
                         Err("Geneva exporter does not support metrics signal".to_string())
@@ -394,13 +390,13 @@ impl GenevaExporter {
                 }
             }
 
-            // OTLP path: For pipelines without OTAP support (e.g., OTLP receiver → Geneva exporter without batch processor)
+            // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver → Geneva exporter without batch processor)
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
                         otel_info!(
                             "geneva_exporter.upload",
-                            message = "Uploading logs to Geneva using OTLP fallback path"
+                            message = "Uploading logs to Geneva using OTLP path"
                         );
 
                         // Decode OTLP bytes to ResourceLogs
@@ -413,22 +409,22 @@ impl GenevaExporter {
                             .encode_and_compress_logs(&logs_request.resource_logs)
                             .map_err(|e| format!("Failed to encode logs: {}", e))?;
 
-                        let batches_encoded = self
+                        let batches_uploaded = self
                             .upload_batches_concurrent(&batches, SignalType::Logs)
                             .await?;
 
                         otel_info!(
                             "geneva_exporter.upload",
-                            count = batches.len(),
-                            message = "Successfully uploaded log batches to Geneva (OTLP fallback)"
+                            count = batches_uploaded,
+                            message = "Successfully uploaded log batches to Geneva (OTLP path)"
                         );
 
-                        Ok(batches_encoded)
+                        Ok(batches_uploaded)
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         otel_info!(
                             "geneva_exporter.upload",
-                            message = "Uploading traces to Geneva using OTLP fallback path"
+                            message = "Uploading traces to Geneva using OTLP path"
                         );
 
                         // Decode OTLP bytes to ResourceSpans
@@ -441,18 +437,17 @@ impl GenevaExporter {
                             .encode_and_compress_spans(&traces_request.resource_spans)
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
 
-                        let batches_encoded = self
+                        let batches_uploaded = self
                             .upload_batches_concurrent(&batches, SignalType::Traces)
                             .await?;
 
                         otel_info!(
                             "geneva_exporter.upload",
-                            count = batches.len(),
-                            message =
-                                "Successfully uploaded trace batches to Geneva (OTLP fallback)"
+                            count = batches_uploaded,
+                            message = "Successfully uploaded trace batches to Geneva (OTLP path)"
                         );
 
-                        Ok(batches_encoded)
+                        Ok(batches_uploaded)
                     }
                     OtlpProtoBytes::ExportMetricsRequest(_) => {
                         Err("Geneva exporter does not support metrics signal".to_string())
@@ -510,7 +505,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
 
                     return Ok(TerminalState::new(
                         deadline,
-                        vec![self.pdata_metrics.snapshot(), self.metrics.snapshot()],
+                        [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
                     ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -539,7 +534,6 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         }
                         Err(e) => {
                             self.pdata_metrics.inc_failed(signal_type);
-                            self.metrics.exports_failed.inc();
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = e,
