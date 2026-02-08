@@ -506,6 +506,7 @@ mod tests {
     use crate::pdata::OtapPdata;
 
     use crate::compression::CompressionMethod;
+    use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
@@ -529,7 +530,8 @@ mod tests {
     };
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::{
-        ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
+        ArrowPayloadType, BatchArrowRecords, BatchStatus,
+        arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
@@ -546,6 +548,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
+    use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
     const METRIC_BATCH_ID: i64 = 0;
     const LOG_BATCH_ID: i64 = 1;
@@ -1043,6 +1046,224 @@ mod tests {
                     pipeline_ctrl_msg_rx,
                 )
             )
+        });
+
+        tokio_rt
+            .block_on(server_handle)
+            .expect("server shutdown success");
+    }
+
+    /// Mock StreamingArrowService that consumes one batch from the request stream
+    /// (triggering correlation_tx.send) then returns Err.
+    /// This tests the drained-correlation path in stream_arrow_batches.
+    struct MockConsumeAndFail;
+
+    #[async_trait::async_trait]
+    impl super::StreamingArrowService for MockConsumeAndFail {
+        async fn handle_req_stream(
+            &mut self,
+            req_stream: impl IntoStreamingRequest<Message = BatchArrowRecords> + Send,
+        ) -> Result<Response<Streaming<BatchStatus>>, Status> {
+            use tokio_stream::StreamExt;
+            let mut stream = Box::pin(req_stream.into_streaming_request().into_inner());
+            // Consume the first batch — this polls create_req_stream, which
+            // sends the corresponding OtapPdata to correlation_tx.
+            let _ = stream.next().await;
+            Err(Status::unavailable("mock failure after consume"))
+        }
+    }
+
+    /// Tests that when handle_req_stream fails AFTER the request stream was
+    /// partially consumed, the already-correlated pdata is drained from the
+    /// correlation channel and reported as Failed.
+    #[tokio::test]
+    async fn test_stream_arrow_batches_drain_correlation_on_error() {
+        use super::{PDataMetricsUpdate, stream_arrow_batches};
+
+        let (batches_tx, batches_rx) = tokio::sync::mpsc::channel(4);
+        let (metrics_tx, mut metrics_rx) = tokio::sync::mpsc::channel(4);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+        let pdata = OtapPdata::new_default(log_message.into());
+        let payload = pdata.clone();
+        batches_tx
+            .send((pdata, payload.payload().try_into().unwrap()))
+            .await
+            .unwrap();
+        // Drop sender so the function exits after processing
+        drop(batches_tx);
+
+        stream_arrow_batches(
+            MockConsumeAndFail,
+            SignalType::Logs,
+            None,
+            batches_rx,
+            metrics_tx,
+            shutdown_rx,
+        )
+        .await;
+
+        // The drained pdata should come through as Failed
+        let update = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(update, PDataMetricsUpdate::IncFailed(SignalType::Logs, _)),
+            "expected IncFailed, got something else"
+        );
+    }
+
+    /// gRPC service mock that returns a gRPC error in the response stream
+    /// after processing the first batch.
+    struct ArrowLogsServiceGrpcErrorMock {
+        sender: tokio::sync::mpsc::Sender<()>,
+    }
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsService
+        for ArrowLogsServiceGrpcErrorMock
+    {
+        type ArrowLogsStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<BatchStatus, Status>> + Send + 'static>,
+        >;
+
+        async fn arrow_logs(
+            &self,
+            request: tonic::Request<Streaming<BatchArrowRecords>>,
+        ) -> Result<Response<Self::ArrowLogsStream>, Status> {
+            let mut input_stream = request.into_inner();
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let notify = self.sender.clone();
+
+            _ = tokio::spawn(async move {
+                // Read the first batch
+                if let Ok(Some(_batch)) = input_stream.message().await {
+                    // Notify the test that we received the batch
+                    let _ = notify.send(()).await;
+                    // Send a gRPC error instead of a success status
+                    let _ = tx.send(Err(Status::internal("mock gRPC error"))).await;
+                }
+            });
+
+            Ok(Response::new(
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)) as Self::ArrowLogsStream,
+            ))
+        }
+    }
+
+    /// Tests that when the gRPC server returns an error in the response stream
+    /// (after the connection was successfully established), the exporter sends
+    /// a NACK for the corresponding pdata.
+    #[test]
+    fn test_grpc_error_in_response_stream() {
+        use otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &json!({
+                    "grpc_endpoint": grpc_endpoint,
+                    "compression_method": "none",
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (pipeline_ctrl_msg_tx, mut pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (batch_received_tx, mut batch_received_rx) = tokio::sync::mpsc::channel(1);
+        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Start gRPC server that returns errors
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let error_service = ArrowLogsServiceServer::new(ArrowLogsServiceGrpcErrorMock {
+                sender: batch_received_tx,
+            });
+
+            Server::builder()
+                .add_service(error_service)
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        let _ = tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let mr = metrics_reporter.clone();
+            let _exporter_fut = local_set.spawn_local(async move {
+                let _ = exporter.start(pipeline_ctrl_msg_tx, mr).await;
+            });
+
+            tokio::join!(local_set, async {
+                // Send a batch with ACK/NACK subscription
+                let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                let pdata = OtapPdata::new_default(log_message.into()).test_subscribe_to(
+                    Interests::ACKS | Interests::NACKS,
+                    Default::default(),
+                    0,
+                );
+                pdata_tx.send(pdata).await.expect("send pdata");
+
+                // Wait for server to receive the batch
+                _ = timeout(Duration::from_secs(5), batch_received_rx.recv())
+                    .await
+                    .expect("timed out waiting for server to receive batch");
+
+                // Wait for NACK (server returned gRPC error)
+                timeout(Duration::from_secs(5), async {
+                    loop {
+                        match pipeline_ctrl_msg_rx.recv().await {
+                            Ok(PipelineControlMsg::DeliverNack { .. }) => break,
+                            Ok(_) => continue,
+                            Err(_) => panic!("pipeline ctrl channel closed"),
+                        }
+                    }
+                })
+                .await
+                .expect("Timed out waiting for NACK from gRPC error");
+
+                // Shutdown
+                control_sender
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: Instant::now().add(Duration::from_millis(10)),
+                        reason: "test done".into(),
+                    })
+                    .await
+                    .unwrap();
+                server_shutdown_tx.send(true).unwrap();
+            })
         });
 
         tokio_rt
