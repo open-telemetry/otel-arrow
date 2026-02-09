@@ -423,11 +423,7 @@ impl ResourceValidatorProcessor {
     }
 
     /// Updates metrics and logs warnings based on validation result
-    fn update_metrics(
-        &mut self,
-        result: &Result<(), (ValidationFailure, String)>,
-        num_items: u64,
-    ) {
+    fn update_metrics(&mut self, result: &Result<(), (ValidationFailure, String)>, num_items: u64) {
         match result {
             Ok(()) => {
                 self.metrics.batches_accepted.add(1);
