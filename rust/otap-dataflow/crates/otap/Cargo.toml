@@ -129,6 +129,7 @@ recordset-kql-processor = [
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset"
 ]
+resource-validator-processor = ["experimental-processors"]
 
 
 [dev-dependencies]
