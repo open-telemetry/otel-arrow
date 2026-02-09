@@ -65,8 +65,10 @@ processors:
 - `resource_validator_batches_accepted` - Batches that passed validation
 - `resource_validator_batches_rejected_missing` - Rejected: missing attribute
 - `resource_validator_batches_rejected_not_allowed` - Rejected: invalid value
-- `resource_validator_batches_rejected_invalid_type` - Rejected: attribute not a string
-- `resource_validator_batches_rejected_conversion_error` - Rejected: internal conversion error
+- `resource_validator_batches_rejected_invalid_type` - Rejected:
+  attribute not a string
+- `resource_validator_batches_rejected_conversion_error` - Rejected:
+  internal conversion error
 - `resource_validator_items_accepted` - Telemetry items accepted
 - `resource_validator_items_rejected` - Telemetry items rejected
 
