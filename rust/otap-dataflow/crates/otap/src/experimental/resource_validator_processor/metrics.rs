@@ -25,4 +25,12 @@ pub struct ResourceValidatorMetrics {
     /// Number of batches rejected due to value not in allowed list
     #[metric(unit = "{batch}")]
     pub batches_rejected_not_allowed: Counter<u64>,
+
+    /// Number of batches rejected due to invalid attribute type (not a string)
+    #[metric(unit = "{batch}")]
+    pub batches_rejected_invalid_type: Counter<u64>,
+
+    /// Number of batches rejected due to internal conversion error
+    #[metric(unit = "{batch}")]
+    pub batches_rejected_conversion_error: Counter<u64>,
 }

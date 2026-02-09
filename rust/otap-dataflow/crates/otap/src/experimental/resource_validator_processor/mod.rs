@@ -443,10 +443,14 @@ impl ResourceValidatorProcessor {
             Err((failure, msg)) => {
                 warn!(reason = %failure, "{}", msg);
                 match failure {
-                    ValidationFailure::MissingAttribute
-                    | ValidationFailure::InvalidAttributeType
-                    | ValidationFailure::ConversionError => {
+                    ValidationFailure::MissingAttribute => {
                         self.metrics.batches_rejected_missing.add(1);
+                    }
+                    ValidationFailure::InvalidAttributeType => {
+                        self.metrics.batches_rejected_invalid_type.add(1);
+                    }
+                    ValidationFailure::ConversionError => {
+                        self.metrics.batches_rejected_conversion_error.add(1);
                     }
                     ValidationFailure::NotInAllowedList => {
                         self.metrics.batches_rejected_not_allowed.add(1);

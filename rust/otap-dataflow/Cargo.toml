@@ -219,6 +219,7 @@ azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
 experimental-processors = ["otap-df-otap/experimental-processors"]
 condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
 recordset-kql-processor = ["otap-df-otap/recordset-kql-processor"]
+resource-validator-processor = ["otap-df-otap/resource-validator-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints
