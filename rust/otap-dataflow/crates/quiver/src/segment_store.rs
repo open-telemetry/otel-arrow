@@ -365,7 +365,7 @@ impl SegmentStore {
     /// On Windows, this occurs when trying to delete a file that's still open
     /// (e.g., memory-mapped by outstanding `BundleHandle`s).
     #[cfg(windows)]
-    const fn is_sharing_violation(error: &std::io::Error) -> bool {
+    fn is_sharing_violation(error: &std::io::Error) -> bool {
         // Windows error code 32: ERROR_SHARING_VIOLATION
         // "The process cannot access the file because it is being used by another process."
         error.raw_os_error() == Some(32)
