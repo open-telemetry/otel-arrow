@@ -1604,15 +1604,22 @@ where
             .take(range.end)
             .skip(range.start)
         {
-            // dict_key_kept_in_values_range[i] = Some(range_idx);
             *k = Some(range_idx)
         }
     }
 
     // Build the new dictionary keys.
     let key_keep_ranges =
-        transform_ranges_to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges)
-            .unwrap_or_default();
+        transform_ranges_to_keep_ranges(dict_arr.len(), &dict_key_transform_ranges).unwrap_or_else(
+            || {
+                // if we're here, it means some dictionary values were deleted but no dictionary
+                // keys were pointing at this value, which means we keep all the keys
+                vec![Range {
+                    start: 0,
+                    end: dict_arr.len(),
+                }]
+            },
+        );
     let count_kept_values = key_keep_ranges.iter().map(Range::len).sum();
     let mut new_dict_keys_values_buffer =
         MutableBuffer::with_capacity(count_kept_values * size_of::<K::Native>());
@@ -3781,48 +3788,93 @@ mod test {
 
     #[test]
     fn test_transform_attrs_keys_dict_encoded() {
-        let test_cases = vec![(
-            // basic dict transform
-            AttributesTransform {
-                insert: None,
-                rename: Some(RenameTransform::new(BTreeMap::from_iter([(
-                    "a".into(),
-                    "AA".into(),
-                )]))),
-                delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
-            },
+        let test_cases = vec![
             (
-                // keys column - dict keys
-                vec![1, 0, 2, 3, 2, 1, 0]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
-                // keys column - dict values
-                vec!["a", "b", "c", "d"]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
-                // attr value str column
-                vec!["a", "b", "c", "d", "e", "f", "g"]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
+                // basic dict transform
+                AttributesTransform {
+                    insert: None,
+                    rename: Some(RenameTransform::new(BTreeMap::from_iter([(
+                        "a".into(),
+                        "AA".into(),
+                    )]))),
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
+                },
+                (
+                    // keys column - dict keys
+                    vec![1, 0, 2, 3, 2, 1, 0]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // keys column - dict values
+                    vec!["a", "b", "c", "d"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // attr value str column
+                    vec!["a", "b", "c", "d", "e", "f", "g"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    vec![0, 1, 2, 1, 0]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    vec!["AA", "c", "d"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    vec!["b", "c", "d", "e", "g"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
             ),
+            // check what happens when delete value that is not referenced by any key
             (
-                vec![0, 1, 2, 1, 0]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
-                vec!["AA", "c", "d"]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
-                vec!["b", "c", "d", "e", "g"]
-                    .into_iter()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
+                // basic dict transform
+                AttributesTransform {
+                    insert: None,
+                    rename: None,
+                    delete: Some(DeleteTransform::new(BTreeSet::from_iter(["b".into()]))),
+                },
+                (
+                    // keys column - dict keys
+                    vec![0, 0, 2, 3, 2, 3, 0]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // keys column - dict values
+                    vec!["a", "b", "c", "d"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // attr value str column
+                    vec!["a", "b", "c", "d", "e", "f", "g"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
+                (
+                    // keys column - dict keys
+                    vec![0, 0, 1, 2, 1, 2, 0]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // keys column - dict values
+                    vec!["a", "c", "d"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                    // attr value str column (same as input)
+                    vec!["a", "b", "c", "d", "e", "f", "g"]
+                        .into_iter()
+                        .map(Some)
+                        .collect::<Vec<_>>(),
+                ),
             ),
-        )];
+        ];
 
         for (transform, inputs, expected) in test_cases {
             let schema = Arc::new(Schema::new(vec![
