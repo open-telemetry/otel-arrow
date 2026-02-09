@@ -1,7 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-/// Shared TLS test certificate generation utilities (rcgen-only).
+//! Shared TLS test certificate generation utilities (rcgen-only).
+
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
@@ -14,7 +15,9 @@ pub use rcgen::ExtendedKeyUsagePurpose as ExtendedKeyUsage;
 
 /// Certificate and private key pair in PEM format.
 pub struct GeneratedCert {
+    /// PEM-encoded certificate.
     pub cert_pem: String,
+    /// PEM-encoded private key.
     pub key_pem: String,
 }
 
@@ -28,6 +31,7 @@ impl GeneratedCert {
 
 /// CA certificate plus signing issuer for leaf issuance.
 pub struct GeneratedCa {
+    /// PEM-encoded CA certificate.
     pub cert_pem: String,
     issuer: Issuer<'static, KeyPair>,
 }
@@ -39,6 +43,7 @@ impl GeneratedCa {
     }
 
     /// Issue a non-CA leaf certificate signed by this CA.
+    #[must_use]
     pub fn issue_leaf(
         &self,
         cn: &str,
@@ -70,6 +75,7 @@ impl GeneratedCa {
 }
 
 /// Generate a CA certificate that can issue leaf certificates.
+#[must_use]
 pub fn generate_ca(cn: &str) -> GeneratedCa {
     let mut params = CertificateParams::new(Vec::new()).expect("empty SAN");
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -89,6 +95,7 @@ pub fn generate_ca(cn: &str) -> GeneratedCa {
 }
 
 /// Generate a self-signed certificate.
+#[must_use]
 pub fn generate_self_signed_cert(cn: &str, san: Option<&str>, is_ca: bool) -> GeneratedCert {
     let mut params = match san {
         Some(san_name) => CertificateParams::new(vec![san_name.to_string()]).expect("SAN"),
@@ -112,6 +119,7 @@ pub fn generate_self_signed_cert(cn: &str, san: Option<&str>, is_ca: bool) -> Ge
 }
 
 /// Generate CA + signed leaf cert and write them to disk.
+#[must_use]
 pub fn write_ca_and_leaf_to_dir(
     dir: &Path,
     ca_name: &str,

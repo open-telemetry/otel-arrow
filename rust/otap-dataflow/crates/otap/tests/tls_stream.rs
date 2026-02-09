@@ -4,13 +4,10 @@
 #![allow(missing_docs)]
 
 #[cfg(feature = "experimental-tls")]
-mod common;
-
-#[cfg(feature = "experimental-tls")]
 mod tests {
-    use super::common::tls_certs::write_ca_and_leaf_to_dir;
     use futures::StreamExt;
     use otap_df_otap::tls_utils::create_tls_stream;
+    use otap_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::pem::PemObject;
     use rustls_pki_types::{CertificateDer, PrivateKeyDer};
     use std::fs;

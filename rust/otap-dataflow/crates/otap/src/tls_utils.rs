@@ -1599,18 +1599,9 @@ fn read_file_with_limit_sync(path: &Path) -> Result<Vec<u8>, io::Error> {
 mod tests {
     use super::*;
     use otap_df_config::tls::TlsConfig;
+    use otap_test_tls_certs as tls_certs;
     use std::fs;
     use tempfile::TempDir;
-
-    // `tests/common` is an integration-test module tree, so unit tests in `src/` cannot
-    // import it with `mod` paths directly. Include the shared helper file to keep one
-    // rcgen implementation for TLS test cert generation.
-    mod tls_certs {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/common/tls_certs.rs"
-        ));
-    }
 
     /// Generate a self-signed certificate using shared rcgen helpers.
     fn generate_cert(dir: &Path, name: &str, cn: &str) {

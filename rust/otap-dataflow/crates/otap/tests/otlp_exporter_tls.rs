@@ -6,11 +6,9 @@
 #![cfg(feature = "experimental-tls")]
 #![allow(missing_docs)]
 
-mod common;
-
-use common::tls_certs::{ExtendedKeyUsage, generate_ca};
 use otap_df_config::tls::{TlsClientConfig, TlsConfig};
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
+use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tonic::transport::{Identity, Server, ServerTlsConfig};

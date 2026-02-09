@@ -6,4 +6,3 @@
 
 pub mod counting_exporter;
 pub mod flaky_exporter;
-pub mod tls_certs;

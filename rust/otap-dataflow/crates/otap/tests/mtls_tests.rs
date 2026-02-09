@@ -5,12 +5,10 @@
 
 #![cfg(feature = "experimental-tls")]
 
-mod common;
-
-use common::tls_certs::generate_self_signed_cert as generate_cert;
 use otap_df_config::tls::{TlsConfig, TlsServerConfig};
 use otap_df_otap::tls_utils::build_reloadable_server_config;
 use otap_df_telemetry::{otel_debug, otel_info};
+use otap_test_tls_certs::generate_self_signed_cert as generate_cert;
 use rustls_pki_types::pem::PemObject;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs;

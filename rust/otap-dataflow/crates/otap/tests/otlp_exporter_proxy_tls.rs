@@ -6,10 +6,7 @@
 #![cfg(feature = "experimental-tls")]
 #![allow(missing_docs)]
 
-mod common;
-
 use bytes::Bytes;
-use common::tls_certs::{ExtendedKeyUsage, generate_ca};
 use otap_df_config::tls::{TlsClientConfig, TlsConfig};
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::LogsServiceClient;
@@ -20,6 +17,7 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_serve
     LogsService, LogsServiceServer,
 };
 use otap_df_telemetry::otel_debug;
+use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use prost::Message;
 use std::net::SocketAddr;
 use std::sync::{
