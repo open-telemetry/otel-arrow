@@ -329,8 +329,8 @@ impl QuiverEngine {
 
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
-        let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
-            .map_err(|e| {
+        let registry =
+            SubscriberRegistry::open(registry_config, segment_store.clone()).map_err(|e| {
                 otel_error!(
                     "quiver.engine.open",
                     error = %e,
