@@ -403,7 +403,7 @@ impl ProtoBuffer {
 
     /// Returns the current capacity of the underlying buffer.
     #[must_use]
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.buffer.capacity()
     }
 
@@ -553,7 +553,7 @@ pub(crate) struct SortedBatchCursor {
 
 impl SortedBatchCursor {
     /// Create a new instance of [`SortedBatchCursor`]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             sorted_indices: Vec::new(),
             curr_index: 0,
@@ -572,13 +572,13 @@ impl SortedBatchCursor {
     }
 
     /// Advance the cursor
-    pub fn advance(&mut self) {
+    pub const fn advance(&mut self) {
         self.curr_index += 1;
     }
 
     /// Check if the cursor has finished. This will return true once we've iterated to the end of
     /// the record batch that was used to initialize this cursor.
-    pub fn finished(&self) -> bool {
+    pub const fn finished(&self) -> bool {
         self.curr_index >= self.sorted_indices.len()
     }
 }
@@ -770,7 +770,7 @@ impl<'a, T> ChildIndexIter<'a, T>
 where
     T: ArrowPrimitiveType,
 {
-    pub fn new(
+    pub const fn new(
         parent_id: T::Native,
         parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
         cursor: &'a mut SortedBatchCursor,

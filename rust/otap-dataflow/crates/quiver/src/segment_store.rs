@@ -226,7 +226,7 @@ impl SegmentStore {
 
     /// Returns the read mode being used.
     #[must_use]
-    pub fn read_mode(&self) -> SegmentReadMode {
+    pub const fn read_mode(&self) -> SegmentReadMode {
         self.read_mode
     }
 
@@ -364,18 +364,17 @@ impl SegmentStore {
     ///
     /// On Windows, this occurs when trying to delete a file that's still open
     /// (e.g., memory-mapped by outstanding `BundleHandle`s).
+    #[cfg(windows)]
     fn is_sharing_violation(error: &std::io::Error) -> bool {
         // Windows error code 32: ERROR_SHARING_VIOLATION
         // "The process cannot access the file because it is being used by another process."
-        #[cfg(windows)]
-        {
-            error.raw_os_error() == Some(32)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = error;
-            false
-        }
+        error.raw_os_error() == Some(32)
+    }
+
+    #[cfg(not(windows))]
+    const fn is_sharing_violation(error: &std::io::Error) -> bool {
+        let _ = error;
+        false
     }
 
     /// Removes a read-only file from disk.

@@ -187,7 +187,7 @@ const fn default_accept_compressed_requests() -> bool {
     true
 }
 
-fn default_http_timeout() -> Option<Duration> {
+const fn default_http_timeout() -> Option<Duration> {
     // Conservative default chosen to mitigate slow-client DoS while keeping parity
     // with common collector defaults.
     Some(Duration::from_secs(30))

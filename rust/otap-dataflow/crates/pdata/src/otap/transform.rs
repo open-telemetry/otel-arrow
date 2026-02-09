@@ -699,7 +699,7 @@ pub struct InsertTransform {
 
 impl InsertTransform {
     #[must_use]
-    pub fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
+    pub const fn new(entries: BTreeMap<String, LiteralValue>) -> Self {
         Self { entries }
     }
 }

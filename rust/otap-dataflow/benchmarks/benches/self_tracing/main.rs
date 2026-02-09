@@ -100,7 +100,7 @@ enum BenchOp {
 
 impl BenchOp {
     /// Returns true if this operation requires entity context.
-    fn needs_entity(self) -> bool {
+    const fn needs_entity(self) -> bool {
         matches!(
             self,
             BenchOp::EncodeProtoWithScope | BenchOp::FormatWithEntity
@@ -124,7 +124,7 @@ struct EntityContext {
 }
 
 impl BenchLayer {
-    fn new(iterations: usize, op: BenchOp) -> Self {
+    const fn new(iterations: usize, op: BenchOp) -> Self {
         Self {
             iterations,
             op,

@@ -151,7 +151,7 @@ impl Display for PipelinePhase {
 impl PipelinePhase {
     /// Returns the `PhaseKind` corresponding to this `PipelinePhase` (i.e. without details).
     #[must_use]
-    pub fn kind(&self) -> PhaseKind {
+    pub const fn kind(&self) -> PhaseKind {
         match self {
             PipelinePhase::Pending => PhaseKind::Pending,
             PipelinePhase::Starting => PhaseKind::Starting,
@@ -172,7 +172,7 @@ impl PipelinePhase {
     ///
     /// Terminal states are: `Stopped`, `Deleted`, `Failed`, and `Rejected`.
     #[must_use]
-    pub fn is_terminal(&self) -> bool {
+    pub const fn is_terminal(&self) -> bool {
         match self {
             // Terminal states - pipeline has reached an end state
             Self::Stopped | Self::Deleted | Self::Failed(_) | Self::Rejected(_) => true,

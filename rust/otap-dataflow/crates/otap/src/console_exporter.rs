@@ -62,7 +62,7 @@ pub struct ConsoleExporter {
 impl ConsoleExporter {
     /// Create a new console exporter with the given configuration.
     #[must_use]
-    pub fn new(config: ConsoleExporterConfig) -> Self {
+    pub const fn new(config: ConsoleExporterConfig) -> Self {
         Self {
             formatter: HierarchicalFormatter::new(config.color, config.unicode),
         }
@@ -186,7 +186,7 @@ pub struct HierarchicalFormatter {
 impl HierarchicalFormatter {
     /// Create a new hierarchical formatter.
     #[must_use]
-    pub fn new(use_color: bool, use_unicode: bool) -> Self {
+    pub const fn new(use_color: bool, use_unicode: bool) -> Self {
         Self {
             color: if use_color {
                 ColorMode::Color

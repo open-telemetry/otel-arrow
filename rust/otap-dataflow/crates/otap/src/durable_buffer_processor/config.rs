@@ -21,7 +21,7 @@ use quiver::config::RetentionPolicy;
 use serde::Deserialize;
 
 /// Default retention size cap (10 GiB).
-fn default_retention_size_cap() -> Byte {
+const fn default_retention_size_cap() -> Byte {
     Byte::from_u64_with_unit(10, Unit::GiB).expect("valid constant")
 }
 

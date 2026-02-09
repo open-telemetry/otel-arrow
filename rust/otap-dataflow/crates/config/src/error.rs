@@ -133,7 +133,7 @@ pub struct Context {
 impl Context {
     /// Creates a new context with the given pipeline group and pipeline ids.
     #[must_use]
-    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
+    pub const fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
             pipeline_group_id: Some(pipeline_group_id),
             pipeline_id: Some(pipeline_id),

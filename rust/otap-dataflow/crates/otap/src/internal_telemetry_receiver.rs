@@ -78,7 +78,7 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
 impl InternalTelemetryReceiver {
     /// Create a new receiver with the given configuration and internal telemetry settings.
     #[must_use]
-    pub fn new_with_telemetry(
+    pub const fn new_with_telemetry(
         config: Config,
         internal_telemetry: otap_df_telemetry::InternalTelemetrySettings,
     ) -> Self {

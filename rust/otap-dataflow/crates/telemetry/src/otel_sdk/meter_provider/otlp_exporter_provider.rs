@@ -121,7 +121,7 @@ impl OtlpExporterProvider {
         Ok(exporter)
     }
 
-    fn to_sdk_temporality(config: &Temporality) -> opentelemetry_sdk::metrics::Temporality {
+    const fn to_sdk_temporality(config: &Temporality) -> opentelemetry_sdk::metrics::Temporality {
         match config {
             Temporality::Cumulative => opentelemetry_sdk::metrics::Temporality::Cumulative,
             Temporality::Delta => opentelemetry_sdk::metrics::Temporality::Delta,

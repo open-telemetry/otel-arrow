@@ -70,7 +70,7 @@ pub(crate) struct NodeTaskContext {
 }
 
 impl NodeTaskContext {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         entity_key: Option<EntityKey>,
         telemetry_handle: Option<NodeTelemetryHandle>,
         input_channel_key: Option<EntityKey>,
@@ -305,7 +305,7 @@ pub struct NodeTelemetryGuard {
 }
 
 impl NodeTelemetryGuard {
-    pub(crate) fn new(handle: NodeTelemetryHandle) -> Self {
+    pub(crate) const fn new(handle: NodeTelemetryHandle) -> Self {
         Self { handle }
     }
 

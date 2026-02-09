@@ -194,7 +194,7 @@ impl<PData> ReceiverWrapper<PData> {
         }
     }
 
-    pub(crate) fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
+    pub(crate) const fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
         match self {
             ReceiverWrapper::Local { telemetry, .. } => telemetry.take(),
             ReceiverWrapper::Shared { telemetry, .. } => telemetry.take(),
@@ -356,7 +356,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the PData receiver.
-    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
+    pub const fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ReceiverWrapper::Local { pdata_receiver, .. } => {
                 Receiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))

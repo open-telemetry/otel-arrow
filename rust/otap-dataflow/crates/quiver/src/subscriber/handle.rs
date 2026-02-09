@@ -80,7 +80,7 @@ impl<C: ResolutionCallback> BundleHandle<C> {
     ///
     /// This is called by the registry when claiming a bundle.
     #[must_use]
-    pub(crate) fn new(
+    pub(crate) const fn new(
         bundle_ref: BundleRef,
         subscriber_id: SubscriberId,
         data: ReconstructedBundle,
@@ -97,19 +97,19 @@ impl<C: ResolutionCallback> BundleHandle<C> {
 
     /// Returns a reference to the bundle data.
     #[must_use]
-    pub fn data(&self) -> &ReconstructedBundle {
+    pub const fn data(&self) -> &ReconstructedBundle {
         &self.data
     }
 
     /// Returns the bundle reference (for retry scheduling).
     #[must_use]
-    pub fn bundle_ref(&self) -> BundleRef {
+    pub const fn bundle_ref(&self) -> BundleRef {
         self.bundle_ref
     }
 
     /// Returns the subscriber ID.
     #[must_use]
-    pub fn subscriber_id(&self) -> &SubscriberId {
+    pub const fn subscriber_id(&self) -> &SubscriberId {
         &self.subscriber_id
     }
 

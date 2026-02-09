@@ -1625,7 +1625,7 @@ fn collect_hyper_edges_runtime<PData>(
     edges
 }
 
-fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
+const fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
     match strategy {
         DispatchStrategy::Broadcast => "broadcast",
         DispatchStrategy::RoundRobin => "round_robin",

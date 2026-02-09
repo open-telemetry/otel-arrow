@@ -124,13 +124,13 @@ pub struct SegmentWriter {
 impl SegmentWriter {
     /// Creates a new segment writer.
     #[must_use]
-    pub fn new(segment_seq: SegmentSeq) -> Self {
+    pub const fn new(segment_seq: SegmentSeq) -> Self {
         Self { segment_seq }
     }
 
     /// Returns the segment sequence number.
     #[must_use]
-    pub fn segment_seq(&self) -> SegmentSeq {
+    pub const fn segment_seq(&self) -> SegmentSeq {
         self.segment_seq
     }
 
@@ -551,7 +551,7 @@ struct HashingWriter<'a, W> {
 }
 
 impl<'a, W> HashingWriter<'a, W> {
-    fn new(inner: &'a mut W, hasher: &'a mut Hasher) -> Self {
+    const fn new(inner: &'a mut W, hasher: &'a mut Hasher) -> Self {
         Self { inner, hasher }
     }
 }

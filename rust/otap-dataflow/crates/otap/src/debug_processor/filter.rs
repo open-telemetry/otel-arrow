@@ -25,7 +25,7 @@ pub struct FilterRules {
 
 impl FilterRules {
     #[must_use]
-    pub fn new(predicate: Predicate, mode: FilterMode) -> Self {
+    pub const fn new(predicate: Predicate, mode: FilterMode) -> Self {
         Self { predicate, mode }
     }
     pub fn filter_logs(&self, logs_data: &mut LogsData) {
