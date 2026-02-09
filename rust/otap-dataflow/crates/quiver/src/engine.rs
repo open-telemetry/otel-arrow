@@ -825,10 +825,7 @@ impl QuiverEngine {
         }
 
         if skipped_expired > 0 {
-            tracing::info!(
-                skipped_expired,
-                "skipped expired WAL entries during replay (max_age)"
-            );
+            otel_info!("quiver.wal.replay", skipped_expired, message = "skipped expired WAL entries during replay (max_age)");
             let _ = self
                 .expired_bundles
                 .fetch_add(skipped_expired, Ordering::Relaxed);
