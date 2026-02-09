@@ -299,7 +299,7 @@ impl WalWriterOptions {
     }
 
     /// Validates the configuration, returning an error if any values are invalid.
-    const fn validate(&self) -> WalResult<()> {
+    fn validate(&self) -> WalResult<()> {
         let (numerator, denominator) = self.buffer_decay_rate;
         if denominator == 0 {
             otel_error!("quiver.wal.init", reason = "invalid_config",);
