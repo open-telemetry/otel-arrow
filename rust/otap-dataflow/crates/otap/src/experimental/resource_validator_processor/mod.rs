@@ -431,7 +431,7 @@ impl ResourceValidatorProcessor {
             }
             Err((failure, msg)) => {
                 otel_warn!(
-                    "resource_validation_failed",
+                    "resource_validator_processor.validation.fail",
                     failure_reason = %failure,
                     message = msg.as_str()
                 );
