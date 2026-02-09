@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use parking_lot::{Mutex, RwLock};
 
 use crate::budget::DiskBudget;
-use crate::logging::{otel_debug, otel_error, otel_info, otel_trace, otel_warn};
+use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
@@ -437,7 +437,7 @@ impl SegmentStore {
                 }
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // Still in use, keep in pending list
-                    otel_trace!(
+                    otel_debug!(
                         "quiver.segment.delete",
                         segment = seq.raw(),
                         phase = "deferred",

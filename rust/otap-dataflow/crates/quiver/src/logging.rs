@@ -136,30 +136,10 @@ macro_rules! otel_debug {
     };
 }
 
-/// Macro for logging trace messages with a required event name.
-///
-/// # Arguments
-/// - First argument (required): The event name identifying the log event.
-/// - Additional optional key-value pairs and/or trailing message literal.
-///
-/// # Example
-/// ```ignore
-/// otel_trace!("quiver.segment.file_in_use", segment = seq.raw());
-/// ```
-macro_rules! otel_trace {
-    ($name:expr, $($fields:tt)+) => {
-        tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
-    };
-    ($name:expr) => {
-        tracing::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
-    };
-}
-
 // Make macros available within this crate only (no #[macro_export])
 pub(crate) use otel_debug;
 pub(crate) use otel_error;
 pub(crate) use otel_info;
-pub(crate) use otel_trace;
 pub(crate) use otel_warn;
 
 #[cfg(test)]
@@ -187,9 +167,6 @@ mod tests {
 
         otel_debug!("quiver.test.debug_only");
         otel_debug!("quiver.test.debug_fields", count = 100);
-
-        otel_trace!("quiver.test.trace_only");
-        otel_trace!("quiver.test.trace_fields", detail = "fine-grained");
     }
 
     #[test]
