@@ -15,7 +15,7 @@
 //! This processor validates:
 //! 1. The attribute exists on the Resource
 //! 2. The value is in the allowed list
-//! 3. Rejects with permanent NACK on failure (HTTP 400 / gRPC INVALID_ARGUMENT)
+//! 3. Rejects with permanent NACK on failure
 //!
 //! # Configuration
 //!
@@ -315,6 +315,11 @@ impl ResourceValidatorProcessor {
         // Attribute not found
         Err(ValidationFailure::MissingAttribute)
     }
+
+    // Note: validate_logs, validate_metrics, validate_traces, and validate_arrow_logs
+    // share identical loop bodies. A generic helper is impractical because the view traits
+    // (ResourceLogsView, ResourceMetricsView, ResourceSpansView) use GATs with different
+    // associated types and have no common super-trait for `.resource()`.
 
     /// Validates all resources in logs data
     fn validate_logs(

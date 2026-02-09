@@ -13,7 +13,7 @@ The collector must:
 
 1. Validate the attribute exists on the Resource
 2. Check value is in an allowed list
-3. Reject with error (HTTP 400 / gRPC INVALID_ARGUMENT) on failure
+3. Reject with permanent NACK on failure
 
 This enables clients to detect misconfiguration immediately rather than having
 data silently dropped.
@@ -51,10 +51,14 @@ processors:
 | Condition                                    | Result                    |
 | -------------------------------------------- | ------------------------- |
 | Attribute present with value in allowed list | Pass through              |
-| Attribute present, empty allowed_values list | Permanent NACK - HTTP 400 |
-| Attribute missing                            | Permanent NACK - HTTP 400 |
-| Attribute wrong type (not string)            | Permanent NACK - HTTP 400 |
-| Attribute value not in allowed list          | Permanent NACK - HTTP 400 |
+| Attribute present, empty allowed_values list | Permanent NACK |
+| Attribute missing                            | Permanent NACK |
+| Attribute wrong type (not string)            | Permanent NACK |
+| Attribute value not in allowed list          | Permanent NACK |
+
+> **Note:** The processor sends a permanent NACK (`NackMsg::new_permanent`), but
+> the receiver currently maps all NACKs to HTTP 503 / gRPC UNAVAILABLE. Returning
+> HTTP 400 / gRPC INVALID_ARGUMENT for permanent NACKs requires receiver-side changes.
 
 ## Metrics
 

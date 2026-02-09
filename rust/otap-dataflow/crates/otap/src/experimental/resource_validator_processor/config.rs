@@ -34,6 +34,8 @@ pub struct Config {
     pub allowed_values: Vec<String>,
 
     /// Whether to perform case-sensitive comparison of attribute values.
+    /// Note: this only affects `allowed_values` matching. The `required_attribute`
+    /// key lookup is always case-sensitive.
     /// Default: true
     #[serde(default = "default_case_sensitive")]
     pub case_sensitive: bool,
