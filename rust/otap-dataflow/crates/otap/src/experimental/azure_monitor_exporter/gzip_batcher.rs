@@ -181,7 +181,7 @@ impl GzipBatcher {
 mod tests {
     use super::*;
     use flate2::read::GzDecoder;
-    use rand::Rng;
+    use rand::RngExt;
     use std::io::Read;
 
     // ==================== Test Helpers ====================
