@@ -71,11 +71,11 @@ impl Default for ArrowConfig {
     }
 }
 
-fn default_compression_method() -> Option<CompressionMethod> {
+const fn default_compression_method() -> Option<CompressionMethod> {
     Some(CompressionMethod::Zstd)
 }
 
-fn default_arrow_payload_compression() -> Option<ArrowPayloadCompression> {
+const fn default_arrow_payload_compression() -> Option<ArrowPayloadCompression> {
     Some(ArrowPayloadCompression::Zstd)
 }
 

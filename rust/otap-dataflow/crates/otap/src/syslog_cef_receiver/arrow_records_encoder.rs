@@ -38,7 +38,7 @@ impl ArrowRecordsBuilder {
         }
     }
 
-    pub(crate) fn len(&self) -> u16 {
+    pub(crate) const fn len(&self) -> u16 {
         // Current log record ID is incremented for each new log appended
         // so it can be used to get the number of logs in the builder.
         self.curr_log_id

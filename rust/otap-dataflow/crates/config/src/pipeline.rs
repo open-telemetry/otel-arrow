@@ -65,7 +65,7 @@ pub struct PipelineConfig {
     service: ServiceConfig,
 }
 
-fn default_pipeline_type() -> PipelineType {
+const fn default_pipeline_type() -> PipelineType {
     PipelineType::Otap
 }
 
@@ -393,13 +393,13 @@ pub struct PipelineSettings {
     pub telemetry: TelemetrySettings,
 }
 
-fn default_node_ctrl_msg_channel_size() -> usize {
+const fn default_node_ctrl_msg_channel_size() -> usize {
     100
 }
-fn default_pipeline_ctrl_msg_channel_size() -> usize {
+const fn default_pipeline_ctrl_msg_channel_size() -> usize {
     100
 }
-fn default_pdata_channel_size() -> usize {
+const fn default_pdata_channel_size() -> usize {
     100
 }
 
@@ -512,13 +512,13 @@ impl PipelineConfig {
 
     /// Returns the general settings for this pipeline.
     #[must_use]
-    pub fn pipeline_settings(&self) -> &PipelineSettings {
+    pub const fn pipeline_settings(&self) -> &PipelineSettings {
         &self.settings
     }
 
     /// Returns the quota configuration for this pipeline.
     #[must_use]
-    pub fn quota(&self) -> &Quota {
+    pub const fn quota(&self) -> &Quota {
         &self.quota
     }
 
@@ -529,7 +529,7 @@ impl PipelineConfig {
 
     /// Returns a reference to the main pipeline nodes.
     #[must_use]
-    pub fn nodes(&self) -> &PipelineNodes {
+    pub const fn nodes(&self) -> &PipelineNodes {
         &self.nodes
     }
 
@@ -545,7 +545,7 @@ impl PipelineConfig {
 
     /// Returns the service-level telemetry configuration.
     #[must_use]
-    pub fn service(&self) -> &ServiceConfig {
+    pub const fn service(&self) -> &ServiceConfig {
         &self.service
     }
 
@@ -557,7 +557,7 @@ impl PipelineConfig {
 
     /// Returns a reference to the internal pipeline nodes.
     #[must_use]
-    pub fn internal_nodes(&self) -> &PipelineNodes {
+    pub const fn internal_nodes(&self) -> &PipelineNodes {
         &self.internal
     }
 

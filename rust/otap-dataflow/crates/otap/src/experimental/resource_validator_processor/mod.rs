@@ -248,7 +248,7 @@ impl ResourceValidatorProcessor {
     ///     }
     /// }
     /// ```
-    fn get_allowed_values(&self, _pdata: &OtapPdata) -> Cow<'_, HashSet<String>> {
+    const fn get_allowed_values(&self, _pdata: &OtapPdata) -> Cow<'_, HashSet<String>> {
         // Currently just returns the static/fallback values.
         // When auth context is available, this will check pdata.context().auth() first.
         Cow::Borrowed(&self.allowed_values)

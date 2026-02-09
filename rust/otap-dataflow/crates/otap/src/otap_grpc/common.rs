@@ -31,7 +31,7 @@ pub struct AckRegistry {
 impl AckRegistry {
     /// Creates a new bundle of optional subscription maps.
     #[must_use]
-    pub fn new(logs: Option<AckSlot>, metrics: Option<AckSlot>, traces: Option<AckSlot>) -> Self {
+    pub const fn new(logs: Option<AckSlot>, metrics: Option<AckSlot>, traces: Option<AckSlot>) -> Self {
         Self {
             logs,
             metrics,

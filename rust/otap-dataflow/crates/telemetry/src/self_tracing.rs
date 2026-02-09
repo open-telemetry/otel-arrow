@@ -67,7 +67,7 @@ pub struct SavedCallsite {
 impl SavedCallsite {
     /// Construct saved callsite information from tracing Metadata.
     #[must_use]
-    pub fn new(metadata: &'static Metadata<'static>) -> Self {
+    pub const fn new(metadata: &'static Metadata<'static>) -> Self {
         Self { metadata }
     }
 

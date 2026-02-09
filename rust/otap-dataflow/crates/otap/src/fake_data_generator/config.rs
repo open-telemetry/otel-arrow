@@ -108,33 +108,33 @@ impl Config {
 
     /// Builder-style method to set data source
     #[must_use]
-    pub fn with_data_source(mut self, data_source: DataSource) -> Self {
+    pub const fn with_data_source(mut self, data_source: DataSource) -> Self {
         self.data_source = data_source;
         self
     }
 
     /// Builder-style method to set generation strategy
     #[must_use]
-    pub fn with_generation_strategy(mut self, generation_strategy: GenerationStrategy) -> Self {
+    pub const fn with_generation_strategy(mut self, generation_strategy: GenerationStrategy) -> Self {
         self.generation_strategy = generation_strategy;
         self
     }
 
     /// Get the data source
     #[must_use]
-    pub fn data_source(&self) -> &DataSource {
+    pub const fn data_source(&self) -> &DataSource {
         &self.data_source
     }
 
     /// Get the generation strategy
     #[must_use]
-    pub fn generation_strategy(&self) -> &GenerationStrategy {
+    pub const fn generation_strategy(&self) -> &GenerationStrategy {
         &self.generation_strategy
     }
 
     /// Provide a reference to the traffic config
     #[must_use]
-    pub fn get_traffic_config(&self) -> &TrafficConfig {
+    pub const fn get_traffic_config(&self) -> &TrafficConfig {
         &self.traffic_config
     }
 
@@ -183,7 +183,7 @@ impl Config {
 impl TrafficConfig {
     /// create a new traffic config which describes the output traffic of the receiver
     #[must_use]
-    pub fn new(
+    pub const fn new(
         signals_per_second: Option<usize>,
         max_signal_count: Option<u64>,
         max_batch_size: usize,
@@ -203,7 +203,7 @@ impl TrafficConfig {
 
     /// return the specified message rate
     #[must_use]
-    pub fn get_signal_rate(&self) -> Option<usize> {
+    pub const fn get_signal_rate(&self) -> Option<usize> {
         self.signals_per_second
     }
 
@@ -254,30 +254,30 @@ impl TrafficConfig {
 
     /// returns the max amounts of signals that should be sent
     #[must_use]
-    pub fn get_max_signal_count(&self) -> Option<u64> {
+    pub const fn get_max_signal_count(&self) -> Option<u64> {
         self.max_signal_count
     }
 
     /// returns the max batch size per message
     #[must_use]
-    pub fn get_max_batch_size(&self) -> usize {
+    pub const fn get_max_batch_size(&self) -> usize {
         self.max_batch_size
     }
 }
 
-fn default_signals_per_second() -> Option<usize> {
+const fn default_signals_per_second() -> Option<usize> {
     Some(30)
 }
 
-fn default_max_signal() -> Option<u64> {
+const fn default_max_signal() -> Option<u64> {
     None
 }
 
-fn default_max_batch_size() -> usize {
+const fn default_max_batch_size() -> usize {
     1000
 }
 
-fn default_weight() -> u32 {
+const fn default_weight() -> u32 {
     0
 }
 

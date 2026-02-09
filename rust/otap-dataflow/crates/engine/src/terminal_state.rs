@@ -30,7 +30,7 @@ impl TerminalState {
 
     /// Returns the deadline by which the node must terminate.
     #[must_use]
-    pub fn deadline(&self) -> Instant {
+    pub const fn deadline(&self) -> Instant {
         self.deadline
     }
 
@@ -48,7 +48,7 @@ impl TerminalState {
 
     /// Returns `true` when no metrics were captured.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.metrics.is_empty()
     }
 }
