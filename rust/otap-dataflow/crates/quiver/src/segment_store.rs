@@ -342,7 +342,7 @@ impl SegmentStore {
                     // On Windows, the file may still be memory-mapped by outstanding
                     // BundleHandles. Add to pending deletes for retry later.
                     otel_debug!(
-                        "quiver.segment.delete",
+                        "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
                         "Segment file in use, deferring deletion"
@@ -428,7 +428,7 @@ impl SegmentStore {
                 Ok(_) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
                     otel_debug!(
-                        "quiver.segment.delete",
+                        "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
                         "Successfully deleted previously deferred segment"
@@ -438,7 +438,7 @@ impl SegmentStore {
                 Err(e) if Self::is_sharing_violation(&e) => {
                     // Still in use, keep in pending list
                     otel_debug!(
-                        "quiver.segment.delete",
+                        "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
                         "Segment file still in use, will retry later"
@@ -448,7 +448,7 @@ impl SegmentStore {
                     // Other error - remove from pending and log
                     let _ = self.pending_deletes.lock().remove(&seq);
                     otel_warn!(
-                        "quiver.segment.delete",
+                        "quiver.segment.drop",
                         segment = seq.raw(),
                         error = %e,
                         phase = "deferred",

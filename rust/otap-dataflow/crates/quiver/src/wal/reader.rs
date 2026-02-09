@@ -777,7 +777,7 @@ impl MultiFileWalReader {
                 }
                 Err(e) => {
                     otel_error!(
-                        "quiver.wal.file_open",
+                        "quiver.wal.file.init",
                         path = %path.display(),
                         rotation_id,
                         error = %e,
@@ -802,7 +802,7 @@ impl MultiFileWalReader {
                 }
                 Err(e) => {
                     otel_warn!(
-                        "quiver.wal.file_open",
+                        "quiver.wal.file.init",
                         path = %base_path.display(),
                         error = %e,
                         file_type = "active",
@@ -935,7 +935,7 @@ impl Iterator for MultiFileWalIter {
                         let seek_pos = self.start_position.max(file_info.wal_position_start);
                         if let Err(e) = reader.seek_to_position(seek_pos) {
                             otel_error!(
-                                "quiver.wal.file_open",
+                                "quiver.wal.file.init",
                                 path = %file_info.path.display(),
                                 error = %e,
                                 file_type = "iteration",
@@ -948,7 +948,7 @@ impl Iterator for MultiFileWalIter {
                     }
                     Err(e) => {
                         otel_error!(
-                            "quiver.wal.file_open",
+                            "quiver.wal.file.init",
                             path = %file_info.path.display(),
                             error = %e,
                             file_type = "iteration",

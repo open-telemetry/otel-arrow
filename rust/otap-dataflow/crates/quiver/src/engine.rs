@@ -237,7 +237,7 @@ impl QuiverEngine {
         let min_budget = segment_size.saturating_mul(2);
         if budget.cap() < min_budget && budget.cap() != u64::MAX {
             otel_error!(
-                "quiver.engine.open",
+                "quiver.engine.init",
                 budget_cap = budget.cap(),
                 segment_size,
                 min_budget,
@@ -258,7 +258,7 @@ impl QuiverEngine {
         let segment_dir = segment_dir(&config);
         fs::create_dir_all(&segment_dir).map_err(|e| {
             otel_error!(
-                "quiver.engine.open",
+                "quiver.engine.init",
                 path = %segment_dir.display(),
                 error = %e,
                 reason = "dir_create_failed",
@@ -270,7 +270,7 @@ impl QuiverEngine {
         // Use async WAL initialization
         let wal_writer = initialize_wal_writer(&config, &budget).await.map_err(|e| {
             otel_error!(
-                "quiver.engine.open",
+                "quiver.engine.init",
                 error = %e,
                 reason = "wal_init_failed",
                 "failed to initialize WAL writer"
@@ -332,7 +332,7 @@ impl QuiverEngine {
         let registry =
             SubscriberRegistry::open(registry_config, segment_store.clone()).map_err(|e| {
                 otel_error!(
-                    "quiver.engine.open",
+                    "quiver.engine.init",
                     error = %e,
                     reason = "registry_open_failed",
                     "failed to open subscriber registry"
@@ -628,7 +628,7 @@ impl QuiverEngine {
                 Ok(c) => c.wal_position,
                 Err(e) => {
                     otel_warn!(
-                        "quiver.wal.cursor_load",
+                        "quiver.wal.cursor.load",
                         error = %e,
                         reason = "decode_failed",
                         "failed to decode cursor sidecar, replaying from beginning - duplicates may occur"
@@ -640,7 +640,7 @@ impl QuiverEngine {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => {
                 otel_warn!(
-                    "quiver.wal.cursor_load",
+                    "quiver.wal.cursor.load",
                     error = %e,
                     reason = "read_failed",
                     "failed to read cursor sidecar, replaying from beginning - duplicates may occur"
@@ -668,7 +668,7 @@ impl QuiverEngine {
         let wal_end = reader.wal_end_position();
         let cursor_position = if cursor_position > wal_end {
             otel_warn!(
-                "quiver.wal.cursor_load",
+                "quiver.wal.cursor.load",
                 cursor_position,
                 wal_end,
                 reason = "clamped",
@@ -682,7 +682,7 @@ impl QuiverEngine {
         // Log warning if cursor was missing/corrupted and we're replaying from a non-zero position
         if cursor_may_cause_duplicates && cursor_position > 0 {
             otel_warn!(
-                "quiver.wal.cursor_load",
+                "quiver.wal.cursor.load",
                 cursor_position,
                 reason = "invalid",
                 "cursor sidecar was invalid, replaying from beginning - duplicates may have been written to segments"
@@ -742,9 +742,10 @@ impl QuiverEngine {
                     // so stop replay here.
                     stopped_at_corruption = true;
                     otel_error!(
-                        "quiver.wal.corruption",
+                        "quiver.wal.replay",
                         error = %e,
                         replayed_so_far = replayed_count,
+                        reason = "corruption",
                         "WAL corruption detected during replay, stopping replay"
                     );
                     break;
@@ -784,7 +785,7 @@ impl QuiverEngine {
                 None => {
                     // Decode failure logged by from_wal_entry with slot details
                     otel_warn!(
-                        "quiver.wal.entry_decode",
+                        "quiver.wal.entry.decode",
                         sequence = entry.sequence,
                         slot_count = entry.slots.len(),
                         scope = "entry",
@@ -876,7 +877,7 @@ impl QuiverEngine {
                 // WAL is full - finalize the current segment to advance the cursor
                 // and free WAL space, then retry the append.
                 otel_warn!(
-                    "quiver.wal.capacity",
+                    "quiver.wal.backpressure",
                     "WAL at capacity, finalizing segment to free space before retry"
                 );
                 self.finalize_current_segment().await?;
@@ -925,20 +926,20 @@ impl QuiverEngine {
         if let Err(ref e) = result {
             if self.config.durability == DurabilityMode::Wal {
                 otel_warn!(
-                    "quiver.engine.shutdown",
+                    "quiver.engine.stop",
                     error = %e,
                     "failed to finalize open segment during shutdown — data should be recoverable via WAL replay"
                 );
             } else {
                 otel_error!(
-                    "quiver.engine.shutdown",
+                    "quiver.engine.stop",
                     error = %e,
                     "failed to finalize open segment during shutdown — data in open segment will be lost (WAL is disabled)"
                 );
             }
         }
         otel_info!(
-            "quiver.engine.shutdown",
+            "quiver.engine.stop",
             cumulative_segment_bytes = self.cumulative_segment_bytes.load(Ordering::Relaxed),
             force_dropped_segments = self.force_dropped_segments.load(Ordering::Relaxed),
             force_dropped_bundles = self.force_dropped_bundles.load(Ordering::Relaxed),
@@ -989,7 +990,7 @@ impl QuiverEngine {
         let (bytes_written, _checksum) =
             writer.write_segment(&segment_path, segment).await.map_err(|e| {
                 otel_error!(
-                    "quiver.segment.finalize",
+                    "quiver.segment.flush",
                     segment = seq.raw(),
                     path = %segment_path.display(),
                     error = %e,
@@ -999,7 +1000,7 @@ impl QuiverEngine {
             })?;
 
         otel_debug!(
-            "quiver.segment.finalize",
+            "quiver.segment.flush",
             segment = seq.raw(),
             bytes_written,
             "segment finalized and written to disk"
@@ -1018,7 +1019,7 @@ impl QuiverEngine {
             let mut wal_writer = self.wal_writer.lock().await;
             wal_writer.persist_cursor(&cursor).await.map_err(|e| {
                 otel_error!(
-                    "quiver.segment.finalize",
+                    "quiver.segment.flush",
                     segment = seq.raw(),
                     error = %e,
                     "WAL cursor persist failed after segment write — WAL replay may produce duplicates on restart"
@@ -1185,7 +1186,7 @@ impl QuiverEngine {
         for seq in self.segment_store.segment_sequences() {
             if seq < delete_boundary {
                 if let Err(e) = self.segment_store.delete_segment(seq) {
-                    otel_warn!("quiver.segment.delete", segment = seq.raw(), error = %e, reason = "completed", "Failed to delete segment");
+                    otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, reason = "completed", "Failed to delete segment");
                 } else {
                     deleted += 1;
                 }
@@ -1229,10 +1230,10 @@ impl QuiverEngine {
                 bundles_dropped += count as u64;
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!("quiver.segment.delete", segment = seq.raw(), error = %e, reason = "force_drop", "Failed to delete force-dropped segment");
+                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, reason = "force_drop", "Failed to delete force-dropped segment");
             } else {
                 otel_info!(
-                    "quiver.segment.delete",
+                    "quiver.segment.drop",
                     segment = seq.raw(),
                     reason = "force_drop",
                     "Force-dropped pending segment (DropOldest policy)"
@@ -1297,7 +1298,7 @@ impl QuiverEngine {
 
             if let Err(e) = self.segment_store.delete_segment(*seq) {
                 otel_warn!(
-                    "quiver.segment.delete",
+                    "quiver.segment.drop",
                     segment = seq.raw(),
                     error = %e,
                     reason = "expired",
@@ -1305,7 +1306,7 @@ impl QuiverEngine {
                 );
             } else {
                 otel_info!(
-                    "quiver.segment.delete",
+                    "quiver.segment.drop",
                     segment = seq.raw(),
                     max_age_secs = max_age.as_secs(),
                     reason = "expired",
@@ -1360,7 +1361,7 @@ impl QuiverEngine {
 
         if flushed > 0 || deleted > 0 || expired > 0 || pending_deletes_cleared > 0 {
             otel_debug!(
-                "quiver.engine.maintain",
+                "quiver.engine.tick",
                 flushed,
                 deleted,
                 expired,

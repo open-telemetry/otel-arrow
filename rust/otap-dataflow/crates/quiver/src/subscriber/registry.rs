@@ -163,7 +163,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     }
                     Err(e) => {
                         otel_error!(
-                            "quiver.subscriber.progress_load",
+                            "quiver.subscriber.progress.load",
                             subscriber_id = %sub_id,
                             error = %e,
                             "failed to load progress file — subscriber will start fresh with potential data re-delivery or gaps"
@@ -212,10 +212,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         let _ = subscribers.insert(id.clone(), Arc::new(RwLock::new(state)));
 
         otel_info!(
-            "quiver.subscriber.lifecycle",
+            "quiver.subscriber.register",
             subscriber_id = %id,
-            action = "register",
-            "subscriber registered"
         );
 
         Ok(())
@@ -254,10 +252,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         state.activate();
 
         otel_info!(
-            "quiver.subscriber.lifecycle",
+            "quiver.subscriber.activate",
             subscriber_id = %id,
-            action = "activate",
-            "subscriber activated"
         );
 
         Ok(())
@@ -284,10 +280,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         state.deactivate();
 
         otel_info!(
-            "quiver.subscriber.lifecycle",
+            "quiver.subscriber.deactivate",
             subscriber_id = %id,
-            action = "deactivate",
-            "subscriber deactivated"
         );
 
         Ok(())
@@ -321,10 +315,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
         delete_progress_file(&self.config.data_dir, id).await?;
 
         otel_info!(
-            "quiver.subscriber.lifecycle",
+            "quiver.subscriber.unregister",
             subscriber_id = %id,
-            action = "unregister",
-            "subscriber unregistered and progress file deleted"
         );
 
         Ok(())
@@ -782,7 +774,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                     let mut dirty_set = self.dirty_subscribers.lock();
                     let _ = dirty_set.insert(sub_id.clone());
                     otel_warn!(
-                        "quiver.subscriber.progress_flush",
+                        "quiver.subscriber.progress.flush",
                         subscriber_id = %sub_id,
                         error = %e,
                         "failed to flush subscriber progress, will retry"

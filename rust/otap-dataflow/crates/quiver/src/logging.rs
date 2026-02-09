@@ -26,32 +26,38 @@
 //!
 //! ## Event Naming Convention
 //!
-//! Event names should follow the pattern: `quiver.<component>.<operation>`
+//! Event names follow the [Events Guide] pattern:
+//! `quiver.<entity>[.<thing>].<verb>`
 //!
-//! Names describe the **operation**, not the outcome. Use attributes for
+//! [Events Guide]: ../../docs/telemetry/events-guide.md
+//!
+//! Names describe the **operation** (verb), not the outcome. Use attributes for
 //! outcome details (e.g., `reason`, `phase`, `scope`, `status`):
 //!
-//! - `reason`: Why the operation happened (`"expired"`, `"force_drop"`, `"completed"`)
+//! - `reason`: Why the operation happened (`"expired"`, `"force_drop"`, `"corruption"`)
 //! - `phase`: When it happened (`"deferred"`, `"scan"`, `"runtime"`)
 //! - `scope`: What was affected (`"entry"`, `"slot"`)
 //! - `status`: Outcome detail (`"stopped_incomplete"`)
+//!
+//! Verbs are drawn from the guide's recommended set (`init`, `stop`, `flush`,
+//! `drop`, `backpressure`, `scan`, `replay`, `rotate`, `tick`, `load`, `decode`).
 //!
 //! The log level carries success vs failure (info = success, warn/error = failure).
 //!
 //! Examples:
 //! - `quiver.wal.replay` — all WAL replay events (level + fields distinguish outcomes)
-//! - `quiver.segment.delete` — all segment deletion (reason + phase attrs differentiate)
+//! - `quiver.segment.drop` — all segment removal (reason + phase attrs differentiate)
 //! - `quiver.segment.scan` — startup segment scanning
-//! - `quiver.wal.cursor_load` — cursor sidecar loading (reason attr for failure type)
-//! - `quiver.wal.file_open` — WAL file open/seek (file_type attr for variant)
-//! - `quiver.wal.drop_flush` — drop-time flush (reason attr for skip/failure cause)
-//! - `quiver.subscriber.progress_load` — subscriber progress file loading
+//! - `quiver.wal.cursor.load` — cursor sidecar loading (reason attr for failure type)
+//! - `quiver.wal.file.init` — WAL file open/seek (file_type attr for variant)
+//! - `quiver.wal.drop.flush` — drop-time flush (reason attr for skip/failure cause)
+//! - `quiver.subscriber.progress.load` — subscriber progress file loading
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! otel_info!("quiver.segment.delete", segment = 5, reason = "expired", "Deleted expired segment");
-//! otel_warn!("quiver.wal.cursor_load", error = %e, reason = "decode_failed");
+//! otel_info!("quiver.segment.drop", segment = 5, reason = "expired");
+//! otel_warn!("quiver.wal.cursor.load", error = %e, reason = "decode_failed");
 //! otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 //! ```
 
