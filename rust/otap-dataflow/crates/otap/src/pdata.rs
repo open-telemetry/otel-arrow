@@ -14,7 +14,6 @@
 //! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
-pub use otap_df_config::NodeId;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::{Error, TypedError};
@@ -28,7 +27,6 @@ use otap_df_pdata::OtapPayload;
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
-    source_node: Option<NodeId>,
     stack: Vec<Frame>,
 }
 
@@ -38,7 +36,6 @@ impl Context {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            source_node: None,
             stack: Vec::with_capacity(capacity),
         }
     }
@@ -50,9 +47,14 @@ impl Context {
         calldata: CallData,
         node_id: usize,
     ) {
-        if let Some(last) = self.stack.last() {
+        if let Some(last) = self.stack.last_mut() {
             // Inherit the preceding frame's RETURN_DATA bit
             interests |= last.interests & Interests::RETURN_DATA;
+
+            if node_id == last.node_id {
+                last.interests = interests;
+                return;
+            }
         }
         self.stack.push(Frame {
             interests,
@@ -124,14 +126,23 @@ impl Context {
     }
 
     /// Set the source node for this context.
-    pub fn set_source_node(&mut self, node: Option<NodeId>) {
-        self.source_node = node;
+    pub fn set_source_node(&mut self, node_id: usize) {
+        if let Some(last) = self.stack.last() {
+            if node_id == last.node_id {
+                return;
+            }
+        }
+        self.stack.push(Frame {
+            interests: Interests::empty(),
+            node_id,
+            calldata: CallData::default(),
+        });
     }
 
     /// Get the source node for this context.
     #[must_use]
-    pub fn source_node(&self) -> Option<NodeId> {
-        self.source_node.clone()
+    pub fn source_node(&self) -> Option<usize> {
+        self.stack.last().map(|f| f.node_id)
     }
 }
 
@@ -264,14 +275,14 @@ impl OtapPdata {
     }
 
     /// update the source node
-    pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self {
+    pub fn add_source_node(mut self, node_id: usize) -> Self {
         self.context.set_source_node(node_id);
         self
     }
 
     /// return the source node field
     #[must_use]
-    pub fn get_source_node(&self) -> Option<NodeId> {
+    pub fn get_source_node(&self) -> Option<usize> {
         self.context.source_node()
     }
 }
@@ -382,7 +393,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.send_message(data).await
     }
 
@@ -390,7 +401,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.try_send_message(data)
     }
 
@@ -402,7 +413,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.send_message_to(port, data).await
     }
 
@@ -414,7 +425,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.try_send_message_to(port, data)
     }
 }
@@ -427,7 +438,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.send_message(data).await
     }
 
@@ -435,7 +446,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.try_send_message(data)
     }
 
@@ -447,7 +458,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.send_message_to(port, data).await
     }
 
@@ -459,7 +470,7 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.try_send_message_to(port, data)
     }
 }
@@ -472,7 +483,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.send_message(data).await
     }
 
@@ -480,7 +491,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.try_send_message(data)
     }
 
@@ -492,7 +503,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.send_message_to(port, data).await
     }
 
@@ -504,7 +515,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = data.add_source_node(self.processor_id().index);
         self.try_send_message_to(port, data)
     }
 }
@@ -517,7 +528,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.send_message(data).await
     }
 
@@ -525,7 +536,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.try_send_message(data)
     }
 
@@ -537,7 +548,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.send_message_to(port, data).await
     }
 
@@ -549,7 +560,7 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = data.add_source_node(self.receiver_id().index);
         self.try_send_message_to(port, data)
     }
 }
