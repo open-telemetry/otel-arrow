@@ -6,7 +6,7 @@
 //!
 
 use otap_df_pdata::{SpanID, TraceID};
-use rand::Rng;
+use rand::RngExt;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

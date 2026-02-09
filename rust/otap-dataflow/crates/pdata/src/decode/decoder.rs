@@ -209,7 +209,7 @@ mod tests {
         UInt16Array, UInt32Array, UInt64Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-    use rand::Rng;
+    use rand::RngExt;
     use rand::distr::{Alphanumeric, SampleString};
     use std::io::Cursor;
     use std::sync::Arc;

@@ -795,7 +795,7 @@ mod schema_tests {
     use super::*;
     use crate::record_batch;
     use arrow::array::{Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array};
-    use rand::Rng;
+    use rand::RngExt;
     use std::sync::Arc;
 
     #[test]
