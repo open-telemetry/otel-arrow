@@ -35,7 +35,7 @@ to client.
 processors:
   resource_validator:
     # The resource attribute key that must be present (required, no default)
-    required_attribute: "cloud.resource_id"
+    required_attribute_key: "cloud.resource_id"
 
     # List of allowed values (required - empty list rejects all values)
     allowed_values:

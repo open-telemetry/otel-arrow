@@ -22,7 +22,7 @@
 //! ```yaml
 //! processors:
 //!   resource_validator:
-//!     required_attribute: "cloud.resource_id"  # required, no default
+//!     required_attribute_key: "cloud.resource_id"  # required, no default
 //!     allowed_values:
 //!       - "/subscriptions/xxx/resourceGroups/yyy/..."
 //!     case_sensitive: false  # optional, defaults to true
@@ -87,35 +87,18 @@ pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:resource_validator:
 /// Source of allowed values for validation.
 ///
 /// This enum enables extensibility for future dynamic auth context support.
-/// Currently only `Static` is implemented, but `Dynamic` provides the extension
+/// Currently only `Static` is used, but `Dynamic` provides the extension
 /// point for SAT auth integration.
 #[derive(Debug, Clone)]
 pub enum AllowedValuesSource {
-    /// Static allowed values from configuration.
-    /// These are pre-normalized (lowercased if case_sensitive is false).
-    Static(HashSet<String>),
+    /// Use only the static config values.
+    Static,
 
-    /// Dynamic allowed values from auth context (future).
+    /// Check auth context first, fall back to config values (future).
     /// When SAT auth extension is ready, this variant will be used to
     /// indicate that allowed values should be read from the request context.
-    ///
-    /// The optional HashSet provides fallback values from config if auth
-    /// context is not available for a particular request.
     #[allow(dead_code)]
-    Dynamic {
-        /// Fallback values from config (used when auth context is unavailable)
-        fallback: HashSet<String>,
-    },
-}
-
-impl AllowedValuesSource {
-    /// Gets the allowed values set (static config or fallback for dynamic).
-    fn get_allowed_values(&self) -> &HashSet<String> {
-        match self {
-            AllowedValuesSource::Static(values) => values,
-            AllowedValuesSource::Dynamic { fallback } => fallback,
-        }
-    }
+    Dynamic,
 }
 
 /// Validation result indicating why validation failed
@@ -152,13 +135,16 @@ impl std::fmt::Display for ValidationFailure {
 /// The processor is designed to support both static configuration and future
 /// dynamic auth context validation:
 ///
-/// - `allowed_values_source`: Determines where allowed values come from
+/// - `source_mode`: Determines where allowed values come from
 /// - `get_allowed_values()`: Extension point for per-request allowed values
 pub struct ResourceValidatorProcessor {
     /// The attribute key to validate
-    required_attribute: String,
-    /// Source of allowed values (static config or dynamic auth)
-    allowed_values_source: AllowedValuesSource,
+    required_attribute_key: String,
+    /// Pre-normalized allowed values (used as-is for Static, as fallback for Dynamic)
+    allowed_values: HashSet<String>,
+    /// Where to get allowed values from
+    #[allow(dead_code)]
+    source_mode: AllowedValuesSource,
     /// Whether to perform case-sensitive comparison
     case_sensitive: bool,
     /// Telemetry metrics
@@ -205,8 +191,9 @@ impl ResourceValidatorProcessor {
         config.validate()?;
 
         Ok(Self {
-            required_attribute: config.required_attribute.clone(),
-            allowed_values_source: AllowedValuesSource::Static(config.allowed_values_set()),
+            required_attribute_key: config.required_attribute_key.clone(),
+            allowed_values: config.allowed_values_set(),
+            source_mode: AllowedValuesSource::Static,
             case_sensitive: config.case_sensitive,
             metrics,
         })
@@ -216,15 +203,16 @@ impl ResourceValidatorProcessor {
     #[must_use]
     #[cfg(test)]
     pub fn new(
-        required_attribute: String,
+        required_attribute_key: String,
         allowed_values: HashSet<String>,
         case_sensitive: bool,
         pipeline_ctx: PipelineContext,
     ) -> Self {
         let metrics = pipeline_ctx.register_metrics::<ResourceValidatorMetrics>();
         Self {
-            required_attribute,
-            allowed_values_source: AllowedValuesSource::Static(allowed_values),
+            required_attribute_key,
+            allowed_values,
+            source_mode: AllowedValuesSource::Static,
             case_sensitive,
             metrics,
         }
@@ -245,8 +233,8 @@ impl ResourceValidatorProcessor {
     /// Example future implementation:
     /// ```ignore
     /// fn get_allowed_values<'a>(&'a self, pdata: &'a OtapPdata) -> Cow<'a, HashSet<String>> {
-    ///     match &self.allowed_values_source {
-    ///         AllowedValuesSource::Dynamic { fallback } => {
+    ///     match &self.source_mode {
+    ///         AllowedValuesSource::Dynamic => {
     ///             // Try to get from auth context
     ///             if let Some(auth) = pdata.context().auth() {
     ///                 if let Some(resource_ids) = auth.get_resource_ids() {
@@ -254,16 +242,16 @@ impl ResourceValidatorProcessor {
     ///                 }
     ///             }
     ///             // Fall back to config
-    ///             Cow::Borrowed(fallback)
+    ///             Cow::Borrowed(&self.allowed_values)
     ///         }
-    ///         AllowedValuesSource::Static(values) => Cow::Borrowed(values),
+    ///         AllowedValuesSource::Static => Cow::Borrowed(&self.allowed_values),
     ///     }
     /// }
     /// ```
     fn get_allowed_values(&self, _pdata: &OtapPdata) -> Cow<'_, HashSet<String>> {
         // Currently just returns the static/fallback values.
         // When auth context is available, this will check pdata.context().auth() first.
-        Cow::Borrowed(self.allowed_values_source.get_allowed_values())
+        Cow::Borrowed(&self.allowed_values)
     }
 
     /// Validates a single resource's attributes against the provided allowed values.
@@ -272,7 +260,7 @@ impl ResourceValidatorProcessor {
         resource: &R,
         allowed_values: &HashSet<String>,
     ) -> Result<(), ValidationFailure> {
-        let required_key = self.required_attribute.as_bytes();
+        let required_key = self.required_attribute_key.as_bytes();
 
         // Find the required attribute
         for attr in resource.attributes() {
@@ -413,19 +401,19 @@ impl ResourceValidatorProcessor {
             ValidationFailure::MissingAttribute => {
                 format!(
                     "required resource attribute '{}' is missing from telemetry data",
-                    self.required_attribute
+                    self.required_attribute_key
                 )
             }
             ValidationFailure::InvalidAttributeType => {
                 format!(
                     "resource attribute '{}' must be a string",
-                    self.required_attribute
+                    self.required_attribute_key
                 )
             }
             ValidationFailure::NotInAllowedList => {
                 format!(
                     "resource attribute '{}' value is not in the allowed list",
-                    self.required_attribute
+                    self.required_attribute_key
                 )
             }
             ValidationFailure::ConversionError => {
@@ -571,7 +559,7 @@ mod tests {
 
     /// Test helper struct for validation testing without metrics
     struct TestValidator {
-        required_attribute: String,
+        required_attribute_key: String,
         allowed_values: HashSet<String>,
         case_sensitive: bool,
     }
@@ -595,7 +583,7 @@ mod tests {
             &self,
             resource: &R,
         ) -> Result<(), ValidationFailure> {
-            let required_key = self.required_attribute.as_bytes();
+            let required_key = self.required_attribute_key.as_bytes();
 
             for attr in resource.attributes() {
                 if attr.key() == required_key {
@@ -692,19 +680,19 @@ mod tests {
                 ValidationFailure::MissingAttribute => {
                     format!(
                         "required resource attribute '{}' is missing from telemetry data",
-                        self.required_attribute
+                        self.required_attribute_key
                     )
                 }
                 ValidationFailure::InvalidAttributeType => {
                     format!(
                         "resource attribute '{}' must be a string",
-                        self.required_attribute
+                        self.required_attribute_key
                     )
                 }
                 ValidationFailure::NotInAllowedList => {
                     format!(
                         "resource attribute '{}' value is not in the allowed list",
-                        self.required_attribute
+                        self.required_attribute_key
                     )
                 }
                 ValidationFailure::ConversionError => {
@@ -748,7 +736,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -769,7 +757,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -793,7 +781,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -817,7 +805,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: false,
         };
@@ -836,7 +824,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: HashSet::new(),
             case_sensitive: true,
         };
@@ -858,7 +846,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -882,7 +870,7 @@ mod tests {
 
         let data = RawLogsData::new(&logs_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -897,12 +885,12 @@ mod tests {
     #[test]
     fn test_config_deserialization() {
         let json = r#"{
-            "required_attribute": "my.custom.attribute",
+            "required_attribute_key": "my.custom.attribute",
             "allowed_values": ["value1", "Value2"],
             "case_sensitive": false
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(config.required_attribute, "my.custom.attribute");
+        assert_eq!(config.required_attribute_key, "my.custom.attribute");
         assert_eq!(config.allowed_values, vec!["value1", "Value2"]);
         assert!(!config.case_sensitive);
 
@@ -931,7 +919,7 @@ mod tests {
         let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
 
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -951,7 +939,7 @@ mod tests {
         let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
 
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -974,7 +962,7 @@ mod tests {
         let _ = allowed.insert("/subscriptions/123/resourceGroups/test".to_string());
 
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -997,7 +985,7 @@ mod tests {
         let _ = allowed.insert("/subscriptions/123/resourcegroups/test".to_string());
 
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: false,
         };
@@ -1086,7 +1074,7 @@ mod tests {
 
         let data = RawMetricsData::new(&metrics_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -1107,7 +1095,7 @@ mod tests {
 
         let data = RawMetricsData::new(&metrics_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -1131,7 +1119,7 @@ mod tests {
 
         let data = RawTraceData::new(&traces_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
@@ -1152,7 +1140,7 @@ mod tests {
 
         let data = RawTraceData::new(&traces_bytes);
         let validator = TestValidator {
-            required_attribute: "microsoft.resourceId".to_string(),
+            required_attribute_key: "microsoft.resourceId".to_string(),
             allowed_values: allowed,
             case_sensitive: true,
         };
