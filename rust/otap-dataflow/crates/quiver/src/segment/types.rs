@@ -165,7 +165,7 @@ pub struct StreamMetadata {
 impl StreamMetadata {
     /// Creates new stream metadata.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         id: StreamId,
         slot_id: SlotId,
         schema_fingerprint: SchemaFingerprint,
@@ -187,7 +187,7 @@ impl StreamMetadata {
 
     /// Returns the stream key for this metadata.
     #[must_use]
-    pub fn stream_key(&self) -> StreamKey {
+    pub const fn stream_key(&self) -> StreamKey {
         (self.slot_id, self.schema_fingerprint)
     }
 }

@@ -264,12 +264,12 @@ impl PipelineRuntimeStatus {
     }
 
     #[must_use]
-    pub(crate) fn accepted_condition(&self) -> &ConditionState {
+    pub(crate) const fn accepted_condition(&self) -> &ConditionState {
         &self.accepted_condition
     }
 
     #[must_use]
-    pub(crate) fn ready_condition(&self) -> &ConditionState {
+    pub(crate) const fn ready_condition(&self) -> &ConditionState {
         &self.ready_condition
     }
 

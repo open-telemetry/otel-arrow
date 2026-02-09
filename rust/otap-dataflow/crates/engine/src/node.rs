@@ -139,7 +139,7 @@ impl<PData, Inner> NodeDefs<PData, Inner> {
 }
 
 impl NodeId {
-    pub(crate) fn build(index: usize, name: NodeName) -> NodeId {
+    pub(crate) const fn build(index: usize, name: NodeName) -> NodeId {
         NodeId { index, name }
     }
 }

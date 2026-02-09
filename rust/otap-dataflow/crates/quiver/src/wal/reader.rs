@@ -148,12 +148,12 @@ impl WalReader {
     }
 
     /// Returns the segment configuration hash from the WAL header.
-    pub fn segment_cfg_hash(&self) -> [u8; 16] {
+    pub const fn segment_cfg_hash(&self) -> [u8; 16] {
         self.segment_cfg_hash
     }
 
     /// Returns the header size in bytes for this WAL file.
-    pub fn header_size(&self) -> u64 {
+    pub const fn header_size(&self) -> u64 {
         self.header_size
     }
 
@@ -171,7 +171,7 @@ impl WalReader {
     ///
     /// This is computed from the file length and header, representing the
     /// position where the next entry would start if appended to this file.
-    pub fn wal_position_end(&self) -> WalResult<u64> {
+    pub const fn wal_position_end(&self) -> WalResult<u64> {
         let data_bytes = self.file_len.saturating_sub(self.header_size);
         Ok(self.wal_position_start.saturating_add(data_bytes))
     }
@@ -346,7 +346,7 @@ pub(crate) struct WalEntryIter<'a> {
 }
 
 impl<'a> WalEntryIter<'a> {
-    fn new(
+    const fn new(
         file: &'a mut File,
         offset: u64,
         file_len: u64,
@@ -513,7 +513,7 @@ impl WalConsumerCursor {
     /// This is equivalent to `WalConsumerCursor::default()` followed by
     /// `increment(bundle)`, but clearer when you only need to track a
     /// single entry.
-    pub fn after(bundle: &WalRecordBundle) -> Self {
+    pub const fn after(bundle: &WalRecordBundle) -> Self {
         Self::from_offset(&bundle.offset)
     }
 
@@ -521,7 +521,7 @@ impl WalConsumerCursor {
     ///
     /// This allows tracking progress directly from write operations without
     /// needing to read the entry back.
-    pub fn from_offset(offset: &WalOffset) -> Self {
+    pub const fn from_offset(offset: &WalOffset) -> Self {
         Self {
             safe_offset: offset.next_offset,
             safe_sequence: offset.sequence,
@@ -542,7 +542,7 @@ impl WalConsumerCursor {
     /// }
     /// writer.persist_cursor(&cursor)?;  // persist + cleanup
     /// ```
-    pub fn increment(&mut self, bundle: &WalRecordBundle) {
+    pub const fn increment(&mut self, bundle: &WalRecordBundle) {
         self.safe_offset = bundle.next_offset;
         self.safe_sequence = bundle.sequence;
     }

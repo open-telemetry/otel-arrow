@@ -152,7 +152,7 @@ impl QuiverEngineBuilder {
     ///
     /// By default, uses an unlimited disk budget with backpressure policy.
     #[must_use]
-    pub fn new(config: QuiverConfig) -> Self {
+    pub const fn new(config: QuiverConfig) -> Self {
         Self {
             config,
             budget: None,
@@ -216,7 +216,7 @@ impl QuiverEngine {
     /// }
     /// ```
     #[must_use]
-    pub fn builder(config: QuiverConfig) -> QuiverEngineBuilder {
+    pub const fn builder(config: QuiverConfig) -> QuiverEngineBuilder {
         QuiverEngineBuilder::new(config)
     }
 
@@ -414,7 +414,7 @@ impl QuiverEngine {
     }
 
     /// Returns the configuration backing this engine.
-    pub fn config(&self) -> &QuiverConfig {
+    pub const fn config(&self) -> &QuiverConfig {
         &self.config
     }
 
@@ -422,12 +422,12 @@ impl QuiverEngine {
     ///
     /// Use this to inspect current usage, available capacity, or to share
     /// the budget with external components.
-    pub fn budget(&self) -> &Arc<crate::budget::DiskBudget> {
+    pub const fn budget(&self) -> &Arc<crate::budget::DiskBudget> {
         &self.budget
     }
 
     /// Returns metric counters for instrumentation layers.
-    pub fn metrics(&self) -> &PersistenceMetrics {
+    pub const fn metrics(&self) -> &PersistenceMetrics {
         &self.metrics
     }
 
@@ -1382,7 +1382,7 @@ impl QuiverEngine {
     ///
     /// This is useful for advanced use cases like custom segment queries.
     #[must_use]
-    pub fn segment_store(&self) -> &Arc<SegmentStore> {
+    pub const fn segment_store(&self) -> &Arc<SegmentStore> {
         &self.segment_store
     }
 
@@ -1390,7 +1390,7 @@ impl QuiverEngine {
     ///
     /// This is useful for advanced use cases like custom subscriber management.
     #[must_use]
-    pub fn registry(&self) -> &Arc<SubscriberRegistry<SegmentStore>> {
+    pub const fn registry(&self) -> &Arc<SubscriberRegistry<SegmentStore>> {
         &self.registry
     }
 
@@ -1428,7 +1428,7 @@ fn wal_path(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("wal").join("quiver.wal")
 }
 
-fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
+const fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
     // Placeholder: the segment_cfg_hash should be derived from adapter-owned
     // layout contracts (slot id → payload mappings, per-slot ordering, checksum
     // policy toggles) once available. Operational knobs like segment.target_size,

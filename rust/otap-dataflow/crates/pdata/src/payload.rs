@@ -118,7 +118,7 @@ impl OtapPayload {
 
     /// Returns the signal format.
     #[must_use]
-    pub fn signal_format(&self) -> SignalFormat {
+    pub const fn signal_format(&self) -> SignalFormat {
         match self {
             Self::OtapArrowRecords(_) => SignalFormat::OtapRecords,
             Self::OtlpBytes(_) => SignalFormat::OtlpBytes,
@@ -165,7 +165,7 @@ impl OtapPayload {
 
     /// Return an empty payload of a certain type.
     #[must_use]
-    pub fn empty(signal: SignalType) -> Self {
+    pub const fn empty(signal: SignalType) -> Self {
         Self::OtlpBytes(OtlpProtoBytes::empty(signal))
     }
 }

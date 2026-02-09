@@ -80,7 +80,7 @@ pub(crate) struct ChannelSenderMetricsState {
 }
 
 impl ChannelSenderMetricsState {
-    pub(crate) fn new(metrics: MetricSet<ChannelSenderMetrics>) -> Self {
+    pub(crate) const fn new(metrics: MetricSet<ChannelSenderMetrics>) -> Self {
         Self { metrics }
     }
 
@@ -114,7 +114,7 @@ pub(crate) struct ChannelReceiverMetricsState {
 }
 
 impl ChannelReceiverMetricsState {
-    pub(crate) fn new(metrics: MetricSet<ChannelReceiverMetrics>, capacity: u64) -> Self {
+    pub(crate) const fn new(metrics: MetricSet<ChannelReceiverMetrics>, capacity: u64) -> Self {
         Self { metrics, capacity }
     }
 

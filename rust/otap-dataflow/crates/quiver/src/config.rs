@@ -117,35 +117,35 @@ pub struct QuiverConfigBuilder {
 impl QuiverConfigBuilder {
     /// Sets the durability mode.
     #[must_use]
-    pub fn durability(mut self, durability: DurabilityMode) -> Self {
+    pub const fn durability(mut self, durability: DurabilityMode) -> Self {
         self.durability = durability;
         self
     }
 
     /// Applies a custom WAL configuration.
     #[must_use]
-    pub fn wal(mut self, wal: WalConfig) -> Self {
+    pub const fn wal(mut self, wal: WalConfig) -> Self {
         self.wal = wal;
         self
     }
 
     /// Applies a custom segment configuration.
     #[must_use]
-    pub fn segment(mut self, segment: SegmentConfig) -> Self {
+    pub const fn segment(mut self, segment: SegmentConfig) -> Self {
         self.segment = segment;
         self
     }
 
     /// Applies a custom retention configuration.
     #[must_use]
-    pub fn retention(mut self, retention: RetentionConfig) -> Self {
+    pub const fn retention(mut self, retention: RetentionConfig) -> Self {
         self.retention = retention;
         self
     }
 
     /// Sets the segment read mode (mmap vs standard I/O).
     #[must_use]
-    pub fn read_mode(mut self, read_mode: SegmentReadMode) -> Self {
+    pub const fn read_mode(mut self, read_mode: SegmentReadMode) -> Self {
         self.read_mode = read_mode;
         self
     }

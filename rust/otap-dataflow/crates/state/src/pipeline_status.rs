@@ -35,7 +35,7 @@ impl PipelineStatus {
 
     /// Returns the current per-core status map.
     #[must_use]
-    pub fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
+    pub const fn per_core(&self) -> &HashMap<CoreId, PipelineRuntimeStatus> {
         &self.cores
     }
 

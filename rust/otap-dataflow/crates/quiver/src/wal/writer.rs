@@ -235,7 +235,7 @@ pub(crate) struct WalWriterOptions {
 }
 
 impl WalWriterOptions {
-    pub fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_policy: FlushPolicy) -> Self {
+    pub const fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_policy: FlushPolicy) -> Self {
         Self {
             path,
             segment_cfg_hash,
@@ -248,12 +248,12 @@ impl WalWriterOptions {
         }
     }
 
-    pub fn with_flush_policy(mut self, policy: FlushPolicy) -> Self {
+    pub const fn with_flush_policy(mut self, policy: FlushPolicy) -> Self {
         self.flush_policy = policy;
         self
     }
 
-    pub fn with_max_wal_size(mut self, max_bytes: u64) -> Self {
+    pub const fn with_max_wal_size(mut self, max_bytes: u64) -> Self {
         self.max_wal_size = max_bytes;
         self
     }
@@ -293,13 +293,13 @@ impl WalWriterOptions {
     /// Returns `InvalidConfig` from `WalWriter::open()` if:
     /// - `denominator` is zero
     /// - `numerator >= denominator` (no decay would occur)
-    pub fn with_buffer_decay_rate(mut self, numerator: usize, denominator: usize) -> Self {
+    pub const fn with_buffer_decay_rate(mut self, numerator: usize, denominator: usize) -> Self {
         self.buffer_decay_rate = (numerator, denominator);
         self
     }
 
     /// Validates the configuration, returning an error if any values are invalid.
-    fn validate(&self) -> WalResult<()> {
+    const fn validate(&self) -> WalResult<()> {
         let (numerator, denominator) = self.buffer_decay_rate;
         if denominator == 0 {
             otel_error!("quiver.wal.init", reason = "invalid_config",);
@@ -648,18 +648,18 @@ impl WalWriter {
     }
 
     /// Returns the number of WAL file rotations performed during this writer's lifetime.
-    pub(crate) fn rotation_count(&self) -> u64 {
+    pub(crate) const fn rotation_count(&self) -> u64 {
         self.coordinator.rotation_count
     }
 
     /// Returns the number of rotated files purged during this writer's lifetime.
-    pub(crate) fn purge_count(&self) -> u64 {
+    pub(crate) const fn purge_count(&self) -> u64 {
         self.coordinator.purge_count
     }
 
     /// Returns the cumulative bytes written to WAL since this writer opened.
     /// This value never decreases, even as WAL files are rotated and purged.
-    pub(crate) fn cumulative_bytes_written(&self) -> u64 {
+    pub(crate) const fn cumulative_bytes_written(&self) -> u64 {
         self.coordinator.cumulative_bytes_written
     }
 
@@ -727,7 +727,7 @@ impl ActiveWalFile {
         }
     }
 
-    fn len(&self) -> u64 {
+    const fn len(&self) -> u64 {
         self.current_len
     }
 
@@ -751,7 +751,7 @@ impl ActiveWalFile {
         self.file_ref()
     }
 
-    fn set_len(&mut self, len: u64) {
+    const fn set_len(&mut self, len: u64) {
         self.current_len = len;
     }
 
@@ -953,7 +953,7 @@ struct ScanResult {
 }
 
 impl WalCoordinator {
-    fn new(
+    const fn new(
         options: WalWriterOptions,
         sidecar_path: PathBuf,
         cursor_state: CursorSidecar,
@@ -988,7 +988,7 @@ impl WalCoordinator {
             .map_or(self.wal_position_start, |f| f.wal_position_end)
     }
 
-    fn options(&self) -> &WalWriterOptions {
+    const fn options(&self) -> &WalWriterOptions {
         &self.options
     }
 
@@ -1593,7 +1593,7 @@ async fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
     }
 }
 
-fn default_cursor_state() -> CursorSidecar {
+const fn default_cursor_state() -> CursorSidecar {
     CursorSidecar::new(0)
 }
 
@@ -1686,7 +1686,7 @@ struct RotatedWalFile {
 }
 
 impl RotatedWalFile {
-    fn total_bytes(&self) -> u64 {
+    const fn total_bytes(&self) -> u64 {
         self.file_bytes
     }
 }

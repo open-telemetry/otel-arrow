@@ -119,7 +119,7 @@ impl Context {
 
     /// Are there any subscribers?
     #[must_use]
-    pub fn has_subscribers(&self) -> bool {
+    pub const fn has_subscribers(&self) -> bool {
         !self.stack.is_empty()
     }
 
@@ -179,7 +179,7 @@ impl OtapPdata {
 
     /// Construct new OtapData with context and payload
     #[must_use]
-    pub fn new(context: Context, payload: OtapPayload) -> Self {
+    pub const fn new(context: Context, payload: OtapPayload) -> Self {
         Self { context, payload }
     }
 
@@ -191,7 +191,7 @@ impl OtapPdata {
 
     /// Returns the format of signal represented by this `OtapPdata` instance.
     #[must_use]
-    pub fn signal_format(&self) -> SignalFormat {
+    pub const fn signal_format(&self) -> SignalFormat {
         self.payload.signal_format()
     }
 
@@ -219,7 +219,7 @@ impl OtapPdata {
 
     /// Borrow the payload.
     #[must_use]
-    pub fn payload_ref(&self) -> &OtapPayload {
+    pub const fn payload_ref(&self) -> &OtapPayload {
         &self.payload
     }
 
@@ -253,7 +253,7 @@ impl OtapPdata {
     /// Returns Context::has_subscribers()
     #[cfg(test)]
     #[must_use]
-    pub fn has_subscribers(&self) -> bool {
+    pub const fn has_subscribers(&self) -> bool {
         self.context.has_subscribers()
     }
 
