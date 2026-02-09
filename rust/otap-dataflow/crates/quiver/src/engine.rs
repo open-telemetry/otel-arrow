@@ -1189,7 +1189,7 @@ impl QuiverEngine {
         for seq in self.segment_store.segment_sequences() {
             if seq < delete_boundary {
                 if let Err(e) = self.segment_store.delete_segment(seq) {
-                    otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, reason = "completed", "Failed to delete segment");
+                    otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "completed");
                 } else {
                     deleted += 1;
                 }
@@ -1233,13 +1233,12 @@ impl QuiverEngine {
                 bundles_dropped += count as u64;
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
-                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, reason = "force_drop", "Failed to delete force-dropped segment");
+                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
             } else {
                 otel_info!(
                     "quiver.segment.drop",
                     segment = seq.raw(),
                     reason = "force_drop",
-                    "Force-dropped pending segment (DropOldest policy)"
                 );
                 deleted += 1;
             }
@@ -1304,8 +1303,8 @@ impl QuiverEngine {
                     "quiver.segment.drop",
                     segment = seq.raw(),
                     error = %e,
+                    error_type = "io",
                     reason = "expired",
-                    "Failed to delete expired segment"
                 );
             } else {
                 otel_info!(
@@ -1313,7 +1312,6 @@ impl QuiverEngine {
                     segment = seq.raw(),
                     max_age_secs = max_age.as_secs(),
                     reason = "expired",
-                    "Deleted expired segment (max_age retention)"
                 );
                 deleted += 1;
             }
@@ -1369,7 +1367,6 @@ impl QuiverEngine {
                 deleted,
                 expired,
                 pending_deletes_cleared,
-                "maintenance cycle completed"
             );
         }
 
