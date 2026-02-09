@@ -199,7 +199,10 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub const fn new(control_rx: Receiver<NodeControlMsg<PData>>, pdata_rx: Receiver<PData>) -> Self {
+    pub const fn new(
+        control_rx: Receiver<NodeControlMsg<PData>>,
+        pdata_rx: Receiver<PData>,
+    ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),

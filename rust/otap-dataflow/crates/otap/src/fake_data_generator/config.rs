@@ -115,7 +115,10 @@ impl Config {
 
     /// Builder-style method to set generation strategy
     #[must_use]
-    pub const fn with_generation_strategy(mut self, generation_strategy: GenerationStrategy) -> Self {
+    pub const fn with_generation_strategy(
+        mut self,
+        generation_strategy: GenerationStrategy,
+    ) -> Self {
         self.generation_strategy = generation_strategy;
         self
     }
