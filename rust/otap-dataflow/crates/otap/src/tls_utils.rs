@@ -1600,71 +1600,22 @@ mod tests {
     use super::*;
     use otap_df_config::tls::TlsConfig;
     use std::fs;
-    use std::process::Command;
     use tempfile::TempDir;
 
-    /// Check if OpenSSL CLI is available on the system.
-    /// Returns `true` if `openssl version` succeeds, `false` otherwise.
-    fn is_openssl_available() -> bool {
-        Command::new("openssl")
-            .arg("version")
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+    // `tests/common` is an integration-test module tree, so unit tests in `src/` cannot
+    // import it with `mod` paths directly. Include the shared helper file to keep one
+    // rcgen implementation for TLS test cert generation.
+    mod tls_certs {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/common/tls_certs.rs"
+        ));
     }
 
-    /// Skips the test if OpenSSL is not available, printing a clear message.
-    /// Returns `true` if the test should be skipped.
-    fn skip_if_no_openssl() -> bool {
-        if !is_openssl_available() {
-            eprintln!(
-                "SKIPPED: OpenSSL CLI not found. Install OpenSSL to run this test. \
-                 On macOS: `brew install openssl`, on Ubuntu: `apt-get install openssl`"
-            );
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Generate a self-signed certificate using OpenSSL CLI.
-    ///
-    /// # Panics
-    /// Panics if OpenSSL is not installed or if cert generation fails.
-    /// Tests using this should call `skip_if_no_openssl()` first for graceful handling.
+    /// Generate a self-signed certificate using shared rcgen helpers.
     fn generate_cert(dir: &Path, name: &str, cn: &str) {
-        // Generate Key and Cert in one go (self-signed)
-        let output = Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", name),
-                "-out",
-                &format!("{}.crt", name),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-            ])
-            .current_dir(dir)
-            .output()
-            .expect(
-                "Failed to execute openssl. Ensure OpenSSL CLI is installed: \
-                 macOS: `brew install openssl`, Ubuntu: `apt-get install openssl`",
-            );
-
-        if !output.status.success() {
-            panic!(
-                "Certificate generation failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        let cert = tls_certs::generate_self_signed_cert(cn, Some(cn), true);
+        cert.write_to_dir(dir, name);
     }
 
     /// Generate an end-entity (leaf) certificate signed by a CA using rcgen.
@@ -1679,62 +1630,23 @@ mod tests {
     ///
     /// # Arguments
     /// * `dir` - Directory to write certificate files
-    /// * `ca_name` - Base name for CA files (creates `{ca_name}.crt` and `{ca_name}.key`)
+    /// * `ca_name` - Base name for CA cert file (creates `{ca_name}.crt`)
     /// * `cert_name` - Base name for end-entity cert files
     /// * `cn` - Common Name for the end-entity cert (also used as SAN for hostname verification)
     fn generate_ca_signed_cert(dir: &Path, ca_name: &str, cert_name: &str, cn: &str) {
-        use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair};
-
-        // Step 1: Generate CA certificate
-        let mut ca_params = CertificateParams::default();
-        ca_params
-            .distinguished_name
-            .push(DnType::CommonName, format!("{}CA", cn));
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-
-        let ca_key_pair = KeyPair::generate().expect("Failed to generate CA key pair");
-        let ca_cert = ca_params
-            .self_signed(&ca_key_pair)
-            .expect("Failed to self-sign CA certificate");
-
-        // Write CA cert and key
-        fs::write(dir.join(format!("{}.crt", ca_name)), ca_cert.pem())
-            .expect("Failed to write CA cert");
-        fs::write(
-            dir.join(format!("{}.key", ca_name)),
-            ca_key_pair.serialize_pem(),
-        )
-        .expect("Failed to write CA key");
-
-        // Step 2: Generate end-entity certificate signed by CA
-        let mut ee_params =
-            CertificateParams::new(vec![cn.to_string()]).expect("Failed to create cert params");
-        ee_params.distinguished_name.push(DnType::CommonName, cn);
-        ee_params.is_ca = IsCa::ExplicitNoCa;
-
-        let ee_key_pair = KeyPair::generate().expect("Failed to generate end-entity key pair");
-
-        // Create issuer from CA params and key pair
-        let issuer = Issuer::from_params(&ca_params, &ca_key_pair);
-        let ee_cert = ee_params
-            .signed_by(&ee_key_pair, &issuer)
-            .expect("Failed to sign end-entity certificate");
-
-        // Write end-entity cert and key
-        fs::write(dir.join(format!("{}.crt", cert_name)), ee_cert.pem())
-            .expect("Failed to write end-entity cert");
-        fs::write(
-            dir.join(format!("{}.key", cert_name)),
-            ee_key_pair.serialize_pem(),
-        )
-        .expect("Failed to write end-entity key");
+        let _ = tls_certs::write_ca_and_leaf_to_dir(
+            dir,
+            ca_name,
+            &format!("{cn}CA"),
+            cert_name,
+            cn,
+            Some(cn),
+            None,
+        );
     }
 
     #[tokio::test]
     async fn test_lazy_reload_resolver() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -1830,9 +1742,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_server_tls_config_success_pem() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         generate_cert(path, "server", "localhost");
@@ -1862,9 +1771,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_server_tls_config_success_file() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
         generate_cert(path, "server", "localhost");
@@ -1896,9 +1802,6 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(target_os = "macos", ignore = "Skipping on macOS due to flakiness")]
     async fn test_reloadable_client_ca_verifier_file_watch() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -1939,9 +1842,6 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_reloadable_client_ca_verifier_from_pem() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
@@ -1965,9 +1865,6 @@ mod tests {
         ignore = "Skipping on Windows and macOS due to flakiness"
     )]
     async fn test_build_reloadable_server_config_with_mtls() {
-        if skip_if_no_openssl() {
-            return;
-        }
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let path = temp_dir.path();
