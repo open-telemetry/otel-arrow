@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
     header::{AUTHORIZATION, CONTENT_ENCODING, CONTENT_TYPE, HeaderValue},

@@ -3,6 +3,7 @@
 
 //! Create and run a multi-core pipeline
 
+use clap::error::ErrorKind;
 use clap::{ArgGroup, Parser};
 use otap_df_config::engine::{EngineConfig, EngineSettings, HttpAdminSettings};
 use otap_df_config::pipeline::{CoreAllocation, CoreRange, PipelineConfig, Quota};
@@ -45,6 +46,11 @@ static GLOBAL: Jemalloc = Jemalloc;
     about,
     long_about = None,
     after_help = system_info(),
+    after_long_help = concat!(
+        "EXAMPLES:\n",
+        "  ", env!("CARGO_BIN_NAME"), " --pipeline pipeline.yaml\n",
+        "  ", env!("CARGO_BIN_NAME"), " --config  config.yaml\n",
+    ),
     group = ArgGroup::new("config_source")
         .required(true)
         .multiple(false)
@@ -129,7 +135,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_cores,
         core_id_range,
         http_admin_bind,
-    } = Args::parse();
+    } = Args::try_parse().unwrap_or_else(|e| {
+        // Replace the confusing ArgGroup syntax with a human-readable message.
+        if e.kind() == ErrorKind::MissingRequiredArgument {
+            let bin = std::env::args()
+                .next()
+                .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string());
+            eprintln!(
+                "error: missing required option\n\n\
+                 Provide exactly one of:\n  \
+                 --pipeline <FILE>  Path to a single pipeline definition\n  \
+                 --config   <FILE>  Path to a full engine configuration\n\n\
+                 Examples:\n  \
+                 {bin} --pipeline pipeline.yaml\n  \
+                 {bin} --config   config.yaml\n\n\
+                 For more information, try '--help'."
+            );
+            std::process::exit(2);
+        }
+        e.exit();
+    });
 
     println!("{}", system_info());
 
