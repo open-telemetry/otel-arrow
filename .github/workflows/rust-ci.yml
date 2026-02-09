@@ -326,6 +326,9 @@ jobs:
       - name: cargo xtask ${{ matrix.folder }}
         run: cargo xtask structure-check
         working-directory: ./rust/${{ matrix.folder }}
+      - name: check telemetry macro usage
+        run: ./scripts/check-direct-telemetry-macros.sh
+        working-directory: ./rust/${{ matrix.folder }}
 
   document-build-options:
     if: github.event_name == 'pull_request'
