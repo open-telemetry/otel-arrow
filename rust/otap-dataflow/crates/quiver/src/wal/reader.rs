@@ -65,7 +65,7 @@ use std::path::{Path, PathBuf};
 
 use crc32fast::Hasher;
 
-use crate::logging::otel_warn;
+use crate::logging::{otel_error, otel_warn};
 use crate::record_bundle::{SchemaFingerprint, SlotId};
 
 use super::header::WalHeader;
@@ -776,13 +776,13 @@ impl MultiFileWalReader {
                     });
                 }
                 Err(e) => {
-                    otel_warn!(
+                    otel_error!(
                         "quiver.wal.file_open",
                         path = %path.display(),
                         rotation_id,
                         error = %e,
                         file_type = "rotated",
-                        "failed to open rotated WAL file, skipping"
+                        "failed to open rotated WAL file, skipping — WAL entries in this file will be lost during replay"
                     );
                 }
             }
@@ -934,12 +934,12 @@ impl Iterator for MultiFileWalIter {
                         // Seek to appropriate position within this file
                         let seek_pos = self.start_position.max(file_info.wal_position_start);
                         if let Err(e) = reader.seek_to_position(seek_pos) {
-                            otel_warn!(
+                            otel_error!(
                                 "quiver.wal.file_open",
                                 path = %file_info.path.display(),
                                 error = %e,
                                 file_type = "iteration",
-                                "failed to seek in WAL file, skipping"
+                                "failed to seek in WAL file, skipping — entries in this file will be lost during replay"
                             );
                             self.current_idx += 1;
                             continue;
@@ -947,12 +947,12 @@ impl Iterator for MultiFileWalIter {
                         self.current_reader = Some(reader);
                     }
                     Err(e) => {
-                        otel_warn!(
+                        otel_error!(
                             "quiver.wal.file_open",
                             path = %file_info.path.display(),
                             error = %e,
                             file_type = "iteration",
-                            "failed to open WAL file during iteration, skipping"
+                            "failed to open WAL file during iteration, skipping — entries in this file will be lost during replay"
                         );
                         self.current_idx += 1;
                         continue;

@@ -122,7 +122,7 @@ use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
 use crate::budget::DiskBudget;
-use crate::logging::{otel_debug, otel_info, otel_warn};
+use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -302,11 +302,23 @@ impl WalWriterOptions {
     fn validate(&self) -> WalResult<()> {
         let (numerator, denominator) = self.buffer_decay_rate;
         if denominator == 0 {
+            otel_error!(
+                "quiver.wal.open",
+                reason = "invalid_config",
+                "buffer_decay_rate denominator must be positive"
+            );
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate denominator must be positive",
             ));
         }
         if numerator >= denominator {
+            otel_error!(
+                "quiver.wal.open",
+                numerator,
+                denominator,
+                reason = "invalid_config",
+                "buffer_decay_rate numerator must be less than denominator for decay"
+            );
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate numerator must be less than denominator for decay",
             ));
@@ -448,10 +460,26 @@ impl WalWriter {
             file.flush().await?;
             (0, header.encoded_len()) // New file starts at WAL position 0
         } else if metadata.len() < WAL_HEADER_MIN_LEN as u64 {
+            otel_error!(
+                "quiver.wal.open",
+                path = %options.path.display(),
+                file_size = metadata.len(),
+                min_header_size = WAL_HEADER_MIN_LEN,
+                reason = "invalid_header",
+                "WAL file is too small for a valid header — file may be corrupt"
+            );
             return Err(WalError::InvalidHeader("file smaller than minimum header"));
         } else {
             let header = WalHeader::read_from(&mut file).await?;
             if header.segment_cfg_hash != options.segment_cfg_hash {
+                otel_error!(
+                    "quiver.wal.open",
+                    path = %options.path.display(),
+                    expected = ?options.segment_cfg_hash,
+                    found = ?header.segment_cfg_hash,
+                    reason = "config_mismatch",
+                    "WAL segment config hash mismatch — WAL was created with a different configuration"
+                );
                 return Err(WalError::SegmentConfigMismatch {
                     expected: options.segment_cfg_hash,
                     found: header.segment_cfg_hash,

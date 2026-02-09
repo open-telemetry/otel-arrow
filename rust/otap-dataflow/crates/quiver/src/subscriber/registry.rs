@@ -43,7 +43,7 @@ use std::time::Duration;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::Notify;
 
-use crate::logging::{otel_info, otel_warn};
+use crate::logging::{otel_error, otel_info, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentSeq};
 
 use super::error::{Result, SubscriberError};
@@ -162,11 +162,11 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                         let _ = subscribers.insert(sub_id, Arc::new(RwLock::new(state)));
                     }
                     Err(e) => {
-                        otel_warn!(
+                        otel_error!(
                             "quiver.subscriber.progress_load",
                             subscriber_id = %sub_id,
                             error = %e,
-                            "failed to load progress file, subscriber will start fresh"
+                            "failed to load progress file — subscriber will start fresh with potential data re-delivery or gaps"
                         );
                     }
                 }

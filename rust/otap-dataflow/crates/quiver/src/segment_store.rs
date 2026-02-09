@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use parking_lot::{Mutex, RwLock};
 
 use crate::budget::DiskBudget;
-use crate::logging::{otel_debug, otel_info, otel_trace, otel_warn};
+use crate::logging::{otel_debug, otel_error, otel_info, otel_trace, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
@@ -552,12 +552,11 @@ impl SegmentStore {
                     match self.register_segment(seq) {
                         Ok(bundle_count) => found.push((seq, bundle_count)),
                         Err(e) => {
-                            // Use debug level since this is expected during concurrent cleanup
-                            otel_debug!(
+                            otel_error!(
                                 "quiver.segment.scan",
                                 path = %path.display(),
                                 error = %e,
-                                "failed to load segment, skipping"
+                                "failed to load segment — segment data is inaccessible and may indicate corruption"
                             );
                         }
                     }

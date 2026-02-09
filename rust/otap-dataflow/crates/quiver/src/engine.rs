@@ -236,6 +236,14 @@ impl QuiverEngine {
         let segment_size = config.segment.target_size_bytes.get();
         let min_budget = segment_size.saturating_mul(2);
         if budget.cap() < min_budget && budget.cap() != u64::MAX {
+            otel_error!(
+                "quiver.engine.open",
+                budget_cap = budget.cap(),
+                segment_size,
+                min_budget,
+                reason = "budget_too_small",
+                "disk budget must be at least 2x segment size to prevent deadlock"
+            );
             return Err(QuiverError::invalid_config(format!(
                 "disk budget ({} bytes) must be at least 2x segment size ({} bytes = {} bytes) \
                  to prevent deadlock; increase budget to at least {} bytes or reduce segment size",
@@ -248,10 +256,27 @@ impl QuiverEngine {
 
         // Ensure directories exist
         let segment_dir = segment_dir(&config);
-        fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
+        fs::create_dir_all(&segment_dir).map_err(|e| {
+            otel_error!(
+                "quiver.engine.open",
+                path = %segment_dir.display(),
+                error = %e,
+                reason = "dir_create_failed",
+                "failed to create segment directory"
+            );
+            SegmentError::io(segment_dir.clone(), e)
+        })?;
 
         // Use async WAL initialization
-        let wal_writer = initialize_wal_writer(&config, &budget).await?;
+        let wal_writer = initialize_wal_writer(&config, &budget).await.map_err(|e| {
+            otel_error!(
+                "quiver.engine.open",
+                error = %e,
+                reason = "wal_init_failed",
+                "failed to initialize WAL writer"
+            );
+            e
+        })?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -294,10 +319,10 @@ impl QuiverEngine {
                 deleted_during_scan = scan_result.deleted;
             }
             Err(e) => {
-                otel_warn!(
+                otel_error!(
                     "quiver.segment.scan",
                     error = %e,
-                    "failed to scan existing segments during startup; continuing with empty store"
+                    "failed to scan existing segments during startup; continuing with empty store — previously finalized data may be inaccessible"
                 );
             }
         }
@@ -305,7 +330,15 @@ impl QuiverEngine {
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
         let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
-            .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
+            .map_err(|e| {
+                otel_error!(
+                    "quiver.engine.open",
+                    error = %e,
+                    reason = "registry_open_failed",
+                    "failed to open subscriber registry"
+                );
+                SegmentError::io(config.data_dir.clone(), std::io::Error::other(e))
+            })?;
 
         // If any segments were deleted during scan, force-complete them in the
         // registry so that subscribers restored from progress.json don't try to
@@ -889,6 +922,21 @@ impl QuiverEngine {
     /// Returns an error if segment finalization fails.
     pub async fn shutdown(&self) -> Result<()> {
         let result = self.finalize_current_segment().await;
+        if let Err(ref e) = result {
+            if self.config.durability == DurabilityMode::Wal {
+                otel_warn!(
+                    "quiver.engine.shutdown",
+                    error = %e,
+                    "failed to finalize open segment during shutdown — data should be recoverable via WAL replay"
+                );
+            } else {
+                otel_error!(
+                    "quiver.engine.shutdown",
+                    error = %e,
+                    "failed to finalize open segment during shutdown — data in open segment will be lost (WAL is disabled)"
+                );
+            }
+        }
         otel_info!(
             "quiver.engine.shutdown",
             cumulative_segment_bytes = self.cumulative_segment_bytes.load(Ordering::Relaxed),
@@ -938,7 +986,17 @@ impl QuiverEngine {
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (bytes_written, _checksum) = writer.write_segment(&segment_path, segment).await?;
+        let (bytes_written, _checksum) =
+            writer.write_segment(&segment_path, segment).await.map_err(|e| {
+                otel_error!(
+                    "quiver.segment.finalize",
+                    segment = seq.raw(),
+                    path = %segment_path.display(),
+                    error = %e,
+                    "segment write failed — data in open segment may only be recoverable via WAL replay"
+                );
+                e
+            })?;
 
         otel_debug!(
             "quiver.segment.finalize",
@@ -958,7 +1016,15 @@ impl QuiverEngine {
         // Step 5: Advance WAL cursor now that segment is durable
         {
             let mut wal_writer = self.wal_writer.lock().await;
-            wal_writer.persist_cursor(&cursor).await?;
+            wal_writer.persist_cursor(&cursor).await.map_err(|e| {
+                otel_error!(
+                    "quiver.segment.finalize",
+                    segment = seq.raw(),
+                    error = %e,
+                    "WAL cursor persist failed after segment write — WAL replay may produce duplicates on restart"
+                );
+                e
+            })?;
         }
 
         // Step 6: Register segment with store (triggers subscriber notification)
