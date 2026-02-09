@@ -987,13 +987,13 @@ mod test {
                 let (outbound_context, _payload) = outbound_pdata.clone().into_parts();
 
                 // assert that since the pipeline did no routing, the outbound context should be
-                // same as the inbound
-                assert_eq!(inbound_context.source_node(), None);
+                // same as the inbound (after adding the processor's source node)
+                assert_eq!(inbound_context.source_node(), Some(999));
                 assert_eq!(
                     outbound_context.source_node(),
-                    Some("transform-processor".into())
+                    Some(0)
                 );
-                inbound_context.set_source_node(Some("transform-processor".into()));
+                inbound_context.set_source_node(0);
                 assert_eq!(inbound_context, outbound_context);
                 assert!(outbound_context.has_subscribers());
             })

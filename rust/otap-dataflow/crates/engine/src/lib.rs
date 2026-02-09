@@ -358,7 +358,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// from the Internal Telemetry System.
     pub fn build(
         self: &PipelineFactory<PData>,
-        pipeline_ctx: PipelineContext,
+        mut pipeline_ctx: PipelineContext,
         config: PipelineConfig,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
@@ -380,6 +380,18 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let _enter = span.enter();
 
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+
+        // Build a shared node-name-to-index map so that any node factory can
+        // resolve peer node names to their pipeline indices.  Indices are
+        // assigned sequentially in iteration order, matching `next_node_id`.
+        let node_names: context::NodeNameIndex = Arc::new(
+            config
+                .node_iter()
+                .enumerate()
+                .map(|(idx, (name, _))| (name.clone(), idx))
+                .collect(),
+        );
+        pipeline_ctx.set_node_names(node_names);
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.

@@ -119,10 +119,10 @@ impl Context {
         self.stack.last().map(|f| f.calldata.clone())
     }
 
-    /// Are there any subscribers?
+    /// Are there any subscribers with actual interests (ACKS or NACKS)?
     #[must_use]
-    pub const fn has_subscribers(&self) -> bool {
-        !self.stack.is_empty()
+    pub fn has_subscribers(&self) -> bool {
+        self.stack.iter().any(|f| !f.interests.is_empty())
     }
 
     /// Set the source node for this context.
@@ -264,7 +264,7 @@ impl OtapPdata {
     /// Returns Context::has_subscribers()
     #[cfg(test)]
     #[must_use]
-    pub const fn has_subscribers(&self) -> bool {
+    pub fn has_subscribers(&self) -> bool {
         self.context.has_subscribers()
     }
 
@@ -615,7 +615,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -642,7 +642,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -672,7 +672,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -704,7 +704,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -730,7 +730,7 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -759,7 +759,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -790,7 +790,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -817,7 +817,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -847,7 +847,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -873,7 +873,7 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -902,7 +902,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -933,7 +933,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -962,7 +962,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -994,7 +994,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[tokio::test]
@@ -1022,7 +1022,7 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(0));
     }
 
     #[test]

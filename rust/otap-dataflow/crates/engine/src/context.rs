@@ -12,7 +12,12 @@ use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
+
+/// A shared, immutable mapping from node names to their pipeline indices.
+pub type NodeNameIndex = Arc<HashMap<NodeId, usize>>;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 // Choose UUID v7 for better sortability in telemetry signals
@@ -109,6 +114,10 @@ pub struct PipelineContext {
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
     internal_telemetry: Option<InternalTelemetrySettings>,
+    /// Shared mapping from node names to pipeline indices.
+    /// Populated before node factories are called so that any node
+    /// can resolve peer node names to indices.
+    node_names: NodeNameIndex,
 }
 
 impl ControllerContext {
@@ -166,6 +175,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             internal_telemetry: None,
+            node_names: Arc::new(HashMap::new()),
         }
     }
 
@@ -211,6 +221,17 @@ impl PipelineContext {
     #[must_use]
     pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
+    }
+
+    /// Sets the shared node-name-to-index mapping for this pipeline context.
+    pub fn set_node_names(&mut self, node_names: NodeNameIndex) {
+        self.node_names = node_names;
+    }
+
+    /// Returns the pipeline index for the given node name, if it exists.
+    #[must_use]
+    pub fn node_index_by_name(&self, name: &str) -> Option<usize> {
+        self.node_names.get(name).copied()
     }
 
     /// Takes the internal telemetry settings, leaving None in its place.
@@ -388,6 +409,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             internal_telemetry: None,
+            node_names: self.node_names.clone(),
         }
     }
 }
