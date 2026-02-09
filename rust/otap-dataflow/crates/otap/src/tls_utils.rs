@@ -348,6 +348,7 @@ async fn add_system_trust_anchors_if_enabled(
                 let native = load_native_certs();
                 if !native.errors.is_empty() {
                     otel_warn!(
+                        "tls.native_cert.load_errors",
                         count = native.errors.len(),
                         first = ?native.errors.first(),
                         message = "Errors while loading native certificates",
@@ -723,7 +724,7 @@ impl CaWatcherState {
                 "tls.file_watcher.no_match",
                 event_paths = ?event.paths,
                 watched_path = ?self.watched_path,
-                "Event not for our file"
+                message = "Event not for our file"
             );
         }
 
@@ -736,7 +737,7 @@ impl CaWatcherState {
         let current_identity = match get_file_identity(&self.reload_path) {
             Ok(id) => id,
             Err(e) => {
-                otel_debug!("tls.file_watcher.identity_error", error = ?e, "Failed to get file identity, skipping reload");
+                otel_debug!("tls.file_watcher.identity_error", error = ?e, message = "Failed to get file identity, skipping reload");
                 return false;
             }
         };
@@ -745,7 +746,7 @@ impl CaWatcherState {
         if current_identity == prev_identity {
             otel_debug!(
                 "tls.file_watcher.identity_unchanged",
-                "File identity unchanged, skipping reload"
+                message = "File identity unchanged, skipping reload"
             );
             return false;
         }
@@ -753,7 +754,7 @@ impl CaWatcherState {
             "tls.file_watcher.identity_changed",
             prev_identity = prev_identity,
             current_identity = current_identity,
-            "File identity changed"
+            message = "File identity changed"
         );
 
         // Check debounce window
@@ -762,7 +763,7 @@ impl CaWatcherState {
         if now.saturating_sub(last) < CA_RELOAD_DEBOUNCE_SECS {
             otel_debug!(
                 "tls.file_watcher.debounce",
-                "Debouncing CA file change event"
+                message = "Debouncing CA file change event"
             );
             return false;
         }
@@ -775,7 +776,7 @@ impl CaWatcherState {
         {
             otel_debug!(
                 "tls.file_watcher.reload_in_progress",
-                "CA reload already in progress, skipping"
+                message = "CA reload already in progress, skipping"
             );
             return false;
         }
@@ -786,8 +787,9 @@ impl CaWatcherState {
     /// Perform the actual CA certificate reload.
     fn perform_reload(&self) {
         otel_info!(
-            "CA certificate file changed, reloading",
+            "tls.file_watcher.reload_start",
             path = ?self.reload_path,
+            message = "CA certificate file changed, reloading"
         );
 
         // Note: There's a theoretical TOCTOU between getting identity and reading the file.
@@ -802,12 +804,16 @@ impl CaWatcherState {
                 self.last_identity
                     .store(current_identity, Ordering::Relaxed);
                 self.last_reload.store(now, Ordering::Relaxed);
-                otel_info!("Successfully reloaded client CA certificates");
+                otel_info!(
+                    "tls.file_watcher.reload_success",
+                    message = "Successfully reloaded client CA certificates"
+                );
             }
             Err(e) => {
                 otel_error!(
-                    "Failed to reload CA certificates (keeping previous)",
+                    "tls.file_watcher.reload_failed",
                     error = ?e,
+                    message = "Failed to reload CA certificates (keeping previous)",
                 );
             }
         }
@@ -919,7 +925,7 @@ impl ReloadableClientCaVerifier {
         otel_debug!(
             "tls.ca.initial_load",
             size_bytes = ca_pem.len(),
-            "Initial CA PEM size"
+            message = "Initial CA PEM size"
         );
         let verifier = build_webpki_verifier(&ca_pem, include_system_cas)?;
 
@@ -1032,9 +1038,10 @@ impl ReloadableClientCaVerifier {
             .map_err(io::Error::other)?;
 
         otel_info!(
-            "File watcher set up for CA certificates",
+            "tls.file_watcher.setup",
             ca_file = ?ca_file_path,
             watching_parent = ?parent_dir,
+            message = "File watcher set up for CA certificates"
         );
 
         Ok(Box::new(watcher))
@@ -1070,19 +1077,21 @@ impl ReloadableClientCaVerifier {
                     }
 
                     otel_info!(
-                        "CA certificate file changed (polling), reloading",
+                        "tls.poll_watcher.event",
                         ca_path = ?ca_path,
+                        message = "CA certificate file changed (polling), reloading"
                     );
 
                     match reload_ca_verifier(&ca_path, include_system_cas) {
                         Ok(new_verifier) => {
                             inner.store(Arc::new(new_verifier));
-                            otel_info!("Successfully reloaded client CA certificates");
+                            otel_info!("tls.poll_watcher.reload_success", message = "Successfully reloaded client CA certificates");
                         }
                         Err(e) => {
                             otel_error!(
-                                "Failed to reload CA certificates (keeping previous)",
+                                "tls.poll_watcher.reload_failed",
                                 error = ?e,
+                                message = "Failed to reload CA certificates (keeping previous)"
                             );
                         }
                     }
@@ -1102,9 +1111,10 @@ impl ReloadableClientCaVerifier {
             .map_err(io::Error::other)?;
 
         otel_info!(
-            "Poll watcher set up for CA certificates",
+            "tls.poll_watcher.setup",
             ca_file = ?ca_file_path,
             interval = ?poll_interval,
+            message = "Poll watcher set up for CA certificates",
         );
 
         Ok(Box::new(watcher))
@@ -1431,7 +1441,7 @@ async fn build_client_auth(
         // No client auth configured
         otel_debug!(
             "tls.mtls.disabled",
-            "No client CA configured, disabling client authentication"
+            message = "No client CA configured, disabling client authentication"
         );
         return Ok(builder.with_no_client_auth());
     }
@@ -1441,15 +1451,17 @@ async fn build_client_auth(
         // File-based CA configuration
         let verifier = if watch_enabled {
             otel_info!(
-                "Configuring mTLS with file watching for CA certificates",
+                "tls.file_watcher.setup",
                 ca_file = ?ca_file,
+                message = "Configuring mTLS with file watching for CA certificates"
             );
             ReloadableClientCaVerifier::new_with_file_watch(ca_file.clone(), include_system_cas)?
         } else {
             otel_info!(
-                "Configuring mTLS with polling for CA certificates",
+                "tls.poll_watcher.setup",
                 ca_file = ?ca_file,
                 interval = ?check_interval,
+                message = "Configuring mTLS with polling for CA certificates"
             );
             ReloadableClientCaVerifier::new_with_polling(
                 ca_file.clone(),
@@ -1461,7 +1473,10 @@ async fn build_client_auth(
         Ok(builder.with_client_cert_verifier(verifier))
     } else if let Some(ca_pem) = &config.client_ca_pem {
         // PEM-based (static) CA configuration
-        otel_info!("Configuring mTLS with static PEM CA certificates");
+        otel_info!(
+            "tls.mtls.configure_static_pem",
+            message = "Configuring mTLS with static PEM CA certificates"
+        );
 
         // For PEM-based, we need to combine with system CAs if requested
         let mut combined_pem = Vec::new();
@@ -1480,7 +1495,10 @@ async fn build_client_auth(
         Ok(builder.with_client_cert_verifier(verifier))
     } else if include_system_cas {
         // Only system CAs (no user-provided CA)
-        otel_info!("Configuring mTLS with system CA certificates only");
+        otel_info!(
+            "tls.mtls.configure_system_cas",
+            message = "Configuring mTLS with system CA certificates only"
+        );
 
         let cert_res = tokio::task::spawn_blocking(load_native_certs)
             .await
