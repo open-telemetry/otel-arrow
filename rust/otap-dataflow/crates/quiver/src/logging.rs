@@ -112,8 +112,6 @@
 //! otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 //! ```
 
-#![allow(unused_macros, unused_macro_rules)]
-
 /// Macro for logging informational messages with a required event name.
 ///
 /// # Arguments
@@ -125,6 +123,7 @@
 /// otel_info!("quiver.engine.init", version = "1.0.0");
 /// otel_info!("quiver.wal.rotate", rotation_id = 3, rotated_file_count = 2);
 /// ```
+#[allow(unused_macro_rules)]
 macro_rules! otel_info {
     ($name:expr, $($fields:tt)+) => {
         tracing::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -148,6 +147,7 @@ macro_rules! otel_info {
 /// );
 /// otel_warn!("quiver.budget.backpressure", policy = "backpressure");
 /// ```
+#[allow(unused_macro_rules)]
 macro_rules! otel_warn {
     ($name:expr, $($fields:tt)+) => {
         tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -170,6 +170,7 @@ macro_rules! otel_warn {
 ///     message = "stopping replay at corruption boundary",
 /// );
 /// ```
+#[allow(unused_macro_rules)]
 macro_rules! otel_error {
     ($name:expr, $($fields:tt)+) => {
         tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -190,6 +191,7 @@ macro_rules! otel_error {
 /// otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 /// otel_debug!("quiver.segment.flush", segment = 7, bytes_written = 4096);
 /// ```
+#[allow(unused_macro_rules)]
 macro_rules! otel_debug {
     ($name:expr, $($fields:tt)+) => {
         tracing::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
@@ -209,24 +211,29 @@ pub(crate) use otel_warn;
 mod tests {
     #[test]
     fn test_macros_compile() {
-        // These just verify the macros compile correctly with various argument patterns
+        // Verify macros compile with various argument patterns.
+        // Tests model best practice: use `message = "..."` (named field)
+        // rather than trailing string literals.
         otel_info!("quiver.test.info_only");
-        otel_info!("quiver.test.info_message", "a message");
         otel_info!("quiver.test.info_fields", key = 42);
-        otel_info!("quiver.test.info_fields_message", key = 42, "with message");
+        otel_info!(
+            "quiver.test.info_fields_message",
+            key = 42,
+            message = "with context"
+        );
         otel_info!("quiver.test.info_debug_format", key = ?vec![1, 2, 3]);
         otel_info!("quiver.test.info_display_format", key = %"display");
         otel_info!(
             "quiver.test.info_message_as_field",
-            message = "human-readable message"
+            message = "human-readable message",
         );
 
         otel_warn!("quiver.test.warn_only");
-        otel_warn!("quiver.test.warn_message", "warning message");
         otel_warn!("quiver.test.warn_fields", a = 1, b = 2);
+        otel_warn!("quiver.test.warn_message", message = "warning context");
 
         otel_error!("quiver.test.error_only");
-        otel_error!("quiver.test.error_fields", error = %"some error");
+        otel_error!("quiver.test.error_fields", error = %"some error", error_type = "io");
 
         otel_debug!("quiver.test.debug_only");
         otel_debug!("quiver.test.debug_fields", count = 100);
@@ -235,6 +242,6 @@ mod tests {
     #[test]
     fn test_shorthand_field() {
         let replayed = 42;
-        otel_info!("quiver.test.shorthand", replayed, "replayed entries");
+        otel_info!("quiver.test.shorthand", replayed);
     }
 }
