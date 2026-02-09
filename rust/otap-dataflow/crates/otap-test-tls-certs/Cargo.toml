@@ -1,10 +1,10 @@
 [package]
-name = "otap-test-tls-certs"
+name = "otap-df-test-tls-certs"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
 license.workspace = true
-publish = false
+publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

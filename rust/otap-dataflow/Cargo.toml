@@ -49,7 +49,7 @@ otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
 otap-df-controller = { path = "crates/controller" }
 otap-df-otap = { path = "crates/otap" }
-otap-test-tls-certs = { path = "crates/otap-test-tls-certs" }
+otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-telemetry = { path = "crates/telemetry" }
 quiver = { package = "otap-df-quiver", path = "crates/quiver" }
