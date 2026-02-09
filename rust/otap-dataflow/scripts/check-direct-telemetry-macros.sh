@@ -94,12 +94,13 @@ fi
 # Check for unqualified imports of tracing/log macros.
 # These bypass the fully-qualified check above since the macro is then called
 # as bare `info!(...)` instead of `tracing::info!(...)`.
-# The pattern matches: use tracing::info; use tracing::{info, warn}; etc.
-if ! check_banned_pattern "use tracing::\(info\|warn\|error\|debug\|trace\)" "tracing macro import (use otel_* macros from otap_df_telemetry instead)"; then
+# Catches both single imports (use tracing::info;) and grouped imports
+# (use tracing::{info, warn};).
+if ! check_banned_pattern "use tracing::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "tracing macro import (use otel_* macros from otap_df_telemetry instead)"; then
     checks_passed=1
 fi
 
-if ! check_banned_pattern "use log::\(info\|warn\|error\|debug\|trace\)" "log macro import (use otel_* macros from otap_df_telemetry instead)"; then
+if ! check_banned_pattern "use log::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "log macro import (use otel_* macros from otap_df_telemetry instead)"; then
     checks_passed=1
 fi
 
