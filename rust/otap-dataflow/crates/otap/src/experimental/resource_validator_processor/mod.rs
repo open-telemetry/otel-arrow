@@ -423,13 +423,19 @@ impl ResourceValidatorProcessor {
     }
 
     /// Updates metrics and logs warnings based on validation result
-    fn update_metrics(&mut self, result: &Result<(), (ValidationFailure, String)>) {
+    fn update_metrics(
+        &mut self,
+        result: &Result<(), (ValidationFailure, String)>,
+        num_items: u64,
+    ) {
         match result {
             Ok(()) => {
                 self.metrics.batches_accepted.add(1);
+                self.metrics.items_accepted.add(num_items);
             }
             Err((failure, msg)) => {
                 warn!(reason = %failure, "{}", msg);
+                self.metrics.items_rejected.add(num_items);
                 match failure {
                     ValidationFailure::MissingAttribute => {
                         self.metrics.batches_rejected_missing.add(1);
@@ -520,7 +526,8 @@ impl local::Processor<OtapPdata> for ResourceValidatorProcessor {
                 };
 
                 // Update metrics
-                self.update_metrics(&validation_result);
+                let num_items = pdata.num_items() as u64;
+                self.update_metrics(&validation_result, num_items);
 
                 match validation_result {
                     Ok(()) => {
