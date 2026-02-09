@@ -535,10 +535,7 @@ impl SegmentStore {
                                     error_type = "io",
                                 );
                             } else {
-                                otel_debug!(
-                                    "quiver.segment.scan",
-                                    segment = seq.raw(),
-                                );
+                                otel_debug!("quiver.segment.scan", segment = seq.raw(),);
                                 deleted.push(seq);
                             }
                             continue;

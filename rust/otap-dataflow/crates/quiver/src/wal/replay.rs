@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 
-use crate::logging::{ otel_debug, otel_error };
+use crate::logging::{otel_debug, otel_error};
 use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };

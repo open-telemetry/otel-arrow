@@ -302,10 +302,7 @@ impl WalWriterOptions {
     fn validate(&self) -> WalResult<()> {
         let (numerator, denominator) = self.buffer_decay_rate;
         if denominator == 0 {
-            otel_error!(
-                "quiver.wal.init",
-                reason = "invalid_config",
-            );
+            otel_error!("quiver.wal.init", reason = "invalid_config",);
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate denominator must be positive",
             ));
@@ -886,10 +883,7 @@ impl ActiveWalFile {
         // Take ownership of the file temporarily. If already taken (shouldn't
         // happen in Drop), skip the sync.
         let Some(tokio_file) = self.file.take() else {
-            otel_warn!(
-                "quiver.wal.drop.flush",
-                reason = "no_handle",
-            );
+            otel_warn!("quiver.wal.drop.flush", reason = "no_handle",);
             return;
         };
 
@@ -900,10 +894,7 @@ impl ActiveWalFile {
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
-                otel_warn!(
-                    "quiver.wal.drop.flush",
-                    reason = "pending_async_ops",
-                );
+                otel_warn!("quiver.wal.drop.flush", reason = "pending_async_ops",);
                 return;
             }
         };

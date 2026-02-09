@@ -407,10 +407,7 @@ impl QuiverEngine {
         // This uses the same ingest path as live ingestion (minus WAL writes)
         let replayed = engine.replay_wal().await?;
         if replayed > 0 {
-            otel_info!(
-                "quiver.wal.replay",
-                replayed,
-            );
+            otel_info!("quiver.wal.replay", replayed,);
         }
 
         Ok(engine)
@@ -825,7 +822,11 @@ impl QuiverEngine {
         }
 
         if skipped_expired > 0 {
-            otel_info!("quiver.wal.replay", skipped_expired, message = "skipped expired WAL entries during replay (max_age)");
+            otel_info!(
+                "quiver.wal.replay",
+                skipped_expired,
+                message = "skipped expired WAL entries during replay (max_age)"
+            );
             let _ = self
                 .expired_bundles
                 .fetch_add(skipped_expired, Ordering::Relaxed);
@@ -986,8 +987,10 @@ impl QuiverEngine {
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (bytes_written, _checksum) =
-            writer.write_segment(&segment_path, segment).await.map_err(|e| {
+        let (bytes_written, _checksum) = writer
+            .write_segment(&segment_path, segment)
+            .await
+            .map_err(|e| {
                 otel_error!(
                     "quiver.segment.flush",
                     segment = seq.raw(),
@@ -999,11 +1002,7 @@ impl QuiverEngine {
                 e
             })?;
 
-        otel_debug!(
-            "quiver.segment.flush",
-            segment = seq.raw(),
-            bytes_written,
-        );
+        otel_debug!("quiver.segment.flush", segment = seq.raw(), bytes_written,);
 
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
         let _ = self
