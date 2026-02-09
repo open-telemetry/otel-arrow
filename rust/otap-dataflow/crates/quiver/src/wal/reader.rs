@@ -781,8 +781,9 @@ impl MultiFileWalReader {
                         path = %path.display(),
                         rotation_id,
                         error = %e,
+                        error_type = "io",
                         file_type = "rotated",
-                        "failed to open rotated WAL file, skipping — WAL entries in this file will be lost during replay"
+                        message = "entries in this file will be lost during replay",
                     );
                 }
             }
@@ -805,8 +806,8 @@ impl MultiFileWalReader {
                         "quiver.wal.file.init",
                         path = %base_path.display(),
                         error = %e,
+                        error_type = "io",
                         file_type = "active",
-                        "failed to open active WAL file"
                     );
                     // If we have no files at all, return the error
                     if files.is_empty() {
@@ -938,8 +939,9 @@ impl Iterator for MultiFileWalIter {
                                 "quiver.wal.file.init",
                                 path = %file_info.path.display(),
                                 error = %e,
+                                error_type = "io",
                                 file_type = "iteration",
-                                "failed to seek in WAL file, skipping — entries in this file will be lost during replay"
+                                message = "entries in this file will be lost during replay",
                             );
                             self.current_idx += 1;
                             continue;
@@ -951,8 +953,9 @@ impl Iterator for MultiFileWalIter {
                             "quiver.wal.file.init",
                             path = %file_info.path.display(),
                             error = %e,
+                            error_type = "io",
                             file_type = "iteration",
-                            "failed to open WAL file during iteration, skipping — entries in this file will be lost during replay"
+                            message = "entries in this file will be lost during replay",
                         );
                         self.current_idx += 1;
                         continue;

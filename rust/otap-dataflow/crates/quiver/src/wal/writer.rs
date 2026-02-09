@@ -305,7 +305,6 @@ impl WalWriterOptions {
             otel_error!(
                 "quiver.wal.init",
                 reason = "invalid_config",
-                "buffer_decay_rate denominator must be positive"
             );
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate denominator must be positive",
@@ -317,7 +316,7 @@ impl WalWriterOptions {
                 numerator,
                 denominator,
                 reason = "invalid_config",
-                "buffer_decay_rate numerator must be less than denominator for decay"
+                message = "numerator must be less than denominator for decay",
             );
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate numerator must be less than denominator for decay",
@@ -465,8 +464,9 @@ impl WalWriter {
                 path = %options.path.display(),
                 file_size = metadata.len(),
                 min_header_size = WAL_HEADER_MIN_LEN,
+                error_type = "corruption",
                 reason = "invalid_header",
-                "WAL file is too small for a valid header — file may be corrupt"
+                message = "file may be corrupt",
             );
             return Err(WalError::InvalidHeader("file smaller than minimum header"));
         } else {
@@ -477,8 +477,9 @@ impl WalWriter {
                     path = %options.path.display(),
                     expected = ?options.segment_cfg_hash,
                     found = ?header.segment_cfg_hash,
+                    error_type = "config",
                     reason = "config_mismatch",
-                    "WAL segment config hash mismatch — WAL was created with a different configuration"
+                    message = "WAL was created with a different configuration",
                 );
                 return Err(WalError::SegmentConfigMismatch {
                     expected: options.segment_cfg_hash,
@@ -533,7 +534,6 @@ impl WalWriter {
             cursor_position = coordinator.cursor_state.wal_position,
             next_sequence,
             aggregate_bytes = coordinator.aggregate_bytes,
-            "WAL writer initialized"
         );
 
         Ok(Self {
@@ -889,7 +889,6 @@ impl ActiveWalFile {
             otel_warn!(
                 "quiver.wal.drop.flush",
                 reason = "no_handle",
-                "WAL drop flush skipped: file handle unavailable"
             );
             return;
         };
@@ -904,7 +903,6 @@ impl ActiveWalFile {
                 otel_warn!(
                     "quiver.wal.drop.flush",
                     reason = "pending_async_ops",
-                    "WAL drop flush skipped: file has pending async operations"
                 );
                 return;
             }
@@ -914,7 +912,7 @@ impl ActiveWalFile {
         #[cfg(test)]
         test_support::record_sync_data();
         if let Err(e) = std_file.sync_data() {
-            otel_warn!("quiver.wal.drop.flush", error = %e, reason = "sync_data_failed", "WAL drop flush failed during sync_data");
+            otel_warn!("quiver.wal.drop.flush", error = %e, error_type = "io", reason = "sync_data_failed");
         }
 
         // Convert back to tokio::fs::File
@@ -1056,7 +1054,7 @@ impl WalCoordinator {
                 entry_count = self.entry_boundaries.len(),
                 rotation_target_bytes = self.options.rotation_target_bytes,
                 reason = "stale_cursor",
-                "entry_boundaries vector is large; consumer cursor may be stale or not advancing"
+                message = "consumer cursor may be stale or not advancing",
             );
         }
     }
@@ -1079,7 +1077,6 @@ impl WalCoordinator {
                 rotated_file_count = self.rotated_files.len(),
                 max_rotated_files = self.options.max_rotated_files,
                 aggregate_bytes = self.aggregate_bytes,
-                "rotated WAL file cap reached during preflight"
             );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
@@ -1100,7 +1097,6 @@ impl WalCoordinator {
                 projected_bytes = projected,
                 max_wal_size = self.options.max_wal_size,
                 aggregate_bytes = self.aggregate_bytes,
-                "WAL size cap exceeded during preflight"
             );
             return Err(WalError::WalAtCapacity(
                 "wal size cap exceeded; advance cursor to reclaim space",
@@ -1322,7 +1318,6 @@ impl WalCoordinator {
                 rotated_file_count = self.rotated_files.len(),
                 max_rotated_files = self.options.max_rotated_files,
                 aggregate_bytes = self.aggregate_bytes,
-                "rotated WAL file cap reached"
             );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
@@ -1400,7 +1395,6 @@ impl WalCoordinator {
             rotated_file_bytes = old_len,
             rotated_file_count = self.rotated_files.len(),
             aggregate_bytes = self.aggregate_bytes,
-            "WAL file rotated"
         );
 
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await?;
@@ -1516,7 +1510,6 @@ impl WalCoordinator {
                     purged_bytes,
                     remaining_rotated_files = self.rotated_files.len().saturating_sub(1),
                     aggregate_bytes = self.aggregate_bytes,
-                    "purged consumed rotated WAL file"
                 );
 
                 self.purge_count = self.purge_count.saturating_add(1);

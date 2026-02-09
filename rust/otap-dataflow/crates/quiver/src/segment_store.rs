@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use parking_lot::{Mutex, RwLock};
 
 use crate::budget::DiskBudget;
-use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
+use crate::logging::{otel_debug, otel_error, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
 
@@ -345,7 +345,6 @@ impl SegmentStore {
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
-                        "Segment file in use, deferring deletion"
                     );
                     let _ = self.pending_deletes.lock().insert(seq);
                     // Don't return error - we've handled it by deferring
@@ -431,7 +430,6 @@ impl SegmentStore {
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
-                        "Successfully deleted previously deferred segment"
                     );
                     deleted += 1;
                 }
@@ -441,7 +439,6 @@ impl SegmentStore {
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
-                        "Segment file still in use, will retry later"
                     );
                 }
                 Err(e) => {
@@ -451,8 +448,8 @@ impl SegmentStore {
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         error = %e,
+                        error_type = "io",
                         phase = "deferred",
-                        "Failed to delete deferred segment"
                     );
                 }
             }
@@ -535,13 +532,12 @@ impl SegmentStore {
                                     "quiver.segment.scan",
                                     path = %path.display(),
                                     error = %e,
-                                    "failed to delete expired segment during scan"
+                                    error_type = "io",
                                 );
                             } else {
-                                otel_info!(
+                                otel_debug!(
                                     "quiver.segment.scan",
                                     segment = seq.raw(),
-                                    "deleted expired segment during startup scan"
                                 );
                                 deleted.push(seq);
                             }
@@ -556,7 +552,8 @@ impl SegmentStore {
                                 "quiver.segment.scan",
                                 path = %path.display(),
                                 error = %e,
-                                "failed to load segment — segment data is inaccessible and may indicate corruption"
+                                error_type = "io",
+                                message = "segment data is inaccessible and may indicate corruption",
                             );
                         }
                     }

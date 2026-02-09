@@ -44,7 +44,50 @@
 //!
 //! The log level carries success vs failure (info = success, warn/error = failure).
 //!
-//! Examples:
+//! ## Message Convention
+//!
+//! Most events need **no message** — the event name, level, and structured
+//! attributes are sufficient. Only add a `message` attribute when it provides
+//! context that cannot be inferred from the other fields (e.g., consequences,
+//! recovery actions, or remediation taken):
+//!
+//! ```ignore
+//! // No message needed — event name + attrs say it all
+//! otel_info!("quiver.wal.rotate", rotation_id = 3, rotated_file_count = 2);
+//! otel_debug!("quiver.segment.flush", segment = 7, bytes_written = 4096);
+//!
+//! // Message adds valuable context (consequence / recovery action)
+//! otel_warn!("quiver.wal.cursor.load",
+//!     error = %e,
+//!     error_type = "decode",
+//!     reason = "decode_failed",
+//!     message = "replaying from start, duplicates may occur",
+//! );
+//! ```
+//!
+//! Use `message = "..."` (named field) rather than a trailing string literal.
+//!
+//! ## Error Classification
+//!
+//! When logging an error with `error = %e`, add an `error_type` attribute with
+//! a low-cardinality classifier for filtering and alerting:
+//!
+//! - `"io"` — filesystem or network I/O failures
+//! - `"decode"` — deserialization or format-parsing failures
+//! - `"config"` — configuration validation errors
+//! - `"corruption"` — data integrity or CRC failures
+//!
+//! ```ignore
+//! otel_error!("quiver.segment.flush",
+//!     segment = seq.raw(),
+//!     error = %e,
+//!     error_type = "io",
+//!     message = "data may only be recoverable via WAL replay",
+//! );
+//! ```
+//!
+//! ## Event Name Examples
+//!
 //! - `quiver.wal.replay` — all WAL replay events (level + fields distinguish outcomes)
 //! - `quiver.segment.drop` — all segment removal (reason + phase attrs differentiate)
 //! - `quiver.segment.scan` — startup segment scanning
@@ -56,8 +99,16 @@
 //! ## Usage
 //!
 //! ```ignore
+//! // Attributes only (preferred when event name is self-describing)
 //! otel_info!("quiver.segment.drop", segment = 5, reason = "expired");
-//! otel_warn!("quiver.wal.cursor.load", error = %e, reason = "decode_failed");
+//!
+//! // With error_type classifier
+//! otel_warn!("quiver.wal.cursor.load",
+//!     error = %e, error_type = "decode", reason = "decode_failed",
+//!     message = "replaying from start, duplicates may occur",
+//! );
+//!
+//! // Attributes only, no message
 //! otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
 //! ```
 
@@ -67,12 +118,12 @@
 ///
 /// # Arguments
 /// - First argument (required): The event name identifying the log event.
-/// - Additional optional key-value pairs and/or trailing message literal.
+/// - Additional optional key-value pairs and/or a `message = "..."` attribute.
 ///
 /// # Example
 /// ```ignore
-/// otel_info!("quiver.engine.startup", version = "1.0.0");
-/// otel_info!("quiver.segment.finalized", segment_id = 42, "segment finalized successfully");
+/// otel_info!("quiver.engine.init", version = "1.0.0");
+/// otel_info!("quiver.wal.rotate", rotation_id = 3, rotated_file_count = 2);
 /// ```
 macro_rules! otel_info {
     ($name:expr, $($fields:tt)+) => {
@@ -87,12 +138,15 @@ macro_rules! otel_info {
 ///
 /// # Arguments
 /// - First argument (required): The event name identifying the log event.
-/// - Additional optional key-value pairs and/or trailing message literal.
+/// - Additional optional key-value pairs and/or a `message = "..."` attribute.
 ///
 /// # Example
 /// ```ignore
-/// otel_warn!("quiver.wal.cursor_missing", "cursor file not found, starting from beginning");
-/// otel_warn!("quiver.segment.delete_failed", error = %e, segment_id = 42);
+/// otel_warn!("quiver.wal.cursor.load",
+///     error = %e, error_type = "io", reason = "read_failed",
+///     message = "replaying from start, duplicates may occur",
+/// );
+/// otel_warn!("quiver.budget.backpressure", policy = "backpressure");
 /// ```
 macro_rules! otel_warn {
     ($name:expr, $($fields:tt)+) => {
@@ -107,11 +161,14 @@ macro_rules! otel_warn {
 ///
 /// # Arguments
 /// - First argument (required): The event name identifying the log event.
-/// - Additional optional key-value pairs and/or trailing message literal.
+/// - Additional optional key-value pairs and/or a `message = "..."` attribute.
 ///
 /// # Example
 /// ```ignore
-/// otel_error!("quiver.wal.corruption_detected", error = %e, "WAL corruption during replay");
+/// otel_error!("quiver.wal.replay",
+///     error = %e, error_type = "corruption", reason = "corruption",
+///     message = "stopping replay at corruption boundary",
+/// );
 /// ```
 macro_rules! otel_error {
     ($name:expr, $($fields:tt)+) => {
@@ -126,12 +183,12 @@ macro_rules! otel_error {
 ///
 /// # Arguments
 /// - First argument (required): The event name identifying the log event.
-/// - Additional optional key-value pairs and/or trailing message literal.
+/// - Additional optional key-value pairs and/or a `message = "..."` attribute.
 ///
 /// # Example
 /// ```ignore
-/// otel_debug!("quiver.wal.replay_started", cursor_position = 0);
-/// otel_debug!("quiver.segment.scan_entry", path = %path.display());
+/// otel_debug!("quiver.wal.replay", status = "stopped_incomplete");
+/// otel_debug!("quiver.segment.flush", segment = 7, bytes_written = 4096);
 /// ```
 macro_rules! otel_debug {
     ($name:expr, $($fields:tt)+) => {

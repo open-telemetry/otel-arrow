@@ -659,7 +659,8 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
                         "quiver.subscriber.progress.scan",
                         file = %name,
                         error = %e,
-                        "ignoring progress file with invalid subscriber ID"
+                        error_type = "decode",
+                        message = "ignoring progress file with invalid subscriber ID"
                     );
                 }
             }

@@ -242,7 +242,7 @@ impl QuiverEngine {
                 segment_size,
                 min_budget,
                 reason = "budget_too_small",
-                "disk budget must be at least 2x segment size to prevent deadlock"
+                message = "disk budget must be at least 2x segment size to prevent deadlock",
             );
             return Err(QuiverError::invalid_config(format!(
                 "disk budget ({} bytes) must be at least 2x segment size ({} bytes = {} bytes) \
@@ -261,8 +261,8 @@ impl QuiverEngine {
                 "quiver.engine.init",
                 path = %segment_dir.display(),
                 error = %e,
+                error_type = "io",
                 reason = "dir_create_failed",
-                "failed to create segment directory"
             );
             SegmentError::io(segment_dir.clone(), e)
         })?;
@@ -272,8 +272,8 @@ impl QuiverEngine {
             otel_error!(
                 "quiver.engine.init",
                 error = %e,
+                error_type = "io",
                 reason = "wal_init_failed",
-                "failed to initialize WAL writer"
             );
             e
         })?;
@@ -305,7 +305,7 @@ impl QuiverEngine {
                         "quiver.segment.scan",
                         segment_count = scan_result.found.len(),
                         next_segment_seq,
-                        "recovered existing segments from previous run"
+                        message = "recovered segments from previous run",
                     );
                 }
                 if !scan_result.deleted.is_empty() {
@@ -313,7 +313,6 @@ impl QuiverEngine {
                         "quiver.segment.scan",
                         deleted_count = scan_result.deleted.len(),
                         next_segment_seq,
-                        "deleted expired segments during startup scan"
                     );
                 }
                 deleted_during_scan = scan_result.deleted;
@@ -322,7 +321,8 @@ impl QuiverEngine {
                 otel_error!(
                     "quiver.segment.scan",
                     error = %e,
-                    "failed to scan existing segments during startup; continuing with empty store — previously finalized data may be inaccessible"
+                    error_type = "io",
+                    message = "continuing with empty store, previously finalized data may be inaccessible",
                 );
             }
         }
@@ -334,8 +334,8 @@ impl QuiverEngine {
                 otel_error!(
                     "quiver.engine.init",
                     error = %e,
+                    error_type = "io",
                     reason = "registry_open_failed",
-                    "failed to open subscriber registry"
                 );
                 SegmentError::io(config.data_dir.clone(), std::io::Error::other(e))
             })?;
@@ -410,7 +410,6 @@ impl QuiverEngine {
             otel_info!(
                 "quiver.wal.replay",
                 replayed,
-                "replayed WAL entries during startup"
             );
         }
 
@@ -630,8 +629,9 @@ impl QuiverEngine {
                     otel_warn!(
                         "quiver.wal.cursor.load",
                         error = %e,
+                        error_type = "decode",
                         reason = "decode_failed",
-                        "failed to decode cursor sidecar, replaying from beginning - duplicates may occur"
+                        message = "replaying from start, duplicates may occur",
                     );
                     cursor_may_cause_duplicates = true;
                     0
@@ -642,8 +642,9 @@ impl QuiverEngine {
                 otel_warn!(
                     "quiver.wal.cursor.load",
                     error = %e,
+                    error_type = "io",
                     reason = "read_failed",
-                    "failed to read cursor sidecar, replaying from beginning - duplicates may occur"
+                    message = "replaying from start, duplicates may occur",
                 );
                 cursor_may_cause_duplicates = true;
                 0
@@ -658,7 +659,7 @@ impl QuiverEngine {
                 otel_debug!(
                     "quiver.wal.replay",
                     error = %e,
-                    "no WAL files found for replay, starting fresh"
+                    error_type = "io",
                 );
                 return Ok(0);
             }
@@ -672,7 +673,7 @@ impl QuiverEngine {
                 cursor_position,
                 wal_end,
                 reason = "clamped",
-                "cursor sidecar position exceeds WAL bounds, clamping to WAL end"
+                message = "cursor position beyond WAL bounds, clamped to end",
             );
             wal_end
         } else {
@@ -685,7 +686,7 @@ impl QuiverEngine {
                 "quiver.wal.cursor.load",
                 cursor_position,
                 reason = "invalid",
-                "cursor sidecar was invalid, replaying from beginning - duplicates may have been written to segments"
+                message = "replaying from start with invalid cursor, duplicates possible",
             );
         }
 
@@ -697,8 +698,9 @@ impl QuiverEngine {
                 otel_warn!(
                     "quiver.wal.replay",
                     error = %e,
+                    error_type = "io",
                     cursor_position,
-                    "failed to create WAL iterator, starting fresh"
+                    message = "starting fresh",
                 );
                 return Ok(0);
             }
@@ -731,7 +733,7 @@ impl QuiverEngine {
                         context,
                         replayed_so_far = replayed_count,
                         status = "stopped_incomplete",
-                        "WAL replay stopped at incomplete entry (expected after crash)"
+                        message = "stopped at incomplete entry, expected after crash",
                     );
                     break;
                 }
@@ -744,9 +746,10 @@ impl QuiverEngine {
                     otel_error!(
                         "quiver.wal.replay",
                         error = %e,
+                        error_type = "corruption",
                         replayed_so_far = replayed_count,
                         reason = "corruption",
-                        "WAL corruption detected during replay, stopping replay"
+                        message = "stopping replay at corruption boundary",
                     );
                     break;
                 }
@@ -789,7 +792,6 @@ impl QuiverEngine {
                         sequence = entry.sequence,
                         slot_count = entry.slots.len(),
                         scope = "entry",
-                        "failed to decode WAL entry for replay, skipping"
                     );
                     // Still update cursor past this entry so we don't retry it
                     let cursor = WalConsumerCursor::after(&entry);
@@ -811,8 +813,8 @@ impl QuiverEngine {
                 otel_error!(
                     "quiver.wal.replay",
                     error = %e,
+                    error_type = "io",
                     sequence = entry.sequence,
-                    "failed to replay WAL entry to segment"
                 );
                 // For critical errors like disk full, we should stop replay
                 // to avoid silent data loss. The next restart will retry.
@@ -846,7 +848,6 @@ impl QuiverEngine {
                 replayed_count,
                 stopped_at_corruption,
                 cursor_position,
-                "WAL replay completed"
             );
         }
 
@@ -878,7 +879,7 @@ impl QuiverEngine {
                 // and free WAL space, then retry the append.
                 otel_warn!(
                     "quiver.wal.backpressure",
-                    "WAL at capacity, finalizing segment to free space before retry"
+                    message = "finalizing segment to free space before retry",
                 );
                 self.finalize_current_segment().await?;
 
@@ -928,13 +929,15 @@ impl QuiverEngine {
                 otel_warn!(
                     "quiver.engine.stop",
                     error = %e,
-                    "failed to finalize open segment during shutdown — data should be recoverable via WAL replay"
+                    error_type = "io",
+                    message = "data recoverable via WAL replay",
                 );
             } else {
                 otel_error!(
                     "quiver.engine.stop",
                     error = %e,
-                    "failed to finalize open segment during shutdown — data in open segment will be lost (WAL is disabled)"
+                    error_type = "io",
+                    message = "data in open segment will be lost, WAL is disabled",
                 );
             }
         }
@@ -943,7 +946,6 @@ impl QuiverEngine {
             cumulative_segment_bytes = self.cumulative_segment_bytes.load(Ordering::Relaxed),
             force_dropped_segments = self.force_dropped_segments.load(Ordering::Relaxed),
             force_dropped_bundles = self.force_dropped_bundles.load(Ordering::Relaxed),
-            "engine shutdown complete"
         );
         result
     }
@@ -994,7 +996,8 @@ impl QuiverEngine {
                     segment = seq.raw(),
                     path = %segment_path.display(),
                     error = %e,
-                    "segment write failed — data in open segment may only be recoverable via WAL replay"
+                    error_type = "io",
+                    message = "data may only be recoverable via WAL replay",
                 );
                 e
             })?;
@@ -1003,7 +1006,6 @@ impl QuiverEngine {
             "quiver.segment.flush",
             segment = seq.raw(),
             bytes_written,
-            "segment finalized and written to disk"
         );
 
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
@@ -1022,7 +1024,8 @@ impl QuiverEngine {
                     "quiver.segment.flush",
                     segment = seq.raw(),
                     error = %e,
-                    "WAL cursor persist failed after segment write — WAL replay may produce duplicates on restart"
+                    error_type = "io",
+                    message = "WAL replay may produce duplicates on restart",
                 );
                 e
             })?;

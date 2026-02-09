@@ -397,7 +397,6 @@ impl DiskBudget {
                             cap = self.cap,
                             used = current,
                             policy = "backpressure",
-                            "disk budget exceeded, applying backpressure"
                         );
                         return Err(QuiverError::StorageAtCapacity {
                             requested: bytes,
@@ -422,7 +421,7 @@ impl DiskBudget {
                                 cap = self.cap,
                                 used = current,
                                 policy = "drop_oldest",
-                                "disk budget exceeded and reclaim failed, applying backpressure"
+                                message = "reclaim failed, falling back to backpressure",
                             );
                             return Err(QuiverError::StorageAtCapacity {
                                 requested: bytes,

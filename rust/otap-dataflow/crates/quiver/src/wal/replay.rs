@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use arrow_array::RecordBatch;
 use arrow_ipc::reader::StreamReader;
 
-use crate::logging::otel_debug;
+use crate::logging::{ otel_debug, otel_error };
 use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
@@ -65,13 +65,12 @@ impl ReplayBundle {
             let batch = match decode_slot_payload(wal_slot) {
                 Some(b) => b,
                 None => {
-                    otel_debug!(
+                    otel_error!(
                         "quiver.wal.entry.decode",
                         slot_id = wal_slot.slot_id.raw(),
                         sequence = entry.sequence,
                         payload_len = wal_slot.payload_len,
                         scope = "slot",
-                        "failed to decode WAL slot payload"
                     );
                     return None;
                 }
@@ -97,7 +96,7 @@ impl ReplayBundle {
                 sequence = entry.sequence,
                 timestamp_nanos = entry.ingestion_ts_nanos,
                 scope = "timestamp",
-                "WAL entry has negative timestamp, clamping to epoch"
+                message = "negative timestamp clamped to epoch",
             );
             UNIX_EPOCH
         };

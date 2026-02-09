@@ -166,7 +166,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                             "quiver.subscriber.progress.load",
                             subscriber_id = %sub_id,
                             error = %e,
-                            "failed to load progress file — subscriber will start fresh with potential data re-delivery or gaps"
+                            error_type = "io",
+                            message = "subscriber will start fresh with potential re-delivery or gaps",
                         );
                     }
                 }
@@ -777,7 +778,8 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
                         "quiver.subscriber.progress.flush",
                         subscriber_id = %sub_id,
                         error = %e,
-                        "failed to flush subscriber progress, will retry"
+                        error_type = "io",
+                        message = "will retry",
                     );
                     // Keep the first error, continue with remaining subscribers
                     if first_error.is_none() {
