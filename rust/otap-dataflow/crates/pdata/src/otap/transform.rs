@@ -2216,11 +2216,7 @@ fn should_remove_transport_optimized_encoding(
     for i in 0..transform_ranges.len() {
         let curr_range = &transform_ranges[i];
 
-        let prev_ranges = if i > 0 {
-            &transform_ranges[0..i - 1]
-        } else {
-            &[]
-        };
+        let prev_ranges = if i > 0 { &transform_ranges[0..i] } else { &[] };
         let prev_neighbour =
             find_previous_neighbour_post_transform(curr_range.start(), prev_ranges);
 
@@ -6269,6 +6265,59 @@ mod test {
             !result,
             "Delete that doesn't join neighbours should return false"
         );
+    }
+
+    #[test]
+    fn test_should_remove_encoding_rename_doesnt_join_left_because_of_rename() {
+        // here we rename k3 to k2, which means that the row in the 3rd position has
+        // the same value as the row in the 2nd position, but we are also renaming
+        // the row in the 2nd position to k4, so there's no joining of segments of equivalent
+        // keys which means we shouldn't remove the encoding. This test helps ensure we dont
+        // have fence-post errors when considering neighbouring transform segments.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(consts::PARENT_ID, DataType::UInt16, false),
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![1u16, 2, 3])),
+                Arc::new(UInt8Array::from_iter_values(vec![
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(vec!["k1", "k2", "k3"])),
+                Arc::new(StringArray::from_iter_values(vec!["v1", "v1", "v1"])),
+            ],
+        )
+        .unwrap();
+
+        let transform_ranges = vec![
+            KeyTransformRange {
+                range: Range { start: 1, end: 2 },
+                idx: 0,
+                range_type: KeyTransformRangeType::Replace,
+            },
+            KeyTransformRange {
+                range: Range { start: 2, end: 3 },
+                idx: 1,
+                range_type: KeyTransformRangeType::Replace,
+            },
+        ];
+
+        let replacement_bytes = vec![b"k4".to_vec(), b"k2".to_vec()];
+
+        let result = should_remove_transport_optimized_encoding(
+            &batch,
+            &replacement_bytes,
+            &transform_ranges,
+        )
+        .unwrap();
+        assert!(!result, "Rename that joins left should return false");
     }
 
     #[test]
