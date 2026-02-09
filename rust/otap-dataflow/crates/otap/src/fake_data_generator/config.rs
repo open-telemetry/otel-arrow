@@ -10,7 +10,6 @@ use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
 use weaver_resolver::SchemaResolver;
-use weaver_semconv::registry::SemConvRegistry;
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Source of telemetry data schema and attributes
@@ -150,26 +149,19 @@ impl Config {
                 let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
                     .map_err(|err| err.to_string())?;
 
-                // Load the semantic convention specs
-                let semconv_specs =
-                    match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
-                        WResult::Ok(semconv_specs) => semconv_specs,
-                        WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
-                        WResult::FatalErr(err) => return Err(err.to_string()),
-                    };
+                // Load the semantic convention registry.
+                let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
+                    WResult::Ok(registry) => registry,
+                    WResult::OkWithNFEs(registry, _) => registry,
+                    WResult::FatalErr(err) => return Err(err.to_string()),
+                };
 
-                // Resolve the main registry
-                let mut registry =
-                    SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
-                        .map_err(|err| err.to_string())?;
                 // Resolve the semantic convention specifications.
-                let resolved_schema =
-                    match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true)
-                    {
-                        WResult::Ok(resolved_schema) => resolved_schema,
-                        WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                        WResult::FatalErr(err) => return Err(err.to_string()),
-                    };
+                let resolved_schema = match SchemaResolver::resolve(registry, true) {
+                    WResult::Ok(resolved_schema) => resolved_schema,
+                    WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                    WResult::FatalErr(err) => return Err(err.to_string()),
+                };
 
                 let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
                     &resolved_schema.registry,
