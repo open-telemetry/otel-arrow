@@ -26,7 +26,7 @@ minijinja = "1"
 reqwest = { version = "0.12", features = ["json"] }
 
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.21.2" }
 weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
