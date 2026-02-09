@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770645957076,
+  "lastUpdate": 1770647705663,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5794,6 +5794,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11607548.570189454,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "lalit_fin@yahoo.com",
+            "name": "Lalit Kumar Bhasin",
+            "username": "lalitb"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ac156091ee91d828561e21f9c4380e438c5e403f",
+          "message": "chore: bump rand from 0.9.2 to v0.10.0 (#2000)\n\n### Description:\n\n  Updates rand dependency from 0.9.2 to 0.10.0.\n\nThe main breaking change affecting this codebase is the trait rename\n`Rng` -> `RngExt` as indicated in [migration\nguide](https://rust-random.github.io/book/update-0.10.html):\n\n``\nUsers of rand will often need to import rand::RngExt may need to migrate\nfrom R: RngCore to R: Rng (noting that where R: Rng was previously used\nit may be preferable to keep R: Rng even though the direct replacement\nwould be R: RngExt; the two bounds are equivalent for R: Sized).\n``\n\nNote - this supersede #1997 which is failing for these breaking changes\nin newer version.",
+          "timestamp": "2026-02-09T12:48:08Z",
+          "tree_id": "4e183d0019d0d5d1ab6d4f4c0c41302c510b11ab",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ac156091ee91d828561e21f9c4380e438c5e403f"
+        },
+        "date": 1770647705077,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.0594661235809326,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 94.53870782490264,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 94.95722888234383,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 45.869140625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 48,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 511700.7633803555,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 522239.06682683004,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002068,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11398700.44180786,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11335633.104541667,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
