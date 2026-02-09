@@ -136,7 +136,6 @@ resource-validator-processor = ["experimental-processors"]
 flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
-rcgen.workspace = true
 tempfile.workspace = true
 url.workspace = true
 tokio-util.workspace = true
@@ -146,5 +145,6 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
+otap-test-tls-certs.workspace = true
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-state = { path = "../state" }

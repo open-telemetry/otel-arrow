@@ -8,101 +8,18 @@
 mod tests {
     use otap_df_config::tls::{TlsConfig, TlsServerConfig};
     use otap_df_otap::tls_utils::build_reloadable_server_config;
+    use otap_test_tls_certs::write_ca_and_leaf_to_dir;
     use rustls_pki_types::CertificateDer;
     use rustls_pki_types::pem::PemObject;
     use std::fs;
     use std::io::BufReader;
     use std::net::SocketAddr;
-    use std::process::Command;
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_rustls::TlsConnector;
-
-    fn generate_ca(dir: &std::path::Path, name: &str, cn: &str) {
-        let status = Command::new("openssl")
-            .args([
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", name),
-                "-out",
-                &format!("{}.crt", name),
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-                "-addext",
-                "keyUsage=critical,keyCertSign,cRLSign",
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to generate CA");
-        if !status.status.success() {
-            panic!("CA gen failed: {}", String::from_utf8_lossy(&status.stderr));
-        }
-    }
-
-    fn generate_server_cert(dir: &std::path::Path, name: &str, ca_name: &str, cn: &str) {
-        let status = Command::new("openssl")
-            .args([
-                "req",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                &format!("{}.key", name),
-                "-out",
-                &format!("{}.csr", name),
-                "-nodes",
-                "-subj",
-                &format!("/CN={}", cn),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to generate CSR");
-        if !status.status.success() {
-            panic!(
-                "CSR gen failed: {}",
-                String::from_utf8_lossy(&status.stderr)
-            );
-        }
-
-        let ext_file = dir.join(format!("{}.ext", name));
-        fs::write(&ext_file, "subjectAltName=DNS:localhost,IP:127.0.0.1")
-            .expect("Failed to write extension file");
-
-        let status = Command::new("openssl")
-            .args([
-                "x509",
-                "-req",
-                "-in",
-                &format!("{}.csr", name),
-                "-CA",
-                &format!("{}.crt", ca_name),
-                "-CAkey",
-                &format!("{}.key", ca_name),
-                "-CAcreateserial",
-                "-out",
-                &format!("{}.crt", name),
-                "-days",
-                "1",
-                "-extfile",
-                ext_file.to_str().expect("Invalid UTF-8 path"),
-            ])
-            .current_dir(dir)
-            .output()
-            .expect("Failed to sign cert");
-        if !status.status.success() {
-            panic!("Sign failed: {}", String::from_utf8_lossy(&status.stderr));
-        }
-    }
 
     async fn start_server(
         config: TlsServerConfig,
@@ -143,8 +60,15 @@ mod tests {
         let key_path = path.join("server.key");
 
         // 1. Generate CA1 and Server1
-        generate_ca(path, "ca1", "Test CA 1");
-        generate_server_cert(path, "server1", "ca1", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca1",
+            "Test CA 1",
+            "server1",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
 
         // 2. Start Server with Server1
         fs::copy(path.join("server1.crt"), &cert_path).expect("copy cert failed");
@@ -196,8 +120,15 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(3)).await; // Wait for reload interval
 
         // Generate CA2 and Server2 now to ensure mtime is different
-        generate_ca(path, "ca2", "Test CA 2");
-        generate_server_cert(path, "server2", "ca2", "localhost");
+        let _ = write_ca_and_leaf_to_dir(
+            path,
+            "ca2",
+            "Test CA 2",
+            "server2",
+            "localhost",
+            Some("localhost"),
+            None,
+        );
 
         fs::copy(path.join("server2.crt"), &cert_path).expect("copy cert failed");
         fs::copy(path.join("server2.key"), &key_path).expect("copy key failed");
