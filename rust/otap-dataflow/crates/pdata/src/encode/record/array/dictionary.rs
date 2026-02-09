@@ -154,7 +154,7 @@ pub struct DictionaryOptions {
 impl DictionaryOptions {
     /// Create a options that configure the dictionary to start off using u8 keys, but allow
     /// upgrade to u16 keys if the dictionary overflows
-    pub fn dict8() -> Self {
+    pub const fn dict8() -> Self {
         Self {
             max_cardinality: u16::MAX,
             min_cardinality: 0,
@@ -162,7 +162,7 @@ impl DictionaryOptions {
     }
 
     /// Create options that configure the dictionary to start off using u16 keys
-    pub fn dict16() -> Self {
+    pub const fn dict16() -> Self {
         Self {
             max_cardinality: u16::MAX,
             min_cardinality: u16::MAX,

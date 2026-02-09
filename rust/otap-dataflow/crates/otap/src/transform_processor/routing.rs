@@ -16,7 +16,7 @@ pub(super) struct RouterImpl {
 }
 
 impl RouterImpl {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { routed: Vec::new() }
     }
 }

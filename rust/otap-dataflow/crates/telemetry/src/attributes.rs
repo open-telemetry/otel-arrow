@@ -156,7 +156,7 @@ pub enum AttributeValue {
 impl AttributeValue {
     /// Returns the value type of this attribute value.
     #[must_use]
-    pub fn value_type(&self) -> AttributeValueType {
+    pub const fn value_type(&self) -> AttributeValueType {
         match self {
             AttributeValue::String(_) => AttributeValueType::String,
             AttributeValue::Int(_) => AttributeValueType::Int,

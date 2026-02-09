@@ -61,7 +61,7 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String,
     }
 }
 
-fn kind_suffix(expected_kind: NodeKind) -> &'static str {
+const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
     match expected_kind {
         NodeKind::Receiver => "receiver",
         NodeKind::Processor | NodeKind::ProcessorChain => "processor",

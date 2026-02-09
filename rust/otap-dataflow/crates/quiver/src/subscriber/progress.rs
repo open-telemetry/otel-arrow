@@ -102,7 +102,7 @@ struct ProgressHeader {
 
 impl ProgressHeader {
     /// Creates a new header with the given values.
-    fn new(oldest_incomplete_seg: SegmentSeq, entry_count: u32) -> Self {
+    const fn new(oldest_incomplete_seg: SegmentSeq, entry_count: u32) -> Self {
         Self {
             version: PROGRESS_VERSION,
             header_size: HEADER_V1_SIZE as u16,
@@ -250,7 +250,7 @@ impl SegmentProgressEntry {
 
     /// Creates an entry from an existing bitmap.
     #[must_use]
-    pub fn from_bitmap(seg_seq: SegmentSeq, bundle_count: u32, bitmap: Vec<u64>) -> Self {
+    pub const fn from_bitmap(seg_seq: SegmentSeq, bundle_count: u32, bitmap: Vec<u64>) -> Self {
         Self {
             seg_seq,
             bundle_count,
@@ -408,7 +408,7 @@ pub struct SubscriberProgress {
 impl SubscriberProgress {
     /// Creates a new empty progress state.
     #[must_use]
-    pub fn new(subscriber_id: SubscriberId) -> Self {
+    pub const fn new(subscriber_id: SubscriberId) -> Self {
         Self {
             subscriber_id,
             oldest_incomplete_seg: SegmentSeq::new(0),
@@ -418,7 +418,7 @@ impl SubscriberProgress {
 
     /// Creates progress with the given state.
     #[must_use]
-    pub fn with_entries(
+    pub const fn with_entries(
         subscriber_id: SubscriberId,
         oldest_incomplete_seg: SegmentSeq,
         entries: Vec<SegmentProgressEntry>,

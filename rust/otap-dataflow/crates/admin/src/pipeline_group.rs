@@ -69,7 +69,7 @@ struct ShutdownParams {
     timeout_secs: u64,
 }
 
-fn default_timeout_secs() -> u64 {
+const fn default_timeout_secs() -> u64 {
     60
 }
 

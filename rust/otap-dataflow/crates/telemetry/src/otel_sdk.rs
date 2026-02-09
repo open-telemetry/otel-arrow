@@ -84,7 +84,7 @@ impl OpentelemetryClient {
 
     /// Get a reference to the meter provider.
     #[must_use]
-    pub fn meter_provider(&self) -> &SdkMeterProvider {
+    pub const fn meter_provider(&self) -> &SdkMeterProvider {
         &self.meter_provider
     }
 

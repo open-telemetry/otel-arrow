@@ -20,7 +20,7 @@ pub struct ObservedEventReporter {
 impl ObservedEventReporter {
     /// Creates a new `ObservedEventReporter` with the given sender channel.
     #[must_use]
-    pub fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
+    pub const fn new(policy: SendPolicy, sender: flume::Sender<ObservedEvent>) -> Self {
         Self { policy, sender }
     }
 

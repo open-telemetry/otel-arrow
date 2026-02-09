@@ -26,7 +26,7 @@ pub struct MetricsDispatcher {
 impl MetricsDispatcher {
     /// Create a new metrics dispatcher
     #[must_use]
-    pub fn new(
+    pub const fn new(
         metrics_handler: TelemetryRegistryHandle,
         reporting_interval: std::time::Duration,
     ) -> Self {

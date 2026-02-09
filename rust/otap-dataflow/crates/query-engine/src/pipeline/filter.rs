@@ -635,7 +635,7 @@ pub struct AttributesFilterPlan {
 }
 
 impl AttributesFilterPlan {
-    fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
+    const fn new(filter: Expr, attrs_identifier: AttributesIdentifier) -> Self {
         Self {
             filter,
             attrs_identifier,
@@ -1511,7 +1511,7 @@ pub struct FilterPipelineStage {
 }
 
 impl FilterPipelineStage {
-    pub fn new(filter_exec: Composite<FilterExec>) -> Self {
+    pub const fn new(filter_exec: Composite<FilterExec>) -> Self {
         Self { filter_exec }
     }
 }

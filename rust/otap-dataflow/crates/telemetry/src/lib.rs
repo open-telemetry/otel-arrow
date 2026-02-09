@@ -302,7 +302,7 @@ impl InternalTelemetrySystem {
 
     /// Returns the configured log level.
     #[must_use]
-    pub fn log_level(&self) -> LogLevel {
+    pub const fn log_level(&self) -> LogLevel {
         self.log_level
     }
 

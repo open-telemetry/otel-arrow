@@ -98,7 +98,7 @@ fn engine_context() -> LogContext {
 
 impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Creates a new controller with the given pipeline factory.
-    pub fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
+    pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
     }
 

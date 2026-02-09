@@ -65,7 +65,7 @@ impl OpenSegment {
 
     /// Returns the number of bundles accumulated so far.
     #[must_use]
-    pub fn bundle_count(&self) -> usize {
+    pub const fn bundle_count(&self) -> usize {
         self.manifest.len()
     }
 
@@ -77,13 +77,13 @@ impl OpenSegment {
 
     /// Returns true if no bundles have been appended.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.manifest.is_empty()
     }
 
     /// Returns true if finalize() has been called.
     #[must_use]
-    pub fn is_finalized(&self) -> bool {
+    pub const fn is_finalized(&self) -> bool {
         self.finalized
     }
 
@@ -91,7 +91,7 @@ impl OpenSegment {
     ///
     /// This is used for time-based finalization decisions.
     #[must_use]
-    pub fn opened_at(&self) -> Option<Instant> {
+    pub const fn opened_at(&self) -> Option<Instant> {
         self.opened_at
     }
 
