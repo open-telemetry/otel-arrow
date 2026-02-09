@@ -4,17 +4,27 @@
 //! Disk budget management for enforcing storage caps.
 //!
 //! The [`DiskBudget`] provides a thread-safe mechanism for tracking and limiting
-//! disk usage within a single Quiver engine (WAL, segments, progress files).
+//! disk usage within a single Quiver engine, with **separate accounting** for
+//! WAL bytes and segment bytes under a shared cap.
 //!
-//! # Hard Cap Enforcement
+//! # Split WAL / Segment Accounting
 //!
-//! The budget uses atomic operations to guarantee that concurrent writers
-//! cannot collectively exceed the configured cap. Each write must reserve
-//! space before proceeding:
+//! Two atomic counters (`wal_used`, `segment_used`) track each pool independently.
+//! Segment reservations check the combined total against the cap:
+//!
+//! ```text
+//! wal_used + segment_used + new_bytes <= cap
+//! ```
+//!
+//! This eliminates the transient double-charge that previously occurred during
+//! segment finalization, when both the WAL entries and the newly-written
+//! segment file existed simultaneously on disk.
+//!
+//! # Reservation Pattern
 //!
 //! ```ignore
-//! let pending = budget.try_reserve(estimated_bytes)?;
-//! let actual = write_file(...)?;
+//! let pending = budget.try_reserve_segment(estimated_bytes)?;
+//! let actual = write_segment_file(...)?;
 //! pending.commit(actual);
 //! ```
 //!
@@ -53,13 +63,11 @@ use crate::logging::otel_warn;
 /// Error returned when budget configuration is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BudgetConfigError {
-    /// The cap is too small for the required reserved headroom.
+    /// The cap is too small to hold at least one segment plus the WAL.
     CapTooSmall {
         /// The requested cap.
         cap: u64,
-        /// The calculated reserved headroom.
-        reserved_headroom: u64,
-        /// The minimum cap required.
+        /// The minimum cap required (`wal_max_size + segment_size`).
         min_cap: u64,
         /// The segment size used in the calculation.
         segment_size_bytes: u64,
@@ -73,21 +81,19 @@ impl std::fmt::Display for BudgetConfigError {
         match self {
             BudgetConfigError::CapTooSmall {
                 cap,
-                reserved_headroom,
                 min_cap,
                 segment_size_bytes,
                 wal_max_size_bytes,
             } => {
                 let cap_mb = cap / (1024 * 1024);
-                let reserved_mb = reserved_headroom / (1024 * 1024);
                 let min_mb = min_cap / (1024 * 1024);
                 let seg_mb = segment_size_bytes / (1024 * 1024);
                 let wal_mb = wal_max_size_bytes / (1024 * 1024);
                 write!(
                     f,
                     "Budget cap {} MB is too small. With segment_size={} MB and WAL max={} MB, \
-                     reserved headroom is {} MB. Minimum cap required: {} MB",
-                    cap_mb, seg_mb, wal_mb, reserved_mb, min_mb
+                     minimum cap required: {} MB",
+                    cap_mb, seg_mb, wal_mb, min_mb
                 )
             }
         }
@@ -119,21 +125,26 @@ pub type CleanupCallback = Box<dyn Fn() -> usize + Send + Sync>;
 /// with a static quota (global cap / number of engines). This avoids any
 /// cross-engine coordination overhead. See the module docs for details.
 ///
-/// # Headroom Reservation
+/// # Split WAL/Segment Accounting
 ///
-/// The budget supports a "reserved headroom" which is space held back for
-/// internal operations like WAL rotation and segment finalization. When
-/// checking if there's enough headroom for a new write, the reserved portion
-/// is subtracted from the available space. This prevents deadlocks where
-/// ingestion fills the budget completely, leaving no room for cleanup operations.
+/// The budget tracks WAL bytes and segment bytes in **separate** atomic
+/// counters under a shared cap. This eliminates the transient double-charge
+/// that previously occurred during segment finalization, when both the WAL
+/// entries and the newly-written segment file existed simultaneously.
+///
+/// - **WAL pool** (`wal_used`): grown by `record_wal_bytes`, shrunk by
+///   `release_wal_bytes` after WAL purge.
+/// - **Segment pool** (`segment_used`): grown by `try_reserve_segment` /
+///   `record_existing_segment`, shrunk by `release_segment` on deletion.
+///
+/// Reservation checks use the combined total: `wal_used + segment_used + N <= cap`.
 pub struct DiskBudget {
-    /// Maximum allowed bytes.
+    /// Maximum allowed bytes (shared across WAL + segments).
     cap: u64,
-    /// Current bytes in use.
-    used: AtomicU64,
-    /// Reserved headroom for internal operations (WAL rotation, segment finalization).
-    /// This is subtracted from the available headroom in `has_ingest_headroom()`.
-    reserved_headroom: u64,
+    /// Current WAL bytes in use (appended entries, rotated files).
+    wal_used: AtomicU64,
+    /// Current segment bytes in use (finalized segment files).
+    segment_used: AtomicU64,
     /// Policy when cap is exceeded.
     policy: RetentionPolicy,
     /// Callback for reclaiming space (used with `DropOldest`).
@@ -148,8 +159,8 @@ impl std::fmt::Debug for DiskBudget {
         // function pointers / closures don't implement Debug
         f.debug_struct("DiskBudget")
             .field("cap", &self.cap)
-            .field("used", &self.used.load(Ordering::Relaxed))
-            .field("reserved_headroom", &self.reserved_headroom)
+            .field("wal_used", &self.wal_used.load(Ordering::Relaxed))
+            .field("segment_used", &self.segment_used.load(Ordering::Relaxed))
             .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
@@ -166,35 +177,8 @@ impl DiskBudget {
     pub fn new(cap: u64, policy: RetentionPolicy) -> Self {
         Self {
             cap,
-            used: AtomicU64::new(0),
-            reserved_headroom: 0,
-            policy,
-            reclaim_callback: Mutex::new(None),
-            cleanup_callback: Mutex::new(None),
-        }
-    }
-
-    /// Creates a new disk budget with reserved headroom.
-    ///
-    /// The `reserved_headroom` is space held back for internal operations like
-    /// WAL rotation and segment finalization. Ingestion will be backpressured
-    /// when available headroom drops below this threshold.
-    ///
-    /// # Arguments
-    ///
-    /// * `cap` - Maximum bytes allowed.
-    /// * `policy` - What to do when the cap is exceeded.
-    /// * `reserved_headroom` - Bytes to reserve for internal operations.
-    #[must_use]
-    pub fn with_reserved_headroom(
-        cap: u64,
-        policy: RetentionPolicy,
-        reserved_headroom: u64,
-    ) -> Self {
-        Self {
-            cap,
-            used: AtomicU64::new(0),
-            reserved_headroom,
+            wal_used: AtomicU64::new(0),
+            segment_used: AtomicU64::new(0),
             policy,
             reclaim_callback: Mutex::new(None),
             cleanup_callback: Mutex::new(None),
@@ -209,113 +193,55 @@ impl DiskBudget {
         Self::new(u64::MAX, RetentionPolicy::Backpressure)
     }
 
-    /// Creates a disk budget for a single engine with automatically calculated headroom.
-    ///
-    /// This is the recommended way to create a budget for production use. It calculates
-    /// the appropriate reserved headroom based on segment and WAL sizes to ensure the
-    /// engine can always complete segment finalization without exceeding the cap.
-    ///
-    /// # Phase 1: Static Quotas
-    ///
-    /// When running multiple engines (e.g., one per CPU core), divide the global cap
-    /// by the number of engines and call this for each:
-    ///
-    /// ```ignore
-    /// let per_engine_cap = global_cap / num_engines;
-    /// let budget = DiskBudget::for_engine(per_engine_cap, policy, segment_size, wal_max_size)?;
-    /// ```
-    ///
-    /// # Headroom Calculation
-    ///
-    /// Reserved headroom = `segment_size + (wal_max_size / 4)`:
-    /// - **segment_size**: Covers the transient overlap during finalization when both
-    ///   the WAL entries AND the new segment file exist before the WAL is purged.
-    /// - **wal_max_size / 4**: Buffer for bundles arriving during finalization and
-    ///   early accumulation for the next segment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the cap is too small for the reserved headroom plus at
-    /// least one segment's worth of working space.
-    pub fn for_engine(
-        cap: u64,
-        policy: RetentionPolicy,
-        segment_size_bytes: u64,
-        wal_max_size_bytes: u64,
-    ) -> std::result::Result<Self, BudgetConfigError> {
-        let reserved_headroom = Self::calculate_headroom(segment_size_bytes, wal_max_size_bytes);
-        let min_cap = reserved_headroom + segment_size_bytes;
-
-        if cap < min_cap {
-            return Err(BudgetConfigError::CapTooSmall {
-                cap,
-                reserved_headroom,
-                min_cap,
-                segment_size_bytes,
-                wal_max_size_bytes,
-            });
-        }
-
-        Ok(Self::with_reserved_headroom(cap, policy, reserved_headroom))
-    }
-
-    /// Calculates the recommended reserved headroom for given segment and WAL sizes.
-    ///
-    /// Formula: `segment_size + (wal_max_size / 4)`
-    ///
-    /// See [`for_engine`](Self::for_engine) for rationale.
-    #[must_use]
-    pub const fn calculate_headroom(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
-        segment_size_bytes + (wal_max_size_bytes / 4)
-    }
-
-    /// Returns the minimum cap required for given segment and WAL sizes.
-    ///
-    /// This is `reserved_headroom + segment_size` (need room for at least one segment).
-    #[must_use]
-    pub const fn minimum_cap(segment_size_bytes: u64, wal_max_size_bytes: u64) -> u64 {
-        let reserved = Self::calculate_headroom(segment_size_bytes, wal_max_size_bytes);
-        reserved + segment_size_bytes
-    }
-
     /// Returns the configured cap.
     #[must_use]
     pub const fn cap(&self) -> u64 {
         self.cap
     }
 
-    /// Returns the current bytes in use.
+    /// Returns the total bytes in use (WAL + segments).
     #[must_use]
     pub fn used(&self) -> u64 {
-        self.used.load(Ordering::Relaxed)
+        self.wal_used
+            .load(Ordering::Relaxed)
+            .saturating_add(self.segment_used.load(Ordering::Relaxed))
+    }
+
+    /// Returns the current WAL bytes in use.
+    #[must_use]
+    pub fn wal_used(&self) -> u64 {
+        self.wal_used.load(Ordering::Relaxed)
+    }
+
+    /// Returns the current segment bytes in use.
+    #[must_use]
+    pub fn segment_used(&self) -> u64 {
+        self.segment_used.load(Ordering::Relaxed)
     }
 
     /// Returns the remaining headroom before the cap.
     #[must_use]
     pub fn headroom(&self) -> u64 {
-        self.cap.saturating_sub(self.used.load(Ordering::Relaxed))
-    }
-
-    /// Returns the reserved headroom for internal operations.
-    #[must_use]
-    pub const fn reserved_headroom(&self) -> u64 {
-        self.reserved_headroom
+        self.cap.saturating_sub(self.used())
     }
 
     /// Checks if there is sufficient headroom for ingestion.
     ///
-    /// Returns `true` if the available headroom (after accounting for reserved
-    /// headroom) is at least `bytes`. This is used to apply backpressure at
-    /// the ingestion boundary, leaving room for internal operations like WAL
-    /// rotation and segment finalization.
+    /// Returns `true` if the available headroom (cap minus total WAL + segment
+    /// usage) is at least `bytes`. This is used to apply backpressure at the
+    /// ingestion boundary.
+    ///
+    /// Because WAL and segment bytes are tracked separately, the WAL's share
+    /// of the cap is treated as unavoidable overhead. Ingestion is gated on
+    /// the _total_ remaining space, so the engine naturally stops accepting
+    /// data when the combined usage approaches the cap.
     ///
     /// This is a "soft" check - it does not reserve space. Use this to decide
-    /// whether to accept new data, then use `try_reserve` for the actual
+    /// whether to accept new data, then use `try_reserve_segment` for the actual
     /// reservation.
     #[must_use]
     pub fn has_ingest_headroom(&self, bytes: u64) -> bool {
-        let available = self.headroom().saturating_sub(self.reserved_headroom);
-        available >= bytes
+        self.headroom() >= bytes
     }
 
     /// Returns the configured retention policy.
@@ -349,11 +275,18 @@ impl DiskBudget {
         *self.cleanup_callback.lock() = Some(Box::new(callback));
     }
 
-    /// Attempts to reserve bytes for a pending write.
+    // ── Segment pool ─────────────────────────────────────────────────────
+
+    /// Attempts to reserve segment bytes for a pending write.
     ///
     /// Returns a [`PendingWrite`] guard that holds the reservation. The guard
     /// must be committed with the actual bytes written, or it will release
     /// the reservation on drop (for error handling).
+    ///
+    /// The reservation checks the **combined** WAL + segment usage against the
+    /// cap, treating WAL bytes as unavoidable overhead. This means that during
+    /// segment finalization the WAL bytes being converted to a segment are
+    /// naturally accounted for — no special "during replay" flag is needed.
     ///
     /// # Errors
     ///
@@ -362,7 +295,7 @@ impl DiskBudget {
     ///
     /// With `DropOldest` policy, this will invoke the reclaim callback to
     /// attempt to free space before failing.
-    pub fn try_reserve(self: &Arc<Self>, bytes: u64) -> Result<PendingWrite> {
+    pub fn try_reserve_segment(self: &Arc<Self>, bytes: u64) -> Result<PendingWrite> {
         // Fast path: if bytes is 0, no reservation needed
         if bytes == 0 {
             return Ok(PendingWrite {
@@ -372,12 +305,13 @@ impl DiskBudget {
             });
         }
 
-        // Try to atomically reserve the space
+        // Try to atomically reserve the space in the segment pool
         loop {
-            let current = self.used.load(Ordering::Acquire);
-            let new_used = current.saturating_add(bytes);
+            let wal = self.wal_used.load(Ordering::Acquire);
+            let current_seg = self.segment_used.load(Ordering::Acquire);
+            let new_seg = current_seg.saturating_add(bytes);
 
-            if new_used > self.cap {
+            if wal.saturating_add(new_seg) > self.cap {
                 // Would exceed cap - handle based on policy
                 match self.policy {
                     RetentionPolicy::Backpressure => {
@@ -400,13 +334,13 @@ impl DiskBudget {
                         );
                         return Err(QuiverError::StorageAtCapacity {
                             requested: bytes,
-                            available: self.cap.saturating_sub(current),
+                            available: self.cap.saturating_sub(wal.saturating_add(current_seg)),
                             cap: self.cap,
                         });
                     }
                     RetentionPolicy::DropOldest => {
                         // Try to reclaim space
-                        let needed = new_used - self.cap;
+                        let needed = wal.saturating_add(new_seg).saturating_sub(self.cap);
                         if let Some(callback) = self.reclaim_callback.lock().as_ref() {
                             let freed = callback(needed);
                             if freed > 0 {
@@ -425,14 +359,18 @@ impl DiskBudget {
                             );
                             return Err(QuiverError::StorageAtCapacity {
                                 requested: bytes,
-                                available: self.cap.saturating_sub(current),
+                                available: self
+                                    .cap
+                                    .saturating_sub(wal.saturating_add(current_seg)),
                                 cap: self.cap,
                             });
                         } else {
                             // No callback registered, fall back to backpressure
                             return Err(QuiverError::StorageAtCapacity {
                                 requested: bytes,
-                                available: self.cap.saturating_sub(current),
+                                available: self
+                                    .cap
+                                    .saturating_sub(wal.saturating_add(current_seg)),
                                 cap: self.cap,
                             });
                         }
@@ -440,10 +378,10 @@ impl DiskBudget {
                 }
             }
 
-            // Try to claim the space atomically
-            match self.used.compare_exchange_weak(
-                current,
-                new_used,
+            // Try to claim the space atomically in the segment pool
+            match self.segment_used.compare_exchange_weak(
+                current_seg,
+                new_seg,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
@@ -455,38 +393,56 @@ impl DiskBudget {
                     });
                 }
                 Err(_) => {
-                    // CAS failed, retry
+                    // CAS failed, retry (will re-read both wal_used and segment_used)
                     continue;
                 }
             }
         }
     }
 
-    /// Records existing usage without going through reservation.
+    /// Records existing segment bytes without going through reservation.
     ///
-    /// Called during startup to account for files from previous runs.
-    /// This can exceed the cap (to accurately reflect reality).
-    pub fn record_existing(&self, bytes: u64) {
-        let _ = self.used.fetch_add(bytes, Ordering::Release);
+    /// Called during startup to account for segment files from previous runs.
+    /// This can exceed the cap (to accurately reflect reality on disk).
+    pub fn record_existing_segment(&self, bytes: u64) {
+        let _ = self.segment_used.fetch_add(bytes, Ordering::Release);
     }
 
-    /// Releases bytes when files are deleted.
-    ///
-    /// Called when WAL files are purged or segments are deleted.
-    pub fn release(&self, bytes: u64) {
-        // Saturating sub to avoid underflow if accounting is slightly off
+    /// Releases segment bytes when segment files are deleted.
+    pub fn release_segment(&self, bytes: u64) {
         let _ = self
-            .used
+            .segment_used
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+                Some(current.saturating_sub(bytes))
+            });
+    }
+
+    // ── WAL pool ─────────────────────────────────────────────────────────
+
+    /// Records WAL bytes (appended entries or files discovered at startup).
+    ///
+    /// WAL bytes are tracked separately from segments but still count against
+    /// the shared cap. This allows segment reservations to see the WAL as
+    /// unavoidable overhead without double-charging during finalization.
+    pub fn record_wal_bytes(&self, bytes: u64) {
+        let _ = self.wal_used.fetch_add(bytes, Ordering::Release);
+    }
+
+    /// Releases WAL bytes when rotated WAL files are purged.
+    pub fn release_wal_bytes(&self, bytes: u64) {
+        let _ = self
+            .wal_used
             .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
                 Some(current.saturating_sub(bytes))
             });
     }
 }
 
-/// Guard for a pending write reservation.
+/// Guard for a pending segment write reservation.
 ///
-/// Holds reserved bytes until the write completes. Must call [`commit`](Self::commit)
-/// with the actual bytes written, or the reservation is released on drop.
+/// Holds reserved bytes in the **segment pool** until the write completes.
+/// Must call [`commit`](Self::commit) with the actual bytes written, or the
+/// reservation is released on drop.
 pub struct PendingWrite {
     budget: Arc<DiskBudget>,
     reserved: u64,
@@ -502,18 +458,18 @@ impl PendingWrite {
 
     /// Commits the write with the actual bytes written.
     ///
-    /// If `actual` differs from the reserved amount, the budget is adjusted.
+    /// If `actual` differs from the reserved amount, the **segment pool** is adjusted.
     /// - If `actual < reserved`: releases the difference
     /// - If `actual > reserved`: records the additional bytes (may exceed cap briefly)
     pub fn commit(self, actual: u64) {
         self.committed.store(true, Ordering::Release);
 
         if actual < self.reserved {
-            // Release the unused portion
-            self.budget.release(self.reserved - actual);
+            // Release the unused portion from the segment pool
+            self.budget.release_segment(self.reserved - actual);
         } else if actual > self.reserved {
-            // Record the additional bytes (we reserved less than needed)
-            self.budget.record_existing(actual - self.reserved);
+            // Record the additional bytes in the segment pool
+            self.budget.record_existing_segment(actual - self.reserved);
         }
         // If actual == reserved, nothing to adjust
     }
@@ -528,9 +484,9 @@ impl PendingWrite {
 
 impl Drop for PendingWrite {
     fn drop(&mut self) {
-        // If not committed, release the reserved bytes
+        // If not committed, release the reserved segment bytes
         if !self.committed.load(Ordering::Acquire) && self.reserved > 0 {
-            self.budget.release(self.reserved);
+            self.budget.release_segment(self.reserved);
         }
     }
 }
@@ -543,6 +499,8 @@ mod tests {
     fn new_budget_starts_empty() {
         let budget = DiskBudget::new(1000, RetentionPolicy::Backpressure);
         assert_eq!(budget.used(), 0);
+        assert_eq!(budget.wal_used(), 0);
+        assert_eq!(budget.segment_used(), 0);
         assert_eq!(budget.headroom(), 1000);
         assert_eq!(budget.cap(), 1000);
     }
@@ -554,21 +512,22 @@ mod tests {
     }
 
     #[test]
-    fn try_reserve_succeeds_when_under_cap() {
+    fn try_reserve_segment_succeeds_when_under_cap() {
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
-        let pending = budget.try_reserve(500).unwrap();
+        let pending = budget.try_reserve_segment(500).unwrap();
+        assert_eq!(budget.segment_used(), 500);
         assert_eq!(budget.used(), 500);
         assert_eq!(pending.reserved(), 500);
         pending.commit(500);
-        assert_eq!(budget.used(), 500);
+        assert_eq!(budget.segment_used(), 500);
     }
 
     #[test]
-    fn try_reserve_fails_when_over_cap_backpressure() {
+    fn try_reserve_segment_fails_when_over_cap_backpressure() {
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
-        budget.record_existing(800);
+        budget.record_existing_segment(800);
 
-        let result = budget.try_reserve(300);
+        let result = budget.try_reserve_segment(300);
         assert!(matches!(result, Err(QuiverError::StorageAtCapacity { .. })));
 
         if let Err(QuiverError::StorageAtCapacity {
@@ -587,10 +546,11 @@ mod tests {
     fn pending_write_releases_on_drop() {
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
         {
-            let _pending = budget.try_reserve(500).unwrap();
-            assert_eq!(budget.used(), 500);
+            let _pending = budget.try_reserve_segment(500).unwrap();
+            assert_eq!(budget.segment_used(), 500);
             // pending drops here without commit
         }
+        assert_eq!(budget.segment_used(), 0);
         assert_eq!(budget.used(), 0);
     }
 
@@ -599,36 +559,131 @@ mod tests {
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
 
         // Reserved more than actual
-        let pending = budget.try_reserve(500).unwrap();
+        let pending = budget.try_reserve_segment(500).unwrap();
         pending.commit(300);
-        assert_eq!(budget.used(), 300);
+        assert_eq!(budget.segment_used(), 300);
 
         // Reserved less than actual (rare but possible with estimates)
-        let pending = budget.try_reserve(100).unwrap();
+        let pending = budget.try_reserve_segment(100).unwrap();
         pending.commit(150);
-        assert_eq!(budget.used(), 450);
+        assert_eq!(budget.segment_used(), 450);
     }
 
     #[test]
-    fn release_frees_space() {
+    fn release_segment_frees_space() {
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
-        budget.record_existing(500);
-        assert_eq!(budget.used(), 500);
+        budget.record_existing_segment(500);
+        assert_eq!(budget.segment_used(), 500);
 
-        budget.release(200);
-        assert_eq!(budget.used(), 300);
+        budget.release_segment(200);
+        assert_eq!(budget.segment_used(), 300);
 
         // Release more than used (shouldn't underflow)
-        budget.release(500);
-        assert_eq!(budget.used(), 0);
+        budget.release_segment(500);
+        assert_eq!(budget.segment_used(), 0);
     }
 
     #[test]
-    fn record_existing_can_exceed_cap() {
+    fn record_existing_segment_can_exceed_cap() {
         let budget = DiskBudget::new(1000, RetentionPolicy::Backpressure);
-        budget.record_existing(1500);
+        budget.record_existing_segment(1500);
+        assert_eq!(budget.segment_used(), 1500);
         assert_eq!(budget.used(), 1500);
         assert_eq!(budget.headroom(), 0);
+    }
+
+    #[test]
+    fn wal_and_segment_pools_are_independent() {
+        let budget = DiskBudget::new(1000, RetentionPolicy::Backpressure);
+
+        budget.record_wal_bytes(300);
+        budget.record_existing_segment(200);
+
+        assert_eq!(budget.wal_used(), 300);
+        assert_eq!(budget.segment_used(), 200);
+        assert_eq!(budget.used(), 500);
+        assert_eq!(budget.headroom(), 500);
+
+        budget.release_wal_bytes(100);
+        assert_eq!(budget.wal_used(), 200);
+        assert_eq!(budget.segment_used(), 200);
+        assert_eq!(budget.used(), 400);
+
+        budget.release_segment(50);
+        assert_eq!(budget.wal_used(), 200);
+        assert_eq!(budget.segment_used(), 150);
+        assert_eq!(budget.used(), 350);
+    }
+
+    #[test]
+    fn try_reserve_segment_accounts_for_wal_bytes() {
+        let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
+
+        // WAL is consuming 600 bytes
+        budget.record_wal_bytes(600);
+
+        // Segment reservation should only have 400 bytes of headroom
+        let pending = budget.try_reserve_segment(400).unwrap();
+        pending.commit(400);
+        assert_eq!(budget.used(), 1000);
+
+        // Further segment reservation should fail
+        let result = budget.try_reserve_segment(1);
+        assert!(matches!(result, Err(QuiverError::StorageAtCapacity { .. })));
+    }
+
+    #[test]
+    fn finalization_without_double_charge() {
+        // Simulates the finalization flow where WAL bytes are converted to a segment.
+        // With split pools, this no longer double-charges.
+        let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
+
+        // Step 1: WAL has 400 bytes of entries
+        budget.record_wal_bytes(400);
+        assert_eq!(budget.used(), 400);
+
+        // Step 2: Reserve segment space (400 bytes estimated)
+        // Combined check: 400 (wal) + 0 (seg) + 400 (new) = 800 <= 1000 ✓
+        let pending = budget.try_reserve_segment(400).unwrap();
+
+        // Step 3: Write segment (actual 350 bytes)
+        pending.commit(350);
+        // Now: wal=400, seg=350, total=750
+        assert_eq!(budget.wal_used(), 400);
+        assert_eq!(budget.segment_used(), 350);
+        assert_eq!(budget.used(), 750);
+
+        // Step 4: Persist cursor and purge WAL (releases 400 bytes from WAL pool)
+        budget.release_wal_bytes(400);
+        // Now: wal=0, seg=350, total=350 — correct!
+        assert_eq!(budget.wal_used(), 0);
+        assert_eq!(budget.segment_used(), 350);
+        assert_eq!(budget.used(), 350);
+    }
+
+    #[test]
+    fn replay_finalization_without_double_charge() {
+        // Simulates WAL replay at startup under a tight budget.
+        // The WAL bytes were counted at startup, so try_reserve_segment must
+        // check against wal_used + segment_used + new, not double-charge.
+        let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::Backpressure));
+
+        // At startup: WAL has 500 bytes, segments have 400 bytes
+        budget.record_wal_bytes(500);
+        budget.record_existing_segment(400);
+        assert_eq!(budget.used(), 900);
+
+        // Replay finalization: reserve ~100 bytes for a segment
+        // Combined: 500 (wal) + 400 (seg) + 100 (new) = 1000 <= 1000 ✓
+        let pending = budget.try_reserve_segment(100).unwrap();
+        pending.commit(100);
+        assert_eq!(budget.used(), 1000);
+
+        // Purge WAL files that were finalized (say 200 bytes)
+        budget.release_wal_bytes(200);
+        assert_eq!(budget.used(), 800);
+        assert_eq!(budget.wal_used(), 300);
+        assert_eq!(budget.segment_used(), 500);
     }
 
     #[test]
@@ -636,7 +691,7 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
 
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::DropOldest));
-        budget.record_existing(900);
+        budget.record_existing_segment(900);
 
         let reclaim_count = Arc::new(AtomicUsize::new(0));
         let reclaim_count_clone = reclaim_count.clone();
@@ -644,10 +699,10 @@ mod tests {
 
         budget.set_reclaim_callback(move |needed| {
             let _ = reclaim_count_clone.fetch_add(1, Ordering::Relaxed);
-            // Simulate reclaiming by releasing from budget
+            // Simulate reclaiming by releasing from segment budget
             if let Some(b) = budget_for_callback.upgrade() {
                 let to_release = needed.min(500); // Release up to 500 bytes
-                b.release(to_release);
+                b.release_segment(to_release);
                 to_release
             } else {
                 0
@@ -655,7 +710,7 @@ mod tests {
         });
 
         // This would exceed cap, should trigger reclaim
-        let pending = budget.try_reserve(200).unwrap();
+        let pending = budget.try_reserve_segment(200).unwrap();
         assert!(reclaim_count.load(Ordering::Relaxed) >= 1);
         pending.commit(200);
     }
@@ -665,7 +720,7 @@ mod tests {
         use std::sync::atomic::AtomicUsize;
 
         let budget = Arc::new(DiskBudget::new(1000, RetentionPolicy::DropOldest));
-        budget.record_existing(900);
+        budget.record_existing_segment(900);
 
         let reclaim_count = Arc::new(AtomicUsize::new(0));
         let reclaim_count_clone = reclaim_count.clone();
@@ -678,7 +733,7 @@ mod tests {
 
         // This would exceed cap, reclaim will be tried but returns 0
         // So we should get a backpressure error (not an infinite loop)
-        let result = budget.try_reserve(200);
+        let result = budget.try_reserve_segment(200);
         assert!(result.is_err());
         match result {
             Err(QuiverError::StorageAtCapacity { .. }) => {} // Expected
@@ -691,45 +746,32 @@ mod tests {
     #[test]
     fn zero_reservation_succeeds() {
         let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
-        budget.record_existing(100); // At capacity
+        budget.record_existing_segment(100); // Segment pool at capacity
 
         // Zero reservation should still work
-        let pending = budget.try_reserve(0).unwrap();
+        let pending = budget.try_reserve_segment(0).unwrap();
         assert_eq!(pending.reserved(), 0);
         pending.commit(0);
     }
 
     #[test]
-    fn with_reserved_headroom_constructor() {
-        let budget = DiskBudget::with_reserved_headroom(1000, RetentionPolicy::Backpressure, 200);
-        assert_eq!(budget.cap(), 1000);
-        assert_eq!(budget.reserved_headroom(), 200);
-        assert_eq!(budget.used(), 0);
-        assert_eq!(budget.headroom(), 1000);
-    }
+    fn has_ingest_headroom_uses_total() {
+        // 1000 cap, tracks both WAL and segment usage
+        let budget = DiskBudget::new(1000, RetentionPolicy::Backpressure);
 
-    #[test]
-    fn has_ingest_headroom_accounts_for_reserved() {
-        // 1000 cap with 200 reserved = 800 available for ingest
-        let budget = DiskBudget::with_reserved_headroom(1000, RetentionPolicy::Backpressure, 200);
+        // With nothing used, we have 1000 available
+        assert!(budget.has_ingest_headroom(1000));
+        assert!(!budget.has_ingest_headroom(1001));
 
-        // With nothing used, we have 800 available for ingest
-        assert!(budget.has_ingest_headroom(800));
-        assert!(budget.has_ingest_headroom(799));
-        assert!(!budget.has_ingest_headroom(801));
+        // After 300 WAL bytes, we have 700 available
+        budget.record_wal_bytes(300);
+        assert!(budget.has_ingest_headroom(700));
+        assert!(!budget.has_ingest_headroom(701));
 
-        // After using 300, we have 500 available for ingest (1000 - 300 - 200)
-        budget.record_existing(300);
+        // After 200 segment bytes, we have 500 available
+        budget.record_existing_segment(200);
         assert!(budget.has_ingest_headroom(500));
         assert!(!budget.has_ingest_headroom(501));
-
-        // After using 800, we have 0 available for ingest (1000 - 800 - 200)
-        budget.record_existing(500); // Now at 800 used
-        assert!(budget.has_ingest_headroom(0));
-        assert!(!budget.has_ingest_headroom(1));
-
-        // Note: headroom() still reports 200, but has_ingest_headroom sees 0
-        assert_eq!(budget.headroom(), 200);
     }
 
     #[test]
@@ -751,12 +793,12 @@ mod tests {
         assert_eq!(budget2.used(), 0);
 
         // Recording in one budget doesn't affect others
-        budget1.record_existing(200);
+        budget1.record_existing_segment(200);
         assert_eq!(budget1.used(), 200);
         assert_eq!(budget2.used(), 0);
 
         // Each budget enforces its own cap independently
-        let pending = budget1.try_reserve(100).unwrap();
+        let pending = budget1.try_reserve_segment(100).unwrap();
         pending.commit(100);
         assert_eq!(budget1.used(), 300);
         assert_eq!(budget1.headroom(), 200); // 500 - 300
@@ -765,122 +807,24 @@ mod tests {
         assert_eq!(budget2.headroom(), per_engine_cap);
 
         // Fill budget1 to capacity
-        budget1.record_existing(200); // Now at 500 (at cap)
+        budget1.record_existing_segment(200); // Now at 500 (at cap)
         assert_eq!(budget1.headroom(), 0);
 
         // budget1 at capacity should reject
-        assert!(budget1.try_reserve(1).is_err());
+        assert!(budget1.try_reserve_segment(1).is_err());
 
         // budget2 should still accept (independent)
-        let pending2 = budget2.try_reserve(100).unwrap();
+        let pending2 = budget2.try_reserve_segment(100).unwrap();
         pending2.commit(100);
         assert_eq!(budget2.used(), 100);
     }
 
     #[test]
-    fn per_engine_headroom_isolation() {
-        // Each engine in Phase 1 has its own reserved headroom
-        let per_engine_cap = 500;
-        let reserved = 100;
-
-        let budget1 = DiskBudget::with_reserved_headroom(
-            per_engine_cap,
-            RetentionPolicy::Backpressure,
-            reserved,
-        );
-        let budget2 = DiskBudget::with_reserved_headroom(
-            per_engine_cap,
-            RetentionPolicy::Backpressure,
-            reserved,
-        );
-
-        // Each has 400 available for ingest (500 - 100 reserved)
-        assert!(budget1.has_ingest_headroom(400));
-        assert!(budget2.has_ingest_headroom(400));
-
-        // Use up budget1's ingest headroom
-        budget1.record_existing(400);
-        assert!(!budget1.has_ingest_headroom(1));
-
-        // budget2 is unaffected
-        assert!(budget2.has_ingest_headroom(400));
-    }
-
-    #[test]
-    fn calculate_headroom_formula() {
-        // Formula: segment_size + (wal_max_size / 4)
-        let segment = 32 * 1024 * 1024; // 32 MB
-        let wal_max = 128 * 1024 * 1024; // 128 MB
-
-        let headroom = DiskBudget::calculate_headroom(segment, wal_max);
-        // 32 MB + 32 MB = 64 MB
-        assert_eq!(headroom, 64 * 1024 * 1024);
-
-        // Edge case: no WAL
-        let headroom_no_wal = DiskBudget::calculate_headroom(segment, 0);
-        assert_eq!(headroom_no_wal, segment);
-    }
-
-    #[test]
-    fn minimum_cap_calculation() {
-        let segment = 32 * 1024 * 1024; // 32 MB
-        let wal_max = 128 * 1024 * 1024; // 128 MB
-
-        let min_cap = DiskBudget::minimum_cap(segment, wal_max);
-        // headroom (64 MB) + segment (32 MB) = 96 MB
-        assert_eq!(min_cap, 96 * 1024 * 1024);
-    }
-
-    #[test]
-    fn for_engine_succeeds_with_sufficient_cap() {
-        let segment = 32 * 1024 * 1024; // 32 MB
-        let wal_max = 128 * 1024 * 1024; // 128 MB
-        let cap = 150 * 1024 * 1024; // 150 MB (> 96 MB minimum)
-
-        let budget = DiskBudget::for_engine(cap, RetentionPolicy::Backpressure, segment, wal_max)
-            .expect("should succeed");
-
-        assert_eq!(budget.cap(), cap);
-        assert_eq!(budget.reserved_headroom(), 64 * 1024 * 1024);
-        // Available for ingest = 150 - 64 = 86 MB
-        assert!(budget.has_ingest_headroom(86 * 1024 * 1024));
-        assert!(!budget.has_ingest_headroom(87 * 1024 * 1024));
-    }
-
-    #[test]
-    fn for_engine_fails_with_insufficient_cap() {
-        let segment = 32 * 1024 * 1024; // 32 MB
-        let wal_max = 128 * 1024 * 1024; // 128 MB
-        let cap = 64 * 1024 * 1024; // 64 MB (< 96 MB minimum)
-
-        let result = DiskBudget::for_engine(cap, RetentionPolicy::Backpressure, segment, wal_max);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, BudgetConfigError::CapTooSmall { .. }));
-
-        // Check error message formatting
-        let msg = format!("{}", err);
-        assert!(msg.contains("64 MB is too small"));
-        assert!(msg.contains("Minimum cap required: 96 MB"));
-    }
-
-    #[test]
-    fn for_engine_exactly_at_minimum() {
-        let segment = 32 * 1024 * 1024; // 32 MB
-        let wal_max = 128 * 1024 * 1024; // 128 MB
-        let min_cap = DiskBudget::minimum_cap(segment, wal_max); // 96 MB
-
-        // Exactly at minimum should succeed
-        let budget =
-            DiskBudget::for_engine(min_cap, RetentionPolicy::Backpressure, segment, wal_max)
-                .expect("should succeed at minimum cap");
-
-        assert_eq!(budget.cap(), min_cap);
-
-        // One byte below should fail
-        let result =
-            DiskBudget::for_engine(min_cap - 1, RetentionPolicy::Backpressure, segment, wal_max);
-        assert!(result.is_err());
+    fn release_wal_bytes_saturates() {
+        let budget = DiskBudget::new(1000, RetentionPolicy::Backpressure);
+        budget.record_wal_bytes(100);
+        // Release more than stored — should not underflow
+        budget.release_wal_bytes(200);
+        assert_eq!(budget.wal_used(), 0);
     }
 }

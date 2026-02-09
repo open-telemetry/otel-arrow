@@ -263,10 +263,15 @@ impl Dashboard {
 
     /// Restores terminal state.
     pub fn cleanup(mut self) -> io::Result<()> {
-        disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
-        self.terminal.show_cursor()?;
+        self.restore_terminal();
         Ok(())
+    }
+
+    /// Best-effort terminal restore (used by both `cleanup` and `Drop`).
+    fn restore_terminal(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen);
+        let _ = self.terminal.show_cursor();
     }
 
     /// Trims all history vectors to max_history_len (for terminal resize).
@@ -472,6 +477,12 @@ impl Dashboard {
         });
 
         Ok(())
+    }
+}
+
+impl Drop for Dashboard {
+    fn drop(&mut self) {
+        self.restore_terminal();
     }
 }
 

@@ -110,25 +110,29 @@ fn create_per_engine_budget(
     let segment_bytes = segment_size_mb * 1024 * 1024;
     let wal_bytes = wal_max_size_mb * 1024 * 1024;
 
-    // Use the library's budget factory which calculates headroom and validates
-    DiskBudget::for_engine(per_engine_cap, policy, segment_bytes, wal_bytes)
-        .map(Arc::new)
-        .map_err(|e| {
-            // Add multi-engine context to the error message
-            let min_global_mb = DiskBudget::minimum_cap(segment_bytes, wal_bytes)
-                * num_engines as u64
-                / (1024 * 1024);
-            format!(
-                "{} (global {} MB / {} engines = {} MB per engine). \
-                 Minimum global for {} engines: {} MB",
-                e,
-                global_disk_budget_mb,
-                num_engines,
-                per_engine_cap / (1024 * 1024),
-                num_engines,
-                min_global_mb
-            )
-        })
+    // Validate: cap must be at least wal_max + segment_size (same check the
+    // engine performs at open time).
+    let minimum_cap = wal_bytes + segment_bytes;
+    if per_engine_cap < minimum_cap {
+        let min_global_mb = minimum_cap * num_engines as u64 / (1024 * 1024);
+        return Err(format!(
+            "disk budget ({} bytes) must be at least WAL max ({} bytes) + \
+             segment size ({} bytes) = {} bytes \
+             (global {} MB / {} engines = {} MB per engine). \
+             Minimum global for {} engines: {} MB",
+            per_engine_cap,
+            wal_bytes,
+            segment_bytes,
+            minimum_cap,
+            global_disk_budget_mb,
+            num_engines,
+            per_engine_cap / (1024 * 1024),
+            num_engines,
+            min_global_mb,
+        ));
+    }
+
+    Ok(Arc::new(DiskBudget::new(per_engine_cap, policy)))
 }
 
 /// Configuration for steady-state test.
@@ -735,7 +739,7 @@ fn create_engine_config(
     config.segment.max_open_duration = Duration::from_secs(30);
 
     config.wal.max_size_bytes =
-        std::num::NonZeroU64::new(256 * 1024 * 1024).expect("256MB is non-zero");
+        std::num::NonZeroU64::new(128 * 1024 * 1024).expect("128MB is non-zero");
     config.wal.rotation_target_bytes =
         std::num::NonZeroU64::new(32 * 1024 * 1024).expect("32MB is non-zero");
 
@@ -794,6 +798,7 @@ async fn create_engines(
         );
 
         // Create per-engine disk budget (Phase 1: static quota per engine)
+        // WAL max is set to 128 MB in create_engine_config
         let wal_size_mb = if no_wal { 0 } else { 128 };
         let budget = create_per_engine_budget(
             disk_budget_mb,
