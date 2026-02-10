@@ -421,9 +421,25 @@ impl DurableBuffer {
     /// The returned config does **not** include the per-core `data_dir`; that is
     /// added by `init_engine` since it depends on `core_id`.
     fn build_quiver_config(config: &DurableBufferConfig) -> QuiverConfig {
+        // Exhaustive destructure: if a field is added to DurableBufferConfig,
+        // the compiler will force you to handle it here (no `..`).
+        let DurableBufferConfig {
+            path: _,                    // per-core subdir added by init_engine
+            retention_size_cap: _,      // drives the DiskBudget, not QuiverConfig
+            max_age,
+            size_cap_policy: _,         // drives the DiskBudget policy
+            poll_interval: _,           // DurableBuffer timer, not engine config
+            otlp_handling: _,           // DurableBuffer adapter concern
+            max_segment_open_duration,
+            initial_retry_interval: _,  // DurableBuffer retry logic
+            max_retry_interval: _,      // DurableBuffer retry logic
+            retry_multiplier: _,        // DurableBuffer retry logic
+            max_in_flight: _,           // DurableBuffer flow control
+        } = config;
+
         let mut quiver_config = QuiverConfig::default();
-        quiver_config.segment.max_open_duration = config.max_segment_open_duration;
-        quiver_config.retention.max_age = config.max_age;
+        quiver_config.segment.max_open_duration = *max_segment_open_duration;
+        quiver_config.retention.max_age = *max_age;
         quiver_config
     }
 
