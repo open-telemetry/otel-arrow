@@ -354,6 +354,11 @@ pub struct DurableBuffer {
 impl DurableBuffer {
     /// Creates a new durable buffer with the given configuration.
     ///
+    /// Validates that the configured `retention_size_cap` is large enough for
+    /// the Quiver engine to operate. The engine requires at least
+    /// `wal_max + segment_size` bytes per core so that segment finalization
+    /// can always succeed even when the WAL is full.
+    ///
     /// Note: The Quiver engine is lazily initialized on the first message
     /// to ensure we're running within an async context.
     pub fn new(
@@ -363,6 +368,31 @@ impl DurableBuffer {
         let metrics = pipeline_ctx.register_metrics::<DurableBufferMetrics>();
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
+
+        // Validate that per-core budget is large enough for the engine.
+        // QuiverEngine::open() enforces cap >= wal_max + segment_size, but
+        // that check happens lazily on first message. Catch it here so the
+        // pipeline fails fast at construction time with a clear message.
+        let quiver_config = Self::build_quiver_config(&config);
+        let total_size_cap = config.size_cap_bytes();
+        let per_core_size_cap = total_size_cap / num_cores.max(1) as u64;
+        let wal_max = quiver_config.wal.max_size_bytes.get();
+        let segment_size = quiver_config.segment.target_size_bytes.get();
+        let min_per_core = wal_max + segment_size;
+
+        if per_core_size_cap < min_per_core {
+            let min_total = min_per_core * num_cores as u64;
+            let max_cores = total_size_cap / min_per_core;
+            return Err(ConfigError::InvalidUserConfig {
+                error: format!(
+                    "retention_size_cap ({total_size_cap} bytes) is too small for {num_cores} core(s): \
+                     per-core capacity is {per_core_size_cap} bytes, but the engine requires at \
+                     least {min_per_core} bytes per core (WAL max {wal_max} + segment size {segment_size}). \
+                     Either increase retention_size_cap to at least {min_total} bytes, \
+                     or reduce the core count to at most {max_cores}",
+                ),
+            });
+        }
 
         Ok(Self {
             engine_state: EngineState::Uninitialized,
@@ -374,6 +404,22 @@ impl DurableBuffer {
             metrics,
             timer_started: false,
         })
+    }
+
+    /// Build the [`QuiverConfig`] that will be used for the engine.
+    ///
+    /// This is the single source of truth for translating [`DurableBufferConfig`]
+    /// fields into Quiver engine settings. Both [`new()`](Self::new) (for early
+    /// validation) and [`init_engine()`](Self::init_engine) (for construction)
+    /// call this so the two can never drift apart.
+    ///
+    /// The returned config does **not** include the per-core `data_dir`; that is
+    /// added by `init_engine` since it depends on `core_id`.
+    fn build_quiver_config(config: &DurableBufferConfig) -> QuiverConfig {
+        let mut quiver_config = QuiverConfig::default();
+        quiver_config.segment.max_open_duration = config.max_segment_open_duration;
+        quiver_config.retention.max_age = config.max_age;
+        quiver_config
     }
 
     /// Calculate exponential backoff delay with jitter.
@@ -481,6 +527,9 @@ impl DurableBuffer {
     ///
     /// The configured `retention_size_cap` is divided by `num_cores` so that
     /// the total disk usage across all cores stays within the configured limit.
+    ///
+    /// Note: The per-core budget validation is performed eagerly in `new()`.
+    /// This check is kept as defense-in-depth; it should never fire in practice.
     async fn init_engine(&self) -> Result<(Arc<QuiverEngine>, SubscriberId), Error> {
         let policy = self.config.retention_policy();
 
@@ -490,31 +539,43 @@ impl DurableBuffer {
         let num_cores = self.num_cores.max(1) as u64;
         let per_core_size_cap = total_size_cap / num_cores;
 
-        // Minimum per-core capacity: 1 MiB (enough for WAL + at least a small segment).
-        // Default segment target is 32 MiB, so this is quite small but prevents
-        // obviously broken configurations (e.g., 100 bytes for 1000 cores).
-        const MIN_PER_CORE_BYTES: u64 = 1024 * 1024; // 1 MiB
+        // Build the QuiverConfig from our DurableBufferConfig (same helper used
+        // in new() for early validation, ensuring the two stay in sync).
+        let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
+        let quiver_config = Self::build_quiver_config(&self.config).with_data_dir(&core_data_dir);
 
-        if per_core_size_cap < MIN_PER_CORE_BYTES {
+        // Defense-in-depth: the primary validation lives in new(), but guard
+        // here too in case init_engine is ever called from a different path.
+        let min_per_core =
+            quiver_config.wal.max_size_bytes.get() + quiver_config.segment.target_size_bytes.get();
+
+        if per_core_size_cap < min_per_core {
+            let min_total = min_per_core * num_cores;
+            let max_cores = total_size_cap / min_per_core;
             otel_error!(
                 "durable_buffer.config.invalid",
                 total_size_cap = total_size_cap,
                 num_cores = num_cores,
                 per_core_size_cap = per_core_size_cap,
-                min_per_core_bytes = MIN_PER_CORE_BYTES,
+                min_per_core_bytes = min_per_core,
+                min_total_bytes = min_total,
+                max_cores = max_cores,
                 message = "per-core storage capacity is below minimum threshold"
             );
             return Err(Error::InternalError {
                 message: format!(
                     "retention_size_cap ({} bytes) is too small for {} cores; \
-                     per-core capacity is {} bytes but minimum is {} bytes (1 MiB)",
-                    total_size_cap, num_cores, per_core_size_cap, MIN_PER_CORE_BYTES
+                     per-core capacity is {} bytes but minimum is {} bytes \
+                     (WAL max {} + segment size {}). \
+                     Either increase retention_size_cap to at least {} bytes, \
+                     or reduce the core count to at most {}",
+                    total_size_cap, num_cores, per_core_size_cap, min_per_core,
+                    quiver_config.wal.max_size_bytes.get(),
+                    quiver_config.segment.target_size_bytes.get(),
+                    min_total, max_cores,
                 ),
             });
         }
-
-        // Create per-core data directory: {base_path}/core_{core_id}
-        let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
 
         otel_info!(
             "durable_buffer.engine.init",
@@ -525,11 +586,6 @@ impl DurableBuffer {
             max_segment_open_duration = ?self.config.max_segment_open_duration,
             max_age = ?self.config.max_age
         );
-
-        // Create Quiver configuration with per-core data directory
-        let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
-        quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
-        quiver_config.retention.max_age = self.config.max_age;
 
         // Create disk budget with per-core share of the total cap
         let budget = Arc::new(DiskBudget::new(per_core_size_cap, policy));
