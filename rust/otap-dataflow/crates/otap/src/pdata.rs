@@ -1204,4 +1204,78 @@ mod test {
         let result = Context::next_nack(nack);
         assert!(result.is_none());
     }
+
+    // ---- set_source_node and subscribe_to frame-reuse tests ----
+
+    #[test]
+    fn test_set_source_node_basics() {
+        let mut ctx = Context::default();
+        assert_eq!(ctx.source_node(), None);
+
+        // Push onto empty context.
+        ctx.set_source_node(42);
+        assert_eq!(ctx.source_node(), Some(42));
+        assert_eq!(ctx.stack.len(), 1);
+        // Source-node-only frames have empty interests — not subscribers.
+        assert!(!ctx.has_subscribers());
+
+        // Same node_id is a no-op (dedup).
+        ctx.set_source_node(42);
+        assert_eq!(ctx.stack.len(), 1);
+
+        // Different node_id pushes a new frame.
+        ctx.set_source_node(99);
+        assert_eq!(ctx.source_node(), Some(99));
+        assert_eq!(ctx.stack.len(), 2);
+        assert!(!ctx.has_subscribers());
+    }
+
+    #[test]
+    fn test_subscribe_to_reuses_frame_for_same_node() {
+        let mut ctx = Context::default();
+
+        // A source-node-only frame can be upgraded by subscribe_to.
+        ctx.set_source_node(10);
+        assert!(!ctx.has_subscribers());
+        ctx.subscribe_to(Interests::ACKS, CallData::default(), 10);
+        assert_eq!(ctx.stack.len(), 1);
+        assert!(ctx.has_subscribers());
+
+        // Re-subscribing with the same node_id replaces interests in-place.
+        ctx.subscribe_to(Interests::NACKS, CallData::default(), 10);
+        assert_eq!(ctx.stack.len(), 1);
+        assert!(ctx.stack[0].interests.contains(Interests::NACKS));
+        assert!(!ctx.stack[0].interests.contains(Interests::ACKS));
+
+        // A different node_id pushes a new frame and inherits RETURN_DATA.
+        ctx.subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            CallData::default(),
+            10,
+        );
+        ctx.subscribe_to(Interests::NACKS, CallData::default(), 20);
+        assert_eq!(ctx.stack.len(), 2);
+        assert!(ctx.stack[1].interests.contains(Interests::RETURN_DATA));
+    }
+
+    #[test]
+    fn test_next_ack_nack_skip_source_node_frames() {
+        let (test_data, pdata) = create_test();
+
+        // Real subscriber, then a source-node-only frame on top.
+        let pdata = pdata.test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            test_data.clone().into(),
+            100,
+        );
+        let pdata = pdata.add_source_node(200);
+        assert!(pdata.has_subscribers());
+
+        // next_ack skips the empty-interests frame and finds node 100.
+        let ack = AckMsg::new(pdata);
+        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find subscriber");
+        assert_eq!(node_id, 100);
+        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv, test_data);
+    }
 }
