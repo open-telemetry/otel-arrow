@@ -52,7 +52,11 @@
 //!     let cfg = QuiverConfig::default().with_data_dir(&data_dir);
 //!
 //!     // Configure disk budget (10 GB cap with backpressure)
-//!     let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+//!     let budget = Arc::new(DiskBudget::new(
+//!         10 * 1024 * 1024 * 1024,  // 10 GB hard cap
+//!         32 * 1024 * 1024,          // 32 MB segment headroom
+//!         RetentionPolicy::Backpressure,
+//!     ));
 //!     let engine = QuiverEngine::open(cfg, budget).await?;
 //!
 //!     // Register and activate a subscriber
@@ -122,7 +126,7 @@ pub mod subscriber;
 pub mod telemetry;
 pub(crate) mod wal;
 
-pub use budget::{BudgetConfigError, DiskBudget, PendingWrite};
+pub use budget::DiskBudget;
 pub use config::{
     DurabilityMode, QuiverConfig, RetentionConfig, RetentionPolicy, SegmentConfig, WalConfig,
 };

@@ -258,7 +258,7 @@ impl SegmentStore {
 
         // Record file size to budget (for existing files loaded at startup)
         if let Some(ref budget) = self.budget {
-            budget.record(file_size);
+            budget.add(file_size);
         }
 
         // Notify callback (outside of segments lock)
@@ -356,7 +356,7 @@ impl SegmentStore {
         // Release bytes from budget regardless of whether the file existed on disk.
         // If the file was externally deleted, we still need to release our accounting.
         if let (Some(budget), Some(size)) = (&self.budget, file_size) {
-            budget.release(size);
+            budget.remove(size);
         }
 
         Ok(())

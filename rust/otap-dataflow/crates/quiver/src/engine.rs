@@ -132,7 +132,11 @@ pub struct QuiverEngine {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
-///     let budget = Arc::new(DiskBudget::new(1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+///     let budget = Arc::new(DiskBudget::new(
+///         1024 * 1024 * 1024,      // 1 GB hard cap
+///         32 * 1024 * 1024,         // 32 MB segment headroom
+///         RetentionPolicy::Backpressure,
+///     ));
 ///
 ///     let engine = QuiverEngineBuilder::new(config)
 ///         .with_budget(budget)
@@ -178,10 +182,7 @@ impl QuiverEngineBuilder {
     /// cannot be initialized.
     pub async fn build(self) -> Result<Arc<QuiverEngine>> {
         let budget = self.budget.unwrap_or_else(|| {
-            Arc::new(crate::budget::DiskBudget::new(
-                u64::MAX,
-                RetentionPolicy::Backpressure,
-            ))
+            Arc::new(crate::budget::DiskBudget::unlimited())
         });
         QuiverEngine::open(self.config, budget).await
     }
@@ -232,29 +233,30 @@ impl QuiverEngine {
     ) -> Result<Arc<Self>> {
         config.validate()?;
 
-        // Validate budget is large enough for WAL + at least one segment.
-        // With split accounting the WAL bytes are tracked separately, so the
-        // cap must accommodate the maximum WAL size plus one segment.
+        // Validate budget is large enough for WAL + two segments.
+        // The hard cap must accommodate the maximum WAL size plus two segment
+        // target sizes: one for the soft_cap headroom, and one for the segment
+        // that could be written while at the soft_cap.
         let segment_size = config.segment.target_size_bytes.get();
         let wal_max = config.wal.max_size_bytes.get();
-        let min_budget = wal_max.saturating_add(segment_size);
-        if budget.cap() < min_budget && budget.cap() != u64::MAX {
+        let min_budget = wal_max.saturating_add(2 * segment_size);
+        if budget.hard_cap() < min_budget && budget.hard_cap() != u64::MAX {
+            let message = format!(
+                "disk budget must be at least 2x segment size to prevent deadlock: \
+                 hard cap {} bytes is too small for WAL max {} bytes + 2 * segment size {} bytes",
+                budget.hard_cap(),
+                wal_max,
+                segment_size,
+            );
             otel_error!(
                 "quiver.engine.init",
-                budget_cap = budget.cap(),
+                budget_cap = budget.hard_cap(),
                 segment_size,
                 min_budget,
                 reason = "budget_too_small",
-                message = "disk budget must be at least 2x segment size to prevent deadlock",
+                message = message,
             );
-            return Err(QuiverError::invalid_config(format!(
-                "disk budget ({} bytes) must be at least WAL max ({} bytes) + segment size \
-                 ({} bytes) = {} bytes to prevent deadlock; increase budget or reduce sizes",
-                budget.cap(),
-                wal_max,
-                segment_size,
-                min_budget,
-            )));
+            return Err(QuiverError::invalid_config(message));
         }
 
         // Ensure directories exist
@@ -377,35 +379,6 @@ impl QuiverEngine {
                 registry_for_callback.on_segment_finalized(seq, bundle_count);
             });
 
-        // Wire up cleanup callback for Backpressure mode
-        let engine_weak_cleanup = Arc::downgrade(&engine);
-        budget.set_cleanup_callback(move || {
-            if let Some(engine) = engine_weak_cleanup.upgrade() {
-                engine.cleanup_completed_segments().unwrap_or(0)
-            } else {
-                0
-            }
-        });
-
-        // Wire up reclaim callback for DropOldest policy
-        let engine_weak = Arc::downgrade(&engine);
-        let budget_weak = Arc::downgrade(&budget);
-        budget.set_reclaim_callback(move |_needed_bytes| {
-            let Some(engine) = engine_weak.upgrade() else {
-                return 0;
-            };
-            let Some(budget) = budget_weak.upgrade() else {
-                return 0;
-            };
-
-            let used_before = budget.used();
-            let completed = engine.cleanup_completed_segments().unwrap_or(0);
-            if completed == 0 {
-                let _ = engine.force_drop_oldest_pending_segments();
-            }
-            used_before.saturating_sub(budget.used())
-        });
-
         // Replay WAL entries that weren't finalized to segments before shutdown/crash
         // This uses the same ingest path as live ingestion (minus WAL writes)
         let replayed = engine.replay_wal().await?;
@@ -508,23 +481,33 @@ impl QuiverEngine {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The disk budget does not have sufficient headroom (`StorageAtCapacity`)
+    /// - The disk budget is over the soft cap (`StorageAtCapacity`)
     /// - WAL append fails
     /// - Segment finalization fails
     pub async fn ingest<B: RecordBundle>(&self, bundle: &B) -> Result<()> {
         self.metrics.record_ingest_attempt();
 
-        // Step 0: Check budget headroom before doing any work.
-        // This "taps the brakes" early, leaving room for WAL rotation and
-        // segment finalization to complete. We use a small estimate (4KB)
-        // since the actual segment bytes aren't known until finalization.
-        const INGEST_HEADROOM_ESTIMATE: u64 = 4 * 1024;
-        if !self.budget.has_ingest_headroom(INGEST_HEADROOM_ESTIMATE) {
-            return Err(QuiverError::StorageAtCapacity {
-                requested: INGEST_HEADROOM_ESTIMATE,
-                available: self.budget.headroom(),
-                cap: self.budget.cap(),
-            });
+        // Step 0: Check budget watermark before doing any work.
+        // If usage exceeds the soft cap, attempt cleanup before rejecting.
+        if self.budget.is_over_soft_cap() {
+            // Try cleaning up fully-consumed segments first (no data loss)
+            let cleaned = self.cleanup_completed_segments().unwrap_or(0);
+
+            if self.budget.is_over_soft_cap() {
+                // For DropOldest: also force-drop pending segments
+                if self.budget.policy() == RetentionPolicy::DropOldest && cleaned == 0 {
+                    let _ = self.force_drop_oldest_pending_segments();
+                }
+
+                // Re-check after cleanup attempts
+                if self.budget.is_over_soft_cap() {
+                    return Err(QuiverError::StorageAtCapacity {
+                        requested: 0,
+                        available: self.budget.headroom(),
+                        cap: self.budget.soft_cap(),
+                    });
+                }
+            }
         }
 
         // Step 1: Append to WAL for durability (if enabled)
@@ -555,10 +538,11 @@ impl QuiverEngine {
     /// During live ingestion, `cursor` is populated from the WAL offset.
     /// During WAL replay, `cursor` is populated from the WAL entry being replayed.
     ///
-    /// Segment finalization always uses `try_reserve`, which checks
-    /// `used + new <= cap`. The `cap >= wal_max + segment_size` validation
-    /// guarantees room for at least one finalization even at maximum WAL
-    /// usage. WAL bytes are released after cursor persistence and purge.
+    /// Segment finalization writes the segment then records its size via
+    /// `budget.add()`. The `hard_cap >= wal_max + 2 * segment_size`
+    /// validation guarantees room for at least one finalization even when
+    /// the budget is at the soft cap. WAL bytes are released after cursor
+    /// persistence and purge.
     #[inline]
     async fn append_to_segment_and_maybe_finalize<B: RecordBundle>(
         &self,
@@ -957,26 +941,20 @@ impl QuiverEngine {
     ///
     /// Uses async I/O for segment writing and WAL cursor persistence.
     ///
-    /// Budget accounting: `try_reserve` checks `used + new <= cap` before
-    /// writing the segment. After the segment is written and the WAL cursor
-    /// is persisted, the superseded WAL files are purged and their bytes
-    /// released. The `cap >= wal_max + segment_size` validation at engine
-    /// open ensures there is always room for at least one segment
-    /// finalization, even when the WAL is at capacity.
+    /// Budget accounting: the segment is written first, then its size is
+    /// recorded via `budget.add()`. The `soft_cap` (= `hard_cap - segment_size`)
+    /// guarantees that even if `used` was at the soft cap before finalization,
+    /// the resulting `used` won't exceed `hard_cap`.
     async fn finalize_segment_impl(&self) -> Result<()> {
-        // First, check if there's anything to finalize (without swapping)
-        let estimated_size = {
+        // Check if there's anything to finalize
+        {
             let segment_guard = self.open_segment.lock();
             if segment_guard.is_empty() {
                 return Ok(());
             }
-            segment_guard.estimated_size_bytes() as u64
-        };
+        }
 
-        // Reserve budget BEFORE swapping out the segment.
-        let pending = self.budget.try_reserve(estimated_size)?;
-
-        // Now safe to swap out the segment and cursor
+        // Swap out the segment and cursor
         let (segment, cursor) = {
             let mut segment_guard = self.open_segment.lock();
             let mut cursor_guard = self.segment_cursor.lock();
@@ -987,12 +965,10 @@ impl QuiverEngine {
 
         // Double-check segment isn't empty (race condition guard)
         if segment.is_empty() {
-            // Release the reservation since we won't write anything
-            drop(pending);
             return Ok(());
         }
 
-        // Assign a segment sequence number (after reservation succeeds)
+        // Assign a segment sequence number
         let seq = SegmentSeq::new(self.next_segment_seq.fetch_add(1, Ordering::SeqCst));
 
         // Write the segment file (streaming serialization - no intermediate buffer)
@@ -1020,8 +996,9 @@ impl QuiverEngine {
             .cumulative_segment_bytes
             .fetch_add(bytes_written, Ordering::Relaxed);
 
-        // Commit reservation with actual bytes written.
-        pending.commit(bytes_written);
+        // Record the segment's bytes in the budget.
+        // This is safe: the soft_cap reserves headroom for exactly this.
+        self.budget.add(bytes_written);
 
         // Step 5: Advance WAL cursor now that segment is durable
         {
@@ -1038,8 +1015,9 @@ impl QuiverEngine {
             })?;
         }
 
-        // Step 6: Register segment with store (triggers subscriber notification)
-        // Use register_new_segment to skip budget recording (already committed above)
+        // Step 6: Register segment with store (triggers subscriber notification).
+        // Budget was already recorded above, so register_segment will skip
+        // duplicate accounting (the file size was already added).
         let _ = self.segment_store.register_new_segment(seq);
 
         Ok(())
@@ -1579,10 +1557,7 @@ mod tests {
 
     /// Creates a large test budget (1 GB) for tests that don't specifically test budget limits.
     fn test_budget() -> Arc<DiskBudget> {
-        Arc::new(DiskBudget::new(
-            1024 * 1024 * 1024,
-            RetentionPolicy::Backpressure,
-        ))
+        Arc::new(DiskBudget::unlimited())
     }
 
     /// Small WAL config for budget-constrained tests.
@@ -2904,6 +2879,7 @@ mod tests {
         // Create a budget with plenty of room
         let budget = Arc::new(DiskBudget::new(
             100 * 1024 * 1024,
+            1, // segment_headroom matches target_size_bytes
             RetentionPolicy::Backpressure,
         ));
         let engine = QuiverEngine::open(config, budget.clone())
@@ -2940,82 +2916,90 @@ mod tests {
     async fn budget_returns_storage_at_capacity_when_exceeded() {
         let temp_dir = tempdir().expect("tempdir");
         let segment_config = SegmentConfig {
-            target_size_bytes: NonZeroU64::new(1).expect("non-zero"), // 1 byte - immediate finalization
-            ..Default::default()
-        };
-        // Minimal WAL config so that the tiny budget passes validation.
-        let wal_config = WalConfig {
-            max_size_bytes: NonZeroU64::new(1).expect("non-zero"),
-            max_rotated_files: 1,
-            rotation_target_bytes: NonZeroU64::new(1).expect("non-zero"),
+            target_size_bytes: NonZeroU64::new(1024).expect("non-zero"), // 1 KB segments
             ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(temp_dir.path())
             .segment(segment_config)
-            .wal(wal_config)
+            .wal(small_wal_config())
             .build()
             .expect("config valid");
 
-        // Create a very small budget (100 bytes) - segment will exceed this
-        let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
-        let engine = QuiverEngine::open(config, budget)
+        // Budget sized to allow a few ingests then saturate.
+        // min_budget = wal_max(32KB) + 2 * segment(1KB) = 34KB.
+        // Use hard_cap just above minimum so the budget fills quickly.
+        let hard_cap: u64 = 36 * 1024;
+        let budget = Arc::new(DiskBudget::new(hard_cap, 1024, RetentionPolicy::Backpressure));
+        let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
 
-        // Ingest a bundle - segment finalization should fail due to budget
-        let bundle = DummyBundle::with_rows(10);
-        let result = engine.ingest(&bundle).await;
+        // Ingest until budget exceeds soft_cap, then verify rejection.
+        let bundle = DummyBundle::with_rows(100);
+        let mut succeeded = 0u32;
+        for _ in 0..50 {
+            match engine.ingest(&bundle).await {
+                Ok(()) => succeeded += 1,
+                Err(e) => {
+                    assert!(
+                        e.is_at_capacity(),
+                        "expected StorageAtCapacity, got {e:?}"
+                    );
+                    // Budget is over soft_cap — test passes.
+                    assert!(
+                        budget.is_over_soft_cap(),
+                        "budget should be over soft_cap when ingest is rejected"
+                    );
+                    return;
+                }
+            }
+        }
+        panic!("expected StorageAtCapacity after {succeeded} ingests, but all succeeded");
+    }
 
-        assert!(
-            result.is_err(),
-            "expected StorageAtCapacity error for tiny budget"
-        );
+    #[tokio::test]
+    async fn budget_at_capacity_blocks_subsequent_ingest() {
+        // Verifies that once the budget soft_cap is exceeded, further ingest
+        // attempts are consistently rejected with StorageAtCapacity.
+        let temp_dir = tempdir().expect("tempdir");
+        let segment_config = SegmentConfig {
+            target_size_bytes: NonZeroU64::new(1024).expect("non-zero"), // 1 KB segments
+            ..Default::default()
+        };
+        let config = QuiverConfig::builder()
+            .data_dir(temp_dir.path())
+            .segment(segment_config)
+            .wal(small_wal_config())
+            .build()
+            .expect("config valid");
+
+        // Budget sized to saturate after a small amount of data.
+        let hard_cap: u64 = 36 * 1024;
+        let budget = Arc::new(DiskBudget::new(hard_cap, 1024, RetentionPolicy::Backpressure));
+        let engine = QuiverEngine::open(config, budget.clone())
+            .await
+            .expect("engine created");
+
+        // Ingest until we hit capacity.
+        let bundle = DummyBundle::with_rows(100);
+        loop {
+            if engine.ingest(&bundle).await.is_err() {
+                break;
+            }
+        }
+
+        // Subsequent ingest should also fail.
+        let result = engine.ingest(&bundle).await;
+        assert!(result.is_err(), "expected StorageAtCapacity error");
         assert!(
             result.as_ref().unwrap_err().is_at_capacity(),
             "expected is_at_capacity() to be true, got {:?}",
             result
         );
-    }
 
-    #[tokio::test]
-    async fn budget_at_capacity_preserves_segment_data() {
-        // Verifies that when budget is exceeded, the open segment data is NOT lost
-        // and can be retried after freeing space.
-        let temp_dir = tempdir().expect("tempdir");
-        let segment_config = SegmentConfig {
-            target_size_bytes: NonZeroU64::new(1).expect("non-zero"), // 1 byte - immediate finalization
-            ..Default::default()
-        };
-        // Minimal WAL config so that the tiny budget passes validation.
-        let wal_config = WalConfig {
-            max_size_bytes: NonZeroU64::new(1).expect("non-zero"),
-            max_rotated_files: 1,
-            rotation_target_bytes: NonZeroU64::new(1).expect("non-zero"),
-            ..Default::default()
-        };
-        let config = QuiverConfig::builder()
-            .data_dir(temp_dir.path())
-            .segment(segment_config)
-            .wal(wal_config)
-            .build()
-            .expect("config valid");
-
-        // Create a very small budget (100 bytes) - segment will exceed this
-        let budget = Arc::new(DiskBudget::new(100, RetentionPolicy::Backpressure));
-        let engine = QuiverEngine::open(config, budget.clone())
-            .await
-            .expect("engine created");
-
-        // Ingest a bundle - segment finalization should fail due to budget
-        let bundle = DummyBundle::with_rows(10);
-        let result = engine.ingest(&bundle).await;
-        assert!(result.is_err(), "expected StorageAtCapacity error");
-
-        // The open segment should still have the data
-        // Verify by increasing budget and trying again
-        // (We can't easily change the budget, so we just verify the error was returned
-        // and the engine didn't panic - the data is preserved in the open segment)
+        // Engine should still be functional (no panic).
+        assert!(engine.metrics().ingest_attempts() >= 2);
     }
 
     #[tokio::test]
@@ -3033,7 +3017,7 @@ mod tests {
             .expect("config valid");
 
         // Create a budget with DropOldest policy - large enough for a few segments
-        let budget = Arc::new(DiskBudget::new(50 * 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(50 * 1024, 1024, RetentionPolicy::DropOldest));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -3064,9 +3048,9 @@ mod tests {
         // Run cleanup to complete segment lifecycle
         let _ = engine.cleanup_completed_segments();
 
-        // Budget's reclaim callback should have been wired up
-        // (We can't easily test DropOldest triggering without precise budget sizing,
-        // but we verify the callback was registered by checking cleanup works)
+        // Cleanup should reclaim completed segments and free budget space.
+        // (With the watermark design, cleanup is called inline during ingest
+        // when the soft cap is exceeded — this test verifies the mechanism works.)
     }
 
     #[tokio::test]
@@ -3083,7 +3067,7 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(100 * 1024, 1024, RetentionPolicy::DropOldest));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -3151,7 +3135,7 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let budget = Arc::new(DiskBudget::new(100 * 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(100 * 1024, 1024, RetentionPolicy::DropOldest));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -5443,12 +5427,10 @@ mod tests {
     /// Regression test: WAL replay must not deadlock under Backpressure policy
     /// when the budget is tight.
     ///
-    /// Before the fix, a single `used` counter combined with `reserved_headroom`
-    /// led to incorrect cap validation during WAL replay. The fix removed
-    /// `reserved_headroom` entirely and added the structural guarantee
-    /// `cap >= wal_max + segment_size` at engine open time, ensuring that
-    /// `try_reserve` always has room for at least one segment write, even
-    /// when the WAL is at maximum capacity.
+    /// The watermark design guarantees `hard_cap >= wal_max + 2 * segment_size`
+    /// at engine open time, and finalization always proceeds (just calls
+    /// `budget.add()`). This test verifies that replay succeeds under a
+    /// tight budget that exactly covers the on-disk state.
     #[tokio::test]
     async fn wal_replay_under_tight_backpressure_budget_succeeds() {
         let dir = tempdir().expect("tempdir");
@@ -5461,7 +5443,7 @@ mod tests {
             ..Default::default()
         };
         // Use a small WAL config so that tight budgets can pass validation
-        // (cap >= wal_max + segment_size).
+        // (hard_cap >= wal_max + 2 * segment_size).
         let wal_config = WalConfig {
             max_size_bytes: NonZeroU64::new(64 * 1024).expect("non-zero"), // 64 KB
             max_rotated_files: 2,
@@ -5485,6 +5467,7 @@ mod tests {
         // produce ~2-3 segments and leave a tail of un-finalized entries.
         let generous_budget = Arc::new(DiskBudget::new(
             100 * 1024 * 1024, // 100 MB
+            segment_target,
             RetentionPolicy::Backpressure,
         ));
 
@@ -5528,17 +5511,21 @@ mod tests {
 
         // Phase 2: Reopen with a tight Backpressure budget.
         //
-        // Set cap = exact disk usage (or the minimum required by validation).
+        // Set hard_cap = exact disk usage (or the minimum required by validation).
         // At startup, both WAL bytes and segment bytes are recorded via
-        // `budget.record()`. When replay triggers finalization,
-        // `try_reserve` checks `used + N <= cap`. The structural guarantee
-        // `cap >= wal_max + segment_size` ensures finalization always has
-        // room — WAL bytes are released after cursor persistence and purge.
+        // `budget.add()`. The watermark design ensures finalization always
+        // proceeds — budget.add() is called after writing, and the
+        // `hard_cap >= wal_max + 2 * segment_size` validation ensures
+        // there is structural room for at least one finalization.
         let disk_total = disk_segment_bytes + disk_wal_bytes;
         let wal_max: u64 = wal_config.max_size_bytes.get();
-        let min_budget = wal_max + segment_target; // QuiverEngine::open requires cap >= wal_max + segment_size
+        let min_budget = wal_max + 2 * segment_target; // QuiverEngine::open requires hard_cap >= wal_max + 2 * segment_size
         let tight_cap = disk_total.max(min_budget);
-        let tight_budget = Arc::new(DiskBudget::new(tight_cap, RetentionPolicy::Backpressure));
+        let tight_budget = Arc::new(DiskBudget::new(
+            tight_cap,
+            segment_target,
+            RetentionPolicy::Backpressure,
+        ));
 
         let config2 = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -5547,14 +5534,14 @@ mod tests {
             .build()
             .expect("config valid");
 
-        // This open() must succeed.  The `cap >= wal_max + segment_size`
-        // guarantee ensures `try_reserve` always has room for finalization,
-        // and WAL bytes are released after purge.
+        // This open() must succeed.  The watermark budget allows finalization
+        // to always proceed (no try_reserve), and WAL bytes are released
+        // after purge.
         let engine = QuiverEngine::open(config2, tight_budget.clone())
             .await
             .expect(
                 "engine open with tight budget should succeed; \
-                 split WAL/segment pools prevent double-charge",
+                 watermark budget allows finalization to always proceed",
             );
 
         // The engine should have replayed and finalized at least one segment

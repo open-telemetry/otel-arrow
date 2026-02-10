@@ -40,7 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = QuiverConfig::default().with_data_dir(&data_dir);
 
     // Configure disk budget (10 GB cap with backpressure)
-    let budget = Arc::new(DiskBudget::new(10 * 1024 * 1024 * 1024, RetentionPolicy::Backpressure));
+    let budget = Arc::new(DiskBudget::new(
+        10 * 1024 * 1024 * 1024,  // 10 GB hard cap
+        32 * 1024 * 1024,          // 32 MB segment headroom
+        RetentionPolicy::Backpressure,
+    ));
     let engine = QuiverEngine::open(config, budget).await?;
 
     // Register a subscriber

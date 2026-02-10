@@ -110,14 +110,14 @@ fn create_per_engine_budget(
     let segment_bytes = segment_size_mb * 1024 * 1024;
     let wal_bytes = wal_max_size_mb * 1024 * 1024;
 
-    // Validate: cap must be at least wal_max + segment_size (same check the
-    // engine performs at open time).
-    let minimum_cap = wal_bytes + segment_bytes;
+    // Validate: cap must be at least wal_max + 2 * segment_size (same check
+    // the engine performs at open time).
+    let minimum_cap = wal_bytes + 2 * segment_bytes;
     if per_engine_cap < minimum_cap {
         let min_global_mb = minimum_cap * num_engines as u64 / (1024 * 1024);
         return Err(format!(
             "disk budget ({} bytes) must be at least WAL max ({} bytes) + \
-             segment size ({} bytes) = {} bytes \
+             2 * segment size ({} bytes) = {} bytes \
              (global {} MB / {} engines = {} MB per engine). \
              Minimum global for {} engines: {} MB",
             per_engine_cap,
@@ -132,7 +132,7 @@ fn create_per_engine_budget(
         ));
     }
 
-    Ok(Arc::new(DiskBudget::new(per_engine_cap, policy)))
+    Ok(Arc::new(DiskBudget::new(per_engine_cap, segment_bytes, policy)))
 }
 
 /// Configuration for steady-state test.
