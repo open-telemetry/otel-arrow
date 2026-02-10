@@ -555,11 +555,10 @@ impl QuiverEngine {
     /// During live ingestion, `cursor` is populated from the WAL offset.
     /// During WAL replay, `cursor` is populated from the WAL entry being replayed.
     ///
-    /// Segment finalization always uses `try_reserve_segment`, which checks the
-    /// combined WAL + segment usage against the cap. Because WAL and segment bytes
-    /// are tracked in separate pools, there is no transient double-charge during
-    /// finalization — the WAL bytes are released independently when WAL files are
-    /// purged after cursor advancement.
+    /// Segment finalization always uses `try_reserve`, which checks
+    /// `used + new <= cap`. The `cap >= wal_max + segment_size` validation
+    /// guarantees room for at least one finalization even at maximum WAL
+    /// usage. WAL bytes are released after cursor persistence and purge.
     #[inline]
     async fn append_to_segment_and_maybe_finalize<B: RecordBundle>(
         &self,
@@ -958,12 +957,12 @@ impl QuiverEngine {
     ///
     /// Uses async I/O for segment writing and WAL cursor persistence.
     ///
-    /// Because WAL and segment bytes are tracked in separate pools within the
-    /// budget, `try_reserve_segment` checks the combined usage (`wal_used +
-    /// segment_used + new`) against the cap. The WAL bytes being converted
-    /// into a segment are not double-charged — they live in `wal_used` while
-    /// the new segment bytes live in `segment_used`. After `persist_cursor`
-    /// purges the superseded WAL files, `wal_used` decreases independently.
+    /// Budget accounting: `try_reserve` checks `used + new <= cap` before
+    /// writing the segment. After the segment is written and the WAL cursor
+    /// is persisted, the superseded WAL files are purged and their bytes
+    /// released. The `cap >= wal_max + segment_size` validation at engine
+    /// open ensures there is always room for at least one segment
+    /// finalization, even when the WAL is at capacity.
     async fn finalize_segment_impl(&self) -> Result<()> {
         // First, check if there's anything to finalize (without swapping)
         let estimated_size = {
@@ -975,7 +974,7 @@ impl QuiverEngine {
         };
 
         // Reserve budget BEFORE swapping out the segment.
-        let pending = self.budget.try_reserve_segment(estimated_size)?;
+        let pending = self.budget.try_reserve(estimated_size)?;
 
         // Now safe to swap out the segment and cursor
         let (segment, cursor) = {
@@ -5444,17 +5443,12 @@ mod tests {
     /// Regression test: WAL replay must not deadlock under Backpressure policy
     /// when the budget is tight.
     ///
-    /// Before the split, a single `used` counter tracked both WAL and segment
-    /// bytes.  At startup the budget was charged for existing WAL bytes
-    /// (`WalWriter::open → record_wal_bytes`) and existing segment bytes
-    /// (`SegmentStore::scan_existing → record_existing_segment`).  When
-    /// `replay_wal` triggered `finalize_segment_impl`, trying to reserve
-    /// segment bytes *on top of* the already-counted WAL bytes transiently
-    /// double-charged, exceeding the cap and returning `StorageAtCapacity`.
-    ///
-    /// With split WAL/segment pools the reservation checks
-    /// `wal_used + segment_used + new <= cap`, so the WAL bytes don't crowd
-    /// out the segment reservation.
+    /// Before the fix, a single `used` counter combined with `reserved_headroom`
+    /// led to incorrect cap validation during WAL replay. The fix removed
+    /// `reserved_headroom` entirely and added the structural guarantee
+    /// `cap >= wal_max + segment_size` at engine open time, ensuring that
+    /// `try_reserve` always has room for at least one segment write, even
+    /// when the WAL is at maximum capacity.
     #[tokio::test]
     async fn wal_replay_under_tight_backpressure_budget_succeeds() {
         let dir = tempdir().expect("tempdir");
@@ -5534,20 +5528,17 @@ mod tests {
 
         // Phase 2: Reopen with a tight Backpressure budget.
         //
-        // Set cap = exact disk usage.  At startup, WAL bytes go into `wal_used`
-        // and segment bytes go into `segment_used`.  Because the pools are
-        // separate, `try_reserve_segment` checks `wal_used + segment_used + N <=
-        // cap`.  The WAL bytes being finalized into a segment are NOT
-        // double-charged: they stay in `wal_used` until purge, and the new
-        // segment goes into `segment_used`.
+        // Set cap = exact disk usage (or the minimum required by validation).
+        // At startup, both WAL bytes and segment bytes are recorded via
+        // `budget.record()`. When replay triggers finalization,
+        // `try_reserve` checks `used + N <= cap`. The structural guarantee
+        // `cap >= wal_max + segment_size` ensures finalization always has
+        // room — WAL bytes are released after cursor persistence and purge.
         let disk_total = disk_segment_bytes + disk_wal_bytes;
         let wal_max: u64 = wal_config.max_size_bytes.get();
         let min_budget = wal_max + segment_target; // QuiverEngine::open requires cap >= wal_max + segment_size
         let tight_cap = disk_total.max(min_budget);
-        let tight_budget = Arc::new(DiskBudget::new(
-            tight_cap,
-            RetentionPolicy::Backpressure,
-        ));
+        let tight_budget = Arc::new(DiskBudget::new(tight_cap, RetentionPolicy::Backpressure));
 
         let config2 = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -5556,9 +5547,9 @@ mod tests {
             .build()
             .expect("config valid");
 
-        // This open() must succeed.  With split WAL/segment accounting,
-        // try_reserve_segment sees the WAL bytes as overhead in the wal_used
-        // pool, so there is no transient double-charge.
+        // This open() must succeed.  The `cap >= wal_max + segment_size`
+        // guarantee ensures `try_reserve` always has room for finalization,
+        // and WAL bytes are released after purge.
         let engine = QuiverEngine::open(config2, tight_budget.clone())
             .await
             .expect(

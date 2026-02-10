@@ -521,7 +521,7 @@ impl WalWriter {
 
         // Record existing WAL bytes in the shared disk budget (if provided)
         if let Some(ref budget) = coordinator.options.budget {
-            budget.record_wal_bytes(coordinator.aggregate_bytes);
+            budget.record(coordinator.aggregate_bytes);
         }
 
         otel_info!(
@@ -1025,7 +1025,7 @@ impl WalCoordinator {
 
         // Record the new WAL bytes in the shared disk budget (if provided)
         if let Some(ref budget) = self.options.budget {
-            budget.record_wal_bytes(entry_total_bytes);
+            budget.record(entry_total_bytes);
         }
 
         // Record the entry end position for in-memory cursor validation
@@ -1495,7 +1495,7 @@ impl WalCoordinator {
                 self.aggregate_bytes = self.aggregate_bytes.saturating_sub(purged_bytes);
 
                 if let Some(ref budget) = self.options.budget {
-                    budget.release_wal_bytes(purged_bytes);
+                    budget.release(purged_bytes);
                 }
 
                 otel_debug!(
