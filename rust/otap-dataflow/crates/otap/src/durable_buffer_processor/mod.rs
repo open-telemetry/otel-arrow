@@ -838,7 +838,7 @@ impl DurableBuffer {
                 // Rate-limit flush warnings to at most once every 10 seconds
                 // since the timer tick fires every poll_interval (~100ms).
                 let now = Instant::now();
-                let should_log = self.last_flush_warn.map_or(true, |last| {
+                let should_log = self.last_flush_warn.is_none_or(|last| {
                     now.duration_since(last) >= Duration::from_secs(10)
                 });
                 if should_log {
