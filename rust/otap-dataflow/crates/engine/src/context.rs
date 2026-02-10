@@ -114,9 +114,10 @@ pub struct PipelineContext {
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
     internal_telemetry: Option<InternalTelemetrySettings>,
-    /// Shared mapping from node names to pipeline indices.
-    /// Populated before node factories are called so that any node
-    /// can resolve peer node names to indices.
+    /// Shared mapping from node names to pipeline indices for mapping
+    /// node names to the index used to send node control messages by,
+    /// for example to map source-node name to index for inferring
+    /// routes at runtime (e.g., how crates/validation works).
     node_names: NodeNameIndex,
 }
 
