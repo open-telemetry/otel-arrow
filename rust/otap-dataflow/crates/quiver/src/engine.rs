@@ -502,9 +502,8 @@ impl QuiverEngine {
                 // Re-check after cleanup attempts
                 if self.budget.is_over_soft_cap() {
                     return Err(QuiverError::StorageAtCapacity {
-                        requested: 0,
                         available: self.budget.headroom(),
-                        cap: self.budget.soft_cap(),
+                        soft_cap: self.budget.soft_cap(),
                     });
                 }
             }
