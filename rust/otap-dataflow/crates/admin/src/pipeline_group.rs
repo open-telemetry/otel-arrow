@@ -8,6 +8,16 @@
 //!   - Query parameters:
 //!     - `wait` (bool, default: false) - if true, block until all pipelines have stopped
 //!     - `timeout_secs` (u64, default: 60) - maximum seconds to wait when `wait=true`
+//!
+//!   Example (fire-and-forget):
+//!   ```sh
+//!   curl -X POST http://localhost:8080/pipeline-groups/shutdown
+//!   ```
+//!   Example (wait for graceful shutdown with 30s timeout):
+//!   ```sh
+//!   curl -X POST "http://localhost:8080/pipeline-groups/shutdown?wait=true&timeout_secs=30"
+//!   ```
+//!
 //!   - 200 OK if `wait=true` and all pipelines stopped successfully
 //!   - 202 Accepted if the stop request was accepted and is being processed (async operation)
 //!   - 400 Bad Request if the pipeline is already stopped (ToDo)

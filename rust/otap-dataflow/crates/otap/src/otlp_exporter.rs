@@ -224,6 +224,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    otel_info!("otlp.exporter.shutdown");
                     debug_assert!(
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
