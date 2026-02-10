@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770737888320,
+  "lastUpdate": 1770758376174,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6718,6 +6718,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11518856.84118842,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "1f22e633cf950a3e0bae41c7360d2c895d2eb143",
+          "message": "fix: error applying transport optimized encoding to plain encoded String/Binary types (#2013)\n\n# Change Summary\n\nProperly track the current offsets when appending segments of the sorted\nvalues column when the type is a plain encoded String/Binary array.\n\nPrior to this fix, we'd have an error when we built the final value\ncolumn if more than one non-null segment of the array was appended. This\nwould happen because we appended offsets generated from slices of the\nvalues array, which were offset from the start of the slice, not from\nthe start of the array. This would cause a non-monotonically increasing\noffsets array for the resulting `StringArray`/`BinaryArray`, which is\ninvalid.\n\n## What issue does this PR close?\n\n* Closes #1974 \n\n## How are these changes tested?\n\nNew unit tests\n\n## Are there any user-facing changes?\n\nNo.",
+          "timestamp": "2026-02-10T20:26:32Z",
+          "tree_id": "7a779cded6a4f033c46a08cb2ed4fc29eb2586a2",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1f22e633cf950a3e0bae41c7360d2c895d2eb143"
+        },
+        "date": 1770758375738,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -0.9116285443305969,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 95.91055875941214,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.53195116207003,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 45.12473958333333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 47.7890625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 528806.220551699,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 533626.9688068859,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.007282,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11586100.600037752,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11529569.245845294,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
