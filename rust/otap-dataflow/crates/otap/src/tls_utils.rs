@@ -71,7 +71,7 @@ fn convert_native_certs_to_pem(cert_res: &rustls_native_certs::CertificateResult
     let mut pem_data = Vec::new();
 
     for error in &cert_res.errors {
-        otel_warn!("tls.native_cert.load_error", error = ?error, message = "Error loading native cert");
+        otel_warn!("tls.native_cert.load_error", error = ?error);
     }
 
     for cert in &cert_res.certs {
