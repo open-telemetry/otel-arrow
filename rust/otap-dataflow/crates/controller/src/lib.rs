@@ -198,10 +198,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             telemetry_config.logs.providers.uses_its_provider(),
         ) {
             (false, true) => {
-                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
+                otel_warn!(
+                    "its.provider.missing_pipeline",
+                    message = "ITS provider requested yet internal pipeline nodes not defined"
+                )
             }
             (true, false) => {
-                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+                otel_warn!(
+                    "its.pipeline.missing_provider",
+                    message = "Internal pipeline nodes defined yet ITS provider not requested"
+                )
             }
             _ => {}
         };

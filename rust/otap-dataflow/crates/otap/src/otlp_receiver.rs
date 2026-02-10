@@ -383,6 +383,7 @@ impl OTLPReceiver {
     ) -> Result<Option<TerminalState>, Error> {
         match msg {
             NodeControlMsg::Shutdown { deadline, .. } => {
+                otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
                 let snapshot = self.metrics.lock().snapshot();
                 if let Some(handle) = telemetry_cancel_handle.take() {
                     _ = handle.cancel().await;

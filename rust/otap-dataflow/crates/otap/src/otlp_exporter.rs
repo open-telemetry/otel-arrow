@@ -119,9 +119,8 @@ impl Exporter<OtapPdata> for OTLPExporter {
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otel_info!(
-            "exporter.start",
-            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str(),
-            message = "Starting OTLP Exporter"
+            "otlp.exporter.grpc.start",
+            grpc_endpoint = self.config.grpc.grpc_endpoint.as_str()
         );
 
         self.config.grpc.log_proxy_info();
@@ -195,7 +194,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                 msg
             } else if inflight_exports.is_empty() {
                 let msg = msg_chan.recv().await?;
-                otel_debug!("exporter.receive", "Received message from pipeline");
+                otel_debug!("otlp.exporter.grpc.receive");
                 msg
             } else {
                 let completion_fut = inflight_exports.next_completion().fuse();
@@ -217,7 +216,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     }
                     msg = recv_fut => {
                         let msg = msg?;
-                        otel_debug!("exporter.receive", "Received message from pipeline");
+                        otel_debug!("otlp.exporter.grpc.receive");
                         msg
                     },
                 }
@@ -225,6 +224,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
+                    otel_info!("otlp.exporter.shutdown");
                     debug_assert!(
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
