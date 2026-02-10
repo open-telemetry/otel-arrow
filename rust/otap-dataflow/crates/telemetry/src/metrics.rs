@@ -14,14 +14,14 @@ use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality
 use crate::entity::EntityRegistry;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
 /// Numeric metric value (integer or floating-point).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
@@ -79,13 +79,13 @@ impl MetricValue {
     }
 
     /// Resets the value to zero while keeping the numeric variant.
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         *self = self.zero_of_kind();
     }
 
     /// Returns the floating-point representation of the value.
     #[must_use]
-    pub fn to_f64(self) -> f64 {
+    pub const fn to_f64(self) -> f64 {
         match self {
             MetricValue::U64(v) => v as f64,
             MetricValue::F64(v) => v,
@@ -94,7 +94,7 @@ impl MetricValue {
 
     /// Converts the metric value to `u64`, lossy for floating-point values.
     #[must_use]
-    pub fn to_u64_lossy(self) -> u64 {
+    pub const fn to_u64_lossy(self) -> u64 {
         match self {
             MetricValue::U64(v) => v,
             MetricValue::F64(v) => v as u64,
@@ -139,19 +139,19 @@ impl<M: MetricSetHandler> MetricSet<M> {
 
     /// Returns the entity key associated with this metric set.
     #[must_use]
-    pub fn entity_key(&self) -> EntityKey {
+    pub const fn entity_key(&self) -> EntityKey {
         self.entity_key
     }
 
     /// Returns the metrics key associated with this metric set.
     #[must_use]
-    pub fn metrics_key(&self) -> MetricSetKey {
+    pub const fn metrics_key(&self) -> MetricSetKey {
         self.key
     }
 
     /// Returns the metric set key associated with this metric set.
     #[must_use]
-    pub fn metric_set_key(&self) -> MetricSetKey {
+    pub const fn metric_set_key(&self) -> MetricSetKey {
         self.key
     }
 }
@@ -226,7 +226,7 @@ impl Debug for MetricsEntry {
 impl MetricsEntry {
     /// Creates a new metrics entry
     #[must_use]
-    pub fn new(
+    pub const fn new(
         metrics_descriptor: &'static MetricsDescriptor,
         metric_values: Vec<MetricValue>,
         entity_key: EntityKey,
@@ -585,7 +585,10 @@ mod tests {
     }
 
     fn register_entity(registry: &mut EntityRegistry, value: &str) -> EntityKey {
-        registry.register(MockAttributeSet::new(value.to_string()))
+        // Note: tests do not distinguish outcomes, so this returns just the key().
+        registry
+            .register(MockAttributeSet::new(value.to_string()))
+            .key()
     }
 
     #[test]

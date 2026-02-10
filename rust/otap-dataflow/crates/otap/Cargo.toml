@@ -21,7 +21,6 @@ futures.workspace = true
 futures-timer.workspace = true
 http.workspace = true
 humantime-serde.workspace = true
-log.workspace = true
 object_store = {workspace = true, features = ["fs"]}
 parquet.workspace = true
 thiserror = { workspace = true }
@@ -42,6 +41,7 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 parking_lot = { workspace = true }
 base64 = { workspace = true }
+tracing = { workspace = true }
 
 data_engine_kql_parser = { workspace = true }
 data_engine_expressions = { workspace =  true }
@@ -89,6 +89,7 @@ azure_identity = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
 
 # OpenTelemetry proto with tonic feature enabled
 opentelemetry-proto = { workspace = true, optional = true }
@@ -98,6 +99,11 @@ rustls = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
+
+# Quiver persistence engine (durable buffer processor)
+quiver = { package = "otap-df-quiver", path = "../quiver" }
+blake3.workspace = true
+byte-unit.workspace = true
 
 [features]
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
@@ -112,6 +118,7 @@ azure-monitor-exporter = [
     "dep:reqwest",
     "dep:azure_core",
     "dep:ahash",
+    "dep:sysinfo",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
 # Experimental processors
@@ -122,12 +129,13 @@ recordset-kql-processor = [
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset"
 ]
+resource-validator-processor = ["experimental-processors"]
+
 
 [dev-dependencies]
 flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
-rcgen.workspace = true
 tempfile.workspace = true
 url.workspace = true
 tokio-util.workspace = true
@@ -137,5 +145,6 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-stream.workspace = true
+otap-test-tls-certs.workspace = true
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
 otap-df-state = { path = "../state" }

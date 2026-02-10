@@ -2,7 +2,7 @@
 
 This documents the choices available in the internal logging
 configuration object in
-`otap_df_config::pipeline::service::telemetry::logs`. See the
+`otap_df_config::settings::telemetry::logs`. See the
 [internal telemetry crate's README](../crates/telemetry/README.md) for
 the motivation behind this configuration as well as for a description
 of the internal metrics pipeline.
@@ -70,7 +70,7 @@ and attrbutes.
 
 Because OTLP bytes is one of the builtin `OtapPayload` formats, it is
 simple to get from a slic of `LogRecord` to the `OtapPayload` we need
-to consume internal telemetry.  To obtain the partial bytes encoding
+to consume internal telemetry. To obtain the partial bytes encoding
 needed, we have a custom [Tokio `tracing` Event][TOKIOEVENT] handler
 based on `otap_df_pdata::otlp::common::ProtoBuffer`.
 
@@ -99,6 +99,7 @@ settings:
 - Global: The default Tokio subscriber, this will apply in threads
   that do not belong to an OTAP dataflow engine core.
 - Engine: This is the default configuration for engine core threads.
+- Admin: This is the configuration use in administrative threads.
 - Internal: This is the default configuration for internal telemetry
   pipeline components.
 
@@ -113,6 +114,120 @@ Provider mode values are:
 Note that the ITS and ConsoleAsync modes share a the same provider
 logic, which writes to an internal channel. These modes differ in how
 the channel is consumed.
+
+## Provider Mode Diagrams
+
+### Noop Provider
+
+Logs are silently dropped. Useful for testing or disabling logging.
+
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["NoSubscriber<br/>(logs dropped)"]
+    A --> B
+```
+
+### ConsoleDirect Provider
+
+Synchronous console output. Simple but may block the producing thread.
+
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["RawLoggingLayer<br/>+ EnvFilter"]
+    C["Console<br/>(stdout)"]
+    A --> B
+    B -->|blocking| C
+```
+
+### ConsoleAsync Provider
+
+Asynchronous console output via a bounded channel. Non-blocking for
+the producing thread; logs will be dropped if the channel is full.
+
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["AsyncLayer<br/>+ EnvFilter"]
+    C["Bounded Channel<br/>(flume::Sender)"]
+    D["LogsCollector<br/>(background task)"]
+    E["Console<br/>(stdout)"]
+    A --> B
+    B -->|non-blocking send| C
+    C --> D
+    D --> E
+```
+
+### OpenTelemetry Provider
+
+Routes logs through the OpenTelemetry SDK for export to backends.
+
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["OTelTracingBridge<br/>+ EnvFilter"]
+    C["SdkLoggerProvider<br/>(queue processor)"]
+    D["OTLP Exporter<br/>(to backend)"]
+    A --> B
+    B -->|non-blocking| C
+    C --> D
+```
+
+### ITS Provider (Internal Telemetry System)
+
+Routes logs through the internal telemetry pipeline for self-hosted
+telemetry consumption. Uses the same channel mechanism as ConsoleAsync
+but consumed by the Internal Telemetry Receiver.
+
+```mermaid
+flowchart TB
+    A["Application Code<br/>tracing::info!()"]
+    B["AsyncLayer<br/>+ EnvFilter"]
+    C["Bounded Channel<br/>(flume::Sender)"]
+
+    subgraph ITP["Internal Telemetry Pipeline"]
+        D["ITR Receiver"]
+        E["Processor"]
+        F["Exporter"]
+        D --> E --> F
+    end
+
+    A --> B
+    B -->|non-blocking send| C
+    C --> D
+```
+
+## Thread Model and Subscriber Scopes
+
+The tracing subscriber can be configured at two scopes:
+
+1. Global subscriber (`try_init_global`): Set once at startup,
+   applies to all threads that do not use with_subscriber.
+2. Thread-local subscriber (`with_subscriber`): Temporarily sets
+   a subscriber for the duration of a closure. Used by engine threads.
+
+```mermaid
+flowchart TB
+    subgraph Process
+        subgraph Global["Global Subscriber<br/>Applies to: main thread, misc threads"]
+        end
+
+        subgraph ET0["Engine Thread 0"]
+            TL0["Thread-local Subscriber<br/>(with_subscriber)"]
+            PC0["Pipeline code runs<br/>with thread-local<br/>tracing active"]
+        end
+
+        subgraph ET1["Engine Thread 1"]
+            TL1["Thread-local Subscriber<br/>(with_subscriber)"]
+            PC1["Pipeline code runs<br/>with thread-local<br/>tracing active"]
+        end
+
+        subgraph Admin["Admin Observer Thread<br/>(e.g., for ConsoleAsync mode)"]
+            AD["Uses ConsoleDirect<br/>or Noop"]
+        end
+    end
+```
 
 ## Default configuration
 
@@ -135,6 +250,7 @@ service:
       providers:
         global: console_async
         engine: console_async
+        admin: console_direct
         internal: noop
 ```
 
@@ -153,6 +269,7 @@ service:
       providers:
         global: its
         engine: its
+        admin: noop
         internal: console_direct
 
 # Normal pipeline node
@@ -162,7 +279,7 @@ nodes:
 # Internal telemetry pipeline nodes
 internal:
   kind: receiver
-  plugin_urn: "urn:otel:otlp:telemetry:receiver"
+  plugin_urn: "urn:otel:internal_telemetry:receiver"
   out_ports:
     out_port:
       destinations:

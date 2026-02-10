@@ -7,15 +7,31 @@
 //! via memory mapping or standard file I/O. It implements [`SegmentProvider`]
 //! for integration with the subscriber registry.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use parking_lot::{Mutex, RwLock};
 
 use crate::budget::DiskBudget;
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
+
+/// Result of scanning the segment directory during startup.
+///
+/// Contains both the segments that were successfully loaded and the
+/// sequence numbers of segments that were deleted due to expiration.
+/// The deleted IDs are needed so the subscriber registry can mark them
+/// as completed, preventing subscribers from trying to read missing files.
+#[derive(Debug, Default)]
+pub struct ScanResult {
+    /// Segments that were found and registered, sorted by sequence number.
+    /// Each entry contains the segment sequence and its bundle count.
+    pub found: Vec<(SegmentSeq, u32)>,
+    /// Segment sequences that were deleted during scan (e.g., expired by max_age).
+    pub deleted: Vec<SegmentSeq>,
+}
 
 /// Type alias for subscriber-related results.
 type Result<T> = std::result::Result<T, SubscriberError>;
@@ -59,13 +75,20 @@ struct SegmentHandle {
     bundle_count: u32,
     /// Size of the segment file in bytes.
     file_size_bytes: u64,
+    /// Time when the segment was finalized (from file modification time).
+    finalized_at: SystemTime,
 }
 
 impl SegmentHandle {
     /// Opens a segment file using the specified read mode.
     fn open(seq: SegmentSeq, path: PathBuf, mode: SegmentReadMode) -> Result<Self> {
-        // Get file size before opening (for budget tracking)
-        let file_size_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // Get file metadata for size and modification time (finalization timestamp)
+        let metadata = std::fs::metadata(&path).map_err(|e| SubscriberError::SegmentIo {
+            path: path.clone(),
+            source: e,
+        })?;
+        let file_size_bytes = metadata.len();
+        let finalized_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
         let reader = match mode {
             SegmentReadMode::Standard => SegmentReader::open(&path),
@@ -85,6 +108,7 @@ impl SegmentHandle {
             reader,
             bundle_count,
             file_size_bytes,
+            finalized_at,
         })
     }
 
@@ -133,6 +157,9 @@ pub struct SegmentStore {
     on_segment_registered: Mutex<Option<SegmentCallback>>,
     /// Optional disk budget for tracking segment storage usage.
     budget: Option<Arc<DiskBudget>>,
+    /// Segments pending deletion (e.g., file deletion failed due to sharing violation on Windows).
+    /// These will be retried during the next maintenance cycle.
+    pending_deletes: Mutex<HashSet<SegmentSeq>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -162,6 +189,7 @@ impl SegmentStore {
             segments: RwLock::new(BTreeMap::new()),
             on_segment_registered: Mutex::new(None),
             budget: None,
+            pending_deletes: Mutex::new(HashSet::new()),
         }
     }
 
@@ -179,6 +207,7 @@ impl SegmentStore {
             segments: RwLock::new(BTreeMap::new()),
             on_segment_registered: Mutex::new(None),
             budget: Some(budget),
+            pending_deletes: Mutex::new(HashSet::new()),
         }
     }
 
@@ -197,7 +226,7 @@ impl SegmentStore {
 
     /// Returns the read mode being used.
     #[must_use]
-    pub fn read_mode(&self) -> SegmentReadMode {
+    pub const fn read_mode(&self) -> SegmentReadMode {
         self.read_mode
     }
 
@@ -284,9 +313,15 @@ impl SegmentStore {
     ///
     /// The segment's file size is released from the disk budget if one was configured.
     ///
+    /// If the file cannot be deleted (e.g., due to a sharing violation on Windows
+    /// when the segment is still memory-mapped), the segment is added to a pending
+    /// delete list and will be retried during the next maintenance cycle via
+    /// [`retry_pending_deletes`](Self::retry_pending_deletes).
+    ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be deleted (e.g., permissions).
+    /// Note: On Windows, sharing violations are handled gracefully by deferring deletion.
     pub fn delete_segment(&self, seq: SegmentSeq) -> std::io::Result<()> {
         // First remove from in-memory map and get file size for budget release
         let file_size = {
@@ -297,14 +332,23 @@ impl SegmentStore {
         // Delete the file from disk
         let path = self.segment_path(seq);
         if path.exists() {
-            // Segment files are read-only after finalization, make writable first
-            if let Ok(metadata) = path.metadata() {
-                let mut perms = metadata.permissions();
-                #[allow(clippy::permissions_set_readonly_false)]
-                perms.set_readonly(false);
-                let _ = std::fs::set_permissions(&path, perms);
+            match Self::remove_readonly_file(&path) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // File was already deleted externally since the call to path.exists(). Treat as success.
+                }
+                Err(e) if Self::is_sharing_violation(&e) => {
+                    // On Windows, the file may still be memory-mapped by outstanding
+                    // BundleHandles. Add to pending deletes for retry later.
+                    tracing::debug!(
+                        segment = seq.raw(),
+                        "Segment file in use, deferring deletion"
+                    );
+                    let _ = self.pending_deletes.lock().insert(seq);
+                    // Don't return error - we've handled it by deferring
+                }
+                Err(e) => return Err(e),
             }
-            std::fs::remove_file(&path)?;
         }
 
         // Release bytes from budget regardless of whether the file existed on disk.
@@ -316,6 +360,103 @@ impl SegmentStore {
         Ok(())
     }
 
+    /// Checks if an I/O error is a sharing violation (Windows-specific).
+    ///
+    /// On Windows, this occurs when trying to delete a file that's still open
+    /// (e.g., memory-mapped by outstanding `BundleHandle`s).
+    #[cfg(windows)]
+    fn is_sharing_violation(error: &std::io::Error) -> bool {
+        // Windows error code 32: ERROR_SHARING_VIOLATION
+        // "The process cannot access the file because it is being used by another process."
+        error.raw_os_error() == Some(32)
+    }
+
+    #[cfg(not(windows))]
+    const fn is_sharing_violation(error: &std::io::Error) -> bool {
+        let _ = error;
+        false
+    }
+
+    /// Removes a read-only file from disk.
+    ///
+    /// On non-Unix platforms, defensively clears the read-only attribute before
+    /// deletion. On Unix, file deletion depends on directory write permissions,
+    /// not file permissions, so this step is skipped.
+    ///
+    /// Note: since Rust 1.85 (https://github.com/rust-lang/rust/pull/134679),
+    /// `std::fs::remove_file` natively handles readonly files on Windows, so
+    /// the attribute clearing is only needed for compatibility with older toolchains.
+    fn remove_readonly_file(path: &Path) -> std::io::Result<()> {
+        #[cfg(not(unix))]
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut perms = metadata.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+        std::fs::remove_file(path)
+    }
+
+    /// Retries deletion of segments that previously failed due to sharing violations.
+    ///
+    /// Returns the number of segments successfully deleted.
+    pub fn retry_pending_deletes(&self) -> usize {
+        let pending: Vec<SegmentSeq> = {
+            let pending = self.pending_deletes.lock();
+            pending.iter().copied().collect()
+        };
+
+        if pending.is_empty() {
+            return 0;
+        }
+
+        let mut deleted = 0;
+        for seq in pending {
+            let path = self.segment_path(seq);
+            if !path.exists() {
+                // File was deleted externally
+                let _ = self.pending_deletes.lock().remove(&seq);
+                deleted += 1;
+                continue;
+            }
+
+            match Self::remove_readonly_file(&path) {
+                Ok(_) => {
+                    let _ = self.pending_deletes.lock().remove(&seq);
+                    tracing::debug!(
+                        segment = seq.raw(),
+                        "Successfully deleted previously deferred segment"
+                    );
+                    deleted += 1;
+                }
+                Err(e) if Self::is_sharing_violation(&e) => {
+                    // Still in use, keep in pending list
+                    tracing::trace!(
+                        segment = seq.raw(),
+                        "Segment file still in use, will retry later"
+                    );
+                }
+                Err(e) => {
+                    // Other error - remove from pending and log
+                    let _ = self.pending_deletes.lock().remove(&seq);
+                    tracing::warn!(
+                        segment = seq.raw(),
+                        error = %e,
+                        "Failed to delete deferred segment"
+                    );
+                }
+            }
+        }
+
+        deleted
+    }
+
+    /// Returns the number of segments pending deletion.
+    #[must_use]
+    pub fn pending_delete_count(&self) -> usize {
+        self.pending_deletes.lock().len()
+    }
+
     /// Returns the path for a segment file.
     fn segment_path(&self, seq: SegmentSeq) -> PathBuf {
         self.segment_dir
@@ -325,12 +466,39 @@ impl SegmentStore {
     /// Scans the segment directory and loads existing segments.
     ///
     /// Called during startup to discover segments from a previous run.
+    /// Use [`scan_existing_with_max_age`](Self::scan_existing_with_max_age) to
+    /// automatically skip loading segments that have exceeded the retention age.
     ///
     /// # Errors
     ///
     /// Returns an error if directory scanning fails.
-    pub fn scan_existing(&self) -> Result<Vec<(SegmentSeq, u32)>> {
+    pub fn scan_existing(&self) -> Result<ScanResult> {
+        self.scan_existing_with_max_age(None)
+    }
+
+    /// Scans the segment directory and loads existing segments, optionally
+    /// filtering out expired segments without loading them.
+    ///
+    /// When `max_age` is provided, segment files whose modification time
+    /// exceeds the age limit are deleted without being loaded into memory.
+    /// This is more efficient than loading all segments and then calling
+    /// [`cleanup_expired_segments`](crate::QuiverEngine::cleanup_expired_segments).
+    ///
+    /// # Arguments
+    ///
+    /// * `max_age` - If provided, segments older than this duration are deleted
+    ///   without being loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory scanning fails.
+    pub fn scan_existing_with_max_age(&self, max_age: Option<Duration>) -> Result<ScanResult> {
         let mut found = Vec::new();
+        let mut deleted = Vec::new();
+        let now = SystemTime::now();
+
+        // Pre-compute cutoff time: segments modified before this are expired.
+        let cutoff = max_age.and_then(|age| now.checked_sub(age));
 
         let entries =
             std::fs::read_dir(&self.segment_dir).map_err(|e| SubscriberError::SegmentIo {
@@ -347,6 +515,28 @@ impl SegmentStore {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "qseg") {
                 if let Some(seq) = Self::parse_segment_filename(&path) {
+                    // Check if segment is expired before loading
+                    if let Some(cutoff) = cutoff {
+                        if Self::is_file_before_cutoff(&path, cutoff) {
+                            // Delete expired segment without loading it.
+                            // No budget release needed - file was never registered.
+                            if let Err(e) = Self::remove_readonly_file(&path) {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "failed to delete expired segment during scan"
+                                );
+                            } else {
+                                tracing::info!(
+                                    segment = seq.raw(),
+                                    "deleted expired segment during startup scan"
+                                );
+                                deleted.push(seq);
+                            }
+                            continue;
+                        }
+                    }
+
                     match self.register_segment(seq) {
                         Ok(bundle_count) => found.push((seq, bundle_count)),
                         Err(e) => {
@@ -364,8 +554,23 @@ impl SegmentStore {
 
         // Sort by sequence number
         found.sort_by_key(|(seq, _)| *seq);
+        deleted.sort();
 
-        Ok(found)
+        Ok(ScanResult { found, deleted })
+    }
+
+    /// Checks if a file's modification time is before the cutoff time.
+    ///
+    /// Returns `true` if the file should be considered expired, or `false` if the
+    /// metadata cannot be read (fail-safe: don't delete if we can't check).
+    fn is_file_before_cutoff(path: &Path, cutoff: SystemTime) -> bool {
+        match std::fs::metadata(path) {
+            Ok(metadata) => match metadata.modified() {
+                Ok(mtime) => mtime < cutoff,
+                Err(_) => false, // Can't determine age, don't expire
+            },
+            Err(_) => false, // Can't read metadata, don't expire
+        }
     }
 
     /// Parses a segment sequence number from a filename.
@@ -385,6 +590,36 @@ impl SegmentStore {
     #[must_use]
     pub fn segment_sequences(&self) -> Vec<SegmentSeq> {
         self.segments.read().keys().copied().collect()
+    }
+
+    /// Returns segments that were finalized more than `max_age` ago.
+    ///
+    /// This is used for age-based retention to identify segments that have
+    /// exceeded the configured maximum retention time. The returned segments
+    /// are candidates for deletion via [`cleanup_expired_segments`].
+    ///
+    /// [`cleanup_expired_segments`]: crate::QuiverEngine::cleanup_expired_segments
+    #[must_use]
+    pub fn segments_older_than(&self, max_age: Duration) -> Vec<SegmentSeq> {
+        let now = SystemTime::now();
+
+        let Some(cutoff) = now.checked_sub(max_age) else {
+            // max_age exceeds time since UNIX_EPOCH - nothing can be expired
+            return Vec::new();
+        };
+
+        let segments = self.segments.read();
+
+        segments
+            .iter()
+            .filter_map(|(seq, handle)| {
+                if handle.finalized_at < cutoff {
+                    Some(*seq)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 
@@ -448,5 +683,268 @@ mod tests {
         // Extension filtering (.qseg) is done by scan_existing().
         let seq = SegmentStore::parse_segment_filename(Path::new("0000000000000001.txt"));
         assert_eq!(seq, Some(SegmentSeq::new(1)));
+    }
+
+    #[test]
+    fn segments_older_than_empty_store() {
+        let dir = tempdir().unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+
+        // No segments, should return empty
+        let expired = store.segments_older_than(Duration::from_secs(1));
+        assert!(expired.is_empty());
+    }
+
+    #[test]
+    fn is_file_before_cutoff_checks_mtime() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "test").unwrap();
+
+        let now = SystemTime::now();
+
+        // File just created, cutoff 1 hour ago - file is NOT before cutoff
+        let cutoff_1hr_ago = now.checked_sub(Duration::from_secs(3600)).unwrap();
+        assert!(!SegmentStore::is_file_before_cutoff(
+            &file_path,
+            cutoff_1hr_ago
+        ));
+
+        // With a very short max_age and sleep, file should be before cutoff
+        std::thread::sleep(Duration::from_millis(50));
+        let later = SystemTime::now();
+        let cutoff_10ms_ago = later.checked_sub(Duration::from_millis(10)).unwrap();
+        assert!(SegmentStore::is_file_before_cutoff(
+            &file_path,
+            cutoff_10ms_ago
+        ));
+    }
+
+    #[test]
+    fn is_file_before_cutoff_nonexistent_file() {
+        // Non-existent file should not be considered expired (returns false)
+        let nonexistent = Path::new("/nonexistent/file.txt");
+        let cutoff = SystemTime::now();
+        assert!(!SegmentStore::is_file_before_cutoff(nonexistent, cutoff));
+    }
+
+    #[test]
+    fn pending_delete_count_initially_zero() {
+        let dir = tempdir().unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+        assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    #[test]
+    fn retry_pending_deletes_empty() {
+        let dir = tempdir().unwrap();
+        let store = SegmentStore::new(dir.path().join("segments"));
+
+        // No pending deletes, should return 0
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn retry_pending_deletes_file_already_gone() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        // Manually add a segment to pending deletes (simulating a failed delete)
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(SegmentSeq::new(1));
+        }
+        assert_eq!(store.pending_delete_count(), 1);
+
+        // The file doesn't exist, so retry should succeed (removes from pending)
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    #[test]
+    fn retry_pending_deletes_file_exists_deletable() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        // Create a dummy segment file
+        let seq = SegmentSeq::new(42);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::write(&path, "dummy segment data").unwrap();
+        assert!(path.exists());
+
+        // Manually add to pending deletes
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(seq);
+        }
+        assert_eq!(store.pending_delete_count(), 1);
+
+        // Retry should delete the file
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.pending_delete_count(), 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn is_sharing_violation_always_false_on_unix() {
+        // On non-Windows, is_sharing_violation should always return false
+        let err = std::io::Error::other("test error");
+        assert!(!SegmentStore::is_sharing_violation(&err));
+
+        #[cfg(not(windows))]
+        {
+            let err = std::io::Error::from_raw_os_error(32); // Would be sharing violation on Windows
+            assert!(!SegmentStore::is_sharing_violation(&err));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_sharing_violation_detects_error_code_32_on_windows() {
+        // On Windows, error code 32 is ERROR_SHARING_VIOLATION
+        let err = std::io::Error::from_raw_os_error(32);
+        assert!(SegmentStore::is_sharing_violation(&err));
+
+        // Other error codes should not be detected as sharing violations
+        let err = std::io::Error::from_raw_os_error(5); // ERROR_ACCESS_DENIED
+        assert!(!SegmentStore::is_sharing_violation(&err));
+
+        let err = std::io::Error::other("generic error");
+        assert!(!SegmentStore::is_sharing_violation(&err));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_segment_defers_on_sharing_violation_windows() {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+        let store = SegmentStore::new(&segment_dir);
+
+        // Create a segment file
+        let seq = SegmentSeq::new(99);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::write(&path, "segment data for windows test").unwrap();
+
+        // Open the file with a handle that prevents deletion (sharing violation)
+        // On Windows, opening without FILE_SHARE_DELETE will cause delete to fail
+        let _held_handle = OpenOptions::new()
+            .read(true)
+            .share_mode(0) // No sharing - this prevents deletion on Windows
+            .open(&path)
+            .expect("should open file");
+
+        // Add segment to the store's in-memory map (simulating a loaded segment)
+        // We can't use register_segment since the file format won't be valid,
+        // so we just test delete_segment directly which removes from map first
+        assert_eq!(store.pending_delete_count(), 0);
+
+        // Try to delete - should fail with sharing violation and add to pending
+        let result = store.delete_segment(seq);
+        assert!(
+            result.is_ok(),
+            "delete_segment should not error on sharing violation"
+        );
+        assert_eq!(
+            store.pending_delete_count(),
+            1,
+            "segment should be added to pending deletes"
+        );
+
+        // File should still exist
+        assert!(
+            path.exists(),
+            "file should still exist after deferred delete"
+        );
+
+        // Drop the handle to release the file
+        drop(_held_handle);
+
+        // Now retry should succeed
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 1, "retry should successfully delete");
+        assert_eq!(store.pending_delete_count(), 0);
+        assert!(!path.exists(), "file should be deleted after retry");
+    }
+
+    #[test]
+    fn remove_readonly_file_deletes_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.qseg");
+        std::fs::write(&file_path, "test data").unwrap();
+        assert!(file_path.exists());
+
+        SegmentStore::remove_readonly_file(&file_path).unwrap();
+        assert!(!file_path.exists());
+    }
+
+    /// Verifies that `remove_readonly_file` successfully deletes readonly files.
+    ///
+    /// Note: since Rust 1.85 (https://github.com/rust-lang/rust/pull/134679),
+    /// `std::fs::remove_file` natively handles readonly files on Windows, so
+    /// the attribute clearing is only needed for compatibility with older toolchains.
+    #[test]
+    fn remove_readonly_file_handles_readonly() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("readonly.qseg");
+        let content = "readonly content";
+        std::fs::write(&file_path, content).unwrap();
+
+        // Make the file read-only
+        let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&file_path, perms).unwrap();
+
+        // Verify it's actually read-only
+        assert!(
+            std::fs::metadata(&file_path)
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+
+        // Should still be able to delete it
+        SegmentStore::remove_readonly_file(&file_path).unwrap();
+        assert!(!file_path.exists(), "read-only file should be deleted");
+    }
+
+    #[test]
+    fn remove_readonly_file_nonexistent_errors() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("nonexistent.qseg");
+
+        let result = SegmentStore::remove_readonly_file(&file_path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Test that future mtime (clock skew) does not cause spurious expiration.
+    ///
+    /// If a file's mtime is in the future relative to the cutoff time,
+    /// it should not be considered expired.
+    #[test]
+    fn is_file_before_cutoff_future_mtime_not_expired() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "test").unwrap();
+
+        // Use a cutoff time far in the past - the file's mtime will be after it
+        let ancient_cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+
+        // File created recently should NOT be before the ancient cutoff
+        assert!(
+            !SegmentStore::is_file_before_cutoff(&file_path, ancient_cutoff),
+            "file with mtime after cutoff should not be considered expired"
+        );
     }
 }

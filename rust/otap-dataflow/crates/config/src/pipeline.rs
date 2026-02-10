@@ -9,6 +9,7 @@ use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
+use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,14 +21,17 @@ use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
-/// - "Hyper" because the edges connecting the nodes can be hyper-edges.  
-/// - A node can be connected to multiple outgoing nodes.  
+/// - "Hyper" because the edges connecting the nodes can be hyper-edges.
+/// - A node can be connected to multiple outgoing nodes.
 /// - The way messages are dispatched over each hyper-edge is defined by a dispatch strategy representing
 ///   different communication model semantics. For example, it could be a broadcast channel that sends
 ///   the same message to all destination nodes, or it might have a round-robin or least-loaded semantic,
 ///   similar to an SPMC channel.
 ///
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
+///
+/// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
+/// deserializing directly with serde to ensure plugin URNs are normalized.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
@@ -61,7 +65,7 @@ pub struct PipelineConfig {
     service: ServiceConfig,
 }
 
-fn default_pipeline_type() -> PipelineType {
+const fn default_pipeline_type() -> PipelineType {
     PipelineType::Otap
 }
 
@@ -182,6 +186,38 @@ impl PipelineNodes {
     /// Returns an iterator visiting all nodes.
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.0.iter()
+    }
+
+    /// Canonicalize plugin URNs for all nodes in this collection.
+    ///
+    /// This rewrites each node's `plugin_urn` to the canonical form and
+    /// attaches node/pipeline context to any validation errors.
+    fn canonicalize_plugin_urns(
+        &mut self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
+        for (node_id, node) in self.0.iter_mut() {
+            let mut updated = (**node).clone();
+            let normalized = crate::urn::validate_plugin_urn(
+                updated.plugin_urn.as_ref(),
+                updated.kind,
+            )
+            .map_err(|e| {
+                if let Error::InvalidUserConfig { error } = e {
+                    Error::InvalidUserConfig {
+                        error: format!(
+                            "node `{node_id}` in pipeline group `{pipeline_group_id}` pipeline `{pipeline_id}`: {error}"
+                        ),
+                    }
+                } else {
+                    e
+                }
+            })?;
+            updated.plugin_urn = normalized.into();
+            *node = Arc::new(updated);
+        }
+        Ok(())
     }
 
     /// Returns an iterator over node IDs.
@@ -357,49 +393,13 @@ pub struct PipelineSettings {
     pub telemetry: TelemetrySettings,
 }
 
-/// Configuration for pipeline-internal telemetry capture.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TelemetrySettings {
-    /// Enable capture of per-pipeline internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `pipeline.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub pipeline_metrics: bool,
-
-    /// Enable capture of Tokio runtime internal metrics.
-    ///
-    /// When disabled, the engine does not update or report the `tokio.runtime.metrics` metric set.
-    #[serde(default = "default_true")]
-    pub tokio_metrics: bool,
-
-    /// Enable capture of channel-level metrics.
-    ///
-    /// When disabled, the engine does not report channel sender/receiver metrics.
-    #[serde(default = "default_true")]
-    pub channel_metrics: bool,
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-impl Default for TelemetrySettings {
-    fn default() -> Self {
-        Self {
-            pipeline_metrics: true,
-            tokio_metrics: true,
-            channel_metrics: true,
-        }
-    }
-}
-
-fn default_node_ctrl_msg_channel_size() -> usize {
+const fn default_node_ctrl_msg_channel_size() -> usize {
     100
 }
-fn default_pipeline_ctrl_msg_channel_size() -> usize {
+const fn default_pipeline_ctrl_msg_channel_size() -> usize {
     100
 }
-fn default_pdata_channel_size() -> usize {
+const fn default_pdata_channel_size() -> usize {
     100
 }
 
@@ -422,13 +422,14 @@ impl PipelineConfig {
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
-        let cfg: PipelineConfig =
+        let mut cfg: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
                 context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
 
+        cfg.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         cfg.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(cfg)
     }
@@ -439,13 +440,14 @@ impl PipelineConfig {
         pipeline_id: PipelineId,
         yaml_str: &str,
     ) -> Result<Self, Error> {
-        let spec: PipelineConfig =
+        let mut spec: PipelineConfig =
             serde_yaml::from_str(yaml_str).map_err(|e| Error::DeserializationError {
                 context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
                 format: "YAML".to_string(),
                 details: e.to_string(),
             })?;
 
+        spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         spec.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(spec)
     }
@@ -510,13 +512,13 @@ impl PipelineConfig {
 
     /// Returns the general settings for this pipeline.
     #[must_use]
-    pub fn pipeline_settings(&self) -> &PipelineSettings {
+    pub const fn pipeline_settings(&self) -> &PipelineSettings {
         &self.settings
     }
 
     /// Returns the quota configuration for this pipeline.
     #[must_use]
-    pub fn quota(&self) -> &Quota {
+    pub const fn quota(&self) -> &Quota {
         &self.quota
     }
 
@@ -527,7 +529,7 @@ impl PipelineConfig {
 
     /// Returns a reference to the main pipeline nodes.
     #[must_use]
-    pub fn nodes(&self) -> &PipelineNodes {
+    pub const fn nodes(&self) -> &PipelineNodes {
         &self.nodes
     }
 
@@ -543,7 +545,7 @@ impl PipelineConfig {
 
     /// Returns the service-level telemetry configuration.
     #[must_use]
-    pub fn service(&self) -> &ServiceConfig {
+    pub const fn service(&self) -> &ServiceConfig {
         &self.service
     }
 
@@ -555,13 +557,66 @@ impl PipelineConfig {
 
     /// Returns a reference to the internal pipeline nodes.
     #[must_use]
-    pub fn internal_nodes(&self) -> &PipelineNodes {
+    pub const fn internal_nodes(&self) -> &PipelineNodes {
         &self.internal
     }
 
     /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
     pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.internal.iter()
+    }
+
+    /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
+    #[must_use]
+    pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
+        if self.internal.is_empty() {
+            return None;
+        }
+
+        Some(PipelineConfig {
+            r#type: self.r#type.clone(),
+            settings: Self::internal_pipeline_settings(),
+            quota: Quota::default(),
+            nodes: self.internal.clone(),
+            internal: PipelineNodes::default(),
+            service: ServiceConfig::default(),
+        })
+    }
+
+    /// Returns hardcoded settings for the internal telemetry pipeline.
+    ///
+    /// TODO: these are hard-coded, add configurability.
+    #[must_use]
+    pub fn internal_pipeline_settings() -> PipelineSettings {
+        PipelineSettings {
+            default_node_ctrl_msg_channel_size: 50,
+            default_pipeline_ctrl_msg_channel_size: 50,
+            default_pdata_channel_size: 50,
+            health_policy: HealthPolicy::default(),
+            telemetry: TelemetrySettings {
+                pipeline_metrics: false,
+                tokio_metrics: false,
+                channel_metrics: false,
+            },
+        }
+    }
+
+    /// Normalize plugin URNs for both main and internal pipeline node maps.
+    ///
+    /// This delegates to `PipelineNodes::canonicalize_plugin_urns` for each
+    /// node collection, ensuring a single canonical representation.
+    fn canonicalize_plugin_urns(
+        &mut self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
+        self.nodes
+            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
+        if !self.internal.is_empty() {
+            self.internal
+                .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
+        }
+        Ok(())
     }
 
     /// Validate the pipeline specification.
@@ -862,7 +917,7 @@ impl PipelineConfigBuilder {
             Err(Error::InvalidConfiguration { errors })
         } else {
             // Build the spec and validate it
-            let spec = PipelineConfig {
+            let mut spec = PipelineConfig {
                 nodes: self
                     .nodes
                     .into_iter()
@@ -875,6 +930,7 @@ impl PipelineConfigBuilder {
                 service: ServiceConfig::default(),
             };
 
+            spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
             spec.validate(&pipeline_group_id, &pipeline_id)?;
             Ok(spec)
         }
@@ -935,8 +991,8 @@ mod tests {
     #[test]
     fn test_duplicate_node_errors() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:receiver", None)
-            .add_processor("A", "urn:test:processor", None) // duplicate
+            .add_receiver("A", "urn:test:example:receiver", None)
+            .add_processor("A", "urn:test:example:processor", None) // duplicate
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -955,8 +1011,8 @@ mod tests {
     #[test]
     fn test_duplicate_outport_errors() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:receiver", None)
-            .add_exporter("B", "urn:test:exporter", None)
+            .add_receiver("A", "urn:test:example:receiver", None)
+            .add_exporter("B", "urn:test:example:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
             .build(PipelineType::Otap, "pgroup", "pipeline");
@@ -979,7 +1035,7 @@ mod tests {
     #[test]
     fn test_missing_source_error() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("B", "urn:test:receiver", None)
+            .add_receiver("B", "urn:test:example:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1005,7 +1061,7 @@ mod tests {
     #[test]
     fn test_missing_target_error() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:receiver", None)
+            .add_receiver("A", "urn:test:example:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1032,8 +1088,8 @@ mod tests {
     #[test]
     fn test_cycle_detection_error() {
         let result = PipelineConfigBuilder::new()
-            .add_processor("A", "urn:test:processor", None)
-            .add_processor("B", "urn:test:processor", None)
+            .add_processor("A", "urn:test:example:processor", None)
+            .add_processor("B", "urn:test:example:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
@@ -1059,8 +1115,12 @@ mod tests {
     #[test]
     fn test_successful_simple_build() {
         let dag = PipelineConfigBuilder::new()
-            .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
-            .add_exporter("End", "urn:test:exporter", None)
+            .add_receiver(
+                "Start",
+                "urn:test:example:receiver",
+                Some(json!({"foo": 1})),
+            )
+            .add_exporter("End", "urn:test:example:exporter", None)
             .broadcast("Start", "out", ["End"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1083,27 +1143,27 @@ mod tests {
             // ----- TRACES pipeline -----
             .add_receiver(
                 "receiver_otlp_traces",
-                "urn:test:receiver",
+                "urn:test:example:receiver",
                 Some(json!({"desc": "OTLP trace receiver"})),
             )
             .add_processor(
                 "processor_batch_traces",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"name": "batch_traces"})),
             )
             .add_processor(
                 "processor_resource_traces",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"name": "resource_traces"})),
             )
             .add_processor(
                 "processor_traces_to_metrics",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"desc": "convert traces to metrics"})),
             )
             .add_exporter(
                 "exporter_otlp_traces",
-                "urn:test:exporter",
+                "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP trace exporter"})),
             )
             .round_robin("receiver_otlp_traces", "out", ["processor_batch_traces"])
@@ -1125,27 +1185,27 @@ mod tests {
             // ----- METRICS pipeline -----
             .add_receiver(
                 "receiver_otlp_metrics",
-                "urn:test:receiver",
+                "urn:test:example:receiver",
                 Some(json!({"desc": "OTLP metric receiver"})),
             )
             .add_processor(
                 "processor_batch_metrics",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"name": "batch_metrics"})),
             )
             .add_processor(
                 "processor_metrics_to_events",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"desc": "convert metrics to events"})),
             )
             .add_exporter(
                 "exporter_prometheus",
-                "urn:test:exporter",
+                "urn:test:example:exporter",
                 Some(json!({"desc": "Prometheus exporter"})),
             )
             .add_exporter(
                 "exporter_otlp_metrics",
-                "urn:test:exporter",
+                "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP metric exporter"})),
             )
             .round_robin("receiver_otlp_metrics", "out", ["processor_batch_metrics"])
@@ -1164,27 +1224,27 @@ mod tests {
             // ----- LOGS pipeline -----
             .add_receiver(
                 "receiver_filelog",
-                "urn:test:receiver",
+                "urn:test:example:receiver",
                 Some(json!({"desc": "file log receiver"})),
             )
             .add_receiver(
                 "receiver_syslog",
-                "urn:test:receiver",
+                "urn:test:example:receiver",
                 Some(json!({"desc": "syslog receiver"})),
             )
             .add_processor(
                 "processor_filter_logs",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"name": "filter_logs"})),
             )
             .add_processor(
                 "processor_logs_to_events",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"desc": "convert logs to events"})),
             )
             .add_exporter(
                 "exporter_otlp_logs",
-                "urn:test:exporter",
+                "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP log exporter"})),
             )
             .round_robin("receiver_filelog", "out", ["processor_filter_logs"])
@@ -1194,17 +1254,17 @@ mod tests {
             // ----- EVENTS pipeline -----
             .add_receiver(
                 "receiver_some_events",
-                "urn:test:receiver",
+                "urn:test:example:receiver",
                 Some(json!({"desc": "custom event receiver"})),
             )
             .add_processor(
                 "processor_enrich_events",
-                "urn:test:processor",
+                "urn:test:example:processor",
                 Some(json!({"name": "enrich_events"})),
             )
             .add_exporter(
                 "exporter_queue_events",
-                "urn:test:exporter",
+                "urn:test:example:exporter",
                 Some(json!({"desc": "push events to queue"})),
             )
             .round_robin("receiver_some_events", "out", ["processor_enrich_events"])
@@ -1572,5 +1632,138 @@ mod tests {
         } else {
             panic!("Expected deserialization to fail due to unknown exporter");
         }
+    }
+
+    #[test]
+    fn test_extract_internal_config_from_yaml() {
+        // Parse a config with internal nodes from YAML
+        let yaml = r#"
+            settings:
+              default_pipeline_ctrl_msg_channel_size: 100
+              default_node_ctrl_msg_channel_size: 100
+              default_pdata_channel_size: 100
+
+            nodes:
+              receiver:
+                kind: receiver
+                plugin_urn: "urn:test:example:receiver"
+                out_ports:
+                  out:
+                    destinations: [exporter]
+                    dispatch_strategy: round_robin
+                config: {}
+              exporter:
+                kind: exporter
+                plugin_urn: "urn:test:example:exporter"
+                config: {}
+
+            internal:
+              itr:
+                kind: receiver
+                plugin_urn: "urn:otel:internal_telemetry:receiver"
+                out_ports:
+                  out_port:
+                    destinations: [console]
+                    dispatch_strategy: round_robin
+                config: {}
+              console:
+                kind: exporter
+                plugin_urn: "urn:otel:console:exporter"
+                config: {}
+        "#;
+
+        use super::PipelineConfig;
+        let config: PipelineConfig = serde_yaml::from_str(yaml).expect("should parse");
+
+        // Verify the main pipeline has internal nodes
+        assert_eq!(config.internal_node_iter().count(), 2);
+
+        // Extract internal config
+        let internal_config = config.extract_internal_config();
+        assert!(internal_config.is_some(), "should extract internal config");
+
+        let internal = internal_config.unwrap();
+
+        // Should have the internal pipeline settings
+        assert_eq!(internal.settings.default_node_ctrl_msg_channel_size, 50);
+        assert_eq!(internal.settings.default_pdata_channel_size, 50);
+
+        // Should have the internal nodes as its main nodes
+        assert_eq!(internal.nodes.len(), 2);
+
+        assert_eq!(
+            internal.nodes["itr"].plugin_urn.as_ref(),
+            "urn:otel:internal_telemetry:receiver"
+        );
+        assert_eq!(
+            internal.nodes["console"].plugin_urn.as_ref(),
+            "urn:otel:console:exporter"
+        );
+
+        // The extracted config's internal should be empty
+        assert!(internal.internal.is_empty());
+
+        // Telemetry should be disabled
+        assert!(!internal.settings.telemetry.pipeline_metrics);
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_normalizes_plugin_urns() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                kind: receiver
+                plugin_urn: "otlp:receiver"
+                out_ports:
+                  out:
+                    destinations: [processor]
+                    dispatch_strategy: round_robin
+                config: {}
+              processor:
+                kind: processor
+                plugin_urn: "attribute:processor"
+                out_ports:
+                  out:
+                    destinations: [exporter]
+                    dispatch_strategy: round_robin
+                config: {}
+              exporter:
+                kind: exporter
+                plugin_urn: "urn:otel:otlp:exporter"
+                config: {}
+        "#;
+
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("should parse");
+        assert_eq!(
+            config.nodes["receiver"].plugin_urn.as_ref(),
+            "urn:otel:otlp:receiver"
+        );
+        assert_eq!(
+            config.nodes["processor"].plugin_urn.as_ref(),
+            "urn:otel:attribute:processor"
+        );
+        assert_eq!(
+            config.nodes["exporter"].plugin_urn.as_ref(),
+            "urn:otel:otlp:exporter"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_legacy_urns_with_doc_link() {
+        let yaml = r#"
+            nodes:
+              exporter:
+                kind: exporter
+                plugin_urn: "urn:otel:otap:perf:exporter"
+                config: {}
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("invalid plugin urn"));
+        assert!(message.contains("urn:<namespace>:<id>:<kind>"));
+        assert!(message.contains("rust/otap-dataflow/docs/urns.md"));
     }
 }

@@ -42,7 +42,7 @@ pub struct TlsConfig {
     pub reload_interval: Option<Duration>,
 }
 
-fn default_reload_interval() -> Option<Duration> {
+const fn default_reload_interval() -> Option<Duration> {
     Some(Duration::from_secs(300))
 }
 
@@ -125,6 +125,6 @@ pub struct TlsServerConfig {
     pub handshake_timeout: Option<Duration>,
 }
 
-fn default_handshake_timeout() -> Option<Duration> {
+const fn default_handshake_timeout() -> Option<Duration> {
     Some(Duration::from_secs(10))
 }

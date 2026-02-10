@@ -319,7 +319,7 @@ impl DiskBudget {
 
     /// Returns the configured retention policy.
     #[must_use]
-    pub fn policy(&self) -> RetentionPolicy {
+    pub const fn policy(&self) -> RetentionPolicy {
         self.policy
     }
 

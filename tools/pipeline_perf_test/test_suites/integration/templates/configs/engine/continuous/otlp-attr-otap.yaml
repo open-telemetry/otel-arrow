@@ -13,12 +13,14 @@ nodes:
           - attr
         dispatch_strategy: round_robin
     config:
-      listening_addr: "0.0.0.0:4317"
-      request_compression: gzip
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+          request_compression: gzip
 
   attr:
     kind: processor
-    plugin_urn: "urn:otap:processor:attributes_processor"
+    plugin_urn: "urn:otel:attribute:processor"
     out_ports:
       out_port:
         destinations:

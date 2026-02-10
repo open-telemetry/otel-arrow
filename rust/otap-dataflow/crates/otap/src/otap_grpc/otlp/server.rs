@@ -19,7 +19,9 @@ use http::{Request, Response};
 use otap_df_config::SignalType;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -110,7 +112,7 @@ struct OtlpBytesCodec {
 }
 
 impl OtlpBytesCodec {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -137,7 +139,7 @@ struct OtlpResponseEncoder {
 }
 
 impl OtlpResponseEncoder {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -177,7 +179,7 @@ struct OtlpBytesDecoder {
 }
 
 impl OtlpBytesDecoder {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -221,7 +223,7 @@ struct OtapBatchService {
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
+    const fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
@@ -283,7 +285,10 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             };
 
             // Send and wait for Ack/Nack
-            match effect_handler.send_message(otap_batch).await {
+            match effect_handler
+                .send_message_with_source_node(otap_batch)
+                .await
+            {
                 Ok(_) => {}
                 Err(e) => {
                     return Err(Status::internal(format!("Failed to send to pipeline: {e}")));

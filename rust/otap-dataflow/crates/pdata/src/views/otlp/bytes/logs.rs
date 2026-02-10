@@ -7,6 +7,8 @@
 use std::cell::Cell;
 use std::num::NonZeroUsize;
 
+use crate::OtlpProtoBytes;
+use crate::error::Error;
 use crate::proto::consts::field_num::logs::{
     LOG_RECORD_ATTRIBUTES, LOG_RECORD_BODY, LOG_RECORD_DROPPED_ATTRIBUTES_COUNT,
     LOG_RECORD_EVENT_NAME, LOG_RECORD_FLAGS, LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
@@ -17,7 +19,6 @@ use crate::proto::consts::field_num::logs::{
 };
 use crate::proto::consts::wire_types;
 use crate::schema::{SpanId, TraceId};
-
 use crate::views::logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView};
 use crate::views::otlp::bytes::common::{
     KeyValueIter, RawAnyValue, RawInstrumentationScope, RawKeyValue,
@@ -30,6 +31,8 @@ use crate::views::otlp::bytes::decode::{
 use crate::views::otlp::bytes::resource::RawResource;
 
 /// Implementation of `LogsDataView` backed by protobuf serialized `LogsData` message
+///
+/// TODO: Rename OtlpLogsView similar to OtapLogsView for consistency?
 pub struct RawLogsData<'a> {
     /// bytes of the serialized message
     buf: &'a [u8],
@@ -38,8 +41,19 @@ pub struct RawLogsData<'a> {
 impl<'a> RawLogsData<'a> {
     /// Create a new instance of `RawLogsData`
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
+    }
+}
+
+impl<'a> TryFrom<&'a OtlpProtoBytes> for RawLogsData<'a> {
+    type Error = Error;
+
+    fn try_from(bytes: &'a OtlpProtoBytes) -> Result<Self, Self::Error> {
+        match bytes {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => Ok(Self::new(bytes)),
+            _ => Err(Error::LogRecordNotFound),
+        }
     }
 }
 

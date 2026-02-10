@@ -25,7 +25,7 @@ use otap_df_engine::{
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 
 /// URN identifier for the processor
-pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:otel:recordset_kql:processor";
+pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:recordset_kql:processor";
 
 /// OTAP KQL Processor
 #[allow(unsafe_code)]
@@ -102,8 +102,8 @@ impl RecordsetKqlProcessor {
                 otap_df_telemetry::otel_debug!(
                     "processor.processing_logs",
                     processor = "recordset_kql",
-                    message = "Processing KQL query",
                     input_items = input_items,
+                    "Processing KQL query"
                 );
                 self.process_logs(bytes, signal)
             }
@@ -141,7 +141,7 @@ impl RecordsetKqlProcessor {
                     "processor.failure",
                     processor = "recordset_kql",
                     input_items = input_items,
-                    message = message,
+                    error = message,
                 );
 
                 effect_handler
@@ -319,7 +319,7 @@ mod tests {
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
         let node = test_node("recordset-kql-processor-test");
         let rt: TestRuntime<OtapPdata> = TestRuntime::new();

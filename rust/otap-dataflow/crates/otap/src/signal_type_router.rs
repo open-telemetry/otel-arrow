@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ProcessorFactory;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
@@ -22,6 +21,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ProcessorFactory};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
-pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
+pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:type_router:processor";
 
 /// Well-known out port names for type-based routing
 /// Name of the out port used for trace signals
@@ -85,28 +85,28 @@ pub struct SignalTypeRouterMetrics {
 }
 
 impl SignalTypeRouterMetrics {
-    fn inc_received(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_received(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
         }
     }
-    fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
         }
     }
-    fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
         }
     }
-    fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_dropped_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_dropped_metrics.inc(),
@@ -131,7 +131,7 @@ pub struct SignalTypeRouter {
 impl SignalTypeRouter {
     /// Creates a new SignalTypeRouter with the given configuration
     #[must_use]
-    pub fn new(config: SignalTypeRouterConfig) -> Self {
+    pub const fn new(config: SignalTypeRouterConfig) -> Self {
         Self {
             config,
             metrics: None,
@@ -191,7 +191,10 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                     .any(|p| p.as_ref() == desired_port);
 
                 if has_port {
-                    match effect_handler.send_message_to(desired_port, data).await {
+                    match effect_handler
+                        .send_message_with_source_node_to(desired_port, data)
+                        .await
+                    {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_named(st);
@@ -206,7 +209,7 @@ impl local::Processor<OtapPdata> for SignalTypeRouter {
                         }
                     }
                 } else {
-                    match effect_handler.send_message(data).await {
+                    match effect_handler.send_message_with_source_node(data).await {
                         Ok(()) => {
                             if let Some(m) = self.metrics.as_mut() {
                                 m.inc_routed_default(st);
@@ -368,7 +371,7 @@ mod tests {
         use otap_df_engine::local::processor::{
             EffectHandler as LocalEffectHandler, Processor as _,
         };
-        use otap_df_engine::message::Message;
+        use otap_df_engine::message::{Message, Sender};
         use otap_df_engine::testing::setup_test_runtime;
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
         use otap_df_telemetry::InternalTelemetrySystem;
@@ -418,7 +421,8 @@ mod tests {
 
                 // Pipeline + node context
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_success");
 
                 // Router with metrics
@@ -430,7 +434,7 @@ mod tests {
                 // Effect handler with a logs named port
                 let (tx_logs, rx_logs) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_LOGS.into(), LocalSender::mpsc(tx_logs));
+                let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -491,7 +495,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_failure");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -503,7 +508,7 @@ mod tests {
                 let (tx_logs, rx_logs) = mpsc::Channel::new(1);
                 drop(rx_logs); // close to trigger SendError::Closed
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_LOGS.into(), LocalSender::mpsc(tx_logs));
+                let _ = senders.insert(PORT_LOGS.into(), Sender::Local(LocalSender::mpsc(tx_logs)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -555,7 +560,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_success");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -566,7 +572,7 @@ mod tests {
                 // Only a single out port (non-named for logs); default path should be used
                 let (tx_out, rx_out) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx_out));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -622,7 +628,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_failure");
 
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
@@ -634,7 +641,7 @@ mod tests {
                 let (tx_out, rx_out) = mpsc::Channel::new(1);
                 drop(rx_out);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx_out));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx_out)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -689,7 +696,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -698,7 +706,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_TRACES.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -744,7 +752,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -754,7 +763,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_TRACES.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_TRACES.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -797,7 +806,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_traces_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -806,7 +816,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -852,7 +862,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_traces_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -862,7 +873,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -906,7 +917,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -915,7 +927,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_METRICS.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -963,7 +975,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_named_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -973,7 +986,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert(PORT_METRICS.into(), LocalSender::mpsc(tx));
+                let _ = senders.insert(PORT_METRICS.into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -1018,7 +1031,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_metrics_success");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -1027,7 +1041,7 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(2);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
@@ -1075,7 +1089,8 @@ mod tests {
                 let (telemetry_registry, reporter, collector_task) = start_telemetry();
 
                 let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+                let pipeline =
+                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
                 let node_id = test_node("signal_router_default_metrics_failure");
                 let mut router = SignalTypeRouter::with_pipeline_ctx(
                     pipeline,
@@ -1085,7 +1100,7 @@ mod tests {
                 let (tx, rx) = mpsc::Channel::new(1);
                 drop(rx);
                 let mut senders = HashMap::new();
-                let _ = senders.insert("out".into(), LocalSender::mpsc(tx));
+                let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 

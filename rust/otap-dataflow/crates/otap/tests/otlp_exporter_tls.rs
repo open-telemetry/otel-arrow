@@ -8,10 +8,7 @@
 
 use otap_df_config::tls::{TlsClientConfig, TlsConfig};
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
-};
+use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
@@ -47,56 +44,23 @@ impl LogsService for LogsServiceMock {
     }
 }
 
-fn new_ca() -> (Certificate, Issuer<'static, KeyPair>) {
-    let mut params = CertificateParams::new(Vec::default()).expect("empty SAN");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "Test CA");
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    params.key_usages.push(KeyUsagePurpose::CrlSign);
-    let key_pair = KeyPair::generate().expect("ca key");
-    let ca = params.self_signed(&key_pair).expect("ca cert");
-    let issuer = Issuer::new(params, key_pair);
-    (ca, issuer)
-}
-
-fn new_leaf(
-    cn: &str,
-    san: &str,
-    eku: ExtendedKeyUsagePurpose,
-    issuer: &Issuer<'_, KeyPair>,
-) -> (String, String) {
-    let mut params = CertificateParams::new(vec![san.to_string()]).expect("SAN");
-    params.distinguished_name.push(DnType::CommonName, cn);
-    params.use_authority_key_identifier_extension = true;
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.extended_key_usages.push(eku);
-    let key_pair = KeyPair::generate().expect("leaf key");
-    let cert = params.signed_by(&key_pair, issuer).expect("leaf cert");
-    (cert.pem(), key_pair.serialize_pem())
-}
-
 #[tokio::test]
 async fn otlp_exporter_connects_with_mtls() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Generate CA, server cert, client cert.
-    let (ca, ca_issuer) = new_ca();
-    let ca_pem = ca.pem();
-    let (server_cert_pem, server_key_pem) = new_leaf(
+    let ca = generate_ca("Test CA");
+    let ca_pem = ca.cert_pem.clone();
+    let server = ca.issue_leaf(
         "localhost",
-        "localhost",
-        ExtendedKeyUsagePurpose::ServerAuth,
-        &ca_issuer,
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
     );
-    let (client_cert_pem, client_key_pem) = new_leaf(
-        "client",
-        "client",
-        ExtendedKeyUsagePurpose::ClientAuth,
-        &ca_issuer,
-    );
+    let server_cert_pem = server.cert_pem;
+    let server_key_pem = server.key_pem;
+    let client = ca.issue_leaf("client", Some("client"), Some(ExtendedKeyUsage::ClientAuth));
+    let client_cert_pem = client.cert_pem;
+    let client_key_pem = client.key_pem;
 
     // gRPC service mock.
     let (tx, mut rx) = mpsc::channel::<()>(8);
@@ -172,13 +136,14 @@ async fn otlp_exporter_fails_with_invalid_ca_pem() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Generate CA and server cert.
-    let (_ca, ca_issuer) = new_ca();
-    let (server_cert_pem, server_key_pem) = new_leaf(
+    let ca = generate_ca("Test CA");
+    let server = ca.issue_leaf(
         "localhost",
-        "localhost",
-        ExtendedKeyUsagePurpose::ServerAuth,
-        &ca_issuer,
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
     );
+    let server_cert_pem = server.cert_pem;
+    let server_key_pem = server.key_pem;
 
     // gRPC service mock.
     let (tx, _rx) = mpsc::channel::<()>(8);
@@ -238,8 +203,7 @@ async fn otlp_exporter_allows_http_with_tls_config() {
         ..GrpcClientSettings::default()
     };
 
-    let result = settings.build_endpoint_with_tls().await;
-    assert!(result.is_ok());
+    let _ = settings.build_endpoint_with_tls().await.unwrap();
 }
 
 #[tokio::test]
@@ -276,14 +240,15 @@ async fn otlp_exporter_connects_with_tls_only() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Generate CA and server cert (no client cert needed for TLS-only).
-    let (ca, ca_issuer) = new_ca();
-    let ca_pem = ca.pem();
-    let (server_cert_pem, server_key_pem) = new_leaf(
+    let ca = generate_ca("Test CA");
+    let ca_pem = ca.cert_pem.clone();
+    let server = ca.issue_leaf(
         "localhost",
-        "localhost",
-        ExtendedKeyUsagePurpose::ServerAuth,
-        &ca_issuer,
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
     );
+    let server_cert_pem = server.cert_pem;
+    let server_key_pem = server.key_pem;
 
     // gRPC service mock.
     let (tx, mut rx) = mpsc::channel::<()>(8);

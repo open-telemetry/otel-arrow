@@ -13,14 +13,67 @@ use weaver_resolver::SchemaResolver;
 use weaver_semconv::registry::SemConvRegistry;
 use weaver_semconv::registry_repo::RegistryRepo;
 
+/// Source of telemetry data schema and attributes
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSource {
+    /// Use OpenTelemetry semantic conventions registry via weaver
+    /// - Fetches and parses semantic conventions from registry_path
+    /// - Full attribute coverage based on spec
+    /// - Requires network/file access at startup
+    #[default]
+    SemanticConventions,
+
+    /// Use minimal static hardcoded signals
+    /// - No external dependencies or network access
+    /// - Fixed set of attributes (e.g., service.name, http.method, etc.)
+    Static,
+}
+
+/// Strategy for generating telemetry batches
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GenerationStrategy {
+    /// Generate fresh signals for every batch
+    /// - New objects allocated per signal
+    /// - Fresh timestamps and unique IDs per signal
+    /// - Highest CPU/memory cost per batch
+    #[default]
+    Fresh,
+
+    /// Pre-generate complete batches at startup, cycle through them unchanged
+    /// - Zero per-batch allocation at runtime
+    /// - Timestamps and IDs will repeat (stale)
+    /// - Lowest CPU cost, maximum throughput
+    PreGenerated,
+
+    /// Pre-generate signal templates, clone and update timestamps/IDs per batch
+    /// - Templates cloned per batch
+    /// - Fresh timestamps and unique IDs
+    /// - Moderate CPU cost, good balance
+    ///
+    /// TODO: Not yet implemented - currently behaves like Fresh
+    Templates,
+}
+
 /// Configuration should take a scenario to play out
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    // Configuration of the traffic to generate
+    /// Configuration of the traffic to generate
     traffic_config: TrafficConfig,
+
+    /// Source of telemetry schema and attributes
+    #[serde(default)]
+    data_source: DataSource,
+
+    /// Path to the semantic conventions registry (only used when data_source = semantic_conventions)
     #[serde(default = "default_registry_path")]
     registry_path: VirtualDirectoryPath,
+
+    /// Strategy for generating telemetry batches
+    #[serde(default)]
+    generation_strategy: GenerationStrategy,
 }
 
 /// Configuration to describe the traffic being sent
@@ -48,53 +101,92 @@ impl Config {
         Self {
             traffic_config,
             registry_path,
+            data_source: DataSource::default(),
+            generation_strategy: GenerationStrategy::default(),
         }
     }
-    /// Provide a reference to the vector of scenario steps
+
+    /// Builder-style method to set data source
     #[must_use]
-    pub fn get_traffic_config(&self) -> &TrafficConfig {
+    pub const fn with_data_source(mut self, data_source: DataSource) -> Self {
+        self.data_source = data_source;
+        self
+    }
+
+    /// Builder-style method to set generation strategy
+    #[must_use]
+    pub const fn with_generation_strategy(
+        mut self,
+        generation_strategy: GenerationStrategy,
+    ) -> Self {
+        self.generation_strategy = generation_strategy;
+        self
+    }
+
+    /// Get the data source
+    #[must_use]
+    pub const fn data_source(&self) -> &DataSource {
+        &self.data_source
+    }
+
+    /// Get the generation strategy
+    #[must_use]
+    pub const fn generation_strategy(&self) -> &GenerationStrategy {
+        &self.generation_strategy
+    }
+
+    /// Provide a reference to the traffic config
+    #[must_use]
+    pub const fn get_traffic_config(&self) -> &TrafficConfig {
         &self.traffic_config
     }
-    /// Provide a reference to the ResolvedRegistry
-    pub fn get_registry(&self) -> Result<ResolvedRegistry, String> {
-        let registry_repo =
-            RegistryRepo::try_new("main", &self.registry_path).map_err(|err| err.to_string())?;
 
-        // Load the semantic convention specs
-        let semconv_specs = match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
-            WResult::Ok(semconv_specs) => semconv_specs,
-            WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
-            WResult::FatalErr(err) => return Err(err.to_string()),
-        };
+    /// Provide a reference to the ResolvedRegistry.
+    /// Returns None if data_source is Static.
+    pub fn get_registry(&self) -> Result<Option<ResolvedRegistry>, String> {
+        match self.data_source {
+            DataSource::Static => Ok(None),
+            DataSource::SemanticConventions => {
+                let registry_repo = RegistryRepo::try_new("main", &self.registry_path)
+                    .map_err(|err| err.to_string())?;
 
-        // Resolve the main registry
-        let mut registry = SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
-            .map_err(|err| err.to_string())?;
-        // Resolve the semantic convention specifications.
-        // If there are any resolution errors, they should be captured into the ongoing list of
-        // diagnostic messages and returned immediately because there is no point in continuing
-        // as the resolution is a prerequisite for the next stages.
-        let resolved_schema =
-            match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true) {
-                WResult::Ok(resolved_schema) => resolved_schema,
-                WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                WResult::FatalErr(err) => return Err(err.to_string()),
-            };
+                // Load the semantic convention specs
+                let semconv_specs =
+                    match SchemaResolver::load_semconv_specs(&registry_repo, true, false) {
+                        WResult::Ok(semconv_specs) => semconv_specs,
+                        WResult::OkWithNFEs(semconv_specs, _) => semconv_specs,
+                        WResult::FatalErr(err) => return Err(err.to_string()),
+                    };
 
-        let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
-            &resolved_schema.registry,
-            resolved_schema.catalog(),
-        )
-        .map_err(|err| err.to_string())?;
+                // Resolve the main registry
+                let mut registry =
+                    SemConvRegistry::from_semconv_specs(&registry_repo, semconv_specs)
+                        .map_err(|err| err.to_string())?;
+                // Resolve the semantic convention specifications.
+                let resolved_schema =
+                    match SchemaResolver::resolve_semantic_convention_registry(&mut registry, true)
+                    {
+                        WResult::Ok(resolved_schema) => resolved_schema,
+                        WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                        WResult::FatalErr(err) => return Err(err.to_string()),
+                    };
 
-        Ok(resolved_registry)
+                let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
+                    &resolved_schema.registry,
+                    resolved_schema.catalog(),
+                )
+                .map_err(|err| err.to_string())?;
+
+                Ok(Some(resolved_registry))
+            }
+        }
     }
 }
 
 impl TrafficConfig {
     /// create a new traffic config which describes the output traffic of the receiver
     #[must_use]
-    pub fn new(
+    pub const fn new(
         signals_per_second: Option<usize>,
         max_signal_count: Option<u64>,
         max_batch_size: usize,
@@ -114,7 +206,7 @@ impl TrafficConfig {
 
     /// return the specified message rate
     #[must_use]
-    pub fn get_signal_rate(&self) -> Option<usize> {
+    pub const fn get_signal_rate(&self) -> Option<usize> {
         self.signals_per_second
     }
 
@@ -165,30 +257,30 @@ impl TrafficConfig {
 
     /// returns the max amounts of signals that should be sent
     #[must_use]
-    pub fn get_max_signal_count(&self) -> Option<u64> {
+    pub const fn get_max_signal_count(&self) -> Option<u64> {
         self.max_signal_count
     }
 
     /// returns the max batch size per message
     #[must_use]
-    pub fn get_max_batch_size(&self) -> usize {
+    pub const fn get_max_batch_size(&self) -> usize {
         self.max_batch_size
     }
 }
 
-fn default_signals_per_second() -> Option<usize> {
+const fn default_signals_per_second() -> Option<usize> {
     Some(30)
 }
 
-fn default_max_signal() -> Option<u64> {
+const fn default_max_signal() -> Option<u64> {
     None
 }
 
-fn default_max_batch_size() -> usize {
+const fn default_max_batch_size() -> usize {
     1000
 }
 
-fn default_weight() -> u32 {
+const fn default_weight() -> u32 {
     0
 }
 

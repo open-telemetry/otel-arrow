@@ -25,19 +25,24 @@ use arrow::{
 
 use crate::{
     arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_required_array, get_u8_array},
-    encode::record::array::{ArrayAppend, PrimitiveArrayBuilder},
-    encode::record::attributes::AttributesRecordBatchBuilderConstructorHelper,
+    encode::record::{
+        array::{ArrayAppend, PrimitiveArrayBuilder},
+        attributes::AttributesRecordBatchBuilderConstructorHelper,
+    },
     error::{Error, Result},
     otap::transform::{
         create_next_element_equality_array, create_next_eq_array_for_array,
         materialize_parent_id_for_attributes, materialize_parent_id_for_exemplars,
         materialize_parent_ids_by_columns, remove_delta_encoding,
         remove_delta_encoding_from_column, sort_to_indices,
+        transport_optimize::attributes::transport_optimize_encode_attrs,
     },
     otlp::attributes::{AttributeValueType, parent_id::ParentId},
     proto::opentelemetry::arrow::v1::ArrowPayloadType,
     schema::{FieldExt, consts, get_field_metadata},
 };
+
+mod attributes;
 
 /// identifier for column encoding
 #[derive(Clone, Copy)]
@@ -134,7 +139,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
     }
 
     // otherwise just return column by name
-    let column_idx = schema.index_of(path).ok()?;
+    let (column_idx, _) = schema.fields.find(path)?;
     columns.get(column_idx).cloned()
 }
 
@@ -576,7 +581,7 @@ pub struct ParentIdRemapping {
 }
 
 impl ParentIdRemapping {
-    fn new(column_path: &'static str, remapped_ids: RemappedParentIds) -> Self {
+    const fn new(column_path: &'static str, remapped_ids: RemappedParentIds) -> Self {
         Self {
             column_path,
             remapped_ids,
@@ -872,6 +877,34 @@ pub fn apply_transport_optimized_encodings(
     if count_to_apply == 0 {
         // nothing to do - the entire record batch already has the columns transport-optimized
         return Ok((record_batch.clone(), None));
+    }
+
+    if (*payload_type == ArrowPayloadType::LogAttrs)
+        | (*payload_type == ArrowPayloadType::SpanAttrs)
+        | (*payload_type == ArrowPayloadType::MetricAttrs)
+        | (*payload_type == ArrowPayloadType::ResourceAttrs)
+        | (*payload_type == ArrowPayloadType::ScopeAttrs)
+    {
+        return Ok((
+            transport_optimize_encode_attrs::<UInt16Type>(record_batch)?,
+            None,
+        ));
+    }
+
+    if (*payload_type == ArrowPayloadType::SpanLinkAttrs)
+        | (*payload_type == ArrowPayloadType::SpanEventAttrs)
+        | (*payload_type == ArrowPayloadType::SummaryDpAttrs)
+        | (*payload_type == ArrowPayloadType::NumberDpAttrs)
+        | (*payload_type == ArrowPayloadType::NumberDpExemplarAttrs)
+        | (*payload_type == ArrowPayloadType::HistogramDpAttrs)
+        | (*payload_type == ArrowPayloadType::HistogramDpExemplarAttrs)
+        | (*payload_type == ArrowPayloadType::ExpHistogramDpAttrs)
+        | (*payload_type == ArrowPayloadType::ExpHistogramDpExemplarAttrs)
+    {
+        return Ok((
+            transport_optimize_encode_attrs::<UInt32Type>(record_batch)?,
+            None,
+        ));
     }
 
     // sort record batch before applying the encoding. This will give us the best compression ratio

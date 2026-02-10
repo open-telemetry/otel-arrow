@@ -26,7 +26,9 @@ use hyper_util::rt::TokioIo;
 use otap_df_config::SignalType;
 use otap_df_config::byte_units;
 use otap_df_engine::shared::receiver::EffectHandler;
-use otap_df_engine::{Interests, ProducerEffectHandlerExtension};
+use otap_df_engine::{
+    Interests, MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
+};
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -185,7 +187,7 @@ const fn default_accept_compressed_requests() -> bool {
     true
 }
 
-fn default_http_timeout() -> Option<Duration> {
+const fn default_http_timeout() -> Option<Duration> {
     // Conservative default chosen to mitigate slow-client DoS while keeping parity
     // with common collector defaults.
     Some(Duration::from_secs(30))
@@ -488,7 +490,11 @@ struct HttpHandler {
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
     settings: HttpServerSettings,
-    semaphore: Arc<Semaphore>,
+    /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
+    /// receiver-wide backpressure tied to downstream capacity.
+    global_semaphore: Option<Arc<Semaphore>>,
+    /// Protocol-local semaphore enforcing HTTP's `max_concurrent_requests`.
+    local_semaphore: Arc<Semaphore>,
 }
 
 impl HttpHandler {
@@ -518,15 +524,49 @@ impl HttpHandler {
         let permit_timeout = self.settings.timeout.unwrap_or(Duration::from_secs(5));
 
         let fut = async move {
-            let permit_result =
-                tokio::time::timeout(permit_timeout, self.semaphore.clone().acquire_owned()).await;
+            // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
+            // HTTP are enabled: global (if any) first, then protocol-local.
+            let _global_permit = if let Some(global) = &self.global_semaphore {
+                let permit_result =
+                    tokio::time::timeout(permit_timeout, global.clone().acquire_owned()).await;
+                match permit_result {
+                    Ok(Ok(permit)) => Some(permit),
+                    Ok(Err(_)) => {
+                        // Semaphore closed (shouldn't happen)
+                        otap_df_telemetry::otel_error!(
+                            "HttpSemaphoreClosed",
+                            kind = "global",
+                            path = path_for_fut.as_str()
+                        );
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(internal_error());
+                    }
+                    Err(_) => {
+                        otap_df_telemetry::otel_warn!(
+                            "HttpRequestRejected",
+                            reason = "global_concurrency_limit_timeout",
+                            path = path_for_fut.as_str(),
+                            timeout_ms = permit_timeout.as_millis() as u64
+                        );
+                        self.metrics.lock().rejected_requests.inc();
+                        return Err(service_unavailable());
+                    }
+                }
+            } else {
+                None
+            };
 
-            let _permit = match permit_result {
+            let permit_result =
+                tokio::time::timeout(permit_timeout, self.local_semaphore.clone().acquire_owned())
+                    .await;
+
+            let _local_permit = match permit_result {
                 Ok(Ok(permit)) => permit,
                 Ok(Err(_)) => {
                     // Semaphore closed (shouldn't happen)
                     otap_df_telemetry::otel_error!(
                         "HttpSemaphoreClosed",
+                        kind = "local",
                         path = path_for_fut.as_str()
                     );
                     self.metrics.lock().rejected_requests.inc();
@@ -641,8 +681,12 @@ impl HttpHandler {
             } else {
                 None
             };
-
-            if self.effect_handler.send_message(pdata).await.is_err() {
+            if self
+                .effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .is_err()
+            {
                 otap_df_telemetry::otel_warn!(
                     "HttpPipelineSendFailed",
                     path = parts.uri.path().to_string(),
@@ -713,29 +757,31 @@ impl Drop for SlotGuard {
 ///
 /// # Parameters
 ///
-/// - `shared_semaphore`: Optional semaphore shared with other protocol servers
-///   (e.g., gRPC). When provided, all protocols draw from the same concurrency
-///   pool. When `None`, creates a dedicated semaphore based on `settings.max_concurrent_requests`.
+/// - `global_semaphore`: Optional semaphore shared across protocols (e.g., gRPC + HTTP)
+///   to apply a receiver-wide concurrency cap.
+///
+/// The HTTP server always enforces its own `settings.max_concurrent_requests` as a
+/// protocol-local limit.
 pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_receiver::OtlpReceiverMetrics>>>,
-    shared_semaphore: Option<Arc<Semaphore>>,
+    global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let listener = effect_handler
         .tcp_listener(settings.listening_addr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-    // Use shared semaphore if provided, otherwise create a dedicated one
-    let semaphore = shared_semaphore.unwrap_or_else(|| {
-        debug_assert!(
-            settings.max_concurrent_requests > 0,
-            "tune_max_concurrent_requests should have been called before serve()"
-        );
-        Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)))
-    });
+    debug_assert!(
+        settings.max_concurrent_requests > 0,
+        "tune_max_concurrent_requests should have been called before serve()"
+    );
+
+    // Always enforce the HTTP-local concurrency limit. When both protocols are enabled,
+    // `global_semaphore` provides an additional receiver-wide cap.
+    let local_semaphore = Arc::new(Semaphore::new(settings.max_concurrent_requests.max(1)));
 
     let tracker = TaskTracker::new();
 
@@ -776,7 +822,8 @@ pub async fn serve(
                     ack_registry: ack_registry.clone(),
                     metrics: metrics.clone(),
                     settings: settings.clone(),
-                    semaphore: semaphore.clone(),
+                    global_semaphore: global_semaphore.clone(),
+                    local_semaphore: local_semaphore.clone(),
                 };
 
                 #[cfg(feature = "experimental-tls")]
@@ -797,7 +844,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("http.connection_error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {
@@ -912,7 +959,7 @@ mod tests {
         let controller_ctx =
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 0);
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let metrics = Arc::new(Mutex::new(
             pipeline_ctx.register_metrics::<crate::otlp_receiver::OtlpReceiverMetrics>(),
         ));

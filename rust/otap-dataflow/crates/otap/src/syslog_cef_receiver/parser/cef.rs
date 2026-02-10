@@ -17,7 +17,7 @@ pub struct CefMessage<'a> {
 
 impl CefMessage<'_> {
     /// Parse and iterate over the extensions as key-value pairs
-    pub(super) fn parse_extensions(&self) -> CefExtensionsIter<'_> {
+    pub(super) const fn parse_extensions(&self) -> CefExtensionsIter<'_> {
         CefExtensionsIter::new(self.extensions)
     }
 }
@@ -214,7 +214,7 @@ pub(super) struct CefExtensionsIter<'a> {
 }
 
 impl<'a> CefExtensionsIter<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    const fn new(data: &'a [u8]) -> Self {
         Self {
             data,
             pos: 0,

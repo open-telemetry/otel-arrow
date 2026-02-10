@@ -74,7 +74,7 @@ fn default_host() -> String {
     "0.0.0.0".to_string()
 }
 
-fn default_port() -> u16 {
+const fn default_port() -> u16 {
     9090
 }
 

@@ -22,7 +22,7 @@ pub enum ConditionStatus {
 impl ConditionStatus {
     #[must_use]
     /// Returns the canonical Kubernetes-style string representation.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             ConditionStatus::True => "True",
             ConditionStatus::False => "False",
@@ -54,7 +54,7 @@ pub enum ConditionKind {
 impl ConditionKind {
     #[must_use]
     /// Returns the canonical type identifier used in serialized payloads.
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             ConditionKind::Accepted => "Accepted",
             ConditionKind::Ready => "Ready",
@@ -140,7 +140,7 @@ pub enum ConditionReason {
 impl ConditionReason {
     #[must_use]
     /// Returns the canonical string representation used in serialized payloads.
-    pub fn as_str(&self) -> &str {
+    pub const fn as_str(&self) -> &str {
         match self {
             ConditionReason::Pending => "Pending",
             ConditionReason::StartRequested => "StartRequested",
@@ -210,13 +210,13 @@ impl ConditionState {
     pub fn new(
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         last_transition_time: Option<SystemTime>,
     ) -> Self {
         Self {
             status,
             reason: reason.into(),
-            message: message.into(),
+            message,
             last_transition_time,
         }
     }
@@ -226,11 +226,10 @@ impl ConditionState {
         &mut self,
         status: ConditionStatus,
         reason: impl Into<Option<ConditionReason>>,
-        message: impl Into<Option<String>>,
+        message: Option<String>,
         transition_time: SystemTime,
     ) -> bool {
         let reason = reason.into();
-        let message = message.into();
         if self.status == status && self.reason == reason && self.message == message {
             return false;
         }

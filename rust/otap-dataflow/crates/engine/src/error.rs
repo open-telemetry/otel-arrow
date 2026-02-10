@@ -394,6 +394,24 @@ pub enum Error {
         /// Prost error string
         reason: String,
     },
+
+    /// No default output port is configured when multiple ports are connected.
+    #[error(
+        "Ambiguous default out port for node {node}: multiple ports connected and no default configured"
+    )]
+    NoDefaultOutPort {
+        /// The node that has no default port configured.
+        node: NodeId,
+    },
+
+    /// An unknown output port was specified.
+    #[error("Unknown out port '{port}' for node {node}")]
+    UnknownOutPort {
+        /// The node where the unknown port was referenced.
+        node: NodeId,
+        /// The name of the unknown port.
+        port: PortName,
+    },
 }
 
 impl Error {
@@ -410,6 +428,7 @@ impl Error {
             Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
             Error::IoError { .. } => "IoError",
             Error::JoinTaskError { .. } => "JoinTaskError",
+            Error::NoDefaultOutPort { .. } => "NoDefaultPort",
             Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
             Error::PDataError { .. } => "PDataError",
             Error::PdataConversionError { .. } => "PdataConversionError",
@@ -425,6 +444,7 @@ impl Error {
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
             Error::UnknownNode { .. } => "UnknownNode",
+            Error::UnknownOutPort { .. } => "UnknownPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",

@@ -24,6 +24,7 @@ mod config;
 mod error;
 mod exporter;
 mod gzip_batcher;
+mod heartbeat;
 mod in_flight_exports;
 mod state;
 mod stats;
@@ -33,11 +34,12 @@ pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureMonitorExporter;
+pub use heartbeat::Heartbeat;
 pub use stats::AzureMonitorExporterStats;
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
-pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:otel:azuremonitor:exporter";
+pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft_azure:monitor:exporter";
 
 /// Register Azure Monitor Exporter with the OTAP exporter factory.
 ///
@@ -58,7 +60,11 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
         })?;
 
         Ok(ExporterWrapper::local(
-            AzureMonitorExporter::new(cfg)?,
+            AzureMonitorExporter::new(cfg).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: e.to_string(),
+                }
+            })?,
             node,
             node_config,
             exporter_config,
@@ -72,6 +78,9 @@ mod tests {
 
     #[test]
     fn test_urn_constant() {
-        assert_eq!(AZURE_MONITOR_EXPORTER_URN, "urn:otel:azuremonitor:exporter");
+        assert_eq!(
+            AZURE_MONITOR_EXPORTER_URN,
+            "urn:microsoft_azure:monitor:exporter"
+        );
     }
 }

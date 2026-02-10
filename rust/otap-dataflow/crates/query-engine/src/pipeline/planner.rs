@@ -7,13 +7,15 @@ use data_engine_expressions::{
     BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression, IntegerValue,
     LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, ReduceMapTransformExpression,
-    RenameMapKeysTransformExpression, ScalarExpression, StaticScalarExpression, StringValue,
-    TransformExpression, ValueAccessor,
+    RenameMapKeysTransformExpression, ScalarExpression, SetTransformExpression,
+    StaticScalarExpression, StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::prelude::{SessionContext, lit_timestamp_nano};
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
+use otap_df_pdata::otap::transform::{
+    AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
+};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -36,7 +38,7 @@ pub struct PipelinePlanner {}
 
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
 
@@ -105,6 +107,7 @@ impl PipelinePlanner {
                 TransformExpression::ReduceMap(reduce_map_exr) => {
                     Self::plan_reduce_map(reduce_map_exr)
                 }
+                TransformExpression::Set(set_expr) => self.plan_set(set_expr),
                 other => Err(Error::NotYetSupportedError {
                     message: format!(
                         "transform expression not yet supported {}",
@@ -408,6 +411,63 @@ impl PipelinePlanner {
         }
 
         Ok(pipeline_stages)
+    }
+
+    fn plan_set(&self, set_expr: &SetTransformExpression) -> Result<Vec<Box<dyn PipelineStage>>> {
+        let MutableValueExpression::Source(dest) = set_expr.get_destination() else {
+            return Err(Error::NotYetSupportedError {
+                message: "set expression only supports source destinations".to_string(),
+            });
+        };
+
+        let dest_accessor = ColumnAccessor::try_from(dest.get_value_accessor())?;
+        let ColumnAccessor::Attributes(attrs_id, key) = dest_accessor else {
+            return Err(Error::NotYetSupportedError {
+                message: format!(
+                    "set expression not supported for destination {:?}",
+                    dest_accessor
+                ),
+            });
+        };
+
+        let ScalarExpression::Static(static_val) = set_expr.get_source() else {
+            return Err(Error::NotYetSupportedError {
+                message: "set expression only supports static scalar values".to_string(),
+            });
+        };
+
+        let literal_value = Self::static_scalar_to_literal(static_val)?;
+
+        let mut entries = std::collections::BTreeMap::new();
+        let _ = entries.insert(key, literal_value);
+        let insert_transform = InsertTransform::new(entries);
+        let transform = AttributesTransform::default().with_insert(insert_transform);
+
+        transform
+            .validate()
+            .map_err(|e| Error::InvalidPipelineError {
+                cause: format!("invalid attribute insert transform: {e}"),
+                query_location: Some(set_expr.get_query_location().clone()),
+            })?;
+
+        Ok(vec![Box::new(AttributeTransformPipelineStage::new(
+            attrs_id, transform,
+        ))])
+    }
+
+    fn static_scalar_to_literal(static_val: &StaticScalarExpression) -> Result<LiteralValue> {
+        match static_val {
+            StaticScalarExpression::String(s) => Ok(LiteralValue::Str(s.get_value().to_string())),
+            StaticScalarExpression::Integer(i) => Ok(LiteralValue::Int(i.get_value())),
+            StaticScalarExpression::Boolean(b) => Ok(LiteralValue::Bool(b.get_value())),
+            StaticScalarExpression::Double(d) => Ok(LiteralValue::Double(d.get_value())),
+            _ => Err(Error::NotYetSupportedError {
+                message: format!(
+                    "unsupported static scalar type for attribute insert: {:?}",
+                    static_val
+                ),
+            }),
+        }
     }
 }
 

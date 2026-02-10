@@ -1,17 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Telemetry level configurations.
+//! OTel SDK-specific telemetry configuration. Note: this is presently
+//! used only for internal metrics reporting, not for internal logging.
 
-pub mod logs;
 pub mod metrics;
 
-use std::{collections::HashMap, time::Duration};
-
+use crate::settings::telemetry::logs::LogsConfig;
+use metrics::MetricsConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
-
-use crate::pipeline::service::telemetry::{logs::LogsConfig, metrics::MetricsConfig};
+use std::{collections::HashMap, time::Duration};
 
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -46,11 +45,11 @@ impl Default for TelemetryConfig {
     }
 }
 
-fn default_reporting_channel_size() -> usize {
+const fn default_reporting_channel_size() -> usize {
     100
 }
 
-fn default_reporting_interval() -> Duration {
+const fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
 }
 

@@ -16,7 +16,7 @@ use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_state::reporter::ObservedEventReporter;
+use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
 use tokio::runtime::Builder;
@@ -57,7 +57,7 @@ pub(crate) struct PipeNode {
 impl PipeNode {
     /// Construct a pipe node with index referring to one an entry in
     /// the appropriate RuntimePipeline Vec.
-    pub(crate) fn new(index: usize) -> Self {
+    pub(crate) const fn new(index: usize) -> Self {
         Self { index }
     }
 }
@@ -88,13 +88,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Returns the number of nodes in the pipeline.
     #[must_use]
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.receivers.len() + self.processors.len() + self.exporters.len()
     }
 
     /// Returns a reference to the pipeline configuration.
     #[must_use]
-    pub fn config(&self) -> &PipelineConfig {
+    pub const fn config(&self) -> &PipelineConfig {
         &self.config
     }
 

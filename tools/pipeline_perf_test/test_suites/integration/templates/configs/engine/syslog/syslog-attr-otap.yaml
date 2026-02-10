@@ -17,7 +17,7 @@ nodes:
       protocol: udp
   attr:
     kind: processor
-    plugin_urn: "urn:otap:processor:attributes_processor"
+    plugin_urn: "urn:otel:attribute:processor"
     out_ports:
       out_port:
         destinations:

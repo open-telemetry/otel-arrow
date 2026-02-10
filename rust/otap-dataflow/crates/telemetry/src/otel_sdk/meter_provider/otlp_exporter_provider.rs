@@ -121,7 +121,7 @@ impl OtlpExporterProvider {
         Ok(exporter)
     }
 
-    fn to_sdk_temporality(config: &Temporality) -> opentelemetry_sdk::metrics::Temporality {
+    const fn to_sdk_temporality(config: &Temporality) -> opentelemetry_sdk::metrics::Temporality {
         match config {
             Temporality::Cumulative => opentelemetry_sdk::metrics::Temporality::Cumulative,
             Temporality::Delta => opentelemetry_sdk::metrics::Temporality::Delta,
@@ -144,13 +144,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        let result = OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
-        );
-        assert!(result.is_ok());
+        )
+        .unwrap();
     }
 
     #[test]
@@ -162,13 +162,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        let result = OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
-        );
-        assert!(result.is_ok());
+        )
+        .unwrap();
     }
 
     #[test]
@@ -180,13 +180,13 @@ mod tests {
             temporality: Temporality::Cumulative,
             tls: None,
         };
-        let result = OtlpExporterProvider::configure_otlp_metric_exporter(
+        let _ = OtlpExporterProvider::configure_otlp_metric_exporter(
             sdk_meter_builder,
             &otlp_config,
             &std::time::Duration::from_secs(10),
             None,
-        );
-        assert!(result.is_ok());
+        )
+        .unwrap();
     }
 
     #[test]
@@ -212,8 +212,7 @@ mod tests {
         let temp_ca_file = create_test_ca_file();
         let ca_path = temp_ca_file.path().to_str().unwrap();
 
-        let result = OtlpExporterProvider::get_tls_config(ca_path);
-        assert!(result.is_ok());
+        let _ = OtlpExporterProvider::get_tls_config(ca_path).unwrap();
     }
 
     fn create_test_ca_file() -> tempfile::NamedTempFile {

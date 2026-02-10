@@ -29,31 +29,31 @@ pub enum Message<PData> {
 impl<Data> Message<Data> {
     /// Create a data message with the given payload.
     #[must_use]
-    pub fn data_msg(data: Data) -> Self {
+    pub const fn data_msg(data: Data) -> Self {
         Message::PData(data)
     }
 
     /// Create a ACK control message with the given ID.
     #[must_use]
-    pub fn ack_ctrl_msg(ack: AckMsg<Data>) -> Self {
+    pub const fn ack_ctrl_msg(ack: AckMsg<Data>) -> Self {
         Message::Control(NodeControlMsg::Ack(ack))
     }
 
     /// Create a NACK control message with the given ID and reason.
     #[must_use]
-    pub fn nack_ctrl_msg(nack: NackMsg<Data>) -> Self {
+    pub const fn nack_ctrl_msg(nack: NackMsg<Data>) -> Self {
         Message::Control(NodeControlMsg::Nack(nack))
     }
 
     /// Creates a config control message with the given configuration.
     #[must_use]
-    pub fn config_ctrl_msg(config: serde_json::Value) -> Self {
+    pub const fn config_ctrl_msg(config: serde_json::Value) -> Self {
         Message::Control(NodeControlMsg::Config { config })
     }
 
     /// Creates a timer tick control message.
     #[must_use]
-    pub fn timer_tick_ctrl_msg() -> Self {
+    pub const fn timer_tick_ctrl_msg() -> Self {
         Message::Control(NodeControlMsg::TimerTick {})
     }
 
@@ -86,6 +86,14 @@ impl<Data> Message<Data> {
 }
 
 /// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
+///
+/// Rationale:
+/// - Local nodes run on a single-threaded `LocalSet`, so it is safe for them to hold either a
+///   local sender or a shared sender. This lets the engine select shared channels when any edge
+///   requires `Send` (e.g. mixed local/shared fan-in) without extra wiring paths.
+/// - Shared nodes keep `SharedSender` directly because their effect handlers must be `Send` to run
+///   on multi-threaded executors (`tokio::spawn`). Wrapping in this enum would make them `!Send`
+///   and introduce unnecessary branching on hot paths.
 #[must_use = "A `Sender` is requested but not used."]
 pub enum Sender<T> {
     /// Sender of a local channel.
@@ -105,7 +113,7 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Sender<T> {
     /// Creates a new local MPSC sender.
-    pub fn new_local_mpsc_sender(mpsc_sender: mpsc::Sender<T>) -> Self {
+    pub const fn new_local_mpsc_sender(mpsc_sender: mpsc::Sender<T>) -> Self {
         Sender::Local(LocalSender::mpsc(mpsc_sender))
     }
 
@@ -127,6 +135,9 @@ impl<T> Sender<T> {
 }
 
 /// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
+///
+/// See [`Sender`] for the rationale behind using the enum in local contexts while keeping shared
+/// nodes on `SharedReceiver` directly.
 pub enum Receiver<T> {
     /// Receiver of a local channel.
     Local(LocalReceiver<T>),
@@ -137,7 +148,7 @@ pub enum Receiver<T> {
 impl<T> Receiver<T> {
     /// Creates a new local MPMC receiver.
     #[must_use]
-    pub fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
+    pub const fn new_local_mpsc_receiver(mpsc_receiver: mpsc::Receiver<T>) -> Self {
         Receiver::Local(LocalReceiver::mpsc(mpsc_receiver))
     }
 
@@ -188,7 +199,10 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: Receiver<NodeControlMsg<PData>>, pdata_rx: Receiver<PData>) -> Self {
+    pub const fn new(
+        control_rx: Receiver<NodeControlMsg<PData>>,
+        pdata_rx: Receiver<PData>,
+    ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),

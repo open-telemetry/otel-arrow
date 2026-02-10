@@ -3,19 +3,15 @@
 
 //! OpenTelemetry SDK integration for telemetry collection and reporting as a client.
 
-pub mod logger_provider;
 pub mod meter_provider;
 
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider};
+use opentelemetry_sdk::{Resource, metrics::SdkMeterProvider};
 use otap_df_config::pipeline::service::telemetry::{
     AttributeValue, AttributeValueArray, TelemetryConfig,
 };
 
-use crate::{
-    error::Error,
-    otel_sdk::{logger_provider::LoggerProvider, meter_provider::MeterProvider},
-};
+use crate::{error::Error, otel_sdk::meter_provider::MeterProvider};
 
 /// Client for the OpenTelemetry SDK.
 pub struct OpentelemetryClient {
@@ -23,12 +19,13 @@ pub struct OpentelemetryClient {
     /// The reference is kept to ensure the runtime lives as long as the client.
     _runtime: Option<tokio::runtime::Runtime>,
     meter_provider: SdkMeterProvider,
-    logger_provider: SdkLoggerProvider,
-    // TODO: Add traces providers.
 }
 
 impl OpentelemetryClient {
     /// Create a new OpenTelemetry client from the given configuration.
+    ///
+    /// # Arguments
+    /// * `config` - The telemetry configuration.
     pub fn new(config: &TelemetryConfig) -> Result<Self, Error> {
         let sdk_resource = Self::configure_resource(&config.resource);
 
@@ -40,20 +37,14 @@ impl OpentelemetryClient {
         // Extract the meter provider and runtime by consuming the MeterProvider
         let (meter_provider, runtime) = meter_provider.into_parts();
 
-        let logger_provider = LoggerProvider::configure(sdk_resource, &config.logs, runtime)?;
-
-        let (logger_provider, runtime) = logger_provider.into_parts();
-
-        //TODO: Configure traces provider.
-
         Ok(Self {
             _runtime: runtime,
             meter_provider,
-            logger_provider,
         })
     }
 
-    fn configure_resource(
+    /// Creates an SDK Resource from config attributes.
+    pub(crate) fn configure_resource(
         resource_attributes: &std::collections::HashMap<String, AttributeValue>,
     ) -> Resource {
         let mut sdk_resource_builder = Resource::builder_empty();
@@ -93,14 +84,8 @@ impl OpentelemetryClient {
 
     /// Get a reference to the meter provider.
     #[must_use]
-    pub fn meter_provider(&self) -> &SdkMeterProvider {
+    pub const fn meter_provider(&self) -> &SdkMeterProvider {
         &self.meter_provider
-    }
-
-    /// Get a reference to the logger provider.
-    #[must_use]
-    pub fn logger_provider(&self) -> &SdkLoggerProvider {
-        &self.logger_provider
     }
 
     /// Consume the client and return the tokio runtime (if any).
@@ -115,17 +100,25 @@ impl OpentelemetryClient {
     /// Shutdown the OpenTelemetry SDK.
     pub fn shutdown(&self) -> Result<(), Error> {
         let meter_shutdown_result = self.meter_provider().shutdown();
-        let logger_provider_shutdown_result = self.logger_provider().shutdown();
 
         if let Err(e) = meter_shutdown_result {
             return Err(Error::ShutdownError(e.to_string()));
         }
 
-        if let Err(e) = logger_provider_shutdown_result {
-            return Err(Error::ShutdownError(e.to_string()));
-        }
         Ok(())
     }
+}
+
+/// Pre-encode resource bytes from config for internal telemetry (ITR).
+///
+/// This creates an SDK Resource from the config attributes and encodes it
+/// to bytes using the OTLP protobuf format.
+#[must_use]
+pub fn encode_resource_bytes(
+    resource_attributes: &std::collections::HashMap<String, AttributeValue>,
+) -> bytes::Bytes {
+    let sdk_resource = OpentelemetryClient::configure_resource(resource_attributes);
+    crate::self_tracing::encode_resource_to_bytes(&sdk_resource)
 }
 
 #[cfg(test)]
@@ -133,7 +126,6 @@ mod tests {
     use opentelemetry::global;
     use otap_df_config::pipeline::service::telemetry::{
         AttributeValue,
-        logs::LogsConfig,
         metrics::{
             MetricsConfig,
             readers::{
@@ -142,6 +134,7 @@ mod tests {
             },
         },
     };
+    use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
     use std::{f64::consts::PI, time::Duration};

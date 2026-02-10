@@ -46,66 +46,77 @@ impl AzureMonitorExporterStats {
     }
 
     /// Get the instant when processing started.
+    #[inline]
     #[must_use]
     pub fn started_at(&self) -> tokio::time::Instant {
         self.processing_started_at
     }
 
     /// Get the instant when the last message was received.
+    #[inline]
     #[must_use]
     pub fn last_message_received_at(&self) -> tokio::time::Instant {
         self.last_message_received_at
     }
 
     /// Get the total idle duration.
+    #[inline]
     #[must_use]
     pub fn idle_duration(&self) -> tokio::time::Duration {
         self.idle_duration
     }
 
     /// Get the total number of successfully exported rows.
+    #[inline]
     #[must_use]
     pub fn successful_row_count(&self) -> f64 {
         self.successful_row_count
     }
 
     /// Get the total number of successfully exported batches.
+    #[inline]
     #[must_use]
     pub fn successful_batch_count(&self) -> f64 {
         self.successful_batch_count
     }
 
     /// Get the total number of successfully exported messages.
+    #[inline]
     #[must_use]
     pub fn successful_msg_count(&self) -> f64 {
         self.successful_msg_count
     }
 
     /// Get the total number of rows that failed to export.
+    #[inline]
     #[must_use]
     pub fn failed_row_count(&self) -> f64 {
         self.failed_row_count
     }
 
     /// Get the total number of batches that failed to export.
+    #[inline]
     #[must_use]
     pub fn failed_batch_count(&self) -> f64 {
         self.failed_batch_count
     }
 
     /// Get the total number of messages that failed to export.
+    #[inline]
     #[must_use]
     pub fn failed_msg_count(&self) -> f64 {
         self.failed_msg_count
     }
 
     /// Get the average client latency in seconds.
+    #[inline]
     #[must_use]
     pub fn average_client_latency_secs(&self) -> f64 {
         self.average_client_latency_secs
     }
 
     /// Get the total number of latency requests recorded.
+    #[inline]
     #[must_use]
     pub fn latency_request_count(&self) -> f64 {
         self.latency_request_count
@@ -136,37 +147,44 @@ impl AzureMonitorExporterStats {
     }
 
     /// Get total accumulated idle duration in seconds.
+    #[inline]
     #[must_use]
     pub fn get_idle_duration_secs(&self) -> f64 {
         self.idle_duration.as_secs_f64()
     }
 
     /// Increment successful row count.
+    #[inline]
     pub fn add_rows(&mut self, row_count: f64) {
         self.successful_row_count += row_count;
     }
 
     /// Increment successful batch count.
+    #[inline]
     pub fn add_batch(&mut self) {
         self.successful_batch_count += 1.0;
     }
 
     /// Increment successful message count.
+    #[inline]
     pub fn add_messages(&mut self, msg_count: f64) {
         self.successful_msg_count += msg_count;
     }
 
     /// Increment failed row count.
+    #[inline]
     pub fn add_failed_rows(&mut self, row_count: f64) {
         self.failed_row_count += row_count;
     }
 
     /// Increment failed batch count.
+    #[inline]
     pub fn add_failed_batch(&mut self) {
         self.failed_batch_count += 1.0;
     }
 
     /// Increment failed message count.
+    #[inline]
     pub fn add_failed_messages(&mut self, msg_count: f64) {
         self.failed_msg_count += msg_count;
     }

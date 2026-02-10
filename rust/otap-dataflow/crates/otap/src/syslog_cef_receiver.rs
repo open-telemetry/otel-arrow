@@ -7,28 +7,36 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
 use otap_df_engine::{
     error::{Error, ReceiverErrorKind, format_error_sources},
     local::receiver as local,
 };
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_info;
+use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use serde_json::Value;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+
+#[cfg(feature = "experimental-tls")]
+use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsServerConfig;
+#[cfg(feature = "experimental-tls")]
+use otap_df_telemetry::otel_debug;
 
 /// Arrow records encoder for syslog messages
 pub mod arrow_records_encoder;
@@ -38,8 +46,12 @@ pub mod parser;
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
-const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100); // Maximum time to wait before building an Arrow batch
+/// Maximum time to wait before building an Arrow batch
+const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
+
+/// Maximum time to wait for spawned TCP tasks to drain during shutdown.
+const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 /// Protocol type for the receiver
 #[derive(Debug, Clone, Deserialize)]
@@ -52,22 +64,30 @@ enum Protocol {
     Udp,
 }
 
-/// config for a syslog cef receiver
+/// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     listening_addr: SocketAddr,
     /// The protocol to use for receiving messages
     protocol: Protocol,
+    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
+    ///
+    /// When configured, TCP connections will require TLS. This is only applicable
+    /// when `protocol` is `tcp`. UDP does not support TLS.
+    #[cfg(feature = "experimental-tls")]
+    pub tls: Option<TlsServerConfig>,
 }
 
 impl Config {
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+    pub const fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
         Self {
             listening_addr,
             protocol,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
         }
     }
 }
@@ -125,7 +145,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for SyslogCefReceiver {
     async fn start(
-        mut self: Box<Self>,
+        self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
@@ -138,12 +158,44 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
-            .start_periodic_telemetry(std::time::Duration::from_secs(1))
+            .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
         match self.config.protocol {
             Protocol::Tcp => {
                 let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+
+                // Build TLS acceptor if TLS is configured
+                #[cfg(feature = "experimental-tls")]
+                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                    .await
+                    .map_err(|e| Error::ReceiverError {
+                        receiver: effect_handler.receiver_id(),
+                        kind: ReceiverErrorKind::Configuration,
+                        error: format!("Failed to configure TLS: {}", e),
+                        source_detail: format_error_sources(&e),
+                    })?;
+
+                // Extract handshake timeout from TLS config (if present)
+                #[cfg(feature = "experimental-tls")]
+                let maybe_handshake_timeout = self
+                    .config
+                    .tls
+                    .as_ref()
+                    .and_then(|tls| tls.handshake_timeout);
+
+                #[cfg(feature = "experimental-tls")]
+                if maybe_tls_acceptor.is_some() {
+                    otel_info!(
+                        "receiver.tls_enabled",
+                        message = "TLS enabled for Syslog/CEF TCP receiver"
+                    );
+                }
+
+                // Flag to signal spawned connection tasks to flush and exit on shutdown
+                let shutdown_flag = Rc::new(Cell::new(false));
+                // Counter to track active connection tasks for graceful shutdown
+                let active_task_count = Rc::new(Cell::new(0usize));
 
                 loop {
                     tokio::select! {
@@ -152,10 +204,31 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+                                    shutdown_flag.set(true); // Signal all connection tasks to flush and exit
+
+                                    // Wait for active tasks to finish flushing.
+                                    // Use 90% of remaining time (keeping 10% buffer for cleanup),
+                                    // capped at MAX_TASK_DRAIN_WAIT.
+                                    let time_until_deadline = deadline.saturating_duration_since(std::time::Instant::now());
+                                    let drain_wait = std::cmp::min(time_until_deadline * 9 / 10, MAX_TASK_DRAIN_WAIT);
+                                    let drain_result = tokio::time::timeout(drain_wait, async {
+                                        while active_task_count.get() > 0 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }).await;
+
+                                    if drain_result.is_err() {
+                                        otel_warn!(
+                                            "receiver.shutdown.drain_timeout",
+                                            active_tasks = active_task_count.get(),
+                                            message = "Shutdown drain timeout expired with tasks still active"
+                                        );
+                                    }
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -173,18 +246,72 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming TCP connections.
                         accept_result = listener.accept() => {
                             match accept_result {
-                                Ok((socket, _peer_addr)) => {
-                                    // Track active connections
-                                    self.metrics.borrow_mut().tcp_connections_active.inc();
-
+                                Ok((socket, peer_addr)) => {
                                     // Clone the effect handler so the spawned task can send messages.
                                     let effect_handler = effect_handler.clone();
                                     let metrics = self.metrics.clone();
 
+                                    // Clone TLS acceptor for the spawned task
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_acceptor = maybe_tls_acceptor.clone();
+                                    #[cfg(feature = "experimental-tls")]
+                                    let tls_handshake_timeout = maybe_handshake_timeout;
+
+                                    // Clone shutdown flag for the spawned task
+                                    let task_shutdown_flag = shutdown_flag.clone();
+                                    // Clone active task counter for the spawned task
+                                    let task_active_count = active_task_count.clone();
+
                                     // Spawn a task to handle the connection.
                                     // ToDo should this be abstracted and exposed a method in the effect handler?
                                     _ = tokio::task::spawn_local(async move {
+                                        // If already shutting down, exit immediately (nothing to process yet)
+                                        if task_shutdown_flag.get() {
+                                            return;
+                                        }
+
+                                        // Now we're committed to handling this connection
+                                        metrics.borrow_mut().tcp_connections_active.inc();
+                                        task_active_count.set(task_active_count.get() + 1);
+
+                                        // Perform TLS handshake if configured, creating a unified reader type
+                                        #[cfg(feature = "experimental-tls")]
+                                        let mut reader: Box<dyn tokio::io::AsyncBufRead + Unpin> = if let Some(acceptor) = tls_acceptor {
+                                            // Use configured timeout or fall back to 10 seconds (the serde default)
+                                            let timeout = tls_handshake_timeout
+                                                .unwrap_or(Duration::from_secs(10));
+                                            match accept_tls_connection(socket, &acceptor, timeout).await {
+                                                Ok(tls_stream) => {
+                                                    otel_debug!(
+                                                        "tls.handshake.success",
+                                                        peer = %peer_addr,
+                                                        message = "TLS handshake completed"
+                                                    );
+                                                    Box::new(BufReader::new(tls_stream))
+                                                }
+                                                Err(e) => {
+                                                    otel_warn!(
+                                                        "tls.handshake.failed",
+                                                        peer = %peer_addr,
+                                                        error = %e,
+                                                        message = "TLS handshake failed, closing connection"
+                                                    );
+                                                    metrics.borrow_mut().tcp_connections_active.dec();
+                                                    metrics.borrow_mut().tls_handshake_failures.inc();
+                                                    task_active_count.set(task_active_count.get() - 1);
+                                                    return;
+                                                }
+                                            }
+                                        } else {
+                                            Box::new(BufReader::new(socket))
+                                        };
+
+                                        #[cfg(not(feature = "experimental-tls"))]
                                         let mut reader = BufReader::new(socket);
+
+                                        // Suppress unused variable warning when TLS is disabled
+                                        let _ = peer_addr;
+
                                         let mut line_bytes = Vec::new();
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -193,6 +320,25 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
 
                                         loop {
+                                            // Check for shutdown signal (simple bool check - very cheap)
+                                            if task_shutdown_flag.get() {
+                                                if arrow_records_builder.len() > 0 {
+                                                    let items = u64::from(arrow_records_builder.len());
+                                                    let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                                    let res = effect_handler.try_send_message_with_source_node(
+                                                        OtapPdata::new_todo_context(arrow_records.into())
+                                                    );
+                                                    let mut m = metrics.borrow_mut();
+                                                    match &res {
+                                                        Ok(_) => m.received_logs_forwarded.add(items),
+                                                        Err(_) => m.received_logs_forward_failed.add(items),
+                                                    }
+                                                }
+                                                metrics.borrow_mut().tcp_connections_active.dec();
+                                                task_active_count.set(task_active_count.get() - 1);
+                                                break;
+                                            }
+
                                             tokio::select! {
                                                 biased; // Prioritize incoming data over timeout
 
@@ -230,7 +376,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -243,6 +389,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Decrement active connections on EOF
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break;
                                                         }
                                                         Ok(_) => {
@@ -291,7 +438,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the timer since we already built an arrow record batch due to size constraint
                                                                 interval.reset();
 
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -306,7 +453,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             if arrow_records_builder.len() > 0 {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
-                                                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
 
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
@@ -319,6 +466,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                                             // Decrement active connections on read error
                                                             metrics.borrow_mut().tcp_connections_active.dec();
+                                                            task_active_count.set(task_active_count.get() - 1);
                                                             break; // ToDo: Handle read error properly
                                                         }
                                                     }
@@ -334,7 +482,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         // Reset the builder for the next batch
                                                         arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                                         {
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -378,10 +526,25 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         // Process incoming control messages.
                         ctrl_msg = ctrl_chan.recv() => {
                             match ctrl_msg {
-                                Ok(NodeControlMsg::Shutdown {..}) => {
-                                    // ToDo: Add proper deadline function
+                                Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                                     let _ = timer_cancel_handle.cancel().await;
-                                    break;
+
+                                    // Flush any remaining records before shutdown
+                                    if arrow_records_builder.len() > 0 {
+                                        let items = u64::from(arrow_records_builder.len());
+                                        let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
+                                        let res = effect_handler.try_send_message_with_source_node(
+                                            OtapPdata::new_todo_context(arrow_records.into())
+                                        );
+                                        let mut m = self.metrics.borrow_mut();
+                                        match &res {
+                                            Ok(_) => m.received_logs_forwarded.add(items),
+                                            Err(_) => m.received_logs_forward_failed.add(items),
+                                        }
+                                    }
+
+                                    let snapshot = self.metrics.borrow().snapshot();
+                                    return Ok(TerminalState::new(deadline, [snapshot]));
                                 }
                                 Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
                                     let mut m = self.metrics.borrow_mut();
@@ -427,7 +590,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                         interval.reset();
 
-                                        let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                         {
                                             let mut m = self.metrics.borrow_mut();
                                             match &res {
@@ -438,7 +601,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         // Do not propagate downstream send errors; keep running
                                         // so that telemetry can still be collected (tests expect refused
                                         // to be counted and reported). We already incremented
-                                        // `received_logs_refused` above.
+                                        // `received_logs_forward_failed` above.
                                         if res.is_err() {
                                             // swallow error
                                         }
@@ -466,7 +629,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                 // Reset the builder for the next batch
                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                let res = effect_handler.send_message(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
                                 {
                                     let mut m = self.metrics.borrow_mut();
                                     match &res {
@@ -485,8 +648,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
         }
-
-        Ok(TerminalState::default())
     }
 }
 
@@ -513,6 +674,11 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of active TCP connections
     #[metric(unit = "{conn}")]
     pub tcp_connections_active: UpDownCounter<u64>,
+
+    /// Number of TLS handshake failures
+    #[cfg(feature = "experimental-tls")]
+    #[metric(unit = "{error}")]
+    pub tls_handshake_failures: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -535,7 +701,6 @@ mod tests {
             }
         }
     }
-    use arrow::array::Array;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -730,9 +895,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -745,57 +912,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -849,9 +965,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -864,57 +982,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Validate using Arrow record batch methods directly
-                // Check the body column to verify message content
-                let body_column = logs_record_batch
-                    .column_by_name("body")
-                    .expect("Body column should exist");
-
-                // The body column is a struct with fields: type (UInt8) and str (Dictionary)
-                let struct_array = body_column
-                    .as_any()
-                    .downcast_ref::<arrow::array::StructArray>()
-                    .expect("Body column should be a StructArray");
-
-                // Get the str field which contains the actual string content
-                let str_field = struct_array
-                    .column_by_name("str")
-                    .expect("Body struct should have 'str' field");
-
-                // The str field is a Dictionary array
-                let dict_array = str_field
-                    .as_any()
-                    .downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                    .expect("str field should be a Dictionary array");
-
-                // Get the values from the dictionary
-                let values = dict_array
-                    .values()
-                    .as_any()
-                    .downcast_ref::<arrow::array::StringArray>()
-                    .expect("Dictionary values should be StringArray");
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Get the actual body content for each record
-                let body1_key = dict_array.key(0).expect("First record should exist");
-                let body2_key = dict_array.key(1).expect("Second record should exist");
-
-                let body1 = values.value(body1_key);
-                let body2 = values.value(body2_key);
-
-                // Verify that the body content matches the input messages
-                assert_eq!(
-                    body1, expected_message1,
-                    "First message body content mismatch"
-                );
-                assert_eq!(
-                    body2, expected_message2,
-                    "Second message body content mismatch"
                 );
             })
         }
@@ -981,9 +1048,11 @@ mod tests {
                     schema.fields().iter().map(|f| f.name().as_str()).collect();
 
                 // Check for essential log record columns
+                // Note: body column is not present when all messages are fully parsed
+                // (all data is in attributes, no need for body)
                 assert!(
-                    column_names.contains(&"body"),
-                    "Logs record batch should contain 'body' column"
+                    !column_names.contains(&"body"),
+                    "Logs record batch should NOT contain 'body' column when all messages are fully parsed"
                 );
                 assert!(
                     column_names.contains(&"severity_number"),
@@ -996,56 +1065,6 @@ mod tests {
                 assert!(
                     column_names.contains(&"time_unix_nano"),
                     "Logs record batch should contain 'time_unix_nano' column"
-                );
-
-                // Get all the message bodies from all batches for validation
-                let mut all_bodies = Vec::new();
-                for arrow_records in &received_messages {
-                    let logs_batch = arrow_records
-                        .get(ArrowPayloadType::Logs)
-                        .expect("Expected Logs record batch to be present");
-
-                    let body_column = logs_batch
-                        .column_by_name("body")
-                        .expect("Body column should exist");
-
-                    let struct_array = body_column
-                        .as_any()
-                        .downcast_ref::<arrow::array::StructArray>()
-                        .expect("Body column should be a StructArray");
-
-                    let str_field = struct_array
-                        .column_by_name("str")
-                        .expect("Body struct should have 'str' field");
-
-                    let dict_array = str_field.as_any().downcast_ref::<arrow::array::DictionaryArray<arrow::datatypes::UInt16Type>>()
-                        .expect("str field should be a Dictionary array");
-
-                    let values = dict_array
-                        .values()
-                        .as_any()
-                        .downcast_ref::<arrow::array::StringArray>()
-                        .expect("Dictionary values should be StringArray");
-
-                    for i in 0..logs_batch.num_rows() {
-                        let key = dict_array.key(i).expect("Record should exist");
-                        let body = values.value(key);
-                        all_bodies.push(body);
-                    }
-                }
-
-                // Expected test messages
-                let expected_message1 = "<34>1 2024-01-15T10:30:45.123Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8";
-                let expected_message2 = "<165>1 2024-01-15T10:31:00.456Z host.example.com myapp 1234 ID123 [exampleSDID@32473 iut=\"3\" eventSource=\"Application\" eventID=\"1011\"] Application started successfully";
-
-                // Verify that both expected messages are present (order doesn't matter)
-                assert!(
-                    all_bodies.contains(&expected_message1),
-                    "First message not found in received bodies"
-                );
-                assert!(
-                    all_bodies.contains(&expected_message2),
-                    "Second message not found in received bodies"
                 );
             })
         }
@@ -1136,6 +1155,7 @@ mod telemetry_tests {
     use super::*;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
+    use otap_df_engine::message::Sender;
     use otap_df_engine::testing::{setup_test_runtime, test_node};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1154,6 +1174,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("test-group".to_string()),
                 otap_df_config::PipelineId::from("test-pipeline".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1172,7 +1193,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(out_tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);
@@ -1247,6 +1268,7 @@ mod telemetry_tests {
                 otap_df_config::PipelineGroupId::from("grp".to_string()),
                 otap_df_config::PipelineId::from("pipe".to_string()),
                 0,
+                1, // num_cores
                 0,
             );
 
@@ -1264,7 +1286,7 @@ mod telemetry_tests {
             let mut senders = std::collections::HashMap::new();
             let _ = senders.insert(
                 "".into(),
-                otap_df_engine::local::message::LocalSender::mpsc(tx),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(tx)),
             );
 
             let (pipe_tx, _pipe_rx) = otap_df_engine::control::pipeline_ctrl_msg_channel(10);

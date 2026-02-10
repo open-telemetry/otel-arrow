@@ -6,7 +6,7 @@
 //!
 
 use otap_df_pdata::{SpanID, TraceID};
-use rand::Rng;
+use rand::RngExt;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -97,7 +97,7 @@ pub fn current_time() -> u64 {
 
 /// generates a delay in nano seconds
 #[must_use]
-pub fn delay() -> u64 {
+pub const fn delay() -> u64 {
     // generate a random delay
     MAX_NS_DELAY
 }

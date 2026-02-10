@@ -13,8 +13,9 @@ nodes:
           - perf_noop
         dispatch_strategy: round_robin
     config:
-      listening_addr: "127.0.0.1:4328"
+      listening_addr: "127.0.0.1:4327"
       response_stream_channel_size: 256
+      compression_method: zstd
 
   perf_noop:
     kind: exporter

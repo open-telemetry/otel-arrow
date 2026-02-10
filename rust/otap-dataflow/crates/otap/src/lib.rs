@@ -49,6 +49,9 @@ pub mod filter_processor;
 /// Implementation of a noop exporter that acts as a exporter placeholder
 pub mod noop_exporter;
 
+/// Fan-out processor to clone data to multiple downstream outputs.
+pub mod fanout_processor;
+
 /// An error-exporter returns a static error.
 pub mod error_exporter;
 
@@ -70,10 +73,6 @@ mod fixtures;
 
 #[cfg(test)]
 pub mod testing;
-
-/// validation process to verify that encoding/decoding works properly with otlp request
-#[cfg(test)]
-pub mod validation;
 
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
@@ -102,12 +101,21 @@ pub mod otlp_http;
 /// Cloud specific auth utilities
 pub mod cloud_auth;
 
+/// Internal telemetry receiver
+pub mod internal_telemetry_receiver;
+
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;
 /// TLS utilities
 #[cfg(feature = "experimental-tls")]
 pub mod tls_utils;
+
+/// Console exporter similar using built-in OTLP-bytes formatting.
+pub mod console_exporter;
+
+/// Durable buffer processor for crash-resilient buffering via Quiver
+pub mod durable_buffer_processor;
 
 /// Factory for OTAP-based pipeline
 #[pipeline_factory(OTAP, OtapPdata)]

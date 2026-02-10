@@ -58,7 +58,7 @@ mod schema;
 mod writer;
 
 #[allow(dead_code)]
-const PARQUET_EXPORTER_URN: &str = "urn:otel:otap:parquet:exporter";
+const PARQUET_EXPORTER_URN: &str = "urn:otel:parquet:exporter";
 
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
@@ -91,7 +91,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl ParquetExporter {
     /// construct a new instance of the `ParquetExporter`
     #[must_use]
-    pub fn new(config: config::Config) -> Self {
+    pub const fn new(config: config::Config) -> Self {
         // NOTE: This constructor does not register metrics because it lacks a PipelineContext.
         // Prefer using from_config in the factory path so metrics are properly wired.
         Self {
@@ -577,7 +577,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, 3).await;
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::LogAttrs, 278).await;
                 })
@@ -761,7 +761,7 @@ mod test {
             ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -849,7 +849,7 @@ mod test {
             ))
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1296,7 +1296,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1366,7 +1366,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
 
                     // simply ensure there is a parquet file for each type we should have
                     // written and that it has the expected number of rows
@@ -1413,7 +1413,7 @@ mod test {
         // Build exporter with metrics via from_config
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
         let pipeline_ctx = controller_ctx
-            .pipeline_context_with("grp".into(), "pipe".into(), 0, 0)
+            .pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0)
             .with_node_context(
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
@@ -1599,7 +1599,7 @@ mod test {
             })
             .run_validation(move |_ctx, exporter_result| {
                 Box::pin(async move {
-                    assert!(exporter_result.is_ok());
+                    exporter_result.unwrap();
                     assert_parquet_file_has_rows(&base_dir, ArrowPayloadType::Logs, num_rows).await;
                 })
             });

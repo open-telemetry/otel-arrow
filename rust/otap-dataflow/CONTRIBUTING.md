@@ -10,6 +10,14 @@ project-level [CONTRIBUTING][] document.
 
 Run `cargo xtask check` to check the structure of the project.
 
+## Telemetry and logging
+
+All internal logging MUST use the `otel_*` macros from `otap_df_telemetry`
+(not `tracing::info!` or `println!`). See the
+[Events Guide](docs/telemetry/events-guide.md) details.
+
+TODO: Add metrics information
+
 ## Building a Docker image
 
 Run `docker build  --build-context otel-arrow=../../ -f Dockerfile -t df_engine .`

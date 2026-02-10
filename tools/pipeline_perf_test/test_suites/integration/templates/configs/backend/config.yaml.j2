@@ -21,7 +21,7 @@ settings:
     "request_compression": compression
   } %}
 {%- else -%}
-  {% set plugin_urn = "urn:unknown:receiver" %}
+  {% set plugin_urn = "urn:unknown:invalid:receiver" %}
   {% set error_msg = "Unknown backend_receiver_type: " ~ receiver_type %}
 {%- endif %}
 
@@ -36,10 +36,19 @@ nodes:
           - perf
         dispatch_strategy: round_robin
     config:
+      {%- if receiver_type == "otlp" %}
+      protocols:
+        grpc:
+          listening_addr: "{{ listen_addr }}"
+          {%- for k, v in extra_config.items() %}
+          {{ k }}: {{ v }}
+          {%- endfor %}
+      {%- else %}
       listening_addr: "{{ listen_addr }}"
       {%- for k, v in extra_config.items() %}
       {{ k }}: {{ v }}
       {%- endfor %}
+      {%- endif %}
     {%- else %}
     config:
       error: "{{ error_msg }}"
@@ -47,7 +56,7 @@ nodes:
 
   perf:
     kind: exporter
-    plugin_urn: "urn:otel:otap:perf:exporter"
+    plugin_urn: "urn:otel:perf:exporter"
     config:
       frequency: 500
       cpu_usage: false

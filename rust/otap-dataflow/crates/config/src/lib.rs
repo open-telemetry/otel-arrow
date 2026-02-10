@@ -24,6 +24,8 @@ pub mod node;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
+/// Pipeline and engine settings.
+pub mod settings;
 /// TLS configuration.
 pub mod tls;
 pub mod urn;
@@ -82,7 +84,7 @@ pub struct PipelineKey {
 impl PipelineKey {
     /// Construct a new PipelineKey from group and pipeline ids.
     #[must_use]
-    pub fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
+    pub const fn new(pipeline_group_id: PipelineGroupId, pipeline_id: PipelineId) -> Self {
         Self {
             pipeline_group_id,
             pipeline_id,
@@ -91,13 +93,13 @@ impl PipelineKey {
 
     /// Returns the pipeline group identifier.
     #[must_use]
-    pub fn pipeline_group_id(&self) -> &PipelineGroupId {
+    pub const fn pipeline_group_id(&self) -> &PipelineGroupId {
         &self.pipeline_group_id
     }
 
     /// Returns the pipeline identifier.
     #[must_use]
-    pub fn pipeline_id(&self) -> &PipelineId {
+    pub const fn pipeline_id(&self) -> &PipelineId {
         &self.pipeline_id
     }
 

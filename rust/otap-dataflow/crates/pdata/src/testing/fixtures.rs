@@ -24,28 +24,69 @@ use crate::proto::opentelemetry::trace::v1::{
 // Logs Fixtures
 //
 
-/// Two logs with full resource and scope
+/// Two scopes with two logs each, for testing tree structure.
 #[must_use]
 pub fn logs_with_full_resource_and_scope() -> LogsData {
+    // 2025-01-15T10:30:00.000Z in nanoseconds
+    const BASE_TIME: u64 = 1_736_937_000_000_000_000;
+    const ONE_SEC: u64 = 1_000_000_000;
+
     LogsData::new(vec![ResourceLogs::new(
-        Resource::build().finish(),
-        vec![ScopeLogs::new(
-            InstrumentationScope::build()
-                .name("test-scope".to_string())
-                .finish(),
-            vec![
-                LogRecord::build()
-                    .time_unix_nano(1000u64)
-                    .observed_time_unix_nano(1100u64)
-                    .severity_number(SeverityNumber::Info as i32)
+        Resource::build()
+            .attributes(vec![KeyValue::new("res.id", AnyValue::new_string("self"))])
+            .finish(),
+        vec![
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope-alpha".to_string())
+                    .version("1.0.0".to_string())
+                    .attributes(vec![KeyValue::new(
+                        "scopekey",
+                        AnyValue::new_string("scopeval"),
+                    )])
                     .finish(),
-                LogRecord::build()
-                    .time_unix_nano(2000u64)
-                    .observed_time_unix_nano(2100u64)
-                    .severity_number(SeverityNumber::Warn as i32)
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(BASE_TIME)
+                        .observed_time_unix_nano(BASE_TIME + 100_000_000)
+                        .severity_number(SeverityNumber::Info as i32)
+                        .event_name("event_1")
+                        .body(AnyValue::new_string("first log in alpha"))
+                        .finish(),
+                    LogRecord::build()
+                        .time_unix_nano(BASE_TIME + ONE_SEC)
+                        .observed_time_unix_nano(BASE_TIME + ONE_SEC + 100_000_000)
+                        .severity_number(SeverityNumber::Warn as i32)
+                        .body(AnyValue::new_string("second log in alpha"))
+                        .finish(),
+                ],
+            ),
+            ScopeLogs::new(
+                InstrumentationScope::build()
+                    .name("scope-beta".to_string())
+                    .version("2.0.0".to_string())
                     .finish(),
-            ],
-        )],
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(BASE_TIME + 2 * ONE_SEC)
+                        .observed_time_unix_nano(BASE_TIME + 2 * ONE_SEC + 100_000_000)
+                        .severity_number(SeverityNumber::Error as i32)
+                        .severity_text("HOTHOT")
+                        .body(AnyValue::new_string("first log in beta"))
+                        .finish(),
+                    LogRecord::build()
+                        .time_unix_nano(BASE_TIME + 3 * ONE_SEC)
+                        .observed_time_unix_nano(BASE_TIME + 3 * ONE_SEC + 100_000_000)
+                        .severity_number(SeverityNumber::Debug as i32)
+                        .event_name("event_2")
+                        .attributes(vec![KeyValue::new(
+                            "detail",
+                            AnyValue::new_string("no body here"),
+                        )])
+                        .finish(),
+                ],
+            ),
+        ],
     )])
 }
 
@@ -872,7 +913,7 @@ impl MetricsConfig {
 
     /// Enable varying attributes on data points
     #[must_use]
-    pub fn with_varying_attributes(mut self, vary: bool) -> Self {
+    pub const fn with_varying_attributes(mut self, vary: bool) -> Self {
         self.vary_attributes = vary;
         self
     }
@@ -888,7 +929,7 @@ impl MetricsConfig {
 
     /// Count total number of metrics
     #[must_use]
-    pub fn metric_count(&self) -> usize {
+    pub const fn metric_count(&self) -> usize {
         self.gauge_points.len()
             + self.sum_points.len()
             + self.histogram_points.len()
@@ -916,7 +957,7 @@ pub struct DataGenerator {
 impl DataGenerator {
     /// Generate N 'limit' number of items
     #[must_use]
-    pub fn new(limit: usize) -> Self {
+    pub const fn new(limit: usize) -> Self {
         Self {
             limit,
             count: 0,
@@ -929,7 +970,7 @@ impl DataGenerator {
 
     /// Create a DataGenerator with a specific metrics configuration
     #[must_use]
-    pub fn with_metrics_config(config: MetricsConfig) -> Self {
+    pub const fn with_metrics_config(config: MetricsConfig) -> Self {
         Self {
             limit: 0,
             count: 0,
@@ -941,7 +982,7 @@ impl DataGenerator {
 
 impl DataGenerator {
     /// Return a unique test timestamp.
-    fn timestamp(&mut self) -> u64 {
+    const fn timestamp(&mut self) -> u64 {
         let val = self.time_value;
         // add one second
         self.time_value += 1_000_000_000;

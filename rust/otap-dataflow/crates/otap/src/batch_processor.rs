@@ -37,6 +37,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
@@ -278,7 +279,7 @@ impl Config {
 
 impl FormatConfig {
     #[cfg(test)]
-    fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
         FormatConfig {
             min_size: NonZeroUsize::new(min_size),
             max_size: NonZeroUsize::new(max_size),
@@ -287,7 +288,7 @@ impl FormatConfig {
     }
 
     #[cfg(test)]
-    fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
         FormatConfig {
             min_size: NonZeroUsize::new(min_size),
             max_size: NonZeroUsize::new(max_size),
@@ -695,7 +696,7 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T>
 where
     SignalBuffer<T>: Batcher<T>,
 {
-    fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
+    const fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
         BatchProcessorSignal {
             signal,
             config: self.config,
@@ -951,7 +952,7 @@ where
                     &mut pdata,
                 );
             }
-            effect.send_message(pdata).await?;
+            effect.send_message_with_source_node(pdata).await?;
         }
 
         Ok(())
@@ -1107,11 +1108,11 @@ impl<T: OtapPayloadHelpers> Default for Inputs<T> {
 }
 
 impl BatchingFormat {
-    fn has_otlp(&self) -> bool {
+    const fn has_otlp(&self) -> bool {
         !matches!(self, Self::Otap)
     }
 
-    fn has_otap(&self) -> bool {
+    const fn has_otap(&self) -> bool {
         !matches!(self, Self::Otlp)
     }
 }
@@ -1130,13 +1131,13 @@ where
 }
 
 impl BatchPortion {
-    fn new(inkey: Option<SlotKey>, items: usize) -> Self {
+    const fn new(inkey: Option<SlotKey>, items: usize) -> Self {
         Self { inkey, items }
     }
 }
 
 impl MultiContext {
-    fn new(inputs: Vec<BatchPortion>) -> Self {
+    const fn new(inputs: Vec<BatchPortion>) -> Self {
         Self { inputs, pos: 0 }
     }
 }
@@ -1150,11 +1151,11 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.items == 0
     }
 
-    fn requests(&self) -> usize {
+    const fn requests(&self) -> usize {
         self.pending.len()
     }
 
@@ -1366,6 +1367,7 @@ mod tests {
             PipelineGroupId::from("test_group".to_string()),
             PipelineId::from("test_pipeline".to_string()),
             0,
+            1, // num_cores
             0,
         );
         (pipeline_ctx, telemetry_registry)
@@ -1385,7 +1387,7 @@ mod tests {
 
         // Create processor using TestRuntime's registry
         let controller = ControllerContext::new(telemetry_registry.clone());
-        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 0);
+        let pipeline_ctx = controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
         let node = test_node("batch-processor-test");
         let mut node_config = NodeUserConfig::new_processor_config(OTAP_BATCH_PROCESSOR_URN);
         node_config.config = cfg;

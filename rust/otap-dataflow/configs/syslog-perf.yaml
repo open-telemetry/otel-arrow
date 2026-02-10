@@ -17,17 +17,10 @@ nodes:
       protocol: udp
   exporter:
     kind: exporter
-    plugin_urn: "urn:otel:otap:perf:exporter"
+    plugin_urn: "urn:otel:perf:exporter"
     config:
       frequency: 1000
       cpu_usage: false
       mem_usage: false
       disk_usage: false
       io_usage: false
-
-service:
-  telemetry:
-    logs:
-      level: "info"
-    resource:
-      service.name: "syslog-perf"
