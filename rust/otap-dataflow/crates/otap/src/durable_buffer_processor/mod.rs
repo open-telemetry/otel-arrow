@@ -349,6 +349,9 @@ pub struct DurableBuffer {
 
     /// Whether timer has been started.
     timer_started: bool,
+
+    /// Last time we logged a flush warning (rate-limiting).
+    last_flush_warn: Option<Instant>,
 }
 
 impl DurableBuffer {
@@ -403,6 +406,7 @@ impl DurableBuffer {
             num_cores,
             metrics,
             timer_started: false,
+            last_flush_warn: None,
         })
     }
 
@@ -569,10 +573,14 @@ impl DurableBuffer {
                      (WAL max {} + segment size {}). \
                      Either increase retention_size_cap to at least {} bytes, \
                      or reduce the core count to at most {}",
-                    total_size_cap, num_cores, per_core_size_cap, min_per_core,
+                    total_size_cap,
+                    num_cores,
+                    per_core_size_cap,
+                    min_per_core,
                     quiver_config.wal.max_size_bytes.get(),
                     quiver_config.segment.target_size_bytes.get(),
-                    min_total, max_cores,
+                    min_total,
+                    max_cores,
                 ),
             });
         }
@@ -827,7 +835,25 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                otel_warn!("durable_buffer.flush.failed", error = %e);
+                // Rate-limit flush warnings to at most once every 10 seconds
+                // since the timer tick fires every poll_interval (~100ms).
+                let now = Instant::now();
+                let should_log = self.last_flush_warn.map_or(true, |last| {
+                    now.duration_since(last) >= Duration::from_secs(10)
+                });
+                if should_log {
+                    self.last_flush_warn = Some(now);
+
+                    if e.is_at_capacity() {
+                        otel_warn!(
+                            "durable_buffer.flush.failed",
+                            error = %e,
+                            reason = "disk_budget_at_capacity"
+                        );
+                    } else {
+                        otel_warn!("durable_buffer.flush.failed", error = %e);
+                    }
+                }
             }
         }
 
