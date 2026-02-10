@@ -1205,11 +1205,11 @@ fn build_webpki_verifier(
     if include_system_cas {
         let system_certs = load_native_certs();
         for error in &system_certs.errors {
-            otel_warn!("tls.native_cert.load_error", error = ?error, message = "Error loading native cert");
+            otel_warn!("tls.native_cert.load_error", error = ?error);
         }
         for cert in system_certs.certs {
             if let Err(e) = roots.add(cert) {
-                otel_warn!("tls.native_cert.add_error", error = ?e, message = "Failed to add system cert");
+                otel_warn!("tls.native_cert.add_error", error = ?e);
             }
         }
     }
