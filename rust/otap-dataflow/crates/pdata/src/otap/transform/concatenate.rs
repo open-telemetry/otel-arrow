@@ -565,7 +565,7 @@ enum Cardinality {
 }
 
 impl Cardinality {
-    fn from_exact(count: usize) -> Cardinality {
+    const fn from_exact(count: usize) -> Cardinality {
         match count {
             count if count <= MAX_U8_CARDINALITY => Cardinality::WithinU8,
             count if count <= MAX_U16_CARDINALITY => Cardinality::WithinU16,

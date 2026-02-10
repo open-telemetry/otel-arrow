@@ -45,11 +45,11 @@ impl Default for TelemetryConfig {
     }
 }
 
-fn default_reporting_channel_size() -> usize {
+const fn default_reporting_channel_size() -> usize {
     100
 }
 
-fn default_reporting_interval() -> Duration {
+const fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
 }
 

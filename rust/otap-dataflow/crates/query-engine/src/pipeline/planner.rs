@@ -38,7 +38,7 @@ pub struct PipelinePlanner {}
 
 impl PipelinePlanner {
     /// creates a new instance of `PipelinePlanner`
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {}
     }
 

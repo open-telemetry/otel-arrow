@@ -33,7 +33,7 @@ pub struct DeclarativeView {
 impl DeclarativeView {
     /// Create a new declarative view from the given configuration.
     #[must_use]
-    pub fn new(config: ViewConfig) -> Self {
+    pub const fn new(config: ViewConfig) -> Self {
         Self { config }
     }
 

@@ -487,12 +487,12 @@ impl PipelineMetricsMonitor {
     }
 
     /// Returns a mutable reference to the metrics struct.
-    pub fn metrics_mut(&mut self) -> &mut MetricSet<PipelineMetrics> {
+    pub const fn metrics_mut(&mut self) -> &mut MetricSet<PipelineMetrics> {
         &mut self.metrics
     }
 
     /// Returns a mutable reference to the Tokio runtime metrics struct.
-    pub fn tokio_metrics_mut(&mut self) -> &mut MetricSet<TokioRuntimeMetrics> {
+    pub const fn tokio_metrics_mut(&mut self) -> &mut MetricSet<TokioRuntimeMetrics> {
         &mut self.tokio_metrics
     }
 

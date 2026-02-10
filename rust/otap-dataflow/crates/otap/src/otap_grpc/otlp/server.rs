@@ -112,7 +112,7 @@ struct OtlpBytesCodec {
 }
 
 impl OtlpBytesCodec {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -139,7 +139,7 @@ struct OtlpResponseEncoder {
 }
 
 impl OtlpResponseEncoder {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -179,7 +179,7 @@ struct OtlpBytesDecoder {
 }
 
 impl OtlpBytesDecoder {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -223,7 +223,7 @@ struct OtapBatchService {
 }
 
 impl OtapBatchService {
-    fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
+    const fn new(effect_handler: EffectHandler<OtapPdata>, state: Option<SharedState>) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,

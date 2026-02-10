@@ -75,13 +75,13 @@ mod otlp_slots {
 ///
 /// Note: The slot ID is determined solely by the payload type, not the signal type.
 /// Signal type is passed for consistency with the API but is not used in the mapping.
-fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
+const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) -> SlotId {
     // ArrowPayloadType values are 0-45, which fits directly in the 64-slot limit
     SlotId::new(payload_type as u16)
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
-fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
+const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
     SlotId::new(match signal_type {
         SignalType::Logs => otlp_slots::OTLP_LOGS,
         SignalType::Traces => otlp_slots::OTLP_TRACES,
@@ -90,7 +90,7 @@ fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
 }
 
 /// Check if a slot ID is an OTLP opaque binary slot
-fn is_otlp_slot(slot: SlotId) -> Option<SignalType> {
+const fn is_otlp_slot(slot: SlotId) -> Option<SignalType> {
     match slot.raw() {
         otlp_slots::OTLP_LOGS => Some(SignalType::Logs),
         otlp_slots::OTLP_TRACES => Some(SignalType::Traces),
@@ -118,7 +118,7 @@ fn slot_to_payload_type(slot: SlotId) -> Option<ArrowPayloadType> {
 ///
 /// These slots are used by ALL signal types, so their presence alone cannot
 /// determine the signal type of a bundle.
-fn is_shared_slot(slot: SlotId) -> bool {
+const fn is_shared_slot(slot: SlotId) -> bool {
     matches!(slot.raw(), 1 | 2) // RESOURCE_ATTRS (1), SCOPE_ATTRS (2)
 }
 
@@ -164,7 +164,7 @@ fn slot_label(signal_type: SignalType, payload_type: ArrowPayloadType) -> Cow<'s
 }
 
 /// Get the slot label for an OTLP opaque slot
-fn otlp_slot_label(signal_type: SignalType) -> Cow<'static, str> {
+const fn otlp_slot_label(signal_type: SignalType) -> Cow<'static, str> {
     Cow::Borrowed(match signal_type {
         SignalType::Logs => "OtlpLogs",
         SignalType::Traces => "OtlpTraces",

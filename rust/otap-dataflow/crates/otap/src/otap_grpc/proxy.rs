@@ -385,7 +385,7 @@ impl ProxyConfig {
     /// the current target matches a NO_PROXY rule. The bypass logic is handled
     /// per-request in `get_proxy_for_uri`.
     #[must_use]
-    pub fn has_proxy(&self) -> bool {
+    pub const fn has_proxy(&self) -> bool {
         self.http_proxy.is_some() || self.https_proxy.is_some() || self.all_proxy.is_some()
     }
 }

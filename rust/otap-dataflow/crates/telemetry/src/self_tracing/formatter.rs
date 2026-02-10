@@ -66,7 +66,7 @@ pub struct StyledBufWriter<'a> {
 impl<'a> StyledBufWriter<'a> {
     /// Create a new styled buffer writer.
     #[inline]
-    pub fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+    pub const fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
         Self {
             buf: Cursor::new(buf),
             color_mode,
@@ -142,7 +142,7 @@ impl RawLoggingLayer {
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
     #[must_use]
-    pub fn no_color() -> Self {
+    pub const fn no_color() -> Self {
         Self {
             color_mode: ColorMode::NoColor,
         }
@@ -150,7 +150,7 @@ impl ConsoleWriter {
 
     /// Create a writer that outputs to stderr with ANSI colors.
     #[must_use]
-    pub fn color() -> Self {
+    pub const fn color() -> Self {
         Self {
             color_mode: ColorMode::Color,
         }
@@ -176,7 +176,7 @@ pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord)
 impl ConsoleWriter {
     /// Return the color mode.
     #[must_use]
-    pub fn color_mode(&self) -> ColorMode {
+    pub const fn color_mode(&self) -> ColorMode {
         self.color_mode
     }
 
@@ -430,7 +430,7 @@ impl StyledBufWriter<'_> {
 
     /// Map severity number to ANSI color code.
     #[inline]
-    fn severity_to_color(severity: Option<i32>) -> AnsiCode {
+    const fn severity_to_color(severity: Option<i32>) -> AnsiCode {
         match severity {
             Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
             Some(s) if s >= 13 => AnsiCode::Yellow, // WARN

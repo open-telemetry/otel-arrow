@@ -74,7 +74,7 @@ impl QuiverError {
 
     /// Helper for creating [`QuiverError::Unimplemented`] values.
     #[must_use]
-    pub fn unimplemented(context: &'static str) -> Self {
+    pub const fn unimplemented(context: &'static str) -> Self {
         Self::Unimplemented { context }
     }
 
@@ -90,7 +90,7 @@ impl QuiverError {
     ///
     /// Cancelled operations should clean up and return without logging errors.
     #[must_use]
-    pub fn is_cancelled(&self) -> bool {
+    pub const fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }
 
@@ -102,7 +102,7 @@ impl QuiverError {
     /// This returns `true` for both disk budget capacity (`StorageAtCapacity`)
     /// and WAL capacity (`WalAtCapacity`) errors.
     #[must_use]
-    pub fn is_at_capacity(&self) -> bool {
+    pub const fn is_at_capacity(&self) -> bool {
         match self {
             Self::StorageAtCapacity { .. } => true,
             Self::Wal { source } => source.is_at_capacity(),
