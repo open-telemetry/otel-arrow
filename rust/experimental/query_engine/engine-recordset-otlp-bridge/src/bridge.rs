@@ -16,6 +16,8 @@ static EXPRESSIONS: LazyLock<RwLock<Vec<BridgePipeline>>> =
     LazyLock::new(|| RwLock::new(Vec::new()));
 
 static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
+    // Canonical schema definition comes from LogRecord proto definition
+    // https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/crates/pdata/src/views/otlp/proto/logs.rs
     ParserMapSchema::new()
         .set_default_map_key("attributes")
         .with_key_definition("time_unix_nano", ParserMapKeySchema::DateTime)
@@ -28,6 +30,8 @@ static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
         .with_key_definition("flags", ParserMapKeySchema::Integer)
         .with_key_definition("event_name", ParserMapKeySchema::String)
         .with_key_aliases([
+            // Support aliases to the Log and Event definition naming
+            // https://opentelemetry.io/docs/specs/otel/logs/data-model/
             ("Attributes", "attributes"),
             ("Timestamp", "time_unix_nano"),
             ("ObservedTimestamp", "observed_time_unix_nano"),
@@ -38,6 +42,15 @@ static LOG_RECORD_SCHEMA: LazyLock<ParserMapSchema> = LazyLock::new(|| {
             ("SpanId", "span_id"),
             ("TraceFlags", "flags"),
             ("EventName", "event_name"),
+            // Support aliases from OTLP JSON encoding
+            // https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
+            ("timeUnixNano", "time_unix_nano"),
+            ("observedTimeUnixNano", "observed_time_unix_nano"),
+            ("severityNumber", "severity_number"),
+            ("severityText", "severity_text"),
+            ("traceId", "trace_id"),
+            ("spanId", "span_id"),
+            ("eventName", "event_name"),
         ])
 });
 
@@ -841,10 +854,13 @@ mod tests {
         run_test("source | where SeverityText == 'Info'");
         run_test("source | extend x = SeverityNumber");
         run_test("source | project Timestamp, Body");
+        run_test("source | where severityText == 'Info'");
+        run_test("source | extend x = severityNumber");
+        run_test("source | project timeUnixNano, body");
 
         // Test mixing aliases and canonical names
         run_test("source | where SeverityText == 'Info' and severity_number > 0");
-        run_test("source | extend ts = Timestamp, sev = severity_text");
+        run_test("source | extend ts = Timestamp, sev = severityText");
 
         // Test default map key alias
         run_test("source | where attributes.custom_field == 'value'");
