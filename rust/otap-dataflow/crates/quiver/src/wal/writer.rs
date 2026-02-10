@@ -1065,6 +1065,7 @@ impl WalCoordinator {
             otel_warn!(
                 "quiver.wal.backpressure",
                 reason = "rotated_files_cap",
+                phase = "preflight_append",
                 rotated_file_count = self.rotated_files.len(),
                 max_rotated_files = self.options.max_rotated_files,
                 aggregate_bytes = self.aggregate_bytes,
@@ -1306,6 +1307,7 @@ impl WalCoordinator {
             otel_warn!(
                 "quiver.wal.backpressure",
                 reason = "rotated_files_cap",
+                phase = "rotate_active_file",
                 rotated_file_count = self.rotated_files.len(),
                 max_rotated_files = self.options.max_rotated_files,
                 aggregate_bytes = self.aggregate_bytes,
