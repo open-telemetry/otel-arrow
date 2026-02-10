@@ -36,9 +36,7 @@ pub enum QuiverError {
     ///
     /// Callers should slow down or pause ingestion until space is reclaimed.
     /// This is not a fatal error—retry after cleanup or subscriber catch-up.
-    #[error(
-        "storage at capacity: {available} bytes available (soft cap: {soft_cap})"
-    )]
+    #[error("storage at capacity: {available} bytes available (soft cap: {soft_cap})")]
     StorageAtCapacity {
         /// Bytes currently available before hitting the soft cap.
         available: u64,

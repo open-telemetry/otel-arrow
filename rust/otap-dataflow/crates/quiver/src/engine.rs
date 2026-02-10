@@ -181,9 +181,9 @@ impl QuiverEngineBuilder {
     /// Returns an error if configuration validation fails or if the WAL
     /// cannot be initialized.
     pub async fn build(self) -> Result<Arc<QuiverEngine>> {
-        let budget = self.budget.unwrap_or_else(|| {
-            Arc::new(crate::budget::DiskBudget::unlimited())
-        });
+        let budget = self
+            .budget
+            .unwrap_or_else(|| Arc::new(crate::budget::DiskBudget::unlimited()));
         QuiverEngine::open(self.config, budget).await
     }
 }
@@ -2931,7 +2931,11 @@ mod tests {
         // soft_cap = 36KB - 1KB = 35KB.
         let hard_cap: u64 = 36 * 1024;
         let segment_headroom: u64 = 1024;
-        let budget = Arc::new(DiskBudget::new(hard_cap, segment_headroom, RetentionPolicy::Backpressure));
+        let budget = Arc::new(DiskBudget::new(
+            hard_cap,
+            segment_headroom,
+            RetentionPolicy::Backpressure,
+        ));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -2958,10 +2962,7 @@ mod tests {
                     }
                 }
                 Err(e) => {
-                    assert!(
-                        e.is_at_capacity(),
-                        "expected StorageAtCapacity, got {e:?}"
-                    );
+                    assert!(e.is_at_capacity(), "expected StorageAtCapacity, got {e:?}");
                     assert!(
                         budget.is_over_soft_cap(),
                         "budget should be over soft_cap when ingest is rejected"
@@ -2973,7 +2974,9 @@ mod tests {
         panic!(
             "expected StorageAtCapacity within {max_iterations} ingests, \
              but all succeeded (budget used={}, soft_cap={}, hard_cap={})",
-            budget.used(), budget.soft_cap(), budget.hard_cap()
+            budget.used(),
+            budget.soft_cap(),
+            budget.hard_cap()
         );
     }
 
@@ -2995,7 +2998,11 @@ mod tests {
 
         // Budget sized to saturate after a small amount of data.
         let hard_cap: u64 = 36 * 1024;
-        let budget = Arc::new(DiskBudget::new(hard_cap, 1024, RetentionPolicy::Backpressure));
+        let budget = Arc::new(DiskBudget::new(
+            hard_cap,
+            1024,
+            RetentionPolicy::Backpressure,
+        ));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -3036,7 +3043,11 @@ mod tests {
             .expect("config valid");
 
         // Create a budget with DropOldest policy - large enough for a few segments
-        let budget = Arc::new(DiskBudget::new(50 * 1024, 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(
+            50 * 1024,
+            1024,
+            RetentionPolicy::DropOldest,
+        ));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -3086,7 +3097,11 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let budget = Arc::new(DiskBudget::new(100 * 1024, 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(
+            100 * 1024,
+            1024,
+            RetentionPolicy::DropOldest,
+        ));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
@@ -3154,7 +3169,11 @@ mod tests {
             .build()
             .expect("config valid");
 
-        let budget = Arc::new(DiskBudget::new(100 * 1024, 1024, RetentionPolicy::DropOldest));
+        let budget = Arc::new(DiskBudget::new(
+            100 * 1024,
+            1024,
+            RetentionPolicy::DropOldest,
+        ));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");

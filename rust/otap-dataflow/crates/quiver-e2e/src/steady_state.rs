@@ -132,7 +132,11 @@ fn create_per_engine_budget(
         ));
     }
 
-    Ok(Arc::new(DiskBudget::new(per_engine_cap, segment_bytes, policy)))
+    Ok(Arc::new(DiskBudget::new(
+        per_engine_cap,
+        segment_bytes,
+        policy,
+    )))
 }
 
 /// Configuration for steady-state test.

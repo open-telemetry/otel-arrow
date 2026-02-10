@@ -424,17 +424,17 @@ impl DurableBuffer {
         // Exhaustive destructure: if a field is added to DurableBufferConfig,
         // the compiler will force you to handle it here (no `..`).
         let DurableBufferConfig {
-            path: _,                    // per-core subdir added by init_engine
-            retention_size_cap: _,      // drives the DiskBudget, not QuiverConfig
+            path: _,               // per-core subdir added by init_engine
+            retention_size_cap: _, // drives the DiskBudget, not QuiverConfig
             max_age,
-            size_cap_policy: _,         // drives the DiskBudget policy
-            poll_interval: _,           // DurableBuffer timer, not engine config
-            otlp_handling: _,           // DurableBuffer adapter concern
+            size_cap_policy: _, // drives the DiskBudget policy
+            poll_interval: _,   // DurableBuffer timer, not engine config
+            otlp_handling: _,   // DurableBuffer adapter concern
             max_segment_open_duration,
-            initial_retry_interval: _,  // DurableBuffer retry logic
-            max_retry_interval: _,      // DurableBuffer retry logic
-            retry_multiplier: _,        // DurableBuffer retry logic
-            max_in_flight: _,           // DurableBuffer flow control
+            initial_retry_interval: _, // DurableBuffer retry logic
+            max_retry_interval: _,     // DurableBuffer retry logic
+            retry_multiplier: _,       // DurableBuffer retry logic
+            max_in_flight: _,          // DurableBuffer flow control
         } = config;
 
         let mut quiver_config = QuiverConfig::default();
@@ -567,8 +567,8 @@ impl DurableBuffer {
 
         // Defense-in-depth: the primary validation lives in new(), but guard
         // here too in case init_engine is ever called from a different path.
-        let min_per_core =
-            quiver_config.wal.max_size_bytes.get() + 2 * quiver_config.segment.target_size_bytes.get();
+        let min_per_core = quiver_config.wal.max_size_bytes.get()
+            + 2 * quiver_config.segment.target_size_bytes.get();
 
         if per_core_size_cap < min_per_core {
             let min_total = min_per_core * num_cores;
@@ -858,9 +858,9 @@ impl DurableBuffer {
                 // Rate-limit flush warnings to at most once every 10 seconds
                 // since the timer tick fires every poll_interval (~100ms).
                 let now = Instant::now();
-                let should_log = self.last_flush_warn.is_none_or(|last| {
-                    now.duration_since(last) >= Duration::from_secs(10)
-                });
+                let should_log = self
+                    .last_flush_warn
+                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10));
                 if should_log {
                     self.last_flush_warn = Some(now);
 
