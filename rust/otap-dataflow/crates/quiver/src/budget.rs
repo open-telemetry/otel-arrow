@@ -125,7 +125,7 @@ impl DiskBudget {
 
     /// Returns remaining headroom before the soft cap.
     #[must_use]
-    pub fn headroom(&self) -> u64 {
+    pub fn soft_cap_headroom(&self) -> u64 {
         self.soft_cap.saturating_sub(self.used())
     }
 
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(budget.used(), 0);
         assert_eq!(budget.hard_cap(), 1000);
         assert_eq!(budget.soft_cap(), 800);
-        assert_eq!(budget.headroom(), 800);
+        assert_eq!(budget.soft_cap_headroom(), 800);
     }
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
         let budget = DiskBudget::new(1000, 200, RetentionPolicy::Backpressure);
         budget.add(300);
         assert_eq!(budget.used(), 300);
-        assert_eq!(budget.headroom(), 500);
+        assert_eq!(budget.soft_cap_headroom(), 500);
         assert!(!budget.is_over_soft_cap());
     }
 
@@ -217,7 +217,7 @@ mod tests {
         budget.add(1500);
         assert_eq!(budget.used(), 1500);
         assert!(budget.is_over_soft_cap());
-        assert_eq!(budget.headroom(), 0);
+        assert_eq!(budget.soft_cap_headroom(), 0);
     }
 
     #[test]

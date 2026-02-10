@@ -502,7 +502,7 @@ impl QuiverEngine {
                 // Re-check after cleanup attempts
                 if self.budget.is_over_soft_cap() {
                     return Err(QuiverError::StorageAtCapacity {
-                        available: self.budget.headroom(),
+                        available: self.budget.soft_cap_headroom(),
                         soft_cap: self.budget.soft_cap(),
                     });
                 }
@@ -2907,7 +2907,7 @@ mod tests {
         );
 
         // Verify headroom decreased
-        let headroom = budget.headroom();
+        let headroom = budget.soft_cap_headroom();
         assert!(headroom < 100 * 1024 * 1024, "headroom should decrease");
     }
 
@@ -2928,24 +2928,40 @@ mod tests {
         // Budget sized to allow a few ingests then saturate.
         // min_budget = wal_max(32KB) + 2 * segment(1KB) = 34KB.
         // Use hard_cap just above minimum so the budget fills quickly.
+        // soft_cap = 36KB - 1KB = 35KB.
         let hard_cap: u64 = 36 * 1024;
-        let budget = Arc::new(DiskBudget::new(hard_cap, 1024, RetentionPolicy::Backpressure));
+        let segment_headroom: u64 = 1024;
+        let budget = Arc::new(DiskBudget::new(hard_cap, segment_headroom, RetentionPolicy::Backpressure));
         let engine = QuiverEngine::open(config, budget.clone())
             .await
             .expect("engine created");
 
         // Ingest until budget exceeds soft_cap, then verify rejection.
+        // With a 35KB soft_cap and 32KB WAL, the budget fills within a handful
+        // of ingests. We use a generous iteration limit but assert on budget
+        // state if it's unexpectedly never reached.
         let bundle = DummyBundle::with_rows(100);
-        let mut succeeded = 0u32;
-        for _ in 0..50 {
+        let max_iterations = 200;
+        for i in 0..max_iterations {
             match engine.ingest(&bundle).await {
-                Ok(()) => succeeded += 1,
+                Ok(()) => {
+                    // Safety valve: if budget is over soft_cap but ingest somehow
+                    // succeeded, something is wrong with the gating logic.
+                    if i > 10 && budget.is_over_soft_cap() {
+                        panic!(
+                            "budget is over soft_cap (used={}, soft_cap={}) \
+                             but ingest succeeded on iteration {}",
+                            budget.used(),
+                            budget.soft_cap(),
+                            i
+                        );
+                    }
+                }
                 Err(e) => {
                     assert!(
                         e.is_at_capacity(),
                         "expected StorageAtCapacity, got {e:?}"
                     );
-                    // Budget is over soft_cap — test passes.
                     assert!(
                         budget.is_over_soft_cap(),
                         "budget should be over soft_cap when ingest is rejected"
@@ -2954,7 +2970,11 @@ mod tests {
                 }
             }
         }
-        panic!("expected StorageAtCapacity after {succeeded} ingests, but all succeeded");
+        panic!(
+            "expected StorageAtCapacity within {max_iterations} ingests, \
+             but all succeeded (budget used={}, soft_cap={}, hard_cap={})",
+            budget.used(), budget.soft_cap(), budget.hard_cap()
+        );
     }
 
     #[tokio::test]
