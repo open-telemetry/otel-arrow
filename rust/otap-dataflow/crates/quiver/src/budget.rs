@@ -115,7 +115,7 @@ impl DiskBudget {
     /// Returns the total bytes currently tracked on disk.
     #[must_use]
     pub fn used(&self) -> u64 {
-        self.used.load(Ordering::Relaxed)
+        self.used.load(Ordering::Acquire)
     }
 
     /// Returns remaining headroom before the soft cap.
@@ -154,7 +154,7 @@ impl DiskBudget {
     pub fn remove(&self, bytes: u64) {
         let _ = self
             .used
-            .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+            .fetch_update(Ordering::Release, Ordering::Acquire, |current| {
                 Some(current.saturating_sub(bytes))
             });
     }
