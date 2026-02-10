@@ -2946,6 +2946,84 @@ mod test {
     }
 
     #[test]
+    fn test_sort_and_apply_transport_delta_encoding_for_attr_plain_encoded_string_values_with_nulls()
+     {
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::PLAIN),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "b", "b", "b", "c", "a", "a", "a",
+                ])),
+                Arc::new(StringArray::from_iter([
+                    None,
+                    Some("f"),
+                    Some("e"),
+                    Some("g"),
+                    Some("a"),
+                    Some("c"),
+                    None,
+                ])),
+            ],
+        )
+        .expect("record batch OK");
+
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "a", "b", "b", "b", "c",
+                ])),
+                Arc::new(StringArray::from_iter([
+                    Some("a"),
+                    Some("c"),
+                    None,
+                    Some("e"),
+                    Some("f"),
+                    None,
+                    Some("g"),
+                ])),
+            ],
+        )
+        .expect("record batch OK");
+
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_sort_and_apply_transport_delta_encoding_for_attr_plain_encoded_binary_values() {
         let input = RecordBatch::try_new(
             Arc::new(Schema::new(vec![
@@ -2985,7 +3063,6 @@ mod test {
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
                 Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
                 Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
-                // TODO add type types as well
             ])),
             vec![
                 Arc::new(UInt16Array::from_iter_values([1, 1, 1, 1, 1, 1, 1])),
@@ -3003,6 +3080,84 @@ mod test {
                 ])),
                 Arc::new(BinaryArray::from_iter_values([
                     b"a", b"b", b"c", b"d", b"e", b"f", b"g",
+                ])),
+            ],
+        )
+        .expect("record batch OK");
+
+        pretty_assertions::assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_sort_and_apply_transport_delta_encoding_for_attr_plain_encoded_binary_values_with_nulls()
+     {
+        let input = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::PLAIN),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "b", "b", "b", "c", "a", "a", "a",
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    Some(b"d"),
+                    Some(b"f"),
+                    None,
+                    Some(b"g"),
+                    Some(b"a"),
+                    None,
+                    Some(b"b"),
+                ])),
+            ],
+        )
+        .expect("record batch OK");
+
+        let result = transport_optimize_encode_attrs::<UInt16Type>(&input).unwrap();
+
+        let expected = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_encoding(consts::metadata::encodings::QUASI_DELTA),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values([1, 1, 1, 1, 1, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values([
+                    "a", "a", "a", "b", "b", "b", "c",
+                ])),
+                Arc::new(BinaryArray::from_iter([
+                    Some(b"a"),
+                    Some(b"b"),
+                    None,
+                    Some(b"d"),
+                    Some(b"f"),
+                    None,
+                    Some(b"g"),
                 ])),
             ],
         )
