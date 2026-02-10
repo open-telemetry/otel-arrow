@@ -35,6 +35,11 @@
 //! there is still room for exactly one segment finalization (up to
 //! `segment_target_size` bytes) without exceeding `hard_cap`.
 //!
+//! **Assumption:** only one segment is accumulating at a time. If the
+//! engine is extended to support multiple concurrent open segments, the
+//! headroom must be widened to `max_concurrent_segments * segment_target_size`
+//! and the minimum budget raised accordingly.
+//!
 //! # Multi-Engine Deployment (Phase 1: Static Quotas)
 //!
 //! Each engine receives its own `DiskBudget` with a static quota
