@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770758374506,
+  "lastUpdate": 1770765979789,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "b3214230ca5d394d11891414c2021fc4c72f8225",
-          "message": "Opl Parser: support referencing attributes on structs (#1776)\n\nCloses #1774 \n\nAdd support to OPL Parser for expressions like\n`resource.attributes[\"x\"]` or `instrumentation_scope.attributes[\"x\"]`.\n\nThe filtering tests in columnar query engine that use this type of\nexpression are updated accordingly to use OplParser as well, for extra\ntest coverage.\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-01-13T18:59:55Z",
-          "tree_id": "4dce113b2c169b24752d7c44bd645ad08baafe7e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/b3214230ca5d394d11891414c2021fc4c72f8225"
-        },
-        "date": 1768333900011,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 2.266961735341753,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 2.4751723321389623,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 595.1640625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 596.13671875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.018376,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.05089582694247525,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.07386750584203146,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 27.21875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 27.21875,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.001373,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -12478,6 +12394,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.001271,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3407598cbb0df2975be6688db50815da581c185",
+          "message": "perf: avoid eagerly removing transport optimized encoding when transforming attributes (#1952)\n\n# Change Summary\n\nTo fix #966 we added a change to eargerly remove transport optimized\nencoding when transforming attributes, which led to the performance\nregression documented in #1853.\n\nRemoving this encoding is actually only necessary under somewhat rare\nconditions, at least for delete and renaming attributes. Basically, if\nthe operation would join sequences where type/key/value or two adjacent\nrows are equal after the transformation, but were not equal before. For\nexample if we had attribute columns like:\n```\nkey | str val\n--- | ------\n A  |  1    \n B  |  1        <-- if key \"B\" were renamed to \"A\"\n ...\n A  |  1    \n B  |  1        <--- if key \"B\" were deleted\n A  |  1    \n```\n\nThis PR removes the eager decoding behaviour, and instead adds code to\ncheck if we've made a transform that produces such a sequence. As part\nof the transformation process, we already compute a sequence of ranges\nof the attribute keys column that will be renamed or deleted. We use\nthese ranges to compute the neighbouring rows of each transformed range,\nand check that the post-transform type/key/value sequences are not\nequal. If we find any neighbours w/ equal values for these columns, we\nremove the transport optimized encoding.\n\nPerforming this check isn't free: For dictionary encoded keys, we\ncompute the transformed ranges only for the dictionary values, so the\nranges need to be mapped back to the equivalent ranges for the\ndictionary keys. Despite this it is faster to check than removing the\ntransport optimized encoding. Moreover, if we remove the encoding and\nthen have to re-apply it to use the OTAP exporter, performing this check\nbecomes even more worthwhile. Also, once we've computed the input to\nperform this check, we're able to use the resulting ranges both to\ncalculate statistics (for attribute transform metrics) and to speed up\nthe computation of which rows were deleted.\n\nBench results:\n\nnum_rows | dict_keys | operation | mode | before_us | after_us | percent\nchange\n-- | -- | -- | -- | -- | -- | --\n128 | FALSE | rename | decode=true | 1.8455 | 1.9344 | 4.60%\n128 | FALSE | rename | decode=false | 1.8486 | 0.6966 | -62.32%\n128 | FALSE | delete | decode=true | 2.8462 | 2.9733 | 4.27%\n128 | FALSE | delete | decode=false | 2.8477 | 1.6827 | -40.91%\n128 | FALSE | rename | no_encode | 0.84347 | 0.84786 | 0.52%\n128 | FALSE | rename | no_encode+stat | 0.84413 | 0.84534 | 0.14%\n128 | TRUE | rename | decode=true | 1.3191 | 1.3912 | 5.18%\n128 | TRUE | rename | decode=false | 1.3286 | 0.4037 | -69.61%\n128 | TRUE | delete | decode=true | 2.5701 | 2.5734 | 0.13%\n128 | TRUE | delete | decode=false | 2.5649 | 1.5479 | -39.65%\n128 | TRUE | rename | no_encode | 0.37642 | 0.29236 | -22.33%\n128 | TRUE | rename | no_encode+stat | 0.37804 | 0.32997 | -12.72%\n1536 | FALSE | rename | decode=true | 9.7934 | 9.7847 | -0.09%\n1536 | FALSE | rename | decode=false | 10.626 | 4.8693 | -54.18%\n1536 | FALSE | delete | decode=true | 10.438 | 10.608 | 1.60%\n1536 | FALSE | delete | decode=false | 10.443 | 5.438 | -47.93%\n1536 | FALSE | rename | no_encode | 6.8959 | 6.9046 | 0.13%\n1536 | FALSE | rename | no_encode+stat | 6.8789 | 6.8796 | 0.01%\n1536 | TRUE | rename | decode=true | 2.8206 | 2.7863 | -1.22%\n1536 | TRUE | rename | decode=false | 2.8938 | 0.7897 | -72.71%\n1536 | TRUE | delete | decode=true | 6.1078 | 4.9459 | -19.02%\n1536 | TRUE | delete | decode=false | 6.0088 | 2.8422 | -52.70%\n1536 | TRUE | rename | no_encode | 0.88044 | 0.2937 | -66.64%\n1536 | TRUE | rename | no_encode+stat | 0.8823 | 0.70662 | -19.91%\n8092 | FALSE | rename | decode=true | 47.095 | 46.716 | -0.80%\n8092 | FALSE | rename | decode=false | 48.285 | 23.947 | -50.40%\n8092 | FALSE | delete | decode=true | 45.416 | 45.583 | 0.37%\n8092 | FALSE | delete | decode=false | 45.38 | 22.297 | -50.87%\n8092 | FALSE | rename | no_encode | 34.7 | 34.575 | -0.36%\n8092 | FALSE | rename | no_encode+stat | 34.605 | 34.619 | 0.04%\n8092 | TRUE | rename | decode=true | 9.8332 | 9.0626 | -7.84%\n8092 | TRUE | rename | decode=false | 9.9166 | 2.3137 | -76.67%\n8092 | TRUE | delete | decode=true | 21.988 | 15.892 | -27.72%\n8092 | TRUE | delete | decode=false | 21.914 | 8.5716 | -60.89%\n8092 | TRUE | rename | no_encode | 3.202 | 0.2927 | -90.86%\n8092 | TRUE | rename | no_encode+stat | 3.1789 | 2.4248 | -23.72%\n\nExplanation of `mode` column from table:\n- `decode=true` = the transformation produced a result that required\nremoval of transport optimized encoding\n- `decode=false` = the transformation produced a result that **_did\nnot_** require removal of transport optmized encoding\n- `no_enocde` = the input record batch did not have transport optimized\nencoding\n- `no_encode+sta`t = the input record batch did not have transport\noptimized encoding, but the caller specified to track statistics of\ntransformations\n\nObservations:\n- performance is significantly improved for the case where\n`decode=false` e.g. we detected that we did not need to remove the\ndecoding. This is expected because in the old code, we'd always eagerly\nremove the decoding\n- performance is improved for most cases where keys are dictionary\nencoded. This is expected because the state we use to track when to\ntrack when remove the dictionary encoding helps us compute the deleted\nranges & statistics more efficiently\n- there are some cases where performance has slightly increased, notably\nfor small batch sizes (128 rows) where we did actually need to do the\ndecode operation. This is the effect of the overhead of having to check\nwhen to perform the decode. This can actually be further optimized --\nfrom profiling, I found that much of the extra time is spent in these\nconstructors, which in the future be optimized to make fewer passes over\nthe arrow schema:\n\nhttps://github.com/open-telemetry/otel-arrow/blob/f67c4d06672b324f8ce3aeb7f3eb0fb360891ca4/rust/otap-dataflow/crates/pdata/src/otap/transform.rs#L2203-L2205\n\n**_TL;DR_** - performance has been improved in the common case, where\nthe key column is dictionary encoded and the transformation produces a\nresult that does not need to have the transport optimized encoding\nremoved.\n\n## What issue does this PR close?\n\n* Closes #1853\n\n## How are these changes tested?\n\nExisting unit tests + many new ones\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-02-10T22:15:05Z",
+          "tree_id": "1508d0757f0448529ac7d34e0410427491a4256d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f3407598cbb0df2975be6688db50815da581c185"
+        },
+        "date": 1770765979127,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.12514664237267561,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.15438300256829324,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 40.16015625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 40.34765625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001267,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.534387850937152,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.7194407728264257,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 179.265625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 179.4453125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001577,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.3190497699587252,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.4017790194091511,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 96.96875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 97.03515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00118,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.07069424339798526,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.11862100396918047,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 33.515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 33.67578125,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000804,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.19020106656745236,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.23935810606650573,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 59.44252232142857,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 59.6171875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.006135,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.05793908673810573,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.07490372585669781,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 27.385044642857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 27.4921875,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001106,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
