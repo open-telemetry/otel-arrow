@@ -5535,8 +5535,7 @@ mod tests {
             .expect("config valid");
 
         // This open() must succeed.  The watermark budget allows finalization
-        // to always proceed (no try_reserve), and WAL bytes are released
-        // after purge.
+        // to always proceed, and WAL bytes are released after purge.
         let engine = QuiverEngine::open(config2, tight_budget.clone())
             .await
             .expect(
