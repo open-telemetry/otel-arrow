@@ -177,7 +177,7 @@ When events are exported as logs, set an appropriate severity.
 
 Regarding severity, choose the log level that best reflects the significance of
 the event. For example, `node.shutdown.complete` at INFO for a graceful
-shutdown and `node.shutdown.fail` at ERROR for a critical failure — these are
+shutdown and `node.shutdown.fail` at ERROR for a critical failure -- these are
 distinct events, not the same event at different severity levels.
 
 ## Stages

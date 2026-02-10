@@ -9,6 +9,7 @@
 //! processors, exporters, and other pipeline components.
 
 #![allow(unused_macros)]
+#![allow(clippy::disallowed_macros)] // This module implements the otel_*! macros by wrapping tracing.
 
 #[doc(hidden)]
 pub mod _private {
