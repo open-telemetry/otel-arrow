@@ -409,14 +409,20 @@ impl PipelineNodes {
                 removed.push((node_id.clone(), *kind));
             }
 
-            // Clean up references to removed nodes from remaining nodes' destinations
+            // Clean up references to removed nodes from remaining nodes' destinations.
             let removed_ids: HashSet<&NodeId> = to_remove.iter().map(|(id, _)| id).collect();
             for node_config in self.0.values_mut() {
-                let mut updated = (**node_config).clone();
-                for edge in updated.out_ports.values_mut() {
-                    edge.destinations.retain(|dest| !removed_ids.contains(dest));
+                let references_removed = node_config
+                    .out_ports
+                    .values()
+                    .any(|edge| edge.destinations.iter().any(|d| removed_ids.contains(d)));
+                if references_removed {
+                    let mut updated = (**node_config).clone();
+                    for edge in updated.out_ports.values_mut() {
+                        edge.destinations.retain(|dest| !removed_ids.contains(dest));
+                    }
+                    *node_config = Arc::new(updated);
                 }
-                *node_config = Arc::new(updated);
             }
         }
 
