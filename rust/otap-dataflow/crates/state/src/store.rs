@@ -156,7 +156,7 @@ impl ObservedStateStore {
         context: &LogContext,
         registry: &TelemetryRegistryHandle,
     ) {
-        for key in context.iter() {
+        for key in context.entity_keys.iter() {
             let visited = registry.visit_entity(*key, |attrs| {
                 (
                     attrs

@@ -9,6 +9,7 @@
 //! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
 //! data flows from this node to one or more target nodes.
 
+use crate::pipeline::service::telemetry::AttributeValue;
 use crate::{Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,10 @@ pub struct NodeUserConfig {
     /// ambiguous and require explicit port selection at runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_out_port: Option<PortName>,
+
+    /// Node specific attributes to be added to internal telemetry.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub attributes: HashMap<String, AttributeValue>,
 
     /// Node-specific configuration.
     ///
@@ -132,6 +137,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
+            attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -144,6 +150,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
+            attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -156,6 +163,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
+            attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -169,6 +177,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
+            attributes: HashMap::new(),
             config: user_config,
         }
     }

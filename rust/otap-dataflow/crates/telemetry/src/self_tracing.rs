@@ -11,13 +11,15 @@ pub mod encoder;
 pub mod formatter;
 
 use crate::registry::EntityKey;
-use bytes::Bytes;
 use encoder::DirectFieldVisitor;
+use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_pdata::otlp::ProtoBuffer;
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::fmt;
+use std::ops::Deref;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
@@ -41,15 +43,68 @@ pub struct LogRecord {
     /// can be interrpreted using the otap_df_pdata::views::otlp::bytes::RawLogRecord
     /// in practice and/or parsed by a crate::proto::opentelemetry::logs::v1::LogRecord
     /// message object for testing.
-    pub body_attrs_bytes: Bytes,
+    pub body_attrs_bytes: bytes::Bytes,
 
     /// The context of this log record, typically pipeline and node context keys.
     pub context: LogContext,
 }
 
-/// Context keys refer to attribute sets in the telemetry registry.
-/// Note: Currently we use at most 1 entity context key per callsite.
-pub type LogContext = SmallVec<[EntityKey; 1]>;
+/// Context for log records, including entity keys for scope encoding
+/// and optional custom node attributes for log records.
+#[derive(Debug, Clone)]
+pub struct LogContext {
+    /// Entity keys that identify scope attribute sets in the telemetry registry.
+    pub entity_keys: SmallVec<[EntityKey; 1]>,
+    /// Custom node attributes to be encoded as log record attributes.
+    pub custom_attrs: HashMap<String, AttributeValue>,
+}
+
+impl LogContext {
+    /// Create a new empty context.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entity_keys: SmallVec::new(),
+            custom_attrs: HashMap::new(),
+        }
+    }
+
+    /// Create a context from a single entity key.
+    #[must_use]
+    pub fn from_buf(buf: [EntityKey; 1]) -> Self {
+        Self {
+            entity_keys: SmallVec::from_buf(buf),
+            custom_attrs: HashMap::new(),
+        }
+    }
+
+    /// Create a context with entity keys and custom node attributes.
+    #[must_use]
+    pub fn with_custom_attrs(
+        entity_keys: SmallVec<[EntityKey; 1]>,
+        custom_attrs: HashMap<String, AttributeValue>,
+    ) -> Self {
+        Self {
+            entity_keys,
+            custom_attrs,
+        }
+    }
+}
+
+impl Default for LogContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Allow iterating entity keys via `Deref` to the inner SmallVec.
+impl Deref for LogContext {
+    type Target = SmallVec<[EntityKey; 1]>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entity_keys
+    }
+}
 
 /// A log context function typically constructs context from
 /// thread-local state.
@@ -115,6 +170,21 @@ impl LogRecord {
         let mut buf = ProtoBuffer::with_capacity(256);
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         event.record(&mut visitor);
+
+        // Encode custom node attributes from context, if any.
+        if !context.custom_attrs.is_empty() {
+            let mut sorted_attrs: Vec<_> = context.custom_attrs.iter().collect();
+            sorted_attrs.sort_by_key(|(k, _)| k.as_str());
+            for (key, value) in sorted_attrs {
+                match value {
+                    AttributeValue::String(s) => visitor.encode_string_attribute(key, s),
+                    AttributeValue::Bool(b) => visitor.encode_bool_attribute(key, *b),
+                    AttributeValue::I64(i) => visitor.encode_int_attribute(key, *i),
+                    AttributeValue::F64(f) => visitor.encode_double_attribute(key, *f),
+                    AttributeValue::Array(_) => {} // Arrays not yet supported for log record attrs
+                }
+            }
+        }
 
         Self {
             callsite_id: metadata.callsite(),

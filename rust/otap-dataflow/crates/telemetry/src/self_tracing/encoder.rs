@@ -506,7 +506,7 @@ pub fn encode_export_logs_request(
                         SCOPE_LOG_SCOPE,
                         {
                             // For each entity key in the log context, append its pre-encoded attributes
-                            for entity_key in event.record.context.iter() {
+                            for entity_key in event.record.context.entity_keys.iter() {
                                 let scope_bytes = scope_cache.get_or_encode(*entity_key);
                                 buf.extend_from_slice(&scope_bytes);
                             }
