@@ -926,33 +926,33 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_traces_span_events_and_links() {
+        // Test new two level relationships:
+        //
         // Spans -> SpanEvents (parent_id UInt16, id UInt32)
         // Spans -> SpanLinks (parent_id UInt16, id UInt32)
+
         let span_ids        = vec![0u16, 1, 2];
-        let span_ids_2      = vec![1u16, 3, 4];
-
         let event_pids      = vec![0u16, 0, 1, 2, 2];
-        let event_pids_2    = vec![1u16, 3, 3, 4];
-
-        let event_ids       = vec![0u32, 1, 2, 3, 4];
-        let event_ids_2     = vec![0u32, 1, 2, 3];
-
         let link_pids       = vec![1u16, 2];
-        let link_pids_2     = vec![3u16, 4, 4];
-
+        let event_ids       = vec![0u32, 1, 2, 3, 4];
         let link_ids        = vec![0u32, 1];
+
+        let span_ids_2      = vec![1u16, 3, 4];
+        let event_pids_2    = vec![1u16, 3, 3, 4];
+        let event_ids_2     = vec![0u32, 1, 2, 3];
+        let link_pids_2     = vec![3u16, 4, 4];
         let link_ids_2      = vec![0u32, 1, 2];
 
         test_reindex_traces(&mut[
             traces!(
-                (Spans, ("id", UInt16, span_ids.clone())),
-                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
-                (SpanLinks, ("id", UInt32, link_ids.clone()), ("parent_id", UInt16, link_pids.clone()))
+                (Spans, ("id", UInt16, span_ids)),
+                (SpanEvents, ("id", UInt32, event_ids), ("parent_id", UInt16, event_pids)),
+                (SpanLinks, ("id", UInt32, link_ids), ("parent_id", UInt16, link_pids))
             ),
             traces!(
-                (Spans, ("id", UInt16, span_ids_2.clone())),
-                (SpanEvents, ("id", UInt32, event_ids_2.clone()), ("parent_id", UInt16, event_pids_2.clone())),
-                (SpanLinks, ("id", UInt32, link_ids_2.clone()), ("parent_id", UInt16, link_pids_2.clone()))
+                (Spans, ("id", UInt16, span_ids_2)),
+                (SpanEvents, ("id", UInt32, event_ids_2), ("parent_id", UInt16, event_pids_2)),
+                (SpanLinks, ("id", UInt32, link_ids_2), ("parent_id", UInt16, link_pids_2))
             ),
         ]);
     }
