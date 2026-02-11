@@ -618,7 +618,7 @@ mod tests {
         let child_ids = vec![1, 0, 2, 3, 5, 4];
 
         // Log Attrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -630,7 +630,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -642,7 +642,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -662,7 +662,7 @@ mod tests {
         let child_ids   = vec![0, 10, 10, 10, 7, 7, 3, 11, 3, 11, 3, 11];
 
         // Log Attrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -674,7 +674,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -686,7 +686,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -706,7 +706,7 @@ mod tests {
         let child_ids   = vec![0, 1, 10, 11, 15, 16];
 
         // Log Attrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -718,7 +718,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -730,7 +730,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -750,7 +750,7 @@ mod tests {
         let child_ids   = vec![0, 0, 1, 1];
 
         // LogAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -762,7 +762,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -774,7 +774,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -797,7 +797,7 @@ mod tests {
         let child_ids_2 = vec![6, 6, 5, 5, 7, 4];
 
         // LogAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -809,7 +809,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -821,7 +821,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut vec![
+        test_reindex_logs(&mut[
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -839,7 +839,7 @@ mod tests {
     /// 3. Asserts no ID overlaps across batch groups
     /// 4. Converts output to OTLP (after reindex)
     /// 5. Asserts the OTLP data is equivalent
-    fn test_reindex_logs(mut batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
+    fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
         // Convert to OTLP before reindexing
         let before_otlp: Vec<_> = batches
             .iter()
@@ -847,10 +847,10 @@ mod tests {
             .collect();
 
         // Reindex
-        reindex_logs(&mut batches).unwrap();
+        reindex_logs(batches).unwrap();
 
         // Validate no ID overlaps
-        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(&batches);
+        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(batches);
 
         // Convert to OTLP after reindexing
         let after_otlp: Vec<_> = batches
@@ -861,7 +861,7 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
-        for rb in batches.to_vec().into_iter().flatten().filter_map(|rb| rb) {
+        for rb in batches.iter().flatten().flatten().cloned() {
             pretty::print_batches(&[rb]).unwrap();
         }
 
