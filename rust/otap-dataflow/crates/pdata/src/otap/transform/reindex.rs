@@ -549,6 +549,7 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
 
+    use crate::error::Error;
     use crate::otap::transform::reindex::{payload_to_idx, reindex_logs};
     use crate::otap::transform::transport_optimize::{
         access_column, replace_column, struct_column_name, update_field_encoding_metadata,
@@ -579,14 +580,23 @@ mod tests {
     }
 
     #[test]
+    fn test_logs_mismatched_id_types() {
+        // Note: We may not have to support u32 here for logs. If this starts
+        // failing then the right thing to do might be to remove this test.
+        let mut batches = vec![
+            logs!((Logs, ("id", UInt16, vec![0, 1]))),
+            logs!((Logs, ("id", UInt32, vec![0, 1]))),
+        ];
+        let result = reindex_logs(&mut batches);
+        assert!(matches!(result, Err(Error::ColumnDataTypeMismatch { .. })));
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn test_logs_reindex_overlapping() {
         // Both batches use the same IDs, so reindexing must remap to avoid overlap
         let parent_ids   = vec![1, 0];
-        let parent_ids_2 = vec![1, 0];
-
         let child_ids   = vec![0, 0, 1, 1];
-        let child_ids_2 = vec![0, 0, 1, 1];
 
         // LogAttrs
         test_reindex_logs(&mut vec![
@@ -595,8 +605,8 @@ mod tests {
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids_2.clone())),
-                (LogAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
 
@@ -607,8 +617,8 @@ mod tests {
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, parent_ids_2.clone())),
-                (ScopeAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
 
@@ -619,8 +629,8 @@ mod tests {
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, [2, 3]), ("resource.id", UInt16, parent_ids_2.clone())),
-                (ResourceAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+                (Logs, ("id", UInt16, [2, 3]), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
     }
