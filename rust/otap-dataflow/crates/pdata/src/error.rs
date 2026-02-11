@@ -197,13 +197,13 @@ pub enum Error {
 
     #[error(
         "Too many items. signal: {}, size: {}, max: {}, message: {}",
-        signal,
+        payload_type,
         count,
         max,
         message
     )]
     TooManyItems {
-        signal: String,
+        payload_type: ArrowPayloadType,
         count: usize,
         max: usize,
         message: String,

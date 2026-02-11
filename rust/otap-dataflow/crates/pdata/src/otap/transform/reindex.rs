@@ -65,71 +65,22 @@ impl<'a, T: OtapBatchStore, const N: usize> MultiBatchStore<'a, T, N> {
 
 pub fn reindex_logs<const N: usize>(logs: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     let mut store = MultiBatchStore::<Logs, { N }>::new(logs);
-
-    // Validate that we don't exceed u16::MAX items
-    let log_count: usize = store
-        .select(Logs::ROOT_PAYLOAD_TYPE)
-        .map(|rb| rb.num_rows())
-        .sum();
-
     // FIXME [JD]: File an item for this - We should be able to support one more
     // item (u16::MAX + 1), but when computing offsets in create_mappings, it is
     // possible to overflow the offset which is of Native type when we're at the limit.
     //
     // The solution might be to do offset math with u64 so that we're always
     // ok, but we'll have to constantly cast back and forth.
-    if log_count > u16::MAX as usize {
-        return Err(Error::TooManyItems {
-            signal: "Logs".to_string(),
-            count: log_count,
-            max: u16::MAX as usize,
-            message: "Too many items to reindex".to_string(),
-        });
-    }
-
     reindex_batch_store(&mut store)
 }
 
 pub fn reindex_metrics<const N: usize>(metrics: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     let mut store = MultiBatchStore::<Metrics, { N }>::new(metrics);
-
-    // Validate that we don't exceed u16::MAX items
-    // FIXME [JD]: This is not right
-    let metric_count: usize = store
-        .select(Metrics::ROOT_PAYLOAD_TYPE)
-        .map(|rb| rb.num_rows())
-        .sum();
-
-    if metric_count > u16::MAX as usize + 1 {
-        return Err(Error::TooManyItems {
-            signal: "Metrics".to_string(),
-            count: metric_count,
-            max: u16::MAX as usize,
-            message: "Too many items to reindex".to_string(),
-        });
-    }
-
     reindex_batch_store(&mut store)
 }
 
 pub fn reindex_traces<const N: usize>(traces: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     let mut store = MultiBatchStore::<Traces, { N }>::new(traces);
-
-    // Validate that we don't exceed u16::MAX items
-    let trace_count: usize = store
-        .select(Traces::ROOT_PAYLOAD_TYPE)
-        .map(|rb| rb.num_rows())
-        .sum();
-
-    if trace_count > u16::MAX as usize + 1 {
-        return Err(Error::TooManyItems {
-            signal: "Traces".to_string(),
-            count: trace_count,
-            max: u16::MAX as usize,
-            message: "Too many items to reindex".to_string(),
-        });
-    }
-
     reindex_batch_store(&mut store)
 }
 
@@ -142,6 +93,20 @@ where
     S: OtapBatchStore,
 {
     use crate::otap::payload_relations;
+
+    let primary_item_count: usize = store
+        .select(S::ROOT_PAYLOAD_TYPE)
+        .map(|rb| rb.num_rows())
+        .sum();
+
+    if primary_item_count > u16::MAX as usize {
+        return Err(Error::TooManyItems {
+            payload_type: S::ROOT_PAYLOAD_TYPE,
+            count: primary_item_count,
+            max: u16::MAX as usize,
+            message: "Too many items to reindex".to_string(),
+        });
+    }
 
     // Iterate over all allowed payload types for this signal
     for &payload_type in S::allowed_payload_types() {
@@ -557,11 +522,11 @@ mod tests {
     use arrow::util::pretty;
 
     use crate::error::Error;
-    use crate::otap::transform::reindex::{payload_to_idx, reindex_logs};
+    use crate::otap::transform::reindex::{payload_to_idx, reindex_logs, reindex_traces};
     use crate::otap::transform::transport_optimize::{
         access_column, replace_column, struct_column_name, update_field_encoding_metadata,
     };
-    use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore};
+    use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore, Traces};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
     use crate::testing::equiv::assert_equivalent;
@@ -586,6 +551,24 @@ mod tests {
             }
         };
     }
+
+    macro_rules! traces {
+        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
+            {
+                use $crate::otap::Traces;
+                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+                make_test_batch::<Traces, { Traces::COUNT }>(vec![
+                    $((
+                        ArrowPayloadType::$payload,
+                        $crate::record_batch!($($record_batch_args)*).unwrap(),
+                    ),)*
+                ])
+            }
+        };
+    }
+
+    // ---- Logs tests ----
 
     #[test]
     fn test_logs_mismatched_id_types() {
@@ -631,8 +614,8 @@ mod tests {
     fn test_logs_referential_integrity_violations() {
         // Referential integrity violations can cause problems because we may end up
         // encountering Ids that are not in any mapped range. We need to make
-        // sure that in such cases all valid ids are remapped and what happens to 
-        // the others is undefined for now. 
+        // sure that in such cases all valid ids are remapped and what happens to
+        // the others is undefined for now.
         //
         // FIXME [JD]: Is this the right behavior or should we error? If we touch the
         // invalid ids by mapping them accidentally, we might add attributes to
@@ -649,10 +632,10 @@ mod tests {
         // - One that is at the start, so it can't get remapped at all
         // - One that is at the end, so it also can't get remapped
         let parent_ids = vec![1, 2, 4];
-        let child_ids = vec![1, 0, 2, 3, 5, 4];
+        let child_ids  = vec![1, 0, 2, 3, 5, 4];
 
         // Log Attrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -664,7 +647,7 @@ mod tests {
         ]);
 
         // ScopeAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -676,7 +659,7 @@ mod tests {
         ]);
 
         // ResourceAttrs
-        test_reindex_logs(&mut[
+        test_reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -693,7 +676,9 @@ mod tests {
     fn test_logs_complex() {
         // Overlapping ranges, not in order, many to many child relations
         let parent_ids   = vec![0, 5, 3, 10, 7, 11];
-        let child_ids   = vec![0, 10, 10, 10, 7, 7, 3, 11, 3, 11, 3, 11];
+        let parent_ids_2 = vec![2, 8, 5, 9, 11, 0];
+        let child_ids    = vec![0, 10, 10, 10, 7, 7, 3, 11, 3, 11, 3, 11];
+        let child_ids_2  = vec![2, 8, 8, 5, 9, 9, 0, 11, 11];
 
         // Log Attrs
         test_reindex_logs(&mut[
@@ -702,8 +687,8 @@ mod tests {
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone())),
-                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
 
@@ -714,8 +699,8 @@ mod tests {
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
-                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("scope.id", UInt16, parent_ids_2.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
 
@@ -726,8 +711,8 @@ mod tests {
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
-                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("resource.id", UInt16, parent_ids_2.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
     }
@@ -735,9 +720,11 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_logs_range_gaps() {
-        // Both batches use the same IDs, so reindexing must remap to avoid overlap
+        // IDs with gaps between consecutive ranges
         let parent_ids   = vec![0, 1, 10, 11, 15, 16];
-        let child_ids   = vec![0, 1, 10, 11, 15, 16];
+        let parent_ids_2 = vec![5, 6, 12, 13, 20, 21];
+        let child_ids    = vec![0, 1, 10, 11, 15, 16];
+        let child_ids_2  = vec![5, 6, 12, 13, 20, 21];
 
         // Log Attrs
         test_reindex_logs(&mut[
@@ -746,8 +733,8 @@ mod tests {
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone())),
-                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
 
@@ -758,8 +745,8 @@ mod tests {
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
-                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("scope.id", UInt16, parent_ids_2.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
 
@@ -770,8 +757,8 @@ mod tests {
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
-                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("resource.id", UInt16, parent_ids_2.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
     }
@@ -867,30 +854,204 @@ mod tests {
         ]);
     }
 
-    /// Validates reindexing for logs:
+    // ---- Traces tests ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_reindex_attrs() {
+        // Test resource, scope, and span attrs reindexing with overlapping IDs
+        let parent_ids = vec![1u16, 0];
+        let child_ids  = vec![0u16, 0, 1, 1];
+
+        // SpanAttrs
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone())),
+                (SpanAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone())),
+                (SpanAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_traces_greater_than_u16_max() {
+        let ids = (0..HALF_U16).collect::<Vec<_>>();
+        let ids2 = (HALF_U16..u16::MAX).collect::<Vec<_>>();
+        let ids3 = vec![u16::MAX];
+
+        let mut batches = vec![
+            traces!((Spans, ("id", UInt16, ids))),
+            traces!((Spans, ("id", UInt16, ids2))),
+            traces!((Spans, ("id", UInt16, ids3))),
+        ];
+        let result = reindex_traces(&mut batches);
+        assert!(matches!(result, Err(Error::TooManyItems { .. })));
+    }
+
+    #[test]
+    fn test_traces_empty_batches() {
+        let mut batches: Vec<[Option<RecordBatch>; Traces::COUNT]> = vec![];
+        reindex_traces(&mut batches).unwrap();
+
+        let mut batches = vec![traces!((Spans, ("id", UInt16, vec![0u16, 1])))];
+        test_reindex_traces(&mut batches);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_span_events_and_links() {
+        // Spans -> SpanEvents (parent_id UInt16, id UInt32)
+        // Spans -> SpanLinks (parent_id UInt16, id UInt32)
+        let span_ids        = vec![0u16, 1, 2];
+        let span_ids_2      = vec![1u16, 3, 4];
+        let event_pids      = vec![0u16, 0, 1, 2, 2];
+        let event_pids_2    = vec![1u16, 3, 3, 4];
+        let event_ids       = vec![0u32, 1, 2, 3, 4];
+        let event_ids_2     = vec![0u32, 1, 2, 3];
+        let link_pids       = vec![1u16, 2];
+        let link_pids_2     = vec![3u16, 4, 4];
+        let link_ids        = vec![0u32, 1];
+        let link_ids_2      = vec![0u32, 1, 2];
+
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
+                (SpanLinks, ("id", UInt32, link_ids.clone()), ("parent_id", UInt16, link_pids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", UInt32, event_ids_2.clone()), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanLinks, ("id", UInt32, link_ids_2.clone()), ("parent_id", UInt16, link_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_span_events_with_attrs() {
+        // Three-level relationship: Spans -> SpanEvents -> SpanEventAttrs
+        // SpanEvents.id is UInt32, SpanEventAttrs.parent_id is UInt32
+        let span_ids         = vec![0u16, 1];
+        let span_ids_2       = vec![2u16, 3];
+        let event_pids       = vec![0u16, 0, 1];
+        let event_pids_2     = vec![2u16, 3, 3];
+        let event_ids        = vec![0u32, 1, 2];
+        let event_ids_2      = vec![0u32, 1, 2];
+        let event_attr_pids  = vec![0u32, 1, 1, 2];
+        let event_attr_pids_2 = vec![0u32, 2, 2];
+
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", UInt32, event_ids_2.clone()), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_complex() {
+        // Complex case with spans, events, event attrs, links, and span attrs all at once
+        let span_ids          = vec![0u16, 5, 3, 10];
+        let span_ids_2        = vec![2u16, 7, 4, 12];
+        let event_pids        = vec![0u16, 0, 3, 10, 10];
+        let event_pids_2      = vec![2u16, 7, 7, 12];
+        let event_ids         = vec![0u32, 1, 2, 3, 4];
+        let event_ids_2       = vec![0u32, 1, 2, 3];
+        let event_attr_pids   = vec![0u32, 1, 2, 3, 4, 4];
+        let event_attr_pids_2 = vec![0u32, 1, 2, 3];
+        let link_pids         = vec![5u16, 3];
+        let link_pids_2       = vec![7u16, 4, 12];
+        let link_ids          = vec![0u32, 1];
+        let link_ids_2        = vec![0u32, 1, 2];
+        let span_attr_pids    = vec![0u16, 5, 3, 10, 10];
+        let span_attr_pids_2  = vec![2u16, 7, 12];
+
+        test_reindex_traces(&mut[
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids.clone())),
+                (SpanLinks, ("id", UInt32, link_ids.clone()), ("parent_id", UInt16, link_pids.clone())),
+                (SpanAttrs, ("parent_id", UInt16, span_attr_pids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", UInt32, event_ids_2.clone()), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids_2.clone())),
+                (SpanLinks, ("id", UInt32, link_ids_2.clone()), ("parent_id", UInt16, link_pids_2.clone())),
+                (SpanAttrs, ("parent_id", UInt16, span_attr_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    // ---- Test helpers ----
+
+    fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
+        test_reindex::<Logs, { Logs::COUNT }>(batches, reindex_logs, |b| {
+            OtapArrowRecords::Logs(Logs { batches: b.clone() })
+        });
+    }
+
+    fn test_reindex_traces(batches: &mut [[Option<RecordBatch>; Traces::COUNT]]) {
+        test_reindex::<Traces, { Traces::COUNT }>(batches, reindex_traces, |b| {
+            OtapArrowRecords::Traces(Traces { batches: b.clone() })
+        });
+    }
+
+    /// Validates reindexing for any signal:
     /// 1. Converts input to OTLP (before reindex)
     /// 2. Reindexes the batches
     /// 3. Asserts no ID overlaps across batch groups
     /// 4. Converts output to OTLP (after reindex)
     /// 5. Asserts the OTLP data is equivalent
-    fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
-        // Convert to OTLP before reindexing
-        let before_otlp: Vec<_> = batches
-            .iter()
-            .map(|b| otap_to_otlp(&OtapArrowRecords::Logs(Logs { batches: b.clone() })))
-            .collect();
+    fn test_reindex<S, const N: usize>(
+        batches: &mut [[Option<RecordBatch>; N]],
+        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> crate::error::Result<()>,
+        to_otap: impl Fn(&[Option<RecordBatch>; N]) -> OtapArrowRecords,
+    ) where
+        S: OtapBatchStore,
+    {
+        let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
 
-        // Reindex
-        reindex_logs(batches).unwrap();
+        reindex_fn(batches).unwrap();
+        assert_no_id_overlaps::<S, N>(batches);
 
-        // Validate no ID overlaps
-        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(batches);
-
-        // Convert to OTLP after reindexing
-        let after_otlp: Vec<_> = batches
-            .iter()
-            .map(|b| otap_to_otlp(&OtapArrowRecords::Logs(Logs { batches: b.clone() })))
-            .collect();
+        let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
 
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
@@ -899,7 +1060,6 @@ mod tests {
             pretty::print_batches(&[rb]).unwrap();
         }
 
-        // Assert equivalence
         assert_equivalent(&before_otlp, &after_otlp);
     }
 
@@ -988,9 +1148,16 @@ mod tests {
     fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
         let batch = match payload_type {
             ArrowPayloadType::Logs => complete_logs_batch(batch),
+            ArrowPayloadType::Spans => complete_spans_batch(batch),
+            ArrowPayloadType::SpanEvents => complete_span_events_batch(batch),
+            ArrowPayloadType::SpanLinks => complete_span_links_batch(batch),
             ArrowPayloadType::LogAttrs
+            | ArrowPayloadType::SpanAttrs
             | ArrowPayloadType::ResourceAttrs
             | ArrowPayloadType::ScopeAttrs => complete_attrs_batch(batch),
+            ArrowPayloadType::SpanEventAttrs | ArrowPayloadType::SpanLinkAttrs => {
+                complete_attrs_u32_batch(batch)
+            }
             _ => batch,
         };
         mark_id_columns_plain(batch)
@@ -1069,6 +1236,99 @@ mod tests {
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
             .expect("Failed to create completed attrs batch")
+    }
+
+    /// Same as complete_attrs_batch but uses UInt32 for parent_id (for SpanEventAttrs, SpanLinkAttrs)
+    fn complete_attrs_u32_batch(batch: RecordBatch) -> RecordBatch {
+        let num_rows = batch.num_rows();
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+
+        if schema.fields.find("key").is_none() {
+            fields.push(Arc::new(Field::new("key", DataType::Utf8, false)));
+            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
+        }
+
+        if schema.fields.find("type").is_none() {
+            fields.push(Arc::new(Field::new("type", DataType::UInt8, false)));
+            columns.push(Arc::new(UInt8Array::from(vec![0u8; num_rows])));
+        }
+
+        if schema.fields.find("int").is_none() {
+            fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
+            columns.push(Arc::new(Int64Array::from(vec![0i64; num_rows])));
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed u32 attrs batch")
+    }
+
+    /// Spans batch: same struct wrapping as logs, but no body column needed
+    fn complete_spans_batch(batch: RecordBatch) -> RecordBatch {
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+
+        for &path in ID_COLUMN_PATHS {
+            let Some(struct_name) = struct_column_name(path) else {
+                continue;
+            };
+            let Some((idx, _)) = schema.fields.find(path) else {
+                continue;
+            };
+            let id_col = columns.remove(idx);
+            let _ = fields.remove(idx);
+            let id_field = Field::new("id", id_col.data_type().clone(), true);
+            let struct_col =
+                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
+                    .expect("Failed to create struct");
+            fields.push(Arc::new(Field::new(
+                struct_name,
+                DataType::Struct(vec![id_field].into()),
+                true,
+            )));
+            columns.push(Arc::new(struct_col));
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed spans batch")
+    }
+
+    /// SpanEvents batch: needs a "name" column for transport decode
+    fn complete_span_events_batch(batch: RecordBatch) -> RecordBatch {
+        let num_rows = batch.num_rows();
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+
+        if schema.fields.find("name").is_none() {
+            fields.push(Arc::new(Field::new("name", DataType::Utf8, true)));
+            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed span events batch")
+    }
+
+    /// SpanLinks batch: needs a "trace_id" column for transport decode
+    fn complete_span_links_batch(batch: RecordBatch) -> RecordBatch {
+        let num_rows = batch.num_rows();
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+
+        if schema.fields.find("trace_id").is_none() {
+            fields.push(Arc::new(Field::new(
+                "trace_id",
+                DataType::FixedSizeBinary(16),
+                true,
+            )));
+            let empty_bytes = vec![0u8; num_rows * 16];
+            columns.push(Arc::new(
+                arrow::array::FixedSizeBinaryArray::try_new(16, empty_bytes.into(), None)
+                    .expect("Failed to create trace_id array"),
+            ));
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed span links batch")
     }
 
     fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
