@@ -569,6 +569,7 @@ mod tests {
 
     /// Known ID column paths that need plain encoding metadata
     const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
+    const HALF_U16: u16 = (u16::MAX / 2) + 1;
 
     macro_rules! logs {
         ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
@@ -600,9 +601,8 @@ mod tests {
 
     #[test]
     fn test_logs_greater_than_u16_max() {
-        let half = (u16::MAX / 2) + 1;
-        let ids = (0..half).collect::<Vec<_>>();
-        let ids2 = (half..u16::MAX).collect::<Vec<_>>();
+        let ids = (0..HALF_U16).collect::<Vec<_>>();
+        let ids2 = (HALF_U16..u16::MAX).collect::<Vec<_>>();
         let ids3 = vec![u16::MAX];
 
         let mut batches = vec![
@@ -616,9 +616,8 @@ mod tests {
 
     #[test]
     fn test_logs_u16_max_items() {
-        let half = (u16::MAX / 2) + 1;
-        let ids = (0..half).collect::<Vec<_>>();
-        let ids2 = (half..u16::MAX).collect::<Vec<_>>();
+        let ids = (0..HALF_U16).collect::<Vec<_>>();
+        let ids2 = (HALF_U16..u16::MAX).collect::<Vec<_>>();
 
         let mut batches = vec![
             logs!((Logs, ("id", UInt16, ids))),
