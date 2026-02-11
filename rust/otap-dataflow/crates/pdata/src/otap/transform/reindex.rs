@@ -72,7 +72,13 @@ pub fn reindex_logs<const N: usize>(logs: &mut [[Option<RecordBatch>; N]]) -> Re
         .map(|rb| rb.num_rows())
         .sum();
 
-    if log_count > u16::MAX as usize + 1 {
+    // FIXME [JD]: File an item for this - We should be able to support one more
+    // item (u16::MAX + 1), but when computing offsets in create_mappings, it is
+    // possible to overflow the offset which is of Native type when we're at the limit.
+    //
+    // The solution might be to do offset math with u64 so that we're always
+    // ok, but we'll have to constantly cast back and forth.
+    if log_count > u16::MAX as usize {
         return Err(Error::TooManyItems {
             signal: "Logs".to_string(),
             count: log_count,
@@ -593,13 +599,16 @@ mod tests {
     }
 
     #[test]
-    fn test_logs_greater_than_u16() {
-        let ids = (0..u16::MAX).collect::<Vec<_>>();
-        let ids2 = vec![0, 1];
+    fn test_logs_greater_than_u16_max() {
+        let half = (u16::MAX / 2) + 1;
+        let ids = (0..half).collect::<Vec<_>>();
+        let ids2 = (half..u16::MAX).collect::<Vec<_>>();
+        let ids3 = vec![u16::MAX];
 
         let mut batches = vec![
             logs!((Logs, ("id", UInt16, ids))),
             logs!((Logs, ("id", UInt16, ids2))),
+            logs!((Logs, ("id", UInt16, ids3))),
         ];
         let result = reindex_logs(&mut batches);
         assert!(matches!(result, Err(Error::TooManyItems { .. })));
@@ -610,12 +619,10 @@ mod tests {
         let half = (u16::MAX / 2) + 1;
         let ids = (0..half).collect::<Vec<_>>();
         let ids2 = (half..u16::MAX).collect::<Vec<_>>();
-        let ids3 = vec![u16::MAX];
 
         let mut batches = vec![
             logs!((Logs, ("id", UInt16, ids))),
             logs!((Logs, ("id", UInt16, ids2))),
-            logs!((Logs, ("id", UInt16, ids3))),
         ];
         test_reindex_logs(&mut batches);
     }
