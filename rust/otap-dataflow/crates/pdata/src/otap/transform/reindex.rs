@@ -1,3 +1,4 @@
+use crate::otap::payload_relations;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::sync::Arc;
 
@@ -92,8 +93,6 @@ fn reindex_batch_store<S, const N: usize>(store: &mut MultiBatchStore<'_, S, N>)
 where
     S: OtapBatchStore,
 {
-    use crate::otap::payload_relations;
-
     let primary_item_count: usize = store
         .select(S::ROOT_PAYLOAD_TYPE)
         .map(|rb| rb.num_rows())
@@ -931,12 +930,16 @@ mod tests {
         // Spans -> SpanLinks (parent_id UInt16, id UInt32)
         let span_ids        = vec![0u16, 1, 2];
         let span_ids_2      = vec![1u16, 3, 4];
+
         let event_pids      = vec![0u16, 0, 1, 2, 2];
         let event_pids_2    = vec![1u16, 3, 3, 4];
+
         let event_ids       = vec![0u32, 1, 2, 3, 4];
         let event_ids_2     = vec![0u32, 1, 2, 3];
+
         let link_pids       = vec![1u16, 2];
         let link_pids_2     = vec![3u16, 4, 4];
+
         let link_ids        = vec![0u32, 1];
         let link_ids_2      = vec![0u32, 1, 2];
 

@@ -196,7 +196,7 @@ pub enum Error {
     MixedSignals,
 
     #[error(
-        "Too many items. signal: {}, size: {}, max: {}, message: {}",
+        "Too many items. signal: {:?}, size: {}, max: {}, message: {}",
         payload_type,
         count,
         max,
