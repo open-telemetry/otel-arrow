@@ -548,6 +548,7 @@ mod tests {
         Array, ArrayRef, AsArray, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
+    use arrow::util::pretty;
 
     use crate::error::Error;
     use crate::otap::transform::reindex::{payload_to_idx, reindex_logs};
@@ -593,6 +594,50 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn test_logs_range_gaps() {
+        // Both batches use the same IDs, so reindexing must remap to avoid overlap
+        let parent_ids   = vec![0, 1, 10, 11, 15, 16];
+        let child_ids   = vec![0, 1, 10, 11, 15, 16];
+
+        // Log Attrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn test_logs_reindex_overlapping() {
         // Both batches use the same IDs, so reindexing must remap to avoid overlap
         let parent_ids   = vec![1, 0];
@@ -613,11 +658,11 @@ mod tests {
         // ScopeAttrs
         test_reindex_logs(&mut vec![
             logs!(
-                (Logs, ("id", UInt16, [0, 1]), ("scope.id", UInt16, parent_ids.clone())),
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, parent_ids.clone())),
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
@@ -625,11 +670,11 @@ mod tests {
         // ResourceAttrs
         test_reindex_logs(&mut vec![
             logs!(
-                (Logs, ("id", UInt16, [0, 1]), ("resource.id", UInt16, parent_ids.clone())),
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, [2, 3]), ("resource.id", UInt16, parent_ids.clone())),
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
@@ -706,6 +751,13 @@ mod tests {
             .iter()
             .map(|b| otap_to_otlp(&OtapArrowRecords::Logs(Logs { batches: b.clone() })))
             .collect();
+
+        // Pretty print batches
+        // Useful for debugging, keep this in and uncomment when running a single
+        // test along with `-- --no-capture`
+        // for rb in batches.to_vec().into_iter().flatten().filter_map(|rb| rb) {
+        //     pretty::print_batches(&[rb]).unwrap();
+        // }
 
         // Assert equivalence
         assert_equivalent(&before_otlp, &after_otlp);
