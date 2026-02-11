@@ -3906,7 +3906,6 @@ mod tests {
         // Configure a short max_age for testing (1 second)
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)),
-            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -3963,7 +3962,6 @@ mod tests {
         let temp_dir = tempdir().expect("tempdir");
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)), // Very short max_age for testing
-            ..RetentionConfig::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(temp_dir.path())
@@ -4108,7 +4106,6 @@ mod tests {
         // Configure a long max_age (1 hour) so segments won't expire
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(3600)),
-            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -4157,7 +4154,6 @@ mod tests {
         // Configure a short max_age for testing
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)),
-            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -4219,7 +4215,6 @@ mod tests {
             .segment(segment_config.clone())
             .retention(RetentionConfig {
                 max_age: Some(Duration::from_secs(3600)), // 1 hour - won't expire yet
-                ..Default::default()
             })
             .build()
             .expect("config");
@@ -4250,7 +4245,6 @@ mod tests {
             .segment(segment_config)
             .retention(RetentionConfig {
                 max_age: Some(Duration::from_millis(10)), // Very short - segments should be expired
-                ..Default::default()
             })
             .build()
             .expect("config");
@@ -4344,7 +4338,6 @@ mod tests {
             .segment(segment_config)
             .retention(RetentionConfig {
                 max_age: Some(Duration::from_secs(1)),
-                ..Default::default()
             })
             .build()
             .expect("config");
@@ -4374,7 +4367,6 @@ mod tests {
 
         let retention = RetentionConfig {
             max_age: Some(Duration::from_secs(1)),
-            ..Default::default()
         };
         let config = QuiverConfig::builder()
             .data_dir(dir.path())
@@ -4498,7 +4490,6 @@ mod tests {
             .segment(segment_config)
             .retention(RetentionConfig {
                 max_age: Some(Duration::from_millis(10)),
-                ..Default::default()
             })
             .build()
             .expect("config");
@@ -4575,7 +4566,6 @@ mod tests {
             .segment(segment_config)
             .retention(RetentionConfig {
                 max_age: Some(Duration::from_millis(10)),
-                ..Default::default()
             })
             .build()
             .expect("config");
@@ -5336,7 +5326,6 @@ mod tests {
                 })
                 .retention(RetentionConfig {
                     max_age: Some(max_age),
-                    ..Default::default()
                 })
                 .build()
                 .expect("config");
@@ -5409,7 +5398,6 @@ mod tests {
                 })
                 .retention(RetentionConfig {
                     max_age: Some(max_age),
-                    ..Default::default()
                 })
                 .build()
                 .expect("config");
@@ -5444,7 +5432,6 @@ mod tests {
                 })
                 .retention(RetentionConfig {
                     max_age: Some(max_age),
-                    ..Default::default()
                 })
                 .build()
                 .expect("config");

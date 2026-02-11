@@ -315,7 +315,7 @@ pub enum RetentionPolicy {
 }
 
 /// Retention-related configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetentionConfig {
     /// Optional maximum wall-clock retention irrespective of size.
@@ -338,12 +338,6 @@ impl RetentionConfig {
     }
 }
 
-impl Default for RetentionConfig {
-    fn default() -> Self {
-        Self { max_age: None }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,7 +357,6 @@ mod tests {
         let cfg = QuiverConfig {
             retention: RetentionConfig {
                 max_age: Some(Duration::ZERO),
-                ..RetentionConfig::default()
             },
             ..QuiverConfig::default()
         };
