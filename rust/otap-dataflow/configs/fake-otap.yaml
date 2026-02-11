@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         signals_per_second: 100000
@@ -23,3 +18,7 @@ nodes:
     type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4327"
+
+connections:
+  - from: receiver
+    to: exporter

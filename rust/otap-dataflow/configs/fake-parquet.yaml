@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-        - exporter
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_batch_size: 1000
@@ -27,3 +22,7 @@ nodes:
       - schema_metadata: ["_part_id"]
       writer_options:
         flush_when_older_than: 10s
+
+connections:
+  - from: receiver
+    to: exporter

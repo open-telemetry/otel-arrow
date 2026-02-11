@@ -7,7 +7,7 @@ pub mod service;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
-use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeUserConfig};
+use crate::node::{DispatchStrategy, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
 use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
@@ -54,11 +54,22 @@ pub struct PipelineConfig {
     #[serde(default)]
     nodes: PipelineNodes,
 
+    /// Explicit graph connections between nodes.
+    ///
+    /// When provided, these connections are used as the authoritative topology for
+    /// the main pipeline graph.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    connections: Vec<PipelineConnection>,
+
     /// Internal telemetry pipeline nodes. These have the same structure
     /// as `nodes` but are independent and isolated to a separate internal
     /// telemetry runtime.
     #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
     internal: PipelineNodes,
+
+    /// Explicit graph connections for the internal telemetry pipeline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    internal_connections: Vec<PipelineConnection>,
 
     /// Service-level telemetry configuration.
     #[serde(default)]
@@ -150,6 +161,221 @@ impl Display for CoreRange {
     }
 }
 
+/// Connection source selector.
+///
+/// Supports either:
+/// - `<node-id>`
+/// - `<node-id>["<port-name>"]`
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct ConnectionSource {
+    node_id: NodeId,
+    out_port: Option<PortName>,
+}
+
+impl ConnectionSource {
+    /// Creates a connection source referencing a node with no explicit port selector.
+    #[must_use]
+    pub const fn from_node(node_id: NodeId) -> Self {
+        Self {
+            node_id,
+            out_port: None,
+        }
+    }
+
+    /// Creates a connection source referencing a node and an explicit port selector.
+    #[must_use]
+    pub const fn from_node_with_port(node_id: NodeId, out_port: PortName) -> Self {
+        Self {
+            node_id,
+            out_port: Some(out_port),
+        }
+    }
+
+    /// Returns the source node id.
+    #[must_use]
+    pub const fn node_id(&self) -> &NodeId {
+        &self.node_id
+    }
+
+    /// Returns the optional explicit source out port selector.
+    #[must_use]
+    pub const fn out_port(&self) -> Option<&PortName> {
+        self.out_port.as_ref()
+    }
+
+    /// Returns the effective out port for this source given a connection-level fallback.
+    #[must_use]
+    pub fn resolved_out_port(&self, fallback: &PortName) -> PortName {
+        self.out_port.clone().unwrap_or_else(|| fallback.clone())
+    }
+}
+
+impl TryFrom<String> for ConnectionSource {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err("connection source must be non-empty".to_string());
+        }
+
+        if let Some(open) = value.find('[') {
+            if !value.ends_with(']') {
+                return Err(format!(
+                    "invalid connection source `{value}`: expected `<node>[\"<port>\"]`"
+                ));
+            }
+            let node = value[..open].trim();
+            if node.is_empty() {
+                return Err(format!(
+                    "invalid connection source `{value}`: missing node id before `[`"
+                ));
+            }
+            let selector = value[open + 1..value.len() - 1].trim();
+            let quoted_port = if selector.len() >= 2
+                && ((selector.starts_with('"') && selector.ends_with('"'))
+                    || (selector.starts_with('\'') && selector.ends_with('\'')))
+            {
+                &selector[1..selector.len() - 1]
+            } else {
+                return Err(format!(
+                    "invalid connection source `{value}`: expected quoted port selector"
+                ));
+            };
+            if quoted_port.is_empty() {
+                return Err(format!(
+                    "invalid connection source `{value}`: port selector must be non-empty"
+                ));
+            }
+            Ok(Self::from_node_with_port(
+                node.to_string().into(),
+                quoted_port.to_string().into(),
+            ))
+        } else {
+            if value.contains(']') {
+                return Err(format!(
+                    "invalid connection source `{value}`: unexpected closing `]`"
+                ));
+            }
+            Ok(Self::from_node(value.to_string().into()))
+        }
+    }
+}
+
+impl From<ConnectionSource> for String {
+    fn from(value: ConnectionSource) -> Self {
+        match value.out_port {
+            Some(out_port) => format!("{}[\"{}\"]", value.node_id, out_port),
+            None => value.node_id.to_string(),
+        }
+    }
+}
+
+/// A set of source selectors used by a connection.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ConnectionSourceSet {
+    /// A single source selector.
+    One(ConnectionSource),
+    /// Multiple source selectors (fan-in).
+    Many(Vec<ConnectionSource>),
+}
+
+impl ConnectionSourceSet {
+    /// Returns this source set as a concrete list of selectors.
+    #[must_use]
+    pub fn sources(&self) -> Vec<ConnectionSource> {
+        match self {
+            Self::One(source) => vec![source.clone()],
+            Self::Many(sources) => sources.clone(),
+        }
+    }
+}
+
+/// A set of destination node ids used by a connection endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ConnectionNodeSet {
+    /// A single node id.
+    One(NodeId),
+    /// Multiple node ids (fan-out).
+    Many(Vec<NodeId>),
+}
+
+impl ConnectionNodeSet {
+    /// Returns this endpoint set as a concrete list of node ids.
+    #[must_use]
+    pub fn nodes(&self) -> Vec<NodeId> {
+        match self {
+            Self::One(node_id) => vec![node_id.clone()],
+            Self::Many(node_ids) => node_ids.clone(),
+        }
+    }
+}
+
+/// A connection between source and destination node sets.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineConnection {
+    /// Source node selector(s). A list denotes fan-in.
+    pub from: ConnectionSourceSet,
+    /// Destination node id(s). A list denotes fan-out.
+    pub to: ConnectionNodeSet,
+    /// Source output port used for this connection.
+    #[serde(
+        default = "default_connection_out_port",
+        skip_serializing_if = "is_default_connection_out_port"
+    )]
+    pub out_port: PortName,
+    /// Dispatch strategy applied when multiple destinations are present.
+    #[serde(
+        default = "default_connection_dispatch_strategy",
+        skip_serializing_if = "is_default_connection_dispatch_strategy"
+    )]
+    pub dispatch_strategy: DispatchStrategy,
+}
+
+impl PipelineConnection {
+    /// Returns the list of source selectors for this connection.
+    #[must_use]
+    pub fn from_sources(&self) -> Vec<ConnectionSource> {
+        self.from.sources()
+    }
+
+    /// Returns the list of source node ids for this connection.
+    #[must_use]
+    pub fn from_nodes(&self) -> Vec<NodeId> {
+        self.from_sources()
+            .into_iter()
+            .map(|source| source.node_id)
+            .collect()
+    }
+
+    /// Returns the list of destination node ids for this connection.
+    #[must_use]
+    pub fn to_nodes(&self) -> Vec<NodeId> {
+        self.to.nodes()
+    }
+}
+
+fn default_connection_out_port() -> PortName {
+    "default".into()
+}
+
+fn is_default_connection_out_port(port: &PortName) -> bool {
+    port.as_ref() == "default"
+}
+
+const fn default_connection_dispatch_strategy() -> DispatchStrategy {
+    DispatchStrategy::RoundRobin
+}
+
+fn is_default_connection_dispatch_strategy(strategy: &DispatchStrategy) -> bool {
+    matches!(strategy, DispatchStrategy::RoundRobin)
+}
+
 /// A collection of nodes forming a pipeline graph.
 ///
 /// Note: We use `Arc<NodeUserConfig>` to allow sharing the same pipeline configuration
@@ -219,118 +445,6 @@ impl PipelineNodes {
     /// Returns an iterator over node IDs.
     pub fn keys(&self) -> impl Iterator<Item = &NodeId> {
         self.0.keys()
-    }
-
-    /// Validate the node graph structure.
-    ///
-    /// Checks for:
-    /// - Invalid hyper-edges (missing target nodes)
-    /// - Cycles in the DAG
-    pub fn validate(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-        errors: &mut Vec<Error>,
-    ) {
-        self.validate_hyper_edges(pipeline_group_id, pipeline_id, errors);
-
-        // Only check for cycles if no hyper-edge errors
-        if errors.is_empty() {
-            for cycle in self.detect_cycles() {
-                errors.push(Error::CycleDetected {
-                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                    nodes: cycle,
-                });
-            }
-        }
-    }
-
-    /// Validate hyper-edges (check that all destination nodes exist).
-    fn validate_hyper_edges(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-        errors: &mut Vec<Error>,
-    ) {
-        for (node_id, node) in self.0.iter() {
-            for edge in node.out_ports.values() {
-                let missing_targets: Vec<_> = edge
-                    .destinations
-                    .iter()
-                    .filter(|target| !self.0.contains_key(*target))
-                    .cloned()
-                    .collect();
-
-                if !missing_targets.is_empty() {
-                    errors.push(Error::InvalidHyperEdgeSpec {
-                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-                        source_node: node_id.clone(),
-                        missing_source: false,
-                        details: Box::new(HyperEdgeSpecDetails {
-                            target_nodes: edge.destinations.iter().cloned().collect(),
-                            dispatch_strategy: edge.dispatch_strategy.clone(),
-                            missing_targets,
-                        }),
-                    });
-                }
-            }
-        }
-    }
-
-    /// Detect cycles in the node graph.
-    fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
-        fn visit(
-            node: &NodeId,
-            nodes: &HashMap<NodeId, Arc<NodeUserConfig>>,
-            visiting: &mut HashSet<NodeId>,
-            visited: &mut HashSet<NodeId>,
-            current_path: &mut Vec<NodeId>,
-            cycles: &mut Vec<Vec<NodeId>>,
-        ) {
-            if visited.contains(node) {
-                return;
-            }
-            if visiting.contains(node) {
-                if let Some(pos) = current_path.iter().position(|n| n == node) {
-                    cycles.push(current_path[pos..].to_vec());
-                }
-                return;
-            }
-            _ = visiting.insert(node.clone());
-            current_path.push(node.clone());
-
-            if let Some(n) = nodes.get(node) {
-                for edge in n.out_ports.values() {
-                    for tgt in &edge.destinations {
-                        visit(tgt, nodes, visiting, visited, current_path, cycles);
-                    }
-                }
-            }
-
-            _ = visiting.remove(node);
-            _ = visited.insert(node.clone());
-            _ = current_path.pop();
-        }
-
-        let mut visiting = HashSet::new();
-        let mut current_path = Vec::new();
-        let mut visited = HashSet::new();
-        let mut cycles = Vec::new();
-
-        for node in self.0.keys() {
-            if !visited.contains(node) {
-                visit(
-                    node,
-                    &self.0,
-                    &mut visiting,
-                    &mut visited,
-                    &mut current_path,
-                    &mut cycles,
-                );
-            }
-        }
-
-        cycles
     }
 }
 
@@ -534,6 +648,17 @@ impl PipelineConfig {
         self.nodes.iter()
     }
 
+    /// Returns true if the pipeline graph is defined with top-level connections.
+    #[must_use]
+    pub fn has_connections(&self) -> bool {
+        !self.connections.is_empty()
+    }
+
+    /// Returns an iterator over top-level pipeline connections.
+    pub fn connection_iter(&self) -> impl Iterator<Item = &PipelineConnection> {
+        self.connections.iter()
+    }
+
     /// Creates a consuming iterator over the nodes in the pipeline.
     pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
@@ -574,7 +699,9 @@ impl PipelineConfig {
             settings: Self::internal_pipeline_settings(),
             quota: Quota::default(),
             nodes: self.internal.clone(),
+            connections: self.internal_connections.clone(),
             internal: PipelineNodes::default(),
+            internal_connections: Vec::new(),
             service: ServiceConfig::default(),
         })
     }
@@ -628,9 +755,13 @@ impl PipelineConfig {
     ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
-        // Validate main pipeline
-        self.nodes
-            .validate(pipeline_group_id, pipeline_id, &mut errors);
+        self.validate_connections(
+            &self.nodes,
+            &self.connections,
+            pipeline_group_id,
+            pipeline_id,
+            &mut errors,
+        );
 
         // Validate internal pipeline if present
         if !self.internal.is_empty() {
@@ -640,8 +771,13 @@ impl PipelineConfig {
             // refer to the set of node defining the internal
             // pipeline.
             let internal_id: PipelineId = format!("{}_internal", &pipeline_id).into();
-            self.internal
-                .validate(pipeline_group_id, &internal_id, &mut errors);
+            self.validate_connections(
+                &self.internal,
+                &self.internal_connections,
+                pipeline_group_id,
+                &internal_id,
+                &mut errors,
+            );
         }
 
         if !errors.is_empty() {
@@ -649,6 +785,170 @@ impl PipelineConfig {
         } else {
             Ok(())
         }
+    }
+
+    fn validate_connections(
+        &self,
+        nodes: &PipelineNodes,
+        connections: &[PipelineConnection],
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+        errors: &mut Vec<Error>,
+    ) {
+        let mut targets_by_source_port: HashMap<(NodeId, PortName), HashSet<NodeId>> =
+            HashMap::new();
+
+        for connection in connections {
+            let target_nodes = connection.to_nodes();
+            let missing_targets: Vec<_> = target_nodes
+                .iter()
+                .filter(|target| !nodes.contains_key(target.as_ref()))
+                .cloned()
+                .collect();
+
+            for source in connection.from_sources() {
+                let source_node = source.node_id().clone();
+                let missing_source = !nodes.contains_key(source_node.as_ref());
+                if missing_source || !missing_targets.is_empty() {
+                    errors.push(Error::InvalidHyperEdgeSpec {
+                        context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                        source_node: source_node.clone(),
+                        missing_source,
+                        details: Box::new(HyperEdgeSpecDetails {
+                            target_nodes: target_nodes.clone(),
+                            dispatch_strategy: connection.dispatch_strategy.clone(),
+                            missing_targets: missing_targets.clone(),
+                        }),
+                    });
+                    continue;
+                }
+
+                if let Some(node_cfg) = nodes.get(source_node.as_ref()) {
+                    let resolved_port = source.resolved_out_port(&connection.out_port);
+                    if !node_cfg.outputs.is_empty()
+                        && !node_cfg
+                            .outputs
+                            .iter()
+                            .any(|output| output == &resolved_port)
+                    {
+                        errors.push(Error::InvalidUserConfig {
+                            error: format!(
+                                "connection source `{source_node}` uses output port `{resolved_port}` which is not declared in `outputs`"
+                            ),
+                        });
+                    }
+                    let entry = targets_by_source_port
+                        .entry((source_node.clone(), resolved_port.clone()))
+                        .or_default();
+                    entry.extend(target_nodes.iter().cloned());
+                }
+            }
+        }
+
+        // The fanout processor expects each destination port to map to a single downstream node.
+        // Multiple targets on the same source port would introduce load-balancing semantics.
+        for ((source_node, source_port), targets) in targets_by_source_port {
+            if targets.len() <= 1 {
+                continue;
+            }
+            if let Some(node_cfg) = nodes.get(source_node.as_ref())
+                && node_cfg.r#type.id() == "fanout"
+            {
+                let mut target_nodes = targets.into_iter().collect::<Vec<_>>();
+                target_nodes.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "fanout: output port `{source_port}` on node `{source_node}` must target exactly one destination, found {} targets ({})",
+                        target_nodes.len(),
+                        target_nodes
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                });
+            }
+        }
+
+        // Only check for cycles if no hyper-edge errors.
+        if errors.is_empty() {
+            for cycle in Self::detect_cycles_from_connections(nodes, connections) {
+                errors.push(Error::CycleDetected {
+                    context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
+                    nodes: cycle,
+                });
+            }
+        }
+    }
+
+    fn detect_cycles_from_connections(
+        nodes: &PipelineNodes,
+        connections: &[PipelineConnection],
+    ) -> Vec<Vec<NodeId>> {
+        fn visit(
+            node: &NodeId,
+            adjacency: &HashMap<NodeId, Vec<NodeId>>,
+            visiting: &mut HashSet<NodeId>,
+            visited: &mut HashSet<NodeId>,
+            current_path: &mut Vec<NodeId>,
+            cycles: &mut Vec<Vec<NodeId>>,
+        ) {
+            if visited.contains(node) {
+                return;
+            }
+            if visiting.contains(node) {
+                if let Some(pos) = current_path.iter().position(|n| n == node) {
+                    cycles.push(current_path[pos..].to_vec());
+                }
+                return;
+            }
+            let _ = visiting.insert(node.clone());
+            current_path.push(node.clone());
+
+            if let Some(targets) = adjacency.get(node) {
+                for target in targets {
+                    visit(target, adjacency, visiting, visited, current_path, cycles);
+                }
+            }
+
+            let _ = visiting.remove(node);
+            let _ = visited.insert(node.clone());
+            let _ = current_path.pop();
+        }
+
+        let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for connection in connections {
+            let sources = connection.from_nodes();
+            let targets = connection.to_nodes();
+            for source in &sources {
+                let entry = adjacency.entry(source.clone()).or_default();
+                for target in &targets {
+                    if !entry.contains(target) {
+                        entry.push(target.clone());
+                    }
+                }
+            }
+        }
+
+        let mut visiting = HashSet::new();
+        let mut current_path = Vec::new();
+        let mut visited = HashSet::new();
+        let mut cycles = Vec::new();
+
+        for node in nodes.keys() {
+            if !visited.contains(node) {
+                visit(
+                    node,
+                    &adjacency,
+                    &mut visiting,
+                    &mut visited,
+                    &mut current_path,
+                    &mut cycles,
+                );
+            }
+        }
+
+        cycles
     }
 }
 
@@ -708,8 +1008,8 @@ impl PipelineConfigBuilder {
                 NodeUserConfig {
                     r#type: node_type,
                     description: None,
-                    out_ports: HashMap::new(),
-                    default_out_port: None,
+                    outputs: Vec::new(),
+                    default_output: None,
                     config: config.unwrap_or(Value::Null),
                 },
             );
@@ -864,7 +1164,9 @@ impl PipelineConfigBuilder {
 
         // Process each pending connection (skipping any 2nd+ duplicates)
         let mut inserted_ports = HashSet::new();
+        let mut built_connections = Vec::new();
         for conn in self.pending_connections {
+            let strategy = conn.strategy.clone();
             let key = (conn.src.clone(), conn.out_port.clone());
             if !inserted_ports.insert(key.clone()) {
                 // skip this duplicate
@@ -888,23 +1190,26 @@ impl PipelineConfigBuilder {
                     missing_source: !src_exists,
                     details: Box::new(HyperEdgeSpecDetails {
                         target_nodes: conn.targets.iter().cloned().collect(),
-                        dispatch_strategy: conn.strategy,
+                        dispatch_strategy: strategy.clone(),
                         missing_targets: missing,
                     }),
                 });
                 continue;
             }
 
-            // finally, insert into the node’s out_ports
+            // record declared output for this source node
             if let Some(node) = self.nodes.get_mut(&conn.src) {
-                let _ = node.out_ports.insert(
-                    conn.out_port.clone(),
-                    HyperEdgeConfig {
-                        destinations: conn.targets.clone(),
-                        dispatch_strategy: conn.strategy,
-                    },
-                );
+                node.add_output(conn.out_port.clone());
             }
+
+            let mut targets = conn.targets.iter().cloned().collect::<Vec<_>>();
+            targets.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+            built_connections.push(PipelineConnection {
+                from: ConnectionSourceSet::One(ConnectionSource::from_node(conn.src)),
+                to: ConnectionNodeSet::Many(targets),
+                out_port: conn.out_port,
+                dispatch_strategy: strategy,
+            });
         }
 
         if !errors.is_empty() {
@@ -917,7 +1222,9 @@ impl PipelineConfigBuilder {
                     .into_iter()
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
+                connections: built_connections,
                 internal: PipelineNodes(HashMap::new()),
+                internal_connections: Vec::new(),
                 settings: PipelineSettings::default(),
                 quota: Quota::default(),
                 r#type: pipeline_type,
@@ -1123,9 +1430,26 @@ mod tests {
                 // two nodes, one edge on Start
                 assert_eq!(pipeline_spec.nodes.len(), 2);
                 let start = &pipeline_spec.nodes["Start"];
-                assert_eq!(start.out_ports.len(), 1);
-                let edge = &start.out_ports["out"];
-                assert!(edge.destinations.contains("End"));
+                assert_eq!(start.outputs, vec![crate::PortName::from("out")]);
+                assert_eq!(pipeline_spec.connection_iter().count(), 1);
+                let conn = pipeline_spec
+                    .connection_iter()
+                    .next()
+                    .expect("missing connection");
+                assert_eq!(
+                    conn.from_sources()
+                        .iter()
+                        .map(|source| source.node_id().as_ref())
+                        .collect::<Vec<_>>(),
+                    vec!["Start"]
+                );
+                assert_eq!(
+                    conn.to_nodes()
+                        .iter()
+                        .map(|id| id.as_ref())
+                        .collect::<Vec<_>>(),
+                    vec!["End"]
+                );
             }
             Err(e) => panic!("expected successful build, got {e:?}"),
         }
@@ -1640,26 +1964,24 @@ mod tests {
             nodes:
               receiver:
                 type: "urn:test:example:receiver"
-                out_ports:
-                  out:
-                    destinations: [exporter]
-                    dispatch_strategy: round_robin
                 config: {}
               exporter:
                 type: "urn:test:example:exporter"
                 config: {}
+            connections:
+              - from: receiver
+                to: exporter
 
             internal:
               itr:
                 type: "urn:otel:internal_telemetry:receiver"
-                out_ports:
-                  out_port:
-                    destinations: [console]
-                    dispatch_strategy: round_robin
                 config: {}
               console:
                 type: "urn:otel:console:exporter"
                 config: {}
+            internal_connections:
+              - from: itr
+                to: console
         "#;
 
         use super::PipelineConfig;
@@ -1692,6 +2014,8 @@ mod tests {
 
         // The extracted config's internal should be empty
         assert!(internal.internal.is_empty());
+        assert!(internal.internal_connections.is_empty());
+        assert_eq!(internal.connection_iter().count(), 1);
 
         // Telemetry should be disabled
         assert!(!internal.settings.telemetry.pipeline_metrics);
@@ -1703,21 +2027,18 @@ mod tests {
             nodes:
               receiver:
                 type: "otlp:receiver"
-                out_ports:
-                  out:
-                    destinations: [processor]
-                    dispatch_strategy: round_robin
                 config: {}
               processor:
                 type: "attribute:processor"
-                out_ports:
-                  out:
-                    destinations: [exporter]
-                    dispatch_strategy: round_robin
                 config: {}
               exporter:
                 type: "urn:otel:otlp:exporter"
                 config: {}
+            connections:
+              - from: receiver
+                to: processor
+              - from: processor
+                to: exporter
         "#;
 
         let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
@@ -1751,5 +2072,161 @@ mod tests {
         assert!(message.contains("invalid plugin urn"));
         assert!(message.contains("urn:<namespace>:<id>:<kind>"));
         assert!(message.contains("rust/otap-dataflow/docs/urns.md"));
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_with_connections() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "otlp:receiver"
+                config: {}
+              processor:
+                type: "attribute:processor"
+                config: {}
+              exporter:
+                type: "urn:otel:otlp:exporter"
+                config: {}
+            connections:
+              - from: receiver
+                to: processor
+              - from: processor
+                to: exporter
+        "#;
+
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("should parse");
+        assert!(config.has_connections());
+        assert_eq!(config.connection_iter().count(), 2);
+        for connection in config.connection_iter() {
+            assert_eq!(connection.out_port.as_ref(), "default");
+        }
+        assert_eq!(
+            config.nodes["receiver"].r#type.as_ref(),
+            "urn:otel:otlp:receiver"
+        );
+        assert_eq!(
+            config.nodes["processor"].r#type.as_ref(),
+            "urn:otel:attribute:processor"
+        );
+        assert_eq!(
+            config.nodes["exporter"].r#type.as_ref(),
+            "urn:otel:otlp:exporter"
+        );
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_with_fan_in_connection() {
+        let yaml = r#"
+            nodes:
+              receiver_a:
+                type: "otlp:receiver"
+                config: {}
+              receiver_b:
+                type: "otlp:receiver"
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: [receiver_a, receiver_b]
+                to: exporter
+        "#;
+
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("should parse");
+        let connection = config
+            .connection_iter()
+            .next()
+            .expect("missing expected connection");
+        let mut from_nodes = connection
+            .from_nodes()
+            .into_iter()
+            .map(|node| node.as_ref().to_string())
+            .collect::<Vec<_>>();
+        from_nodes.sort();
+        assert_eq!(from_nodes, vec!["receiver_a", "receiver_b"]);
+        let to_nodes = connection.to_nodes();
+        assert_eq!(to_nodes.len(), 1);
+        assert_eq!(to_nodes[0].as_ref(), "exporter");
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_with_named_source_port() {
+        let yaml = r#"
+            nodes:
+              router:
+                type: "type_router:processor"
+                outputs: ["logs", "metrics", "traces"]
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: router["logs"]
+                to: exporter
+        "#;
+
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("should parse");
+        let connection = config
+            .connection_iter()
+            .next()
+            .expect("missing expected connection");
+        let from_sources = connection.from_sources();
+        assert_eq!(from_sources.len(), 1);
+        assert_eq!(from_sources[0].node_id().as_ref(), "router");
+        assert_eq!(
+            from_sources[0].out_port().map(|port| port.as_ref()),
+            Some("logs")
+        );
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_unknown_declared_output_port_usage() {
+        let yaml = r#"
+            nodes:
+              router:
+                type: "type_router:processor"
+                outputs: ["metrics"]
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: router["logs"]
+                to: exporter
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("uses output port `logs` which is not declared in `outputs`")
+        );
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_legacy_node_out_ports() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "otlp:receiver"
+                out_ports:
+                  out:
+                    destinations: [missing_node]
+                    dispatch_strategy: round_robin
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: receiver
+                to: exporter
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        assert!(err.to_string().contains("unknown field `out_ports`"));
     }
 }

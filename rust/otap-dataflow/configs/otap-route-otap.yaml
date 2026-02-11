@@ -6,11 +6,6 @@ settings:
 nodes:
   otlp_recv:
     type: otap:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - router
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4327"
       wait_for_result: true
@@ -18,39 +13,17 @@ nodes:
 
   otap_recv:
     type: otap:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - otap_exporter
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4329"
       response_stream_channel_size: 256
 
   router:
     type: type_router:processor
-    out_ports:
-      logs:
-        destinations:
-          - retry
-        dispatch_strategy: round_robin
-      metrics:
-        destinations:
-          - metrics_exporter
-        dispatch_strategy: round_robin
-      traces:
-        destinations:
-          - spans_exporter
-        dispatch_strategy: round_robin
+    outputs: ["logs", "metrics", "traces"]
     config: {}
 
 #  logs_filter:
 #    type: filter:processor
-#    out_ports:
-#      out_port:
-#        destinations:
-#          - logs_exporter
-#        dispatch_strategy: round_robin
 #    config:
 #      logs:
 #        include:
@@ -60,14 +33,13 @@ nodes:
 #              value: openai
 #            - key: ios.app.state
 #              value: active
+#
+# connections:
+#   - from: logs_filter
+#     to: logs_exporter
 
   retry:
     type: retry:processor
-    out_ports:
-      out_port:
-        destinations:
-          - logs_exporter
-        dispatch_strategy: round_robin
     config:
       multiplier: 1.5
 
@@ -87,3 +59,17 @@ nodes:
   otap_exporter:
     type: noop:exporter
     config:
+
+connections:
+  - from: otlp_recv
+    to: router
+  - from: otap_recv
+    to: otap_exporter
+  - from: router["logs"]
+    to: retry
+  - from: router["metrics"]
+    to: metrics_exporter
+  - from: router["traces"]
+    to: spans_exporter
+  - from: retry
+    to: logs_exporter

@@ -307,7 +307,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         &mut pdata,
                     );
                 }
-                // ToDo: handle multiple out_ports differently here?
+                // ToDo: handle multiple outputs differently here?
                 if let Some(ports) = main_ports {
                     for port in ports {
                         // Note each clone has its own clone of the context.

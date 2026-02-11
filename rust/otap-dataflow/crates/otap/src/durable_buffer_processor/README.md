@@ -9,13 +9,7 @@ downstream, enabling recovery after crashes or network outages.
 ```yaml
 nodes:
   durable_buffer:
-    kind: processor
-    plugin_urn: "urn:otel:durable_buffer:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: "durable_buffer:processor"
     config:
       # Directory for persistent storage (required)
       path: /var/lib/otap/buffer
@@ -63,6 +57,9 @@ nodes:
       # Limits concurrent delivery attempts to prevent thundering herd
       # after extended network outages or restarts with large backlogs.
       max_in_flight: 1000
+connections:
+  - from: durable_buffer
+    to: exporter
 ```
 
 ## Architecture

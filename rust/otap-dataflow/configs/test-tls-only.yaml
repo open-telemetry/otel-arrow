@@ -6,11 +6,6 @@
   nodes:
     receiver:
       type: otlp:receiver
-      out_ports:
-        out_port:
-          destinations:
-            - exporter
-          dispatch_strategy: round_robin
       config:
         protocols:
           grpc:
@@ -26,3 +21,7 @@
         tls:
           ca_file: "./test-certs/ca.crt"
           include_system_ca_certs_pool: false
+
+  connections:
+    - from: receiver
+      to: exporter

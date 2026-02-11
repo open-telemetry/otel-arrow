@@ -510,7 +510,7 @@ mod test {
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
         node_config.config = config;
-        node_config.default_out_port = Some(TEST_OUT_PORT_NAME.into());
+        node_config.default_output = Some(TEST_OUT_PORT_NAME.into());
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);

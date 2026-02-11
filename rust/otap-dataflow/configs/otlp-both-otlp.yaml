@@ -12,11 +12,6 @@ settings:
 nodes:
   receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         # OTLP/gRPC receiver (default port: 4317)
@@ -96,3 +91,7 @@ nodes:
       # Uses a different port than this receiver to avoid accidental loops.
       grpc_endpoint: "http://127.0.0.1:4319"
       # timeout: "15s"
+
+connections:
+  - from: receiver
+    to: exporter

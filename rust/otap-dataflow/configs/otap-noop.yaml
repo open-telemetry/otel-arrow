@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: otap:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - perf_noop
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4327"
       response_stream_channel_size: 256
@@ -19,3 +14,7 @@ nodes:
   perf_noop:
     type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: perf_noop

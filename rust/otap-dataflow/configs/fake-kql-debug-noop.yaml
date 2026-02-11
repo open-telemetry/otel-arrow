@@ -1,11 +1,6 @@
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - kql
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_signal_count: 100
@@ -18,11 +13,6 @@ nodes:
 
   kql:
     type: urn:microsoft:recordset_kql:processor
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
     config:
       query: |
         source
@@ -34,11 +24,6 @@ nodes:
 
   debug:
     type: debug:processor
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       verbosity: detailed
       mode: signal
@@ -47,6 +32,13 @@ nodes:
     type: noop:exporter
     config:
 
+connections:
+  - from: receiver
+    to: kql
+  - from: kql
+    to: debug
+  - from: debug
+    to: noop
 settings:
   telemetry:
     logs:

@@ -1,22 +1,12 @@
 nodes:
   receiver:
     type: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
   debug:
     type: "urn:otel:debug:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       verbosity: basic
   exporter:
@@ -26,3 +16,8 @@ nodes:
       compression_method: none
       arrow:
         payload_compression: none
+connections:
+  - from: receiver
+    to: debug
+  - from: debug
+    to: exporter

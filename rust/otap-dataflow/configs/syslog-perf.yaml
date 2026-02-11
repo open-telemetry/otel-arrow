@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: syslog_cef:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       listening_addr: "0.0.0.0:5140"
       protocol: udp
@@ -22,3 +17,7 @@ nodes:
       mem_usage: false
       disk_usage: false
       io_usage: false
+
+connections:
+  - from: receiver
+    to: exporter

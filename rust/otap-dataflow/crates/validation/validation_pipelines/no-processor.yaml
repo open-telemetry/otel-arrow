@@ -1,11 +1,6 @@
 nodes:
   receiver:
     type: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
@@ -15,4 +10,6 @@ nodes:
     type: "urn:otel:otlp:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
-
+connections:
+  - from: receiver
+    to: exporter

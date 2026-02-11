@@ -31,11 +31,6 @@ nodes:
   # OTLP gRPC Receiver - Accepts telemetry from instrumented apps
   otlp-receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - geneva-exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
@@ -75,3 +70,6 @@ nodes:
       # currently used to change runtime behavior.
       max_buffer_size: 1000
       max_concurrent_uploads: 4
+connections:
+  - from: otlp-receiver
+    to: geneva-exporter

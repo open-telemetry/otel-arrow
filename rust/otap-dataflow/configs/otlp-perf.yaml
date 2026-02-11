@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - perf
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
@@ -23,3 +18,7 @@ nodes:
       mem_usage: false
       disk_usage: false
       io_usage: false
+
+connections:
+  - from: receiver
+    to: perf

@@ -43,11 +43,6 @@ pipeline_groups:
         nodes:
           suv_receiver:
             type: "{{ suv_receiver_plugin_urn }}"
-            out_ports:
-              out_port:
-                destinations:
-                  - validation_exporter
-                dispatch_strategy: round_robin
             config:
               {% if suv_receiver_type == "otlp" -%}
               protocols:                                                                                                                                                                        
@@ -61,11 +56,6 @@ pipeline_groups:
 
           control_receiver:
             type: "urn:otel:otlp:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - validation_exporter
-                dispatch_strategy: round_robin
             config:
               protocols:                                                                                                                                                                        
                 grpc:                                                                                                                                                                           
@@ -77,6 +67,11 @@ pipeline_groups:
                 expect_failure: false
                 control_input: control_receiver
                 suv_input: suv_receiver
+        connections:
+          - from: suv_receiver
+            to: validation_exporter
+          - from: control_receiver
+            to: validation_exporter
 
       # ======================================================================
       # System Under Validation pipeline
@@ -106,11 +101,6 @@ pipeline_groups:
         nodes:
           receiver:
             type: "urn:otel:traffic_generator:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - fanout
-                dispatch_strategy: round_robin
             config:
               traffic_config:
                 max_signal_count: {{ max_signal_count }}
@@ -123,15 +113,7 @@ pipeline_groups:
 
           fanout:
             type: "urn:otel:fanout_temp:processor"
-            out_ports:
-              suv_port:
-                destinations:
-                  - suv_exporter
-                dispatch_strategy: round_robin
-              control_port:
-                destinations:
-                  - control_exporter
-                dispatch_strategy: round_robin
+            outputs: ["suv_port", "control_port"]
             config:
           suv_exporter:
             type: "{{ suv_exporter_plugin_urn }}"
@@ -147,3 +129,10 @@ pipeline_groups:
             type: "urn:otel:otlp:exporter"
             config:
               grpc_endpoint: "{{ control_endpoint }}"
+        connections:
+          - from: receiver
+            to: fanout
+          - from: fanout["suv_port"]
+            to: suv_exporter
+          - from: fanout["control_port"]
+            to: control_exporter

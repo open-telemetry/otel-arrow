@@ -29,16 +29,11 @@ pipeline_groups:
         nodes:
           receiver:
             type: traffic_generator:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - exporter
-                dispatch_strategy: round_robin
             config:
               data_source: static
               generation_strategy: pre_generated
               traffic_config:
-                signals_per_second: 100000
+                signals_per_second: 150000
                 max_signal_count: null
                 metric_weight: 0
                 trace_weight: 0
@@ -49,6 +44,11 @@ pipeline_groups:
               grpc_endpoint: "http://127.0.0.1:4327"
       # Second group of traffic generators based on on-the-fly data generation
       # derived from semantic conventions
+
+        connections:
+          - from: receiver
+            to: exporter
+
       traffic_gen2:
         quota:
           core_allocation:
@@ -61,11 +61,6 @@ pipeline_groups:
         nodes:
           receiver:
             type: traffic_generator:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - exporter
-                dispatch_strategy: round_robin
             config:
               traffic_config:
                 signals_per_second: 100000
@@ -82,6 +77,10 @@ pipeline_groups:
       # ======================================================================
       # System Under Test pipeline
       # ======================================================================
+
+        connections:
+          - from: receiver
+            to: exporter
       sut:
         quota:
           core_allocation:
@@ -93,11 +92,6 @@ pipeline_groups:
         nodes:
           otlp_recv1:
             type: otlp:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - router
-                dispatch_strategy: round_robin
             config:
               protocols:
                 grpc:
@@ -105,11 +99,6 @@ pipeline_groups:
                   wait_for_result: true
           otlp_recv2:
             type: otlp:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - router
-                dispatch_strategy: round_robin
             config:
               protocols:
                 grpc:
@@ -118,28 +107,11 @@ pipeline_groups:
 
           router:
             type: type_router:processor
-            out_ports:
-              logs:
-                destinations:
-                  - retry
-                dispatch_strategy: round_robin
-              metrics:
-                destinations:
-                  - metrics_exporter
-                dispatch_strategy: round_robin
-              traces:
-                destinations:
-                  - spans_exporter
-                dispatch_strategy: round_robin
+            outputs: ["logs", "metrics", "traces"]
             config: {}
 
           retry:
             type: retry:processor
-            out_ports:
-              out_port:
-                destinations:
-                  - logs_exporter
-                dispatch_strategy: round_robin
             config:
               multiplier: 1.5
 
@@ -161,6 +133,21 @@ pipeline_groups:
       # ======================================================================
       # Performance No-Op pipeline to measure receiver performance
       # ======================================================================
+
+        connections:
+          - from: otlp_recv1
+            to: router
+          - from: otlp_recv2
+            to: router
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_exporter
+
       backend:
         quota:
           core_allocation:
@@ -173,11 +160,6 @@ pipeline_groups:
         nodes:
           receiver:
             type: otlp:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - perf_noop
-                dispatch_strategy: round_robin
             config:
               protocols:
                 grpc:
@@ -186,3 +168,7 @@ pipeline_groups:
           perf_noop:
             type: noop:exporter
             config: null
+
+        connections:
+          - from: receiver
+            to: perf_noop

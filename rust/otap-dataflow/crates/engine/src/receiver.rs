@@ -309,7 +309,7 @@ impl<PData> ReceiverWrapper<PData> {
                 } else {
                     pdata_senders
                 };
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 let effect_handler = local::EffectHandler::new(
                     node_id,
@@ -341,7 +341,7 @@ impl<PData> ReceiverWrapper<PData> {
                 } else {
                     pdata_senders
                 };
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 let effect_handler = shared::EffectHandler::new(
                     node_id,

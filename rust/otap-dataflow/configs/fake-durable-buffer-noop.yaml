@@ -14,11 +14,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         # Generate signals continuously (null = unlimited)
@@ -32,11 +27,6 @@ nodes:
 
   durable_buffer:
     type: durable_buffer:processor
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       path: /var/lib/otap/fake-durable-buffer-noop-example/buffer
       poll_interval: 10ms
@@ -48,3 +38,9 @@ nodes:
   noop:
     type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: noop

@@ -7,11 +7,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - batch
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_signal_count: 10000
@@ -21,11 +16,6 @@ nodes:
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   batch:
     type: batch:processor
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
     config:
       otap:
         # At the rate set above (100/s), min_size=1000 would emit a batch
@@ -36,14 +26,17 @@ nodes:
       flush_timeout: 3s
   debug:
     type: debug:processor
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       verbosity: detailed
       mode: signal
   noop:
     type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: batch
+  - from: batch
+    to: debug
+  - from: debug
+    to: noop

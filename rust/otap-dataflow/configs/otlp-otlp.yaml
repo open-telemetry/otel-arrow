@@ -12,11 +12,6 @@ settings:
 nodes:
   receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         # OTLP/gRPC receiver only (default port: 4317)
@@ -65,3 +60,7 @@ nodes:
       #   # Client identity for mTLS (optional)
       #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
       #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
+
+connections:
+  - from: receiver
+    to: exporter

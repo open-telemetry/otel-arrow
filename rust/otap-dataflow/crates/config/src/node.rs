@@ -6,23 +6,18 @@
 //! A node is a fundamental unit in our data processing pipeline, representing either a receiver
 //! (source), processor, exporter (sink), or connector (linking pipelines).
 //!
-//! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
-//! data flows from this node to one or more target nodes.
+//! A node can expose multiple named output ports.
 
 use crate::{Description, NodeId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// User configuration for a node in the pipeline.
-/// Each node contains its own settings (i.e. user config) and defines how it connects to downstream
-/// nodes via out_ports.
-/// Each out_port is a named output (e.g. "success", "error") that defines a hyper-edge:
-/// - The hyper-edge configuration determines which downstream nodes are connected,
-///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NodeUserConfig {
     /// The node type URN identifying the plugin (factory) to use for this node.
     ///
@@ -37,16 +32,17 @@ pub struct NodeUserConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
 
-    /// Outgoing hyper-edges, keyed by port name.
-    /// Each port connects this node to one or more downstream nodes, with a specific dispatch strategy.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub out_ports: HashMap<PortName, HyperEdgeConfig>,
+    /// Declared output ports exposed by this node.
+    ///
+    /// This is primarily used with top-level `connections` wiring.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<PortName>,
 
     /// Optional default output port name to use when a node emits pdata without specifying a port.
     /// If omitted and multiple out ports are configured, the engine will treat the default as
     /// ambiguous and require explicit port selection at runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_out_port: Option<PortName>,
+    pub default_output: Option<PortName>,
 
     /// Node-specific configuration.
     ///
@@ -77,7 +73,7 @@ pub struct HyperEdgeConfig {
 }
 
 /// Dispatching strategies for hyper-edges.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DispatchStrategy {
     /// Broadcast the data to all targeted nodes.
@@ -130,8 +126,8 @@ impl NodeUserConfig {
             )
             .expect("invalid receiver node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: Value::Null,
         }
     }
@@ -145,8 +141,8 @@ impl NodeUserConfig {
             )
             .expect("invalid exporter node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: Value::Null,
         }
     }
@@ -160,8 +156,8 @@ impl NodeUserConfig {
             )
             .expect("invalid processor node type"),
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: Value::Null,
         }
     }
@@ -172,24 +168,23 @@ impl NodeUserConfig {
         Self {
             r#type: node_type,
             description: None,
-            out_ports: HashMap::new(),
-            default_out_port: None,
+            outputs: Vec::new(),
+            default_output: None,
             config: user_config,
         }
     }
 
-    /// Adds an out port to this node's configuration.
-    pub fn add_out_port(
-        &mut self,
-        port_name: PortName,
-        edge_config: HyperEdgeConfig,
-    ) -> Option<HyperEdgeConfig> {
-        self.out_ports.insert(port_name, edge_config)
+    /// Adds an output port to this node declaration.
+    pub fn add_output<P: Into<PortName>>(&mut self, port_name: P) {
+        let port_name: PortName = port_name.into();
+        if !self.outputs.iter().any(|output| output == &port_name) {
+            self.outputs.push(port_name);
+        }
     }
 
     /// Sets the default output port name used by this node when no explicit port is specified.
-    pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
-        self.default_out_port = Some(port.into());
+    pub fn set_default_output<P: Into<PortName>>(&mut self, port: P) {
+        self.default_output = Some(port.into());
     }
 
     /// Returns this node kind from its URN.
@@ -206,35 +201,38 @@ mod tests {
     #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
-            "type": "urn:example:demo:receiver",
-            "out_ports": {}
+            "type": "urn:example:demo:receiver"
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
-        assert!(cfg.out_ports.is_empty());
+        assert!(cfg.outputs.is_empty());
     }
 
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"
 type: "urn:otel:type_router:processor"
-out_ports:
-  logs:
-    destinations:
-      - exporter
-    dispatch_strategy: round_robin
-  metrics:
-    destinations:
-      - debug
-    dispatch_strategy: round_robin
-  traces:
-    destinations:
-      - debug
-    dispatch_strategy: round_robin
+outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Processor));
-        assert_eq!(cfg.out_ports.len(), 3);
+        assert_eq!(cfg.outputs.len(), 3);
+    }
+
+    #[test]
+    fn test_yaml_node_outputs() {
+        let yaml = r#"
+type: "debug:processor"
+outputs: ["logs", "metrics", "traces"]
+config: {}
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(cfg.kind(), NodeKind::Processor));
+        let expected: Vec<PortName> = vec!["logs", "metrics", "traces"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        assert_eq!(cfg.outputs, expected);
     }
 }

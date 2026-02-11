@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - debug1
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_signal_count: 10000
@@ -20,33 +15,28 @@ nodes:
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   debug1:
     type: debug:processor
-    out_ports:
-      out_port:
-        destinations:
-          - transform
-        dispatch_strategy: round_robin
     config:
       verbosity: detailed
       output: /tmp/debug1.log
   transform:
     type: transform:processor
-    out_ports:
-      out_port:
-        destinations:
-        - debug2
-        dispatch_strategy: round_robin
     config:
       query: logs | where event_name == "gen_ai.system.message"
   debug2:
-      type: debug:processor
-      out_ports:
-        out_port:
-          destinations:
-            - noop
-          dispatch_strategy: round_robin
-      config:
-        verbosity: detailed
-        output: /tmp/debug2.log
+    type: debug:processor
+    config:
+      verbosity: detailed
+      output: /tmp/debug2.log
   noop:
     type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: debug1
+  - from: debug1
+    to: transform
+  - from: transform
+    to: debug2
+  - from: debug2
+    to: noop

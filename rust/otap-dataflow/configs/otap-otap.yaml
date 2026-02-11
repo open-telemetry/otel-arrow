@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: otap:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
       response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
@@ -49,3 +44,7 @@ nodes:
       #   # Client identity for mTLS (optional)
       #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
       #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
+
+connections:
+  - from: receiver
+    to: exporter

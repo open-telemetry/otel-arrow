@@ -17,11 +17,6 @@ settings:
 nodes:
   otlp-receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - azure-monitor-exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
@@ -70,3 +65,6 @@ nodes:
 
         # OAuth scope for Azure Monitor
         scope: "https://monitor.azure.com/.default"
+connections:
+  - from: otlp-receiver
+    to: azure-monitor-exporter

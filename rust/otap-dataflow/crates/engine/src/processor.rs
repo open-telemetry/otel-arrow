@@ -322,7 +322,7 @@ impl<PData> ProcessorWrapper<PData> {
                         source_detail: String::new(),
                     })?,
                 );
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
@@ -353,7 +353,7 @@ impl<PData> ProcessorWrapper<PData> {
                         source_detail: String::new(),
                     })?),
                 );
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,

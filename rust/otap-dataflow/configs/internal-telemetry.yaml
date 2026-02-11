@@ -21,11 +21,6 @@ service:
 nodes:
   generator:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_signal_count: 100000
@@ -39,15 +34,18 @@ nodes:
 
 # Internal telemetry pipeline - separate from main pipeline
 # Uses hardcoded settings: single thread, no admin server
+
+connections:
+  - from: generator
+    to: noop
 internal:
   telemetry:
     type: "internal_telemetry:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - console
-        dispatch_strategy: round_robin
+    outputs: ["out_port"]
     config: {}
   console:
     type: "console:exporter"
     config: {}
+internal_connections:
+  - from: telemetry["out_port"]
+    to: console

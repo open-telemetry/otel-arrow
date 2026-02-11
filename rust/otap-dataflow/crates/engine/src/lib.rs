@@ -3,7 +3,6 @@
 
 //! Async Pipeline Engine
 
-use crate::error::{ProcessorErrorKind, ReceiverErrorKind};
 use crate::{
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
@@ -465,7 +464,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
-        let edges = collect_hyper_edges_runtime(&receivers, &processors);
+        let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
@@ -1027,14 +1026,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &runtime_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
-        if receiver.user_config().out_ports.is_empty() {
-            return Err(Error::ReceiverError {
-                receiver: node_id,
-                kind: ReceiverErrorKind::Configuration,
-                error: "The `out_ports` field is empty. This is either an invalid configuration or a receiver factory that does not provide the correct configuration.".to_owned(),
-                source_detail: "".to_string(),
-            });
-        }
 
         otel_debug!(
             "receiver.create.complete",
@@ -1091,14 +1082,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &processor_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
-        if processor.user_config().out_ports.is_empty() {
-            return Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
-                error: "The `out_ports` field is empty. This is either an invalid configuration or a processor factory that does not provide the correct configuration.".to_owned(),
-                source_detail: "".to_string(),
-            });
-        }
 
         otel_debug!(
             "processor.create.complete",
@@ -1549,79 +1532,100 @@ impl ResolvedHyperEdgeRuntime {
     }
 }
 
-/// Returns a vector of all hyper-edges in the runtime graph.
-///
-/// Each item represents a hyper-edge with source node ids + ports, dispatch strategy, and
-/// destination node ids.
-fn collect_hyper_edges_runtime<PData>(
-    receivers: &[ReceiverWrapper<PData>],
-    processors: &[ProcessorWrapper<PData>],
-) -> Vec<HyperEdgeRuntime> {
+/// Builds hyper-edges directly from the top-level `connections` section.
+fn collect_hyper_edges_runtime_from_connections<PData>(
+    config: &PipelineConfig,
+    build_state: &BuildState<PData>,
+) -> Result<Vec<HyperEdgeRuntime>, Error> {
     let mut edges: Vec<HyperEdgeRuntime> = Vec::new();
     let mut edge_index: HashMap<HyperEdgeKey, Vec<usize>> = HashMap::new();
-    let mut nodes: Vec<&dyn Node<PData>> = Vec::new();
-    nodes.extend(receivers.iter().map(|node| node as &dyn Node<PData>));
-    nodes.extend(processors.iter().map(|node| node as &dyn Node<PData>));
 
-    for node in nodes {
-        let config = node.user_config();
-        for (port, hyper_edge_cfg) in &config.out_ports {
-            let mut destinations = hyper_edge_cfg
-                .destinations
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            if destinations.is_empty() {
-                continue;
+    for connection in config.connection_iter() {
+        let mut destinations: Vec<NodeName> = connection
+            .to_nodes()
+            .into_iter()
+            .map(|node_id| node_id.as_ref().to_string().into())
+            .collect();
+        if destinations.is_empty() {
+            continue;
+        }
+        destinations.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        destinations.dedup_by(|a, b| a.as_ref() == b.as_ref());
+
+        let mut sources = Vec::new();
+        for source in connection.from_sources() {
+            let source_name: NodeName = source.node_id().as_ref().to_string().into();
+            let registration = build_state.registration(&source_name)?;
+            if !matches!(
+                registration.node_type,
+                NodeType::Receiver | NodeType::Processor
+            ) {
+                return Err(Error::UnknownNode { node: source_name });
             }
-            destinations.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
-            let dispatch_strategy = hyper_edge_cfg.dispatch_strategy.clone();
-            let key = HyperEdgeKey {
-                dispatch_strategy: std::mem::discriminant(&dispatch_strategy),
-                destinations: destinations.clone(),
-            };
-            let node_id = node.node_id();
-            let mut match_index = None;
-            if let Some(indexes) = edge_index.get(&key) {
-                for &index in indexes {
-                    let edge = &edges[index];
-                    let has_conflict = edge.sources.iter().any(|source| {
-                        source.node_id.index == node_id.index
-                            && source.port.as_ref() != port.as_ref()
-                    });
-                    if !has_conflict {
-                        match_index = Some(index);
-                        break;
+            sources.push(NodeIdPortName {
+                node_id: registration.node_id.clone(),
+                port: source.resolved_out_port(&connection.out_port),
+            });
+        }
+        if sources.is_empty() {
+            continue;
+        }
+        sources.sort_by(|left, right| {
+            let left_key = (left.node_id.name.as_ref(), left.port.as_ref());
+            let right_key = (right.node_id.name.as_ref(), right.port.as_ref());
+            left_key.cmp(&right_key)
+        });
+        sources.dedup_by(|left, right| {
+            left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
+        });
+
+        let dispatch_strategy = connection.dispatch_strategy.clone();
+        let key = HyperEdgeKey {
+            dispatch_strategy: std::mem::discriminant(&dispatch_strategy),
+            destinations: destinations.clone(),
+        };
+
+        let mut match_index = None;
+        if let Some(indexes) = edge_index.get(&key) {
+            'candidate: for &index in indexes {
+                let edge = &edges[index];
+                for source in &sources {
+                    if edge.sources.iter().any(|existing| {
+                        existing.node_id.index == source.node_id.index
+                            && existing.port.as_ref() != source.port.as_ref()
+                    }) {
+                        continue 'candidate;
                     }
                 }
-            }
-
-            if let Some(index) = match_index {
-                edges[index].sources.push(NodeIdPortName {
-                    node_id,
-                    port: port.clone(),
-                });
-            } else {
-                edges.push(HyperEdgeRuntime {
-                    sources: vec![NodeIdPortName {
-                        node_id,
-                        port: port.clone(),
-                    }],
-                    dispatch_strategy,
-                    destinations,
-                });
-                edge_index.entry(key).or_default().push(edges.len() - 1);
+                match_index = Some(index);
+                break;
             }
         }
+
+        if let Some(index) = match_index {
+            edges[index].sources.extend(sources);
+        } else {
+            edges.push(HyperEdgeRuntime {
+                sources,
+                dispatch_strategy,
+                destinations,
+            });
+            edge_index.entry(key).or_default().push(edges.len() - 1);
+        }
     }
+
     for edge in &mut edges {
         edge.sources.sort_by(|left, right| {
             let left_key = (left.node_id.name.as_ref(), left.port.as_ref());
             let right_key = (right.node_id.name.as_ref(), right.port.as_ref());
             left_key.cmp(&right_key)
         });
+        edge.sources.dedup_by(|left, right| {
+            left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
+        });
     }
-    edges
+
+    Ok(edges)
 }
 
 const fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {

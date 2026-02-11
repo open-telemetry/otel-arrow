@@ -14,11 +14,6 @@ settings:
 nodes:
   receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
@@ -49,3 +44,7 @@ nodes:
         # Client identity for mTLS (these make it mTLS instead of just TLS)
         cert_file: "./test-certs/client.crt"
         key_file: "./test-certs/client.key"
+
+connections:
+  - from: receiver
+    to: exporter

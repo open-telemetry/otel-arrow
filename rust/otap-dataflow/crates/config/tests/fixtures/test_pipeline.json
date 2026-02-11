@@ -7,13 +7,11 @@
   "nodes": {
     "receiver1": {
       "type": "urn:test:example:receiver",
-      "config": null,
-      "out_ports": {}
+      "config": null
     },
     "exporter1": {
       "type": "urn:test:example:exporter",
-      "config": null,
-      "out_ports": {}
+      "config": null
     }
   },
   "service": {

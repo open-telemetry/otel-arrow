@@ -6,11 +6,6 @@ settings:
 nodes:
   receiver:
     type: traffic_generator:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - filter
-        dispatch_strategy: round_robin
     config:
       traffic_config:
         max_batch_size: 1000
@@ -21,11 +16,6 @@ nodes:
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   filter:
     type: filter:processor
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
     config:
       logs:
         include:
@@ -37,14 +27,17 @@ nodes:
               value: active
   debug:
     type: debug:processor
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       verbosity: detailed
       mode: signal
   noop:
     type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: filter
+  - from: filter
+    to: debug
+  - from: debug
+    to: noop

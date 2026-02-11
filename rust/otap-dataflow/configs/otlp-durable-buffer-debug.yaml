@@ -16,21 +16,11 @@ settings:
 nodes:
   receiver:
     type: otlp:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
 
   durable_buffer:
     type: durable_buffer:processor
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
     config:
       path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
       poll_interval: 100ms
@@ -41,14 +31,17 @@ nodes:
 
   debug:
     type: debug:processor
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
     config:
       verbosity: detailed
       output: /tmp/durable_buffer_debug.log
 
   noop:
     type: noop:exporter
+
+connections:
+  - from: receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: debug
+  - from: debug
+    to: noop

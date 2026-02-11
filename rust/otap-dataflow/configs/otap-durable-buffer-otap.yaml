@@ -16,22 +16,12 @@ settings:
 nodes:
   receiver:
     type: otap:receiver
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
     config:
       listening_addr: "127.0.0.1:4317"
       response_stream_channel_size: 256
 
   durable_buffer:
     type: durable_buffer:processor
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
     config:
       # Directory for WAL and segment files (created if not exists)
       path: /var/lib/otap/otap-durable-buffer-otap-example/buffer
@@ -48,3 +38,9 @@ nodes:
     type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:1235"
+
+connections:
+  - from: receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: exporter

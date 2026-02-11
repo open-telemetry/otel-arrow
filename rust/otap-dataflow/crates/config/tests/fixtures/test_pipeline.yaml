@@ -6,15 +6,12 @@ nodes:
   receiver1:
     type: "urn:test:example:receiver"
     config: null
-    out_ports: {}
   processor1:
     type: "urn:test:example:processor"
     config: null
-    out_ports: {}
   exporter1:
     type: "urn:test:example:exporter"
     config: null
-    out_ports: {}
 
 # Note the internal and nodes graphs are separate.
 # They do not share a namespace.
@@ -22,19 +19,15 @@ internal:
   receiver1:
     type: "urn:test:example:receiver"
     config: null
-    out_ports: {}
   processor1:
     type: "urn:test:example:processor"
     config: null
-    out_ports: {}
   processor2:
     type: "urn:test:example:processor"
     config: null
-    out_ports: {}
   exporter1:
     type: "urn:test:example:exporter"
     config: null
-    out_ports: {}
 
 service:
   telemetry:
