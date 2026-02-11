@@ -541,25 +541,26 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::Arc;
 
-    use arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{
+        Array, ArrayRef, AsArray, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
+    };
+    use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
 
-    use crate::otap::OtapBatchStore;
     use crate::otap::transform::reindex::{payload_to_idx, reindex_logs};
+    use crate::otap::transform::transport_optimize::access_column;
+    use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
     use crate::schema::FieldExt;
+    use crate::testing::equiv::assert_equivalent;
+    use crate::testing::round_trip::otap_to_otlp;
 
     /// Known ID column names that need plain encoding metadata
     const ID_COLUMNS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
 
-    /// Creates a single `[Option<RecordBatch>; N]` from a list of (payload_type, batch) tuples.
-    /// Fills in missing required columns for each batch based on its payload type.
-    /// Marks known ID columns as plain-encoded so transport decoding is skipped.
-    ///
-    /// Panics on duplicate or disallowed payload types.
     macro_rules! logs {
         ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
             {
@@ -576,9 +577,11 @@ mod tests {
         };
     }
 
+    // ---- Tests ----
+
     #[test]
     fn test_logs_reindex_u16() {
-        let mut batches = vec![
+        test_reindex_logs(vec![
             logs!(
                 (Logs, ("id", UInt16, [1, 0])),
                 (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
@@ -587,26 +590,12 @@ mod tests {
                 (Logs, ("id", UInt16, [1, 0])),
                 (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
             ),
-        ];
-
-        let expected = vec![
-            logs!(
-                (Logs, ("id", UInt16, [1, 0])),
-                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, [3, 2])),
-                (LogAttrs, ("parent_id", UInt16, [2, 2, 3, 3]))
-            ),
-        ];
-
-        reindex_logs(&mut batches).unwrap();
-        assert_batches_eq(&batches, &expected);
+        ]);
     }
 
     #[test]
     fn test_logs_reindex_u16_noop() {
-        let mut batches = vec![
+        test_reindex_logs(vec![
             logs!(
                 (Logs, ("id", UInt16, [0, 2, 1, 3])),
                 (LogAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
@@ -615,27 +604,97 @@ mod tests {
                 (Logs, ("id", UInt16, [4, 6, 5, 7])),
                 (LogAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
             ),
-        ];
-
-        let expected = vec![
-            logs!(
-                (Logs, ("id", UInt16, [0, 2, 1, 3])),
-                (LogAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, [4, 6, 5, 7])),
-                (LogAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
-            ),
-        ];
-
-        reindex_logs(&mut batches).unwrap();
-        assert_batches_eq(&batches, &expected);
+        ]);
     }
 
-    fn assert_batches_eq<const N: usize>(
-        actual: &[[Option<RecordBatch>; N]],
-        expected: &[[Option<RecordBatch>; N]],
+    // ---- Test helpers (callstack order) ----
+
+    /// Validates reindexing for logs:
+    /// 1. Converts input to OTLP (before reindex)
+    /// 2. Reindexes the batches
+    /// 3. Asserts no ID overlaps across batch groups
+    /// 4. Converts output to OTLP (after reindex)
+    /// 5. Asserts the OTLP data is equivalent
+    fn test_reindex_logs(mut batches: Vec<[Option<RecordBatch>; Logs::COUNT]>) {
+        // Convert to OTLP before reindexing
+        let before_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&OtapArrowRecords::Logs(Logs { batches: b.clone() })))
+            .collect();
+
+        // Reindex
+        reindex_logs(&mut batches).unwrap();
+
+        // Validate no ID overlaps
+        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(&batches);
+
+        // Convert to OTLP after reindexing
+        let after_otlp: Vec<_> = batches
+            .iter()
+            .map(|b| otap_to_otlp(&OtapArrowRecords::Logs(Logs { batches: b.clone() })))
+            .collect();
+
+        // Assert equivalence
+        assert_equivalent(&before_otlp, &after_otlp);
+    }
+
+    /// Validates that no ID column has overlapping values across batch groups.
+    /// Uses payload_relations to discover all ID columns that should be unique.
+    fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
+        batches: &[[Option<RecordBatch>; N]],
     ) {
+        use crate::otap::payload_relations;
+
+        for &payload_type in S::allowed_payload_types() {
+            let idx = payload_to_idx(payload_type);
+
+            for relation in payload_relations(payload_type) {
+                let mut seen = HashSet::new();
+
+                for (group_idx, group) in batches.iter().enumerate() {
+                    let Some(batch) = &group[idx] else {
+                        continue;
+                    };
+
+                    let Some(col) =
+                        access_column(relation.key_col, &batch.schema(), batch.columns())
+                    else {
+                        continue;
+                    };
+
+                    let ids = collect_ids(col.as_ref());
+                    for id in ids {
+                        assert!(
+                            seen.insert(id),
+                            "Overlapping ID {} in column '{}' for {:?} (group {})",
+                            id,
+                            relation.key_col,
+                            payload_type,
+                            group_idx
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extracts all ID values from a column as u64, handling UInt16 and UInt32 types
+    fn collect_ids(col: &dyn Array) -> Vec<u64> {
+        match col.data_type() {
+            DataType::UInt16 => col
+                .as_primitive::<UInt16Type>()
+                .values()
+                .iter()
+                .map(|&v| v as u64)
+                .collect(),
+            DataType::UInt32 => col
+                .as_primitive::<UInt32Type>()
+                .values()
+                .iter()
+                .map(|&v| v as u64)
+                .collect(),
+            _ => vec![],
+        }
     }
 
     fn make_test_batch<S: OtapBatchStore, const N: usize>(
