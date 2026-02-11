@@ -336,6 +336,90 @@ impl PipelineNodes {
 
         cycles
     }
+
+    /// Remove nodes that are not properly connected in the pipeline graph.
+    ///
+    /// This iteratively removes:
+    /// - Receivers with no outgoing connections (empty `out_ports` or all destinations empty)
+    /// - Processors and exporters that are not referenced as a destination by any other node
+    /// - Processors whose only outgoing destinations have all been removed
+    ///
+    /// Removal is iterative because removing one node may cause downstream or upstream
+    /// nodes to become disconnected.
+    ///
+    /// Returns `(NodeId, NodeKind)` for every removed node (for warning purposes).
+    pub fn remove_unconnected_nodes(&mut self) -> Vec<(NodeId, NodeKind)> {
+        let mut removed = Vec::new();
+
+        loop {
+            let mut to_remove = Vec::new();
+
+            // Build the set of all node IDs referenced as a destination by any remaining node.
+            let mut referenced_as_destination: HashSet<NodeId> = HashSet::new();
+            for node_config in self.0.values() {
+                for edge in node_config.out_ports.values() {
+                    for dest in &edge.destinations {
+                        _ = referenced_as_destination.insert(dest.clone());
+                    }
+                }
+            }
+
+            for (node_id, node_config) in &self.0 {
+                match node_config.kind {
+                    NodeKind::Receiver => {
+                        // A receiver is unconnected if it has no out_ports or all its
+                        // out_ports have empty destinations.
+                        let has_destinations = node_config.out_ports.values().any(|edge| {
+                            !edge.destinations.is_empty()
+                        });
+                        if !has_destinations {
+                            to_remove.push((node_id.clone(), node_config.kind));
+                        }
+                    }
+                    NodeKind::Processor | NodeKind::ProcessorChain => {
+                        if !referenced_as_destination.contains(node_id) {
+                            to_remove.push((node_id.clone(), node_config.kind));
+                        } else {
+                            // Also check if processor has no outgoing connections
+                            let has_destinations = node_config.out_ports.values().any(|edge| {
+                                !edge.destinations.is_empty()
+                            });
+                            if !has_destinations {
+                                to_remove.push((node_id.clone(), node_config.kind));
+                            }
+                        }
+                    }
+                    NodeKind::Exporter => {
+                        if !referenced_as_destination.contains(node_id) {
+                            to_remove.push((node_id.clone(), node_config.kind));
+                        }
+                    }
+                }
+            }
+
+            if to_remove.is_empty() {
+                break;
+            }
+
+            // Remove the unconnected nodes
+            for (node_id, kind) in &to_remove {
+                _ = self.0.remove(node_id);
+                removed.push((node_id.clone(), *kind));
+            }
+
+            // Clean up references to removed nodes from remaining nodes' destinations
+            let removed_ids: HashSet<&NodeId> = to_remove.iter().map(|(id, _)| id).collect();
+            for node_config in self.0.values_mut() {
+                let mut updated = (**node_config).clone();
+                for edge in updated.out_ports.values_mut() {
+                    edge.destinations.retain(|dest| !removed_ids.contains(dest));
+                }
+                *node_config = Arc::new(updated);
+            }
+        }
+
+        removed
+    }
 }
 
 impl std::ops::Index<&str> for PipelineNodes {
@@ -541,6 +625,13 @@ impl PipelineConfig {
     /// Creates a consuming iterator over the nodes in the pipeline.
     pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Arc<NodeUserConfig>)> {
         self.nodes.into_iter()
+    }
+
+    /// Remove unconnected nodes from the pipeline and return descriptions of what was removed.
+    ///
+    /// This delegates to [`PipelineNodes::remove_unconnected_nodes`] on the main pipeline nodes.
+    pub fn remove_unconnected_nodes(&mut self) -> Vec<(NodeId, NodeKind)> {
+        self.nodes.remove_unconnected_nodes()
     }
 
     /// Returns the service-level telemetry configuration.
@@ -1765,5 +1856,141 @@ mod tests {
         assert!(message.contains("invalid plugin urn"));
         assert!(message.contains("urn:<namespace>:<id>:<kind>"));
         assert!(message.contains("rust/otap-dataflow/docs/urns.md"));
+    }
+
+    #[test]
+    fn test_remove_unconnected_receiver_with_empty_out_ports() {
+        // A receiver with no out_ports should be removed.
+        let mut config = PipelineConfigBuilder::new()
+            .add_receiver("connected_recv", "urn:test:a:receiver", None)
+            .add_receiver("disconnected_recv", "urn:test:b:receiver", None)
+            .add_exporter("exporter", "urn:test:c:exporter", None)
+            .round_robin("connected_recv", "out", ["exporter"])
+            // disconnected_recv has no out_ports
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
+        assert!(
+            removed_ids.contains(&"disconnected_recv"),
+            "should remove disconnected receiver, got: {removed_ids:?}"
+        );
+        // connected_recv and exporter should remain
+        assert!(config.nodes().contains_key("connected_recv"));
+        assert!(config.nodes().contains_key("exporter"));
+        assert!(!config.nodes().contains_key("disconnected_recv"));
+    }
+
+    #[test]
+    fn test_remove_unconnected_processor_not_a_destination() {
+        // A processor not referenced as any node's destination should be removed.
+        let mut config = PipelineConfigBuilder::new()
+            .add_receiver("recv", "urn:test:a:receiver", None)
+            .add_processor("connected_proc", "urn:test:b:processor", None)
+            .add_processor("orphan_proc", "urn:test:c:processor", None)
+            .add_exporter("exporter", "urn:test:d:exporter", None)
+            .round_robin("recv", "out", ["connected_proc"])
+            .round_robin("connected_proc", "out", ["exporter"])
+            .round_robin("orphan_proc", "out", ["exporter"])
+            // orphan_proc is never listed as a destination by anyone
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
+        assert!(
+            removed_ids.contains(&"orphan_proc"),
+            "should remove orphan processor, got: {removed_ids:?}"
+        );
+        assert!(config.nodes().contains_key("recv"));
+        assert!(config.nodes().contains_key("connected_proc"));
+        assert!(config.nodes().contains_key("exporter"));
+    }
+
+    #[test]
+    fn test_remove_unconnected_exporter_not_a_destination() {
+        // An exporter not referenced as any node's destination should be removed.
+        let mut config = PipelineConfigBuilder::new()
+            .add_receiver("recv", "urn:test:a:receiver", None)
+            .add_exporter("connected_exp", "urn:test:b:exporter", None)
+            .add_exporter("orphan_exp", "urn:test:c:exporter", None)
+            .round_robin("recv", "out", ["connected_exp"])
+            // orphan_exp is never listed as a destination
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
+        assert!(
+            removed_ids.contains(&"orphan_exp"),
+            "should remove orphan exporter, got: {removed_ids:?}"
+        );
+        assert!(config.nodes().contains_key("recv"));
+        assert!(config.nodes().contains_key("connected_exp"));
+    }
+
+    #[test]
+    fn test_remove_unconnected_cascading_removal() {
+        // 3-level cascade: orphan_proc1 has no incoming edges so it is removed
+        // on pass 1. orphan_proc2's only incoming was from orphan_proc1, so it
+        // becomes orphaned on pass 2. orphan_exp's only incoming was from
+        // orphan_proc2, so it becomes orphaned on pass 3.
+        // Meanwhile, recv -> connected_exp stays intact.
+        let mut config = PipelineConfigBuilder::new()
+            .add_receiver("recv", "urn:test:a:receiver", None)
+            .add_processor("orphan_proc1", "urn:test:b:processor", None)
+            .add_processor("orphan_proc2", "urn:test:c:processor", None)
+            .add_exporter("connected_exp", "urn:test:d:exporter", None)
+            .add_exporter("orphan_exp", "urn:test:e:exporter", None)
+            // orphan_proc1 -> orphan_proc2 -> orphan_exp (nobody -> orphan_proc1)
+            .round_robin("orphan_proc1", "out", ["orphan_proc2"])
+            .round_robin("orphan_proc2", "out", ["orphan_exp"])
+            // recv -> connected_exp (stays intact)
+            .round_robin("recv", "out", ["connected_exp"])
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
+        // Pass 1: orphan_proc1 removed (no incoming edges)
+        assert!(
+            removed_ids.contains(&"orphan_proc1"),
+            "orphan_proc1 should be removed, got: {removed_ids:?}"
+        );
+        // Pass 2: orphan_proc2 removed (only incoming was orphan_proc1)
+        assert!(
+            removed_ids.contains(&"orphan_proc2"),
+            "orphan_proc2 should cascade-remove, got: {removed_ids:?}"
+        );
+        // Pass 3: orphan_exp removed (only incoming was orphan_proc2)
+        assert!(
+            removed_ids.contains(&"orphan_exp"),
+            "orphan_exp should cascade-remove, got: {removed_ids:?}"
+        );
+        // Only the connected chain should remain
+        assert_eq!(config.nodes().len(), 2);
+        assert!(config.nodes().contains_key("recv"));
+        assert!(config.nodes().contains_key("connected_exp"));
+    }
+
+    #[test]
+    fn test_remove_unconnected_nodes_fully_connected_no_removals() {
+        // A fully connected pipeline should have no removals.
+        let mut config = PipelineConfigBuilder::new()
+            .add_receiver("recv", "urn:test:a:receiver", None)
+            .add_processor("proc", "urn:test:b:processor", None)
+            .add_exporter("exp", "urn:test:c:exporter", None)
+            .round_robin("recv", "out", ["proc"])
+            .round_robin("proc", "out", ["exp"])
+            .build(PipelineType::Otap, "g", "p")
+            .unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        assert!(
+            removed.is_empty(),
+            "fully connected pipeline should have no removals, got: {removed:?}"
+        );
+        assert_eq!(config.nodes().len(), 3);
     }
 }
