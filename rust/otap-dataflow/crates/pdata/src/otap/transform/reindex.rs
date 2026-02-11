@@ -541,7 +541,6 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use core::prelude::rust_2021;
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -580,73 +579,23 @@ mod tests {
     }
 
     #[test]
-    fn test_logs_reindex_overlapping_log_attrs() {
-        test_reindex_logs(&mut vec![
-            logs!(
-                (Logs, ("id", UInt16, [1, 0])),
-                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, [1, 0])),
-                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-        ]);
-    }
-
-    #[test]
-    fn test_logs_reindex_overlapping_resource_attrs() {
-        test_reindex_logs(&mut vec![
-            logs!(
-                (
-                    Logs,
-                    ("id", UInt16, [0, 1]),
-                    ("resource.id", UInt16, [1, 0])
-                ),
-                (ResourceAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-            logs!(
-                (
-                    Logs,
-                    ("id", UInt16, [2, 3]),
-                    ("resource.id", UInt16, [1, 0])
-                ),
-                (ResourceAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-        ]);
-    }
-
-    #[test]
-    fn test_logs_reindex_overlapping_scope_attrs() {
-        test_reindex_logs(&mut vec![
-            logs!(
-                (Logs, ("id", UInt16, [0, 1]), ("scope.id", UInt16, [1, 0])),
-                (ScopeAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, [1, 0])),
-                (ScopeAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
-            ),
-        ]);
-    }
-
-    #[test]
     #[rustfmt::skip]
-    fn test_logs_reindex_noop_resource_attrs() {
-        // Ids are not overlapping at all
-        let log_ids = vec![0, 2, 1, 3];
-        let log_ids_2 = vec![4, 6, 5, 7];
+    fn test_logs_reindex_overlapping() {
+        // Both batches use the same IDs, so reindexing must remap to avoid overlap
+        let parent_ids   = vec![1, 0];
+        let parent_ids_2 = vec![1, 0];
 
-        let child_ids = vec![1, 2, 2, 0, 3];
-        let child_ids_2 = vec![6, 6, 5, 5, 7, 4];
+        let child_ids   = vec![0, 0, 1, 1];
+        let child_ids_2 = vec![0, 0, 1, 1];
 
         // LogAttrs
         test_reindex_logs(&mut vec![
             logs!(
-                (Logs, ("id", UInt16, log_ids.clone())),
+                (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, log_ids_2.clone())),
+                (Logs, ("id", UInt16, parent_ids_2.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
@@ -654,11 +603,11 @@ mod tests {
         // ScopeAttrs
         test_reindex_logs(&mut vec![
             logs!(
-                (Logs, ("id", UInt16, log_ids.clone()), ("scope.id", UInt16, log_ids.clone())),
+                (Logs, ("id", UInt16, [0, 1]), ("scope.id", UInt16, parent_ids.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, log_ids_2.clone()), ("scope.id", UInt16, log_ids_2.clone())),
+                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, parent_ids_2.clone())),
                 (ScopeAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
@@ -666,11 +615,58 @@ mod tests {
         // ResourceAttrs
         test_reindex_logs(&mut vec![
             logs!(
-                (Logs, ("id", UInt16, log_ids.clone()), ("resource.id", UInt16, log_ids.clone())),
+                (Logs, ("id", UInt16, [0, 1]), ("resource.id", UInt16, parent_ids.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
             logs!(
-                (Logs, ("id", UInt16, log_ids_2.clone()), ("resource.id", UInt16, log_ids_2.clone())),
+                (Logs, ("id", UInt16, [2, 3]), ("resource.id", UInt16, parent_ids_2.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_reindex_noop() {
+        // IDs are not overlapping at all
+        let parent_ids   = vec![0, 2, 1, 3];
+        let parent_ids_2 = vec![4, 6, 5, 7];
+
+        let child_ids   = vec![1, 2, 2, 0, 3];
+        let child_ids_2 = vec![6, 6, 5, 5, 7, 4];
+
+        // LogAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("scope.id", UInt16, parent_ids_2.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids_2.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2.clone()), ("resource.id", UInt16, parent_ids_2.clone())),
                 (ResourceAttrs, ("parent_id", UInt16, child_ids_2.clone()))
             ),
         ]);
