@@ -375,7 +375,9 @@ pub enum Error {
     },
 
     /// All nodes were removed from the pipeline (none are connected).
-    #[error("Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration")]
+    #[error(
+        "Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration"
+    )]
     EmptyPipeline,
 
     /// Too many nodes are configured.

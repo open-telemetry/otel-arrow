@@ -369,9 +369,10 @@ impl PipelineNodes {
                     NodeKind::Receiver => {
                         // A receiver is unconnected if it has no out_ports or all its
                         // out_ports have empty destinations.
-                        let has_destinations = node_config.out_ports.values().any(|edge| {
-                            !edge.destinations.is_empty()
-                        });
+                        let has_destinations = node_config
+                            .out_ports
+                            .values()
+                            .any(|edge| !edge.destinations.is_empty());
                         if !has_destinations {
                             to_remove.push((node_id.clone(), node_config.kind));
                         }
@@ -381,9 +382,10 @@ impl PipelineNodes {
                             to_remove.push((node_id.clone(), node_config.kind));
                         } else {
                             // Also check if processor has no outgoing connections
-                            let has_destinations = node_config.out_ports.values().any(|edge| {
-                                !edge.destinations.is_empty()
-                            });
+                            let has_destinations = node_config
+                                .out_ports
+                                .values()
+                                .any(|edge| !edge.destinations.is_empty());
                             if !has_destinations {
                                 to_remove.push((node_id.clone(), node_config.kind));
                             }
@@ -2105,9 +2107,18 @@ mod tests {
 
         let removed = config.remove_unconnected_nodes();
         let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
-        assert!(removed_ids.contains(&"recv"), "recv should be removed (no out_ports)");
-        assert!(removed_ids.contains(&"proc"), "proc should be removed (no incoming)");
-        assert!(removed_ids.contains(&"exp"), "exp should be removed (cascade)");
+        assert!(
+            removed_ids.contains(&"recv"),
+            "recv should be removed (no out_ports)"
+        );
+        assert!(
+            removed_ids.contains(&"proc"),
+            "proc should be removed (no incoming)"
+        );
+        assert!(
+            removed_ids.contains(&"exp"),
+            "exp should be removed (cascade)"
+        );
         assert_eq!(
             config.nodes().len(),
             0,
