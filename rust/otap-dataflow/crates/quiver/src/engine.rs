@@ -491,12 +491,17 @@ impl QuiverEngine {
         // If usage exceeds the soft cap, attempt cleanup before rejecting.
         if self.budget.is_over_soft_cap() {
             // Try cleaning up fully-consumed segments first (no data loss)
-            let cleaned = self.cleanup_completed_segments().unwrap_or(0);
+            let _ = self.cleanup_completed_segments();
 
             if self.budget.is_over_soft_cap() {
-                // For DropOldest: also force-drop pending segments
-                if self.budget.policy() == RetentionPolicy::DropOldest && cleaned == 0 {
-                    let _ = self.force_drop_oldest_pending_segments();
+                // For DropOldest: force-drop pending segments until under
+                // soft_cap or nothing left to drop.
+                if self.budget.policy() == RetentionPolicy::DropOldest {
+                    while self.budget.is_over_soft_cap() {
+                        if self.force_drop_oldest_pending_segments() == 0 {
+                            break; // nothing left to reclaim
+                        }
+                    }
                 }
 
                 // Re-check after cleanup attempts
