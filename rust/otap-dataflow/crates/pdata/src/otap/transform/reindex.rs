@@ -603,7 +603,9 @@ mod tests {
         // FIXME [JD]: Is this the right behavior or should we error? If we touch the
         // invalid ids by mapping them accidentally, we might add attributes to
         // some logs that didn't previously exist. More of a problem in a multi-tenant
-        // scenario.
+        // scenario. This might be very expensive to detect for missing ids in the
+        // middle and would require us to go through the motions for a full
+        // join.
         //
         // Three different violations here:
         //
@@ -612,8 +614,8 @@ mod tests {
         // valid ranges
         // - One that is at the start, so it can't get remapped at all
         // - One that is at the end, so it also can't get remapped
-        let parent_ids   = vec![1, 2, 4];
-        let child_ids   = vec![1, 0, 2, 3, 5, 4];
+        let parent_ids = vec![1, 2, 4];
+        let child_ids = vec![1, 0, 2, 3, 5, 4];
 
         // Log Attrs
         test_reindex_logs(&mut vec![
