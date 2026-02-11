@@ -577,11 +577,9 @@ mod tests {
         };
     }
 
-    // ---- Tests ----
-
     #[test]
-    fn test_logs_reindex_u16() {
-        test_reindex_logs(vec![
+    fn test_logs_reindex_overlapping() {
+        test_reindex_logs(&mut vec![
             logs!(
                 (Logs, ("id", UInt16, [1, 0])),
                 (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
@@ -594,8 +592,8 @@ mod tests {
     }
 
     #[test]
-    fn test_logs_reindex_u16_noop() {
-        test_reindex_logs(vec![
+    fn test_logs_reindex_noop() {
+        test_reindex_logs(&mut vec![
             logs!(
                 (Logs, ("id", UInt16, [0, 2, 1, 3])),
                 (LogAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
@@ -607,15 +605,13 @@ mod tests {
         ]);
     }
 
-    // ---- Test helpers (callstack order) ----
-
     /// Validates reindexing for logs:
     /// 1. Converts input to OTLP (before reindex)
     /// 2. Reindexes the batches
     /// 3. Asserts no ID overlaps across batch groups
     /// 4. Converts output to OTLP (after reindex)
     /// 5. Asserts the OTLP data is equivalent
-    fn test_reindex_logs(mut batches: Vec<[Option<RecordBatch>; Logs::COUNT]>) {
+    fn test_reindex_logs(mut batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
         // Convert to OTLP before reindexing
         let before_otlp: Vec<_> = batches
             .iter()
@@ -651,7 +647,7 @@ mod tests {
             for relation in payload_relations(payload_type) {
                 let mut seen = HashSet::new();
 
-                for (group_idx, group) in batches.iter().enumerate() {
+                for group in batches.iter() {
                     let Some(batch) = &group[idx] else {
                         continue;
                     };
@@ -666,11 +662,8 @@ mod tests {
                     for id in ids {
                         assert!(
                             seen.insert(id),
-                            "Overlapping ID {} in column '{}' for {:?} (group {})",
-                            id,
+                            "Overlapping ID in column '{}'",
                             relation.key_col,
-                            payload_type,
-                            group_idx
                         );
                     }
                 }
