@@ -444,12 +444,9 @@ where
         let start_id = chunk[0];
         let end_id = chunk[chunk.len() - 1];
 
-        // Determine if we need to add or subtract to map start_id to current_offset
         let (offset, sign) = if start_id <= current_offset {
-            // IDs are smaller than where we want them, so add the difference
             (current_offset - start_id, Sign::Positive)
         } else {
-            // IDs are larger than where we want them, so subtract the difference
             (start_id - current_offset, Sign::Negative)
         };
 
