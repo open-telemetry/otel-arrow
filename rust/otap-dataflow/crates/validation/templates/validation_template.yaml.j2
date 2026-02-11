@@ -20,11 +20,11 @@ settings:
 {% set metric_weight = metric_weight | default(0) -%}
 {% set trace_weight = trace_weight | default(0) -%}
 {% set log_weight = log_weight | default(100) -%}
-
 {% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
 {% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
 {% set control_addr = control_addr | default("127.0.0.1:4316") -%}
 {% set control_endpoint = control_endpoint | default("http://127.0.0.1:4316") -%}
+{% set validate = validate | default("- equivalence") -%}
 
 pipeline_groups:
   validation_test:
@@ -77,9 +77,10 @@ pipeline_groups:
             kind: exporter
             plugin_urn: "urn:otel:validation:exporter"
             config:
-                expect_failure: false
-                control_input: control_receiver
-                suv_input: suv_receiver
+              control_input: control_receiver
+              suv_input: suv_receiver
+              validate:
+{{ validate | indent(11, true)}}
 
       # ======================================================================
       # System Under Validation pipeline

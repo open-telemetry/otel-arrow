@@ -4,6 +4,7 @@
 //! This module defines structs to describe the traffic being created and captured for validation
 
 use serde::{Deserialize, Serialize};
+use serde_yaml;
 use crate::ValidationKind;
 
 const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
@@ -155,6 +156,12 @@ impl Capture {
         self.validate = validations;
         self
     }
+
+    /// Serialize the configured validations as JSON (for template contexts).
+    #[must_use]
+    pub fn validations_config(&self) -> String {
+        serde_yaml::to_string(&self.validate).unwrap_or_else(|_| "".to_string())
+    }
 }
 
 impl Default for Capture {
@@ -163,7 +170,7 @@ impl Default for Capture {
             suv_receiver_type: MessageType::Otlp,
             suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
             control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
-            validate: Vec::new(),
+            validate: vec![ValidationKind::Equivalence],
         }
     }
 }

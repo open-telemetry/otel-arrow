@@ -161,6 +161,7 @@ impl Scenario {
             suv_endpoint => &traffic_generation_config.suv_endpoint,
             control_addr => &traffic_capture_config.control_listening_addr,
             control_endpoint => &traffic_generation_config.control_endpoint,
+            validate => &traffic_capture_config.validations_config(),
             pipeline_config => pipeline_yaml,
             admin_bind_address => &self.admin_addr
         };

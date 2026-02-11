@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::checks::AttributeCheckConfig;
+use crate::checks::AttributeCheck;
 
 /// invariants/checks helpers (attribute diff, filtering detection, etc.)
 pub mod checks;
@@ -70,7 +70,7 @@ mod tests {
 
 /// Supported validation kinds executed by the validation exporter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ValidationKind {
     /// Check semantic equivalence between control and suv outputs.
     Equivalence,
@@ -84,6 +84,6 @@ pub enum ValidationKind {
     /// Check attribute presence/absence rules (applied to SUV messages).
     Attributes {
         /// Attribute rules to enforce.
-        config: AttributeCheckConfig,
+        config: AttributeCheck
     },
 }
