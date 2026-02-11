@@ -863,16 +863,7 @@ impl DurableBuffer {
                     .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10));
                 if should_log {
                     self.last_flush_warn = Some(now);
-
-                    if e.is_at_capacity() {
-                        otel_warn!(
-                            "durable_buffer.flush.failed",
-                            error = %e,
-                            reason = "disk_budget_at_capacity"
-                        );
-                    } else {
-                        otel_warn!("durable_buffer.flush.failed", error = %e);
-                    }
+                    otel_warn!("durable_buffer.flush.failed", error = %e);
                 }
             }
         }
