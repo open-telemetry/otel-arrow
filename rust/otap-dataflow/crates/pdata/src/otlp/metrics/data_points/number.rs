@@ -36,7 +36,10 @@ impl<'a> TryFrom<&'a RecordBatch> for NumberDpArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = rb.column_by_name(consts::ID).map(UInt32ArrayAccessor::try_new).transpose()?;
+        let id = rb
+            .column_by_name(consts::ID)
+            .map(UInt32ArrayAccessor::try_new)
+            .transpose()?;
         let parent_id = get_u16_array(rb, consts::PARENT_ID)?;
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;

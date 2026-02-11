@@ -34,7 +34,10 @@ impl<'a> TryFrom<&'a RecordBatch> for ExemplarArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = rb.column_by_name(consts::ID).map(UInt32ArrayAccessor::try_new).transpose()?;
+        let id = rb
+            .column_by_name(consts::ID)
+            .map(UInt32ArrayAccessor::try_new)
+            .transpose()?;
         let parent_id = MaybeDictArrayAccessor::<UInt32Array>::try_new(get_required_array(
             rb,
             consts::PARENT_ID,

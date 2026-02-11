@@ -40,7 +40,10 @@ impl<'a> TryFrom<&'a RecordBatch> for SpanLinkArrays<'a> {
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         Ok(Self {
-            id: rb.column_by_name(consts::ID).map(UInt32ArrayAccessor::try_new).transpose()?,
+            id: rb
+                .column_by_name(consts::ID)
+                .map(UInt32ArrayAccessor::try_new)
+                .transpose()?,
             parent_id: get_u16_array(rb, consts::PARENT_ID)?,
             span_id: rb
                 .column_by_name(consts::SPAN_ID)
