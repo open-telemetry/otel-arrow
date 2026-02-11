@@ -39,6 +39,7 @@ otap-df-telemetry = { path = "../telemetry" }
 otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
 otap-df-controller = { path = "../controller" }
+prost = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

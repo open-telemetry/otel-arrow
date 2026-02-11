@@ -3,6 +3,12 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
+use serde::{Deserialize, Serialize};
+
+use crate::checks::AttributeCheckConfig;
+
+/// invariants/checks helpers (attribute diff, filtering detection, etc.)
+pub mod checks;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
@@ -60,4 +66,24 @@ mod tests {
             .run()
             .expect("validation scenario failed");
     }
+}
+
+/// Supported validation kinds executed by the validation exporter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ValidationKind {
+    /// Check semantic equivalence between control and suv outputs.
+    Equivalence,
+    /// Check that after contains fewer signals than before.
+    SignalDrop,
+    /// Check that each message meets a minimum batch size (applied to SUV messages).
+    Batch {
+        /// Minimum items required in each message.
+        min_batch_size: usize,
+    },
+    /// Check attribute presence/absence rules (applied to SUV messages).
+    Attributes {
+        /// Attribute rules to enforce.
+        config: AttributeCheckConfig,
+    },
 }

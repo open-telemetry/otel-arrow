@@ -4,6 +4,7 @@
 //! This module defines structs to describe the traffic being created and captured for validation
 
 use serde::{Deserialize, Serialize};
+use crate::ValidationKind;
 
 const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
 const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";
@@ -49,7 +50,7 @@ pub struct Generator {
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
     pub suv_receiver_type: MessageType,
@@ -57,6 +58,8 @@ pub struct Capture {
     pub suv_listening_addr: String,
     /// Listening address for the control receiver.
     pub control_listening_addr: String,
+    /// List of validations to make with the captured data
+    pub validate: Vec<ValidationKind>,
 }
 
 impl Generator {
@@ -145,6 +148,13 @@ impl Capture {
         self.suv_receiver_type = MessageType::Otap;
         self
     }
+
+    /// Set the validations to perform on captured data.
+    #[must_use]
+    pub fn validate(mut self, validations: Vec<ValidationKind>) -> Self {
+        self.validate = validations;
+        self
+    }
 }
 
 impl Default for Capture {
@@ -153,6 +163,7 @@ impl Default for Capture {
             suv_receiver_type: MessageType::Otlp,
             suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
             control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
+            validate: Vec::new(),
         }
     }
 }

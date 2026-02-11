@@ -21,6 +21,8 @@ use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::assert_equivalent;
+use crate::checks::{check_min_batch_size, check_signal_drop};
+use crate::ValidationKind;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -35,20 +37,26 @@ pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 struct ValidationExporterConfig {
     suv_input: NodeName,
     control_input: NodeName,
-    /// When true, a failing equivalence check is considered expected.
-    #[serde(default)]
-    expect_failure: bool,
+    /// Validation rules to run. Defaults to a single equivalence check.
+    #[serde(default = "ValidationExporterConfig::default_validations")]
+    validations: Vec<ValidationKind>,
+}
+
+impl ValidationExporterConfig {
+    fn default_validations() -> Vec<ValidationKind> {
+        vec![ValidationKind::Equivalence]
+    }
 }
 
 #[metric_set(name = "validation.exporter.metrics")]
 #[derive(Debug, Default, Clone)]
 struct ValidationExporterMetrics {
-    /// Number of comparisons that did not match expectation
-    #[metric(name = "comparison.failed", unit = "{comparison}")]
-    failed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
-    /// Number of comparisons that did match expectation
-    #[metric(name = "comparison.passed", unit = "{comparison}")]
-    passed_comparisons: otap_df_telemetry::instrument::Counter<u64>,
+    /// Number of validation checks that did not match expectation
+    #[metric(name = "check.failed", unit = "{check}")]
+    failed_checks: otap_df_telemetry::instrument::Counter<u64>,
+    /// Number of validation checks that did match expectation
+    #[metric(name = "check.passed", unit = "{check}")]
+    passed_checks: otap_df_telemetry::instrument::Counter<u64>,
     /// The value of the last comparison result
     /// 0 -> not valid
     /// 1 -> valid
@@ -83,25 +91,45 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 };
 
 impl ValidationExporter {
-    /// compares control and suv msgs and updates the metrics
-    fn compare_and_record(&mut self) {
-        let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            assert_equivalent(&self.control_msgs, &self.suv_msgs)
-        }))
-        .is_ok();
-
-        // we do this if we expect the data to be altered due
-        // to a transformative processor in the pipeline
-        // passed is equal to !equiv if expect_failure is true
-        // passed is equal to equiv if expect_failure is false
-
-        if equiv {
-            self.metrics.passed_comparisons.add(1);
-        } else {
-            self.metrics.failed_comparisons.add(1);
+    /// Run the configured validations and update metrics.
+    fn evaluate_and_record(&mut self) {
+        let mut valid = true;
+        for validate in &self.config.validations {
+            valid &= self.evaluate(validate);
         }
-        let passed = equiv ^ self.config.expect_failure;
-        self.metrics.valid.set(passed as u64);
+
+        if valid {
+            self.metrics.passed_checks.add(1);
+        } else {
+            self.metrics.failed_checks.add(1);
+        }
+        self.metrics.valid.set(valid as u64);
+    }
+
+    /// Evaluate a single rule; always returns a pass/fail boolean.
+    fn evaluate(&self, kind: &ValidationKind) -> bool {
+        match kind {
+            ValidationKind::Equivalence => {
+                let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    assert_equivalent(&self.control_msgs, &self.suv_msgs)
+                }))
+                .is_ok();
+                equiv
+            }
+            ValidationKind::SignalDrop => {
+                check_signal_drop(&self.control_msgs, &self.suv_msgs)
+            }
+            ValidationKind::Batch {
+                min_batch_size,
+            } => {
+                check_min_batch_size(&self.suv_msgs, *min_batch_size)
+            }
+            ValidationKind::Attributes {
+                config,
+            } => {
+                config.check(&self.suv_msgs)
+            }
+        }
     }
 
     /// Build a new exporter instance from user configuration embedded in the pipeline.
@@ -159,11 +187,11 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             // match node name and update the vec of msgs and compare
                             name if name == self.config.suv_input => {
                                 self.suv_msgs.push(msg);
-                                self.compare_and_record();
+                                self.evaluate_and_record();
                             }
                             name if name == self.config.control_input => {
                                 self.control_msgs.push(msg);
-                                self.compare_and_record();
+                                self.evaluate_and_record();
                             }
                             _ => {}
                         }
