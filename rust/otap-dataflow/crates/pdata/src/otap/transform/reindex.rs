@@ -550,16 +550,17 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
 
     use crate::otap::transform::reindex::{payload_to_idx, reindex_logs};
-    use crate::otap::transform::transport_optimize::access_column;
+    use crate::otap::transform::transport_optimize::{
+        access_column, replace_column, struct_column_name, update_field_encoding_metadata,
+    };
     use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
-    use crate::schema::FieldExt;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::otap_to_otlp;
 
-    /// Known ID column names that need plain encoding metadata
-    const ID_COLUMNS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
+    /// Known ID column paths that need plain encoding metadata
+    const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
 
     macro_rules! logs {
         ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
@@ -578,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_logs_reindex_overlapping() {
+    fn test_logs_reindex_overlapping_log_attrs() {
         test_reindex_logs(&mut vec![
             logs!(
                 (Logs, ("id", UInt16, [1, 0])),
@@ -592,7 +593,43 @@ mod tests {
     }
 
     #[test]
-    fn test_logs_reindex_noop() {
+    fn test_logs_reindex_overlapping_resource_attrs() {
+        test_reindex_logs(&mut vec![
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [0, 1]),
+                    ("resource.id", UInt16, [1, 0])
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [2, 3]),
+                    ("resource.id", UInt16, [1, 0])
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_logs_reindex_overlapping_scope_attrs() {
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, [0, 1]), ("scope.id", UInt16, [1, 0])),
+                (ScopeAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, [2, 3]), ("scope.id", UInt16, [1, 0])),
+                (ScopeAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_logs_reindex_noop_log_attrs() {
         test_reindex_logs(&mut vec![
             logs!(
                 (Logs, ("id", UInt16, [0, 2, 1, 3])),
@@ -601,6 +638,50 @@ mod tests {
             logs!(
                 (Logs, ("id", UInt16, [4, 6, 5, 7])),
                 (LogAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_logs_reindex_noop_resource_attrs() {
+        test_reindex_logs(&mut vec![
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [0, 1, 2, 3]),
+                    ("resource.id", UInt16, [0, 2, 1, 3])
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [4, 5, 6, 7]),
+                    ("resource.id", UInt16, [4, 6, 5, 7])
+                ),
+                (ResourceAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_logs_reindex_noop_scope_attrs() {
+        test_reindex_logs(&mut vec![
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [0, 1, 2, 3]),
+                    ("scope.id", UInt16, [0, 2, 1, 3])
+                ),
+                (ScopeAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
+            ),
+            logs!(
+                (
+                    Logs,
+                    ("id", UInt16, [4, 5, 6, 7]),
+                    ("scope.id", UInt16, [4, 6, 5, 7])
+                ),
+                (ScopeAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
             ),
         ]);
     }
@@ -732,6 +813,28 @@ mod tests {
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
 
+        // Wrap flat "resource.id" / "scope.id" columns into struct columns
+        for &path in ID_COLUMN_PATHS {
+            let Some(struct_name) = struct_column_name(path) else {
+                continue;
+            };
+            let Some((idx, _)) = schema.fields.find(path) else {
+                continue;
+            };
+            let id_col = columns.remove(idx);
+            let _ = fields.remove(idx);
+            let id_field = Field::new("id", id_col.data_type().clone(), true);
+            let struct_col =
+                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
+                    .expect("Failed to create struct");
+            fields.push(Arc::new(Field::new(
+                struct_name,
+                DataType::Struct(vec![id_field].into()),
+                true,
+            )));
+            columns.push(Arc::new(struct_col));
+        }
+
         if schema.fields.find("body").is_none() {
             let body_fields = vec![
                 Field::new("type", DataType::UInt8, false),
@@ -781,18 +884,16 @@ mod tests {
     }
 
     fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
-        let (schema, columns, _) = batch.into_parts();
-        let fields: Vec<Arc<Field>> = schema
-            .fields()
-            .iter()
-            .map(|f| {
-                if ID_COLUMNS.contains(&f.name().as_str()) {
-                    Arc::new(f.as_ref().clone().with_plain_encoding())
-                } else {
-                    f.clone()
-                }
-            })
-            .collect();
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields = schema.fields.to_vec();
+
+        for &path in ID_COLUMN_PATHS {
+            if let Some(col) = access_column(path, &schema, &columns) {
+                replace_column(path, None, &schema, &mut columns, col);
+                update_field_encoding_metadata(path, None, &mut fields);
+            }
+        }
+
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
             .expect("Failed to mark id columns as plain")
     }

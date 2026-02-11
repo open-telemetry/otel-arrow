@@ -189,7 +189,7 @@ pub(crate) fn replace_column(
 /// # Arguments
 /// - encoding: if `Some`, then the encoding metadata on the field will be updated to reflect the
 ///   new encoding. `None` will be interpreted  as plain encoding.
-fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields: &mut [FieldRef]) {
+pub(crate) fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields: &mut [FieldRef]) {
     if let Some(struct_col_name) = struct_column_name(path) {
         // replace the field metadata in some nested struct
         let found_field = fields
