@@ -558,7 +558,7 @@ mod tests {
     ///
     /// Panics if duplicate payload types are provided or if a payload type is not
     /// allowed for the store. Call this once per batch group.
-    fn make_test_batches<S: OtapBatchStore, const N: usize>(
+    fn make_test_batch<S: OtapBatchStore, const N: usize>(
         inputs: Vec<(ArrowPayloadType, RecordBatch)>,
     ) -> [Option<RecordBatch>; N] {
         let allowed = S::allowed_payload_types();
@@ -672,24 +672,48 @@ mod tests {
     #[test]
     fn test_logs_reindex_u16() {
         let mut batches = vec![
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [1, 0])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
+                ),
             ]),
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [1, 0])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
+                ),
             ]),
         ];
 
         let expected = vec![
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [1, 0])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
+                ),
             ]),
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [3, 2])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [2, 2, 3, 3])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [3, 2])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [2, 2, 3, 3])).unwrap(),
+                ),
             ]),
         ];
 
@@ -700,24 +724,48 @@ mod tests {
     #[test]
     fn test_logs_reindex_u16_noop() {
         let mut batches = vec![
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap(),
+                ),
             ]),
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap(),
+                ),
             ]),
         ];
 
         let expected = vec![
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap(),
+                ),
             ]),
-            make_test_batches::<Logs, { Logs::COUNT }>(vec![
-                (ArrowPayloadType::Logs, record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap()),
-                (ArrowPayloadType::LogAttrs, record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap()),
+            make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                (
+                    ArrowPayloadType::Logs,
+                    record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap(),
+                ),
+                (
+                    ArrowPayloadType::LogAttrs,
+                    record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap(),
+                ),
             ]),
         ];
 
