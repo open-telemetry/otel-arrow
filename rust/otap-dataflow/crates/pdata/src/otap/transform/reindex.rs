@@ -2,7 +2,9 @@ use crate::otap::payload_relations;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, ArrowPrimitiveType, AsArray, PrimitiveArray, RecordBatch};
+use arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
+};
 use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
@@ -306,15 +308,12 @@ where
     untake_vec(&new_ids, &mut ids, &sort_indices);
     let new_ids_array = PrimitiveArray::<T>::new(ScalarBuffer::from(ids), None);
 
+    // Build the replacement column, preserving dictionary encoding if present
+    let new_column = replace_ids::<T>(id_col.as_ref(), new_ids_array);
+
     // Replace ID column in batch
     let (schema, mut columns, _) = batch.into_parts();
-    replace_column(
-        column_path,
-        None,
-        &schema,
-        &mut columns,
-        Arc::new(new_ids_array),
-    );
+    replace_column(column_path, None, &schema, &mut columns, new_column);
     let batch =
         RecordBatch::try_new(schema, columns).map_err(|e| Error::UnexpectedRecordBatchState {
             reason: format!("Failed to create batch: {}", e),
@@ -339,7 +338,11 @@ fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
     indices
 }
 
-/// Materializes an ID array from either a direct array or dictionary  values
+/// Materializes an ID array from either a direct array or dictionary values.
+///
+/// For dictionary arrays, returns the VALUES array (unique dictionary entries), not the per-row
+/// logical values. This is intentional: callers remap just the dictionary values, and the
+/// dictionary keys preserve the per-row structure automatically.
 fn materialize_id_column<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
 where
     T: ArrowPrimitiveType,
@@ -368,6 +371,35 @@ where
     };
 
     Ok(id_arr)
+}
+
+/// Creates a replacement ID column, preserving dictionary encoding if the original was
+/// dictionary-encoded. For plain columns, returns the new values directly. For dictionary
+/// columns, builds a new DictionaryArray with the original keys and the remapped values.
+fn replace_ids<T>(original: &dyn Array, new_values: PrimitiveArray<T>) -> ArrayRef
+where
+    T: ArrowPrimitiveType,
+{
+    match original.data_type() {
+        DataType::Dictionary(key_type, _) => match key_type.as_ref() {
+            DataType::UInt8 => {
+                let dict = original.as_dictionary::<UInt8Type>();
+                Arc::new(DictionaryArray::new(
+                    dict.keys().clone(),
+                    Arc::new(new_values),
+                ))
+            }
+            DataType::UInt16 => {
+                let dict = original.as_dictionary::<UInt16Type>();
+                Arc::new(DictionaryArray::new(
+                    dict.keys().clone(),
+                    Arc::new(new_values),
+                ))
+            }
+            _ => Arc::new(new_values),
+        },
+        _ => Arc::new(new_values),
+    }
 }
 
 /// Sign of an offset operation
@@ -962,27 +994,82 @@ mod tests {
     fn test_traces_span_events_with_attrs() {
         // Three-level relationship: Spans -> SpanEvents -> SpanEventAttrs
         // SpanEvents.id is UInt32, SpanEventAttrs.parent_id is UInt32
-        let span_ids         = vec![0u16, 1];
-        let span_ids_2       = vec![2u16, 3];
-        let event_pids       = vec![0u16, 0, 1];
-        let event_pids_2     = vec![2u16, 3, 3];
-        let event_ids        = vec![0u32, 1, 2];
-        let event_ids_2      = vec![0u32, 1, 2];
-        let event_attr_pids  = vec![0u32, 1, 1, 2];
-        let event_attr_pids_2 = vec![0u32, 2, 2];
+        //
+        // We test four encoding variants for the UInt32 id columns:
+        // 1. Plain UInt32
+        // 2. Dict<UInt8, UInt32>
+        // 3. Dict<UInt16, UInt32>
+        // 4. Mixed encodings across columns and batches
+        let span_ids     = vec![0u16, 1];
+        let span_ids_2   = vec![2u16, 3];
+        let event_pids   = vec![0u16, 0, 1];
+        let event_pids_2 = vec![2u16, 3, 3];
 
+        // UInt32
         test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
-                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
-                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids.clone()))
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, vec![0u32, 1, 1, 2]))
             ),
             traces!(
                 (Spans, ("id", UInt16, span_ids_2.clone())),
-                (SpanEvents, ("id", UInt32, event_ids_2.clone()), ("parent_id", UInt16, event_pids_2.clone())),
-                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids_2.clone()))
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, vec![0u32, 2, 2]))
             ),
         ]);
+
+        // Dict<UInt8, UInt32>
+        // Note: OTLP conversion doesn't handle dict columns, so we verify reindex
+        // directly without the round-trip check. The plain UInt32 case above
+        // already validates OTLP equivalence.
+        let mut batches = [
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
+            ),
+        ];
+        reindex_traces(&mut batches).unwrap();
+        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
+
+        // Dict<UInt16, UInt32>
+        let mut batches = [
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
+            ),
+        ];
+        reindex_traces(&mut batches).unwrap();
+        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
+
+        // Mixed: Dict<UInt8, UInt32> event ids, Dict<UInt16, UInt32> event attr parent ids,
+        // plain UInt32 in second batch event ids, Dict<UInt8, UInt32> in second batch event attr parent ids
+        let mut batches = [
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids_2.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
+            ),
+        ];
+        reindex_traces(&mut batches).unwrap();
+        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
     }
 
     #[test]
