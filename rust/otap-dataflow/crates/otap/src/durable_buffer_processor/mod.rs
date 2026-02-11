@@ -174,9 +174,13 @@ pub struct DurableBufferMetrics {
     pub produced_arrow_traces: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
-    /// Number of ingest errors.
+    /// Number of ingest errors (excludes backpressure/capacity rejections).
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
+
+    /// Number of ingest rejections due to storage backpressure (soft cap exceeded).
+    #[metric(unit = "{rejection}")]
+    pub ingest_backpressure: Counter<u64>,
 
     /// Number of read errors.
     #[metric(unit = "{error}")]
@@ -352,6 +356,9 @@ pub struct DurableBuffer {
 
     /// Last time we logged a flush warning (rate-limiting).
     last_flush_warn: Option<Instant>,
+
+    /// Last time we logged a backpressure warning (rate-limiting).
+    last_backpressure_warn: Option<Instant>,
 }
 
 impl DurableBuffer {
@@ -408,6 +415,7 @@ impl DurableBuffer {
             metrics,
             timer_started: false,
             last_flush_warn: None,
+            last_backpressure_warn: None,
         })
     }
 
@@ -819,8 +827,22 @@ impl DurableBuffer {
                 Ok(())
             }
             Err((e, original_payload)) => {
-                self.metrics.ingest_errors.add(1);
-                otel_error!("durable_buffer.ingest.failed", error = %e);
+                if e.is_at_capacity() {
+                    // Normal backpressure: soft cap exceeded. Count separately
+                    // and rate-limit logging to avoid flooding.
+                    self.metrics.ingest_backpressure.add(1);
+                    let now = Instant::now();
+                    let should_log = self
+                        .last_backpressure_warn
+                        .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10));
+                    if should_log {
+                        self.last_backpressure_warn = Some(now);
+                        otel_warn!("durable_buffer.ingest.backpressure", error = %e);
+                    }
+                } else {
+                    self.metrics.ingest_errors.add(1);
+                    otel_error!("durable_buffer.ingest.failed", error = %e);
+                }
 
                 // Preserve original payload so upstream can retry
                 let nack_pdata = OtapPdata::new(context, original_payload);
