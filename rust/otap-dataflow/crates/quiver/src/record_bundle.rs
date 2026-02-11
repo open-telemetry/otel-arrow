@@ -191,7 +191,7 @@ pub struct BundleDescriptor {
 impl BundleDescriptor {
     /// Creates a descriptor using the provided slots.
     #[must_use]
-    pub fn new(slots: Vec<SlotDescriptor>) -> Self {
+    pub const fn new(slots: Vec<SlotDescriptor>) -> Self {
         Self { slots }
     }
 

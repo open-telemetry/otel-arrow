@@ -56,7 +56,7 @@ pub(crate) struct WalHeader {
 }
 
 impl WalHeader {
-    pub fn new(segment_cfg_hash: [u8; 16]) -> Self {
+    pub const fn new(segment_cfg_hash: [u8; 16]) -> Self {
         Self {
             segment_cfg_hash,
             wal_position_start: 0,
@@ -64,7 +64,7 @@ impl WalHeader {
         }
     }
 
-    pub fn with_base_offset(segment_cfg_hash: [u8; 16], wal_position_start: u64) -> Self {
+    pub const fn with_base_offset(segment_cfg_hash: [u8; 16], wal_position_start: u64) -> Self {
         Self {
             segment_cfg_hash,
             wal_position_start,
@@ -73,7 +73,7 @@ impl WalHeader {
     }
 
     /// Returns the size in bytes of the encoded header.
-    pub fn encoded_len(&self) -> u64 {
+    pub const fn encoded_len(&self) -> u64 {
         self.header_size as u64
     }
 

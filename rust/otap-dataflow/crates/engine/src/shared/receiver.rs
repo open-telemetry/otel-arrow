@@ -74,7 +74,7 @@ pub struct ControlChannel<PData> {
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelShared` with the given receiver.
     #[must_use]
-    pub fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
+    pub const fn new(rx: SharedReceiver<NodeControlMsg<PData>>) -> Self {
         Self { rx }
     }
 

@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// URN for the SignalTypeRouter processor
-pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otap:processor:signal_type_router";
+pub const SIGNAL_TYPE_ROUTER_URN: &str = "urn:otel:type_router:processor";
 
 /// Well-known out port names for type-based routing
 /// Name of the out port used for trace signals
@@ -85,28 +85,28 @@ pub struct SignalTypeRouterMetrics {
 }
 
 impl SignalTypeRouterMetrics {
-    fn inc_received(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_received(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_received_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_received_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_received_traces.inc(),
         }
     }
-    fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_named(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_named_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_named_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_named_traces.inc(),
         }
     }
-    fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_routed_default(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_routed_default_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_routed_default_metrics.inc(),
             otap_df_config::SignalType::Traces => self.signals_routed_default_traces.inc(),
         }
     }
-    fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
+    const fn inc_dropped(&mut self, st: otap_df_config::SignalType) {
         match st {
             otap_df_config::SignalType::Logs => self.signals_dropped_logs.inc(),
             otap_df_config::SignalType::Metrics => self.signals_dropped_metrics.inc(),
@@ -131,7 +131,7 @@ pub struct SignalTypeRouter {
 impl SignalTypeRouter {
     /// Creates a new SignalTypeRouter with the given configuration
     #[must_use]
-    pub fn new(config: SignalTypeRouterConfig) -> Self {
+    pub const fn new(config: SignalTypeRouterConfig) -> Self {
         Self {
             config,
             metrics: None,

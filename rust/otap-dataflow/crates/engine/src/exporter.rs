@@ -182,7 +182,7 @@ impl<PData> ExporterWrapper<PData> {
         }
     }
 
-    pub(crate) fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
+    pub(crate) const fn take_telemetry_guard(&mut self) -> Option<NodeTelemetryGuard> {
         match self {
             ExporterWrapper::Local { telemetry, .. } => telemetry.take(),
             ExporterWrapper::Shared { telemetry, .. } => telemetry.take(),

@@ -1005,7 +1005,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Receiver,
         )
@@ -1013,9 +1013,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let factory = self
             .get_receiver_factory_map()
-            .get(node_config.plugin_urn.as_ref())
+            .get(normalized.as_str())
             .ok_or_else(|| Error::UnknownReceiver {
-                plugin_urn: node_config.plugin_urn.clone(),
+                plugin_urn: normalized.into(),
             })?;
         let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
@@ -1069,7 +1069,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Processor,
         )
@@ -1077,9 +1077,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let factory = self
             .get_processor_factory_map()
-            .get(node_config.plugin_urn.as_ref())
+            .get(normalized.as_str())
             .ok_or_else(|| Error::UnknownProcessor {
-                plugin_urn: node_config.plugin_urn.clone(),
+                plugin_urn: normalized.into(),
             })?;
         let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
@@ -1133,7 +1133,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::urn::validate_plugin_urn(
             node_config.plugin_urn.as_ref(),
             otap_df_config::node::NodeKind::Exporter,
         )
@@ -1141,9 +1141,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let factory = self
             .get_exporter_factory_map()
-            .get(node_config.plugin_urn.as_ref())
+            .get(normalized.as_str())
             .ok_or_else(|| Error::UnknownExporter {
-                plugin_urn: node_config.plugin_urn.clone(),
+                plugin_urn: normalized.into(),
             })?;
         let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;
@@ -1625,7 +1625,7 @@ fn collect_hyper_edges_runtime<PData>(
     edges
 }
 
-fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
+const fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
     match strategy {
         DispatchStrategy::Broadcast => "broadcast",
         DispatchStrategy::RoundRobin => "round_robin",

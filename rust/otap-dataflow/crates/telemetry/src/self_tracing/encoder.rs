@@ -25,7 +25,7 @@ pub struct DirectLogRecordEncoder<'buf> {
 impl<'buf> DirectLogRecordEncoder<'buf> {
     /// Create a new encoder that writes to the provided buffer.
     #[inline]
-    pub fn new(buf: &'buf mut ProtoBuffer) -> Self {
+    pub const fn new(buf: &'buf mut ProtoBuffer) -> Self {
         Self { buf }
     }
 
@@ -87,7 +87,7 @@ pub struct DirectFieldVisitor<'buf> {
 
 impl<'buf> DirectFieldVisitor<'buf> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
-    pub fn new(buf: &'buf mut ProtoBuffer) -> Self {
+    pub const fn new(buf: &'buf mut ProtoBuffer) -> Self {
         Self { buf }
     }
 
@@ -287,7 +287,7 @@ impl tracing::field::Visit for DirectFieldVisitor<'_> {
 /// See: https://opentelemetry.io/docs/specs/otel/logs/data-model/#field-severitynumber
 #[inline]
 #[must_use]
-pub fn level_to_severity_number(level: &Level) -> u8 {
+pub const fn level_to_severity_number(level: &Level) -> u8 {
     match *level {
         Level::TRACE => 1,
         Level::DEBUG => 5,
@@ -645,7 +645,7 @@ mod tests {
             .event_name;
 
         // Test for the event name prefix to avoid a hard-coded line number.
-        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding "));
+        assert!(event_name.starts_with("otap-df-telemetry::test.scope.encoding"));
 
         let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
             Resource::build().finish(),

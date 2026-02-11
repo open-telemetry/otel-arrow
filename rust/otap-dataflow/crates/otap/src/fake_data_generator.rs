@@ -45,7 +45,7 @@ pub mod semconv_signal;
 pub mod static_signal;
 
 /// The URN for the fake data generator receiver
-pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:otap:fake_data_generator:receiver";
+pub const OTAP_FAKE_DATA_GENERATOR_URN: &str = "urn:otel:traffic_generator:receiver";
 
 /// A Receiver that generates fake OTAP data for testing purposes.
 pub struct FakeGeneratorReceiver {
@@ -354,7 +354,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                                     otel_debug!(
                                         "rate_limit.sleep",
                                         sleep_duration_ms = remaining_time.as_millis() as u64,
-                                        message = "Sleeping to maintain configured signal rate"
+                                        "Sleeping to maintain configured signal rate"
                                     );
                                     sleep(remaining_time).await;
                                 }
@@ -362,7 +362,7 @@ impl local::Receiver<OtapPdata> for FakeGeneratorReceiver {
                             } else {
                                 otel_debug!(
                                     "rate_limit.uncapped",
-                                    message = "Rate limiting disabled, continuing immediately"
+                                    "Rate limiting disabled, continuing immediately"
                                 );
                             }
                         }

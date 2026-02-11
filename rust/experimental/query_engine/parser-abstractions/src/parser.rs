@@ -101,6 +101,7 @@ impl Default for ParserOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParserMapSchema {
     keys: HashMap<Box<str>, ParserMapKeySchema>,
+    aliases: HashMap<Box<str>, Box<str>>,
     default_map_key: Option<Box<str>>,
     allow_undefined_keys: bool,
 }
@@ -109,6 +110,7 @@ impl ParserMapSchema {
     pub fn new() -> ParserMapSchema {
         Self {
             keys: HashMap::new(),
+            aliases: HashMap::new(),
             default_map_key: None,
             allow_undefined_keys: false,
         }
@@ -120,6 +122,21 @@ impl ParserMapSchema {
         schema: ParserMapKeySchema,
     ) -> ParserMapSchema {
         self.keys.insert(name.into(), schema);
+        self
+    }
+
+    pub fn with_key_aliases<const N: usize>(
+        mut self,
+        aliases: [(&str, &str); N],
+    ) -> ParserMapSchema {
+        for (alias, canonical_key) in aliases {
+            if !self.keys.contains_key(canonical_key) {
+                panic!(
+                    "Cannot create alias '{alias}' for undefined canonical key '{canonical_key}'"
+                );
+            }
+            self.aliases.insert(alias.into(), canonical_key.into());
+        }
         self
     }
 
@@ -155,7 +172,34 @@ impl ParserMapSchema {
     }
 
     pub fn get_schema_for_key(&self, name: &str) -> Option<&ParserMapKeySchema> {
-        self.keys.get(name)
+        // First check if this is an alias, if so resolve to canonical key
+        let key = self.aliases.get(name).map(|v| v.as_ref()).unwrap_or(name);
+        self.keys.get(key)
+    }
+
+    /// Normalize a key name by resolving aliases to their canonical form.
+    /// If the key is an alias, returns the canonical key name from the schema.
+    /// If the key is already canonical or unknown, returns the key as-is.
+    pub fn normalize_key<'a, 'b>(&'a self, key: &'b str) -> &'a str
+    where
+        'b: 'a,
+    {
+        self.aliases
+            .get(key)
+            .map(|canonical| canonical.as_ref())
+            .unwrap_or(key)
+    }
+
+    pub fn get_all_key_names_for_canonical_key(&self, canonical_key: &str) -> Vec<Box<str>> {
+        let mut names = vec![canonical_key.into()];
+        names.extend(self.aliases.iter().filter_map(|(alias, key)| {
+            if key.as_ref() == canonical_key {
+                Some(alias.clone())
+            } else {
+                None
+            }
+        }));
+        names
     }
 
     pub fn get_default_map(&self) -> Option<(&str, Option<&ParserMapSchema>)> {
@@ -341,5 +385,95 @@ impl ParserResult {
     /// Create a new ParserResult with the given pipeline expression
     pub fn new(pipeline: PipelineExpression) -> Self {
         Self { pipeline }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl ParserMapSchema {
+        fn get_aliases_for_key(&self, canonical_key: &str) -> Vec<&str> {
+            self.aliases
+                .iter()
+                .filter_map(|(alias, key)| {
+                    if key.as_ref() == canonical_key {
+                        Some(alias.as_ref())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn test_parser_map_schema_aliases() {
+        let schema = ParserMapSchema::new()
+            .with_key_definition("SeverityText", ParserMapKeySchema::String)
+            .with_key_definition("SeverityNumber", ParserMapKeySchema::Integer)
+            .with_key_aliases([
+                ("severity_text", "SeverityText"),
+                ("severity_number", "SeverityNumber"),
+            ]);
+
+        // Test canonical key lookup
+        assert_eq!(
+            schema.get_schema_for_key("SeverityText"),
+            Some(&ParserMapKeySchema::String)
+        );
+        assert_eq!(
+            schema.get_schema_for_key("SeverityNumber"),
+            Some(&ParserMapKeySchema::Integer)
+        );
+
+        // Test alias lookup - should resolve to the same schema as canonical key
+        assert_eq!(
+            schema.get_schema_for_key("severity_text"),
+            Some(&ParserMapKeySchema::String)
+        );
+        assert_eq!(
+            schema.get_schema_for_key("severity_number"),
+            Some(&ParserMapKeySchema::Integer)
+        );
+
+        // Test non-existent key
+        assert_eq!(schema.get_schema_for_key("NonExistent"), None);
+    }
+
+    #[test]
+    fn test_parser_map_schema_get_aliases() {
+        let schema = ParserMapSchema::new()
+            .with_key_definition("SeverityText", ParserMapKeySchema::String)
+            .with_key_aliases([
+                ("severity_text", "SeverityText"),
+                ("sev_text", "SeverityText"),
+            ]);
+
+        // Test getting aliases for a canonical key
+        let mut aliases = schema.get_aliases_for_key("SeverityText");
+        aliases.sort();
+        assert_eq!(aliases, vec!["sev_text", "severity_text"]);
+
+        // Test getting all key names (canonical + aliases)
+        let mut all_names: Vec<String> = schema
+            .get_all_key_names_for_canonical_key("SeverityText")
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        all_names.sort();
+        assert_eq!(all_names, vec!["SeverityText", "sev_text", "severity_text"]);
+
+        // Test for key with no aliases
+        assert_eq!(
+            schema.get_aliases_for_key("NonExistent"),
+            Vec::<&str>::new()
+        );
+        let non_existent: Vec<String> = schema
+            .get_all_key_names_for_canonical_key("NonExistent")
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(non_existent, vec!["NonExistent"]);
     }
 }

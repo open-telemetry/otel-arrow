@@ -36,7 +36,7 @@ pub struct MetricsReaderPeriodicConfig {
     pub interval: Duration,
 }
 
-fn default_periodic_interval() -> Duration {
+const fn default_periodic_interval() -> Duration {
     Duration::from_secs(6)
 }
 

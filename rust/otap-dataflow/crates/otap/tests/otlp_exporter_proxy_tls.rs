@@ -17,11 +17,8 @@ use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_serve
     LogsService, LogsServiceServer,
 };
 use otap_df_telemetry::otel_debug;
+use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
 use prost::Message;
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
-};
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
@@ -51,37 +48,6 @@ impl LogsService for LogsServiceMock {
             partial_success: None,
         }))
     }
-}
-
-fn new_ca() -> (Certificate, Issuer<'static, KeyPair>) {
-    let mut params = CertificateParams::new(Vec::default()).expect("empty SAN");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "Test CA");
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    params.key_usages.push(KeyUsagePurpose::CrlSign);
-    let key_pair = KeyPair::generate().expect("ca key");
-    let ca = params.self_signed(&key_pair).expect("ca cert");
-    let issuer = Issuer::new(params, key_pair);
-    (ca, issuer)
-}
-
-fn new_leaf(
-    cn: &str,
-    san: &str,
-    eku: ExtendedKeyUsagePurpose,
-    issuer: &Issuer<'_, KeyPair>,
-) -> (String, String) {
-    let mut params = CertificateParams::new(vec![san.to_string()]).expect("SAN");
-    params.distinguished_name.push(DnType::CommonName, cn);
-    params.use_authority_key_identifier_extension = true;
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params.extended_key_usages.push(eku);
-    let key_pair = KeyPair::generate().expect("leaf key");
-    let cert = params.signed_by(&key_pair, issuer).expect("leaf cert");
-    (cert.pem(), key_pair.serialize_pem())
 }
 
 async fn start_connect_proxy(target_hits: Arc<AtomicUsize>) -> SocketAddr {
@@ -193,23 +159,21 @@ async fn start_tls_logs_server() -> (
 ) {
     if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
         // It's fine if the provider is already installed (e.g. by another test)
-        otel_debug!("rustls default provider installation failed in test", error = ?err);
+        otel_debug!("provider.installation.failed", error = ?err, "rustls default provider installation failed in test");
     }
 
-    let (ca, ca_issuer) = new_ca();
-    let ca_pem = ca.pem();
-    let (server_cert_pem, server_key_pem) = new_leaf(
+    let ca = generate_ca("Test CA");
+    let ca_pem = ca.cert_pem.clone();
+    let server = ca.issue_leaf(
         "localhost",
-        "localhost",
-        ExtendedKeyUsagePurpose::ServerAuth,
-        &ca_issuer,
+        Some("localhost"),
+        Some(ExtendedKeyUsage::ServerAuth),
     );
-    let (client_cert_pem, client_key_pem) = new_leaf(
-        "client",
-        "client",
-        ExtendedKeyUsagePurpose::ClientAuth,
-        &ca_issuer,
-    );
+    let server_cert_pem = server.cert_pem;
+    let server_key_pem = server.key_pem;
+    let client = ca.issue_leaf("client", Some("client"), Some(ExtendedKeyUsage::ClientAuth));
+    let client_cert_pem = client.cert_pem;
+    let client_key_pem = client.key_pem;
 
     let (tx, rx) = mpsc::channel::<()>(8);
     let logs_service = LogsServiceServer::new(LogsServiceMock { sender: tx });

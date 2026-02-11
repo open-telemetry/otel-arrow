@@ -297,7 +297,7 @@ pub struct OTAPTracesAdapter {
 }
 
 impl OTAPTracesAdapter {
-    fn new(receiver: TestReceiver<ExportTraceServiceRequest>) -> Self {
+    const fn new(receiver: TestReceiver<ExportTraceServiceRequest>) -> Self {
         Self { receiver }
     }
 }

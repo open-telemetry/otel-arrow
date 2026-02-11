@@ -127,7 +127,7 @@ pub use engine::{MaintenanceStats, QuiverEngine, QuiverEngineBuilder};
 pub use error::{QuiverError, Result};
 
 pub use segment::SegmentError;
-pub use segment_store::{SegmentReadMode, SegmentStore};
+pub use segment_store::{ScanResult, SegmentReadMode, SegmentStore};
 pub use subscriber::{
     BundleHandle, BundleIndex, BundleRef, RegistryCallback, RegistryConfig, SegmentProvider,
     SubscriberError, SubscriberId, SubscriberRegistry,

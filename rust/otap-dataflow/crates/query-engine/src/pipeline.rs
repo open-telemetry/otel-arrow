@@ -195,7 +195,7 @@ pub struct Pipeline {
 impl Pipeline {
     /// Create a new [`Pipeline`] instance that will evaluate the passed [`PipelineExpression`]
     #[must_use]
-    pub fn new(pipeline_definition: PipelineExpression) -> Self {
+    pub const fn new(pipeline_definition: PipelineExpression) -> Self {
         Self {
             pipeline_definition,
             planned_pipeline: None,

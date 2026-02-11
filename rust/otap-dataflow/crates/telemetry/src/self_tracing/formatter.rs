@@ -66,7 +66,7 @@ pub struct StyledBufWriter<'a> {
 impl<'a> StyledBufWriter<'a> {
     /// Create a new styled buffer writer.
     #[inline]
-    pub fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
+    pub const fn new(buf: &'a mut [u8], color_mode: ColorMode) -> Self {
         Self {
             buf: Cursor::new(buf),
             color_mode,
@@ -142,7 +142,7 @@ impl RawLoggingLayer {
 impl ConsoleWriter {
     /// Create a writer that outputs to stdout without ANSI colors.
     #[must_use]
-    pub fn no_color() -> Self {
+    pub const fn no_color() -> Self {
         Self {
             color_mode: ColorMode::NoColor,
         }
@@ -150,7 +150,7 @@ impl ConsoleWriter {
 
     /// Create a writer that outputs to stderr with ANSI colors.
     #[must_use]
-    pub fn color() -> Self {
+    pub const fn color() -> Self {
         Self {
             color_mode: ColorMode::Color,
         }
@@ -176,7 +176,7 @@ pub fn format_log_record_to_string(time: Option<SystemTime>, record: &LogRecord)
 impl ConsoleWriter {
     /// Return the color mode.
     #[must_use]
-    pub fn color_mode(&self) -> ColorMode {
+    pub const fn color_mode(&self) -> ColorMode {
         self.color_mode
     }
 
@@ -209,9 +209,6 @@ pub fn write_event_name_to<W: Write>(w: &mut W, callsite: &SavedCallsite) {
     let _ = w.write_all(callsite.target().as_bytes());
     let _ = w.write_all(b"::");
     let _ = w.write_all(callsite.name().as_bytes());
-    if let (Some(file), Some(line)) = (callsite.file(), callsite.line()) {
-        let _ = write!(w, " ({}:{})", file, line);
-    }
 }
 
 impl StyledBufWriter<'_> {
@@ -433,7 +430,7 @@ impl StyledBufWriter<'_> {
 
     /// Map severity number to ANSI color code.
     #[inline]
-    fn severity_to_color(severity: Option<i32>) -> AnsiCode {
+    const fn severity_to_color(severity: Option<i32>) -> AnsiCode {
         match severity {
             Some(s) if s >= 17 => AnsiCode::Red,    // FATAL/ERROR
             Some(s) if s >= 13 => AnsiCode::Yellow, // WARN
@@ -784,7 +781,7 @@ mod tests {
         // so the text appears, unlike the protobuf case.
         assert_eq!(
             output,
-            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event (src/test.rs:123)\n"
+            "2024-01-15T12:30:45.678Z  INFO  test_module::submodule::test_event\n"
         );
 
         // Verify full OTLP encoding with known callsite
@@ -796,10 +793,7 @@ mod tests {
         assert_eq!(decoded.time_unix_nano, 1_705_321_845_678_000_000);
         assert_eq!(decoded.severity_number, 9); // INFO
         assert!(decoded.severity_text.is_empty()); // Not coded
-        assert_eq!(
-            decoded.event_name,
-            "test_module::submodule::test_event (src/test.rs:123)"
-        );
+        assert_eq!(decoded.event_name, "test_module::submodule::test_event");
     }
 
     #[test]
