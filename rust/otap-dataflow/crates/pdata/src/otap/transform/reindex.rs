@@ -593,12 +593,40 @@ mod tests {
     }
 
     #[test]
+    fn test_logs_greater_than_u16() {
+        let ids = (0..u16::MAX).collect::<Vec<_>>();
+        let ids2 = vec![0, 1];
+
+        let mut batches = vec![
+            logs!((Logs, ("id", UInt16, ids))),
+            logs!((Logs, ("id", UInt16, ids2))),
+        ];
+        let result = reindex_logs(&mut batches);
+        assert!(matches!(result, Err(Error::TooManyItems { .. })));
+    }
+
+    #[test]
+    fn test_logs_u16_max_items() {
+        let half = (u16::MAX / 2) + 1;
+        let ids = (0..half).collect::<Vec<_>>();
+        let ids2 = (half..u16::MAX).collect::<Vec<_>>();
+        let ids3 = vec![u16::MAX];
+
+        let mut batches = vec![
+            logs!((Logs, ("id", UInt16, ids))),
+            logs!((Logs, ("id", UInt16, ids2))),
+            logs!((Logs, ("id", UInt16, ids3))),
+        ];
+        test_reindex_logs(&mut batches);
+    }
+
+    #[test]
     #[rustfmt::skip]
     fn test_logs_referential_integrity_violations() {
         // Referential integrity violations can cause problems because we may end up
         // encountering Ids that are not in any mapped range. We need to make
-        // sure that in such cases all valid ids are remapped and what 
-        // happens to the others can be undefined for now. 
+        // sure that in such cases all valid ids are remapped and what happens to 
+        // the others is undefined for now. 
         //
         // FIXME [JD]: Is this the right behavior or should we error? If we touch the
         // invalid ids by mapping them accidentally, we might add attributes to
