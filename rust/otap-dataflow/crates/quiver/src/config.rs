@@ -318,8 +318,6 @@ pub enum RetentionPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetentionConfig {
-    /// Total bytes allowed for finalized segments on disk.
-    pub size_cap_bytes: NonZeroU64,
     /// Optional maximum wall-clock retention irrespective of size.
     ///
     /// When set, segments older than this duration are automatically deleted
@@ -342,10 +340,7 @@ impl RetentionConfig {
 
 impl Default for RetentionConfig {
     fn default() -> Self {
-        Self {
-            size_cap_bytes: NonZeroU64::new(500 * 1024 * 1024 * 1024).expect("non-zero"),
-            max_age: None,
-        }
+        Self { max_age: None }
     }
 }
 
@@ -409,7 +404,6 @@ mod tests {
             max_stream_count: 1,
         };
         let retention = RetentionConfig {
-            size_cap_bytes: NonZeroU64::new(2048).unwrap(),
             max_age: Some(Duration::from_secs(1)),
         };
 
