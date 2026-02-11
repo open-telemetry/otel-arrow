@@ -5,8 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
+    type: otap:receiver
     out_ports:
       out_port:
         destinations:
@@ -18,6 +17,5 @@ nodes:
       compression_method: zstd
 
   perf_noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:

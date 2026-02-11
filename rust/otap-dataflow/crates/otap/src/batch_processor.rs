@@ -1328,7 +1328,7 @@ mod tests {
     use crate::pdata::OtapPdata;
     use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind};
+    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig};
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1465,7 +1465,6 @@ mod tests {
 
         // Prepare a NodeUserConfig with an out_port and a default_out_port
         let mut nuc = NodeUserConfig::with_user_config(
-            NodeKind::Processor,
             OTAP_BATCH_PROCESSOR_URN.into(),
             serde_json::json!({
                 "otap": {

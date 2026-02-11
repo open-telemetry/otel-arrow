@@ -1174,7 +1174,7 @@ mod tests {
     use super::*;
     use crate::pdata::Context;
     use otap_df_config::SignalType;
-    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeUserConfig};
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -1239,8 +1239,7 @@ mod tests {
             }
         }
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports,
             default_out_port: None,
@@ -1291,8 +1290,7 @@ mod tests {
 
     fn make_node_config() -> NodeUserConfig {
         NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [(
                 TEST_OUT_PORT_NAME.into(),
@@ -1363,8 +1361,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports,
             default_out_port: None,
@@ -1400,8 +1397,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -1446,8 +1442,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -1484,8 +1479,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [(
                 "p1".into(),
@@ -1524,8 +1518,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -1572,8 +1565,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [(
                 "dest".into(),
@@ -1624,8 +1616,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -1688,8 +1679,7 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -1755,8 +1745,7 @@ mod tests {
     #[test]
     fn duplicate_ports_are_rejected() {
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports: [
                 (
@@ -2655,8 +2644,7 @@ mod tests {
         }
 
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             out_ports,
             default_out_port: None,

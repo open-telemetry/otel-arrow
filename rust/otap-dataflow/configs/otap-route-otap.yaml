@@ -5,8 +5,7 @@ settings:
 
 nodes:
   otlp_recv:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
+    type: otap:receiver
     out_ports:
       out_port:
         destinations:
@@ -18,8 +17,7 @@ nodes:
       response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
 
   otap_recv:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
+    type: otap:receiver
     out_ports:
       out_port:
         destinations:
@@ -30,8 +28,7 @@ nodes:
       response_stream_channel_size: 256
 
   router:
-    kind: processor
-    plugin_urn: "urn:otel:type_router:processor"
+    type: type_router:processor
     out_ports:
       logs:
         destinations:
@@ -48,8 +45,7 @@ nodes:
     config: {}
 
 #  logs_filter:
-#    kind: processor
-#    plugin_urn: "urn:otel:filter:processor"
+#    type: filter:processor
 #    out_ports:
 #      out_port:
 #        destinations:
@@ -66,8 +62,7 @@ nodes:
 #              value: active
 
   retry:
-    kind: processor
-    plugin_urn: "urn:otel:retry:processor"
+    type: retry:processor
     out_ports:
       out_port:
         destinations:
@@ -77,22 +72,18 @@ nodes:
       multiplier: 1.5
 
   logs_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4328"
 
   metrics_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
 
   spans_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
 
   otap_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:

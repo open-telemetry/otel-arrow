@@ -15,8 +15,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    type: otlp:receiver
     out_ports:
       out_port:
         destinations:
@@ -26,8 +25,7 @@ nodes:
       listening_addr: "127.0.0.1:4317"
 
   durable_buffer:
-    kind: processor
-    plugin_urn: "urn:otel:durable_buffer:processor"
+    type: durable_buffer:processor
     out_ports:
       out_port:
         destinations:
@@ -42,8 +40,7 @@ nodes:
       otlp_handling: convert_to_arrow
 
   debug:
-    kind: processor
-    plugin_urn: "urn:otel:debug:processor"
+    type: debug:processor
     out_ports:
       out_port:
         destinations:
@@ -54,5 +51,4 @@ nodes:
       output: /tmp/durable_buffer_debug.log
 
   noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter

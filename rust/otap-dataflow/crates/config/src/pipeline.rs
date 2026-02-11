@@ -7,7 +7,7 @@ pub mod service;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
-use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
 use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
@@ -188,9 +188,9 @@ impl PipelineNodes {
         self.0.iter()
     }
 
-    /// Canonicalize plugin URNs for all nodes in this collection.
+    /// Canonicalize node type URNs for all nodes in this collection.
     ///
-    /// This rewrites each node's `plugin_urn` to the canonical form and
+    /// This rewrites each node's `type` to the canonical form and
     /// attaches node/pipeline context to any validation errors.
     fn canonicalize_plugin_urns(
         &mut self,
@@ -199,11 +199,7 @@ impl PipelineNodes {
     ) -> Result<(), Error> {
         for (node_id, node) in self.0.iter_mut() {
             let mut updated = (**node).clone();
-            let normalized = crate::urn::validate_plugin_urn(
-                updated.plugin_urn.as_ref(),
-                updated.kind,
-            )
-            .map_err(|e| {
+            let normalized = crate::urn::canonicalize_plugin_urn(updated.r#type.as_ref()).map_err(|e| {
                 if let Error::InvalidUserConfig { error } = e {
                     Error::InvalidUserConfig {
                         error: format!(
@@ -214,7 +210,7 @@ impl PipelineNodes {
                     e
                 }
             })?;
-            updated.plugin_urn = normalized.into();
+            updated.r#type = normalized.into();
             *node = Arc::new(updated);
         }
         Ok(())
@@ -694,25 +690,23 @@ impl PipelineConfigBuilder {
         self
     }
 
-    /// Add a node with a given id and kind.
+    /// Add a node with a given id and type URN.
     /// Optionally provide config.
     pub fn add_node<S: Into<NodeId>, U: Into<NodeUrn>>(
         mut self,
         id: S,
-        kind: NodeKind,
-        plugin_urn: U,
+        node_type: U,
         config: Option<Value>,
     ) -> Self {
         let id = id.into();
-        let plugin_urn = plugin_urn.into();
+        let node_type = node_type.into();
         if self.nodes.contains_key(&id) {
             self.duplicate_nodes.push(id.clone());
         } else {
             _ = self.nodes.insert(
                 id.clone(),
                 NodeUserConfig {
-                    kind,
-                    plugin_urn,
+                    r#type: node_type,
                     description: None,
                     out_ports: HashMap::new(),
                     default_out_port: None,
@@ -727,30 +721,30 @@ impl PipelineConfigBuilder {
     pub fn add_receiver<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
-        plugin_urn: U,
+        node_type: U,
         config: Option<Value>,
     ) -> Self {
-        self.add_node(id, NodeKind::Receiver, plugin_urn, config)
+        self.add_node(id, node_type, config)
     }
 
     /// Add a processor node.
     pub fn add_processor<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
-        plugin_urn: U,
+        node_type: U,
         config: Option<Value>,
     ) -> Self {
-        self.add_node(id, NodeKind::Processor, plugin_urn, config)
+        self.add_node(id, node_type, config)
     }
 
     /// Add an exporter node.
     pub fn add_exporter<S: Into<NodeId>, U: Into<NodeUrn>>(
         self,
         id: S,
-        plugin_urn: U,
+        node_type: U,
         config: Option<Value>,
     ) -> Self {
-        self.add_node(id, NodeKind::Exporter, plugin_urn, config)
+        self.add_node(id, node_type, config)
     }
 
     /// Connect source node's out_port to one or more target nodes
@@ -1645,30 +1639,26 @@ mod tests {
 
             nodes:
               receiver:
-                kind: receiver
-                plugin_urn: "urn:test:example:receiver"
+                type: "urn:test:example:receiver"
                 out_ports:
                   out:
                     destinations: [exporter]
                     dispatch_strategy: round_robin
                 config: {}
               exporter:
-                kind: exporter
-                plugin_urn: "urn:test:example:exporter"
+                type: "urn:test:example:exporter"
                 config: {}
 
             internal:
               itr:
-                kind: receiver
-                plugin_urn: "urn:otel:internal_telemetry:receiver"
+                type: "urn:otel:internal_telemetry:receiver"
                 out_ports:
                   out_port:
                     destinations: [console]
                     dispatch_strategy: round_robin
                 config: {}
               console:
-                kind: exporter
-                plugin_urn: "urn:otel:console:exporter"
+                type: "urn:otel:console:exporter"
                 config: {}
         "#;
 
@@ -1692,11 +1682,11 @@ mod tests {
         assert_eq!(internal.nodes.len(), 2);
 
         assert_eq!(
-            internal.nodes["itr"].plugin_urn.as_ref(),
+            internal.nodes["itr"].r#type.as_ref(),
             "urn:otel:internal_telemetry:receiver"
         );
         assert_eq!(
-            internal.nodes["console"].plugin_urn.as_ref(),
+            internal.nodes["console"].r#type.as_ref(),
             "urn:otel:console:exporter"
         );
 
@@ -1712,39 +1702,36 @@ mod tests {
         let yaml = r#"
             nodes:
               receiver:
-                kind: receiver
-                plugin_urn: "otlp:receiver"
+                type: "otlp:receiver"
                 out_ports:
                   out:
                     destinations: [processor]
                     dispatch_strategy: round_robin
                 config: {}
               processor:
-                kind: processor
-                plugin_urn: "attribute:processor"
+                type: "attribute:processor"
                 out_ports:
                   out:
                     destinations: [exporter]
                     dispatch_strategy: round_robin
                 config: {}
               exporter:
-                kind: exporter
-                plugin_urn: "urn:otel:otlp:exporter"
+                type: "urn:otel:otlp:exporter"
                 config: {}
         "#;
 
         let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
             .expect("should parse");
         assert_eq!(
-            config.nodes["receiver"].plugin_urn.as_ref(),
+            config.nodes["receiver"].r#type.as_ref(),
             "urn:otel:otlp:receiver"
         );
         assert_eq!(
-            config.nodes["processor"].plugin_urn.as_ref(),
+            config.nodes["processor"].r#type.as_ref(),
             "urn:otel:attribute:processor"
         );
         assert_eq!(
-            config.nodes["exporter"].plugin_urn.as_ref(),
+            config.nodes["exporter"].r#type.as_ref(),
             "urn:otel:otlp:exporter"
         );
     }
@@ -1754,8 +1741,7 @@ mod tests {
         let yaml = r#"
             nodes:
               exporter:
-                kind: exporter
-                plugin_urn: "urn:otel:otap:perf:exporter"
+                type: "urn:otel:otap:perf:exporter"
                 config: {}
         "#;
 

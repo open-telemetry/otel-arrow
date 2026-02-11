@@ -42,8 +42,7 @@ pipeline_groups:
                 end: 1
         nodes:
           suv_receiver:
-            kind: receiver
-            plugin_urn: "{{ suv_receiver_plugin_urn }}"
+            type: "{{ suv_receiver_plugin_urn }}"
             out_ports:
               out_port:
                 destinations:
@@ -61,8 +60,7 @@ pipeline_groups:
               {% endif %}
 
           control_receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
+            type: "urn:otel:otlp:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -74,8 +72,7 @@ pipeline_groups:
                   listening_addr: "{{ control_addr }}"
 
           validation_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:validation:exporter"
+            type: "urn:otel:validation:exporter"
             config:
                 expect_failure: false
                 control_input: control_receiver
@@ -108,8 +105,7 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:traffic_generator:receiver"
+            type: "urn:otel:traffic_generator:receiver"
             out_ports:
               out_port:
                 destinations:
@@ -126,8 +122,7 @@ pipeline_groups:
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
           fanout:
-            kind: processor
-            plugin_urn: "urn:otel:fanout_temp:processor"
+            type: "urn:otel:fanout_temp:processor"
             out_ports:
               suv_port:
                 destinations:
@@ -139,8 +134,7 @@ pipeline_groups:
                 dispatch_strategy: round_robin
             config:
           suv_exporter:
-            kind: exporter
-            plugin_urn: "{{ suv_exporter_plugin_urn }}"
+            type: "{{ suv_exporter_plugin_urn }}"
             config:
               grpc_endpoint: "{{ suv_endpoint }}"
               {% if suv_exporter_type == "otap" -%}
@@ -150,7 +144,6 @@ pipeline_groups:
               {% endif %}
 
           control_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: "urn:otel:otlp:exporter"
             config:
               grpc_endpoint: "{{ control_endpoint }}"

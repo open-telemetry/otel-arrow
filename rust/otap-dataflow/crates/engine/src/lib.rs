@@ -384,18 +384,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let base_ctx = pipeline_ctx.with_node_context(
-                name.clone(),
-                node_config.plugin_urn.clone(),
-                node_config.kind,
-            );
+            let node_kind = otap_df_config::urn::infer_node_kind(node_config.r#type.as_ref())
+                .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let base_ctx =
+                pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
 
-            match node_config.kind {
+            match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
                     let mut base_ctx = base_ctx;
-                    if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
                         if let Some(ref settings) = internal_telemetry {
                             base_ctx.set_internal_telemetry(settings.clone());
                         }
@@ -1006,7 +1005,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // Validate plugin URN structure during registration
         let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Receiver,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
@@ -1070,7 +1069,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // Validate plugin URN structure during registration
         let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Processor,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
@@ -1134,7 +1133,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         // Validate plugin URN structure during registration
         let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Exporter,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;

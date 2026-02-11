@@ -16,8 +16,7 @@ settings:
 
 nodes:
   otlp-receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    type: otlp:receiver
     out_ports:
       out_port:
         destinations:
@@ -30,8 +29,7 @@ nodes:
           listening_addr: "0.0.0.0:4317"
 
   azure-monitor-exporter:
-    kind: exporter
-    plugin_urn: "urn:microsoft_azure:monitor:exporter"
+    type: "urn:microsoft_azure:monitor:exporter"
     config:
       # API configuration - Update with your actual values
       api:

@@ -5,8 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
+    type: traffic_generator:receiver
     out_ports:
       out_port:
         destinations:
@@ -19,8 +18,7 @@ nodes:
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:parquet:exporter"
+    type: parquet:exporter
     config:
       storage:
         file:

@@ -11,8 +11,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    type: otlp:receiver
     out_ports:
       out_port:
         destinations:
@@ -45,8 +44,7 @@ nodes:
           #   reload_interval: "5m"
 
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: otlp:exporter
     config:
       # Downstream OTLP/gRPC collector endpoint.
       # Uses a different port than this receiver to avoid accidental loops.

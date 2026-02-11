@@ -29,7 +29,13 @@ pub fn parse_urn(raw: &str) -> Result<Urn, Error> {
 /// - full form: `urn:<namespace>:<id>:<kind>`
 /// - shortcut form (OTel only): `<id>:<kind>` (expanded to `urn:otel:<id>:<kind>`)
 pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String, Error> {
-    let expected_suffix = kind_suffix(expected_kind);
+    let (normalized, _inferred_kind, inferred_kind_suffix) = normalize_plugin_urn(raw)?;
+    validate_expected_kind(raw.trim(), expected_kind, inferred_kind_suffix)?;
+    Ok(normalized)
+}
+
+/// Validate and canonicalize a node type URN while inferring its node kind.
+pub fn normalize_plugin_urn(raw: &str) -> Result<(String, NodeKind, &'static str), Error> {
     let raw = raw.trim();
     let parts: Vec<&str> = raw.split(':').collect();
 
@@ -37,8 +43,12 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String,
         [_id, _kind] => {
             validate_segments(raw, "otel", parts.as_slice())?;
             let (id, kind) = split_segments(raw, parts.as_slice())?;
-            validate_kind(raw, kind, expected_suffix)?;
-            Ok(format!("urn:otel:{id}:{kind}"))
+            let inferred_kind = parse_kind(raw, kind)?;
+            Ok((
+                format!("urn:otel:{id}:{kind}"),
+                inferred_kind,
+                kind_suffix(inferred_kind),
+            ))
         }
         [scheme, namespace, _id, _kind] => {
             if !scheme.eq_ignore_ascii_case("urn") {
@@ -51,8 +61,12 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String,
             let id_kind = &parts[2..];
             validate_segments(raw, &namespace, id_kind)?;
             let (id, kind) = split_segments(raw, id_kind)?;
-            validate_kind(raw, kind, expected_suffix)?;
-            Ok(format!("urn:{namespace}:{id}:{kind}"))
+            let inferred_kind = parse_kind(raw, kind)?;
+            Ok((
+                format!("urn:{namespace}:{id}:{kind}"),
+                inferred_kind,
+                kind_suffix(inferred_kind),
+            ))
         }
         _ => Err(invalid_plugin_urn(
             raw,
@@ -61,11 +75,46 @@ pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String,
     }
 }
 
+/// Canonicalize a node type URN.
+pub fn canonicalize_plugin_urn(raw: &str) -> Result<String, Error> {
+    let (normalized, _kind, _kind_suffix) = normalize_plugin_urn(raw)?;
+    Ok(normalized)
+}
+
+/// Infer node kind from a node type URN.
+pub fn infer_node_kind(raw: &str) -> Result<NodeKind, Error> {
+    let (_normalized, kind, _kind_suffix) = normalize_plugin_urn(raw)?;
+    Ok(kind)
+}
+
 const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
     match expected_kind {
         NodeKind::Receiver => "receiver",
         NodeKind::Processor | NodeKind::ProcessorChain => "processor",
         NodeKind::Exporter => "exporter",
+    }
+}
+
+fn validate_expected_kind(raw: &str, expected_kind: NodeKind, kind: &str) -> Result<(), Error> {
+    let expected_suffix = kind_suffix(expected_kind);
+    if kind != expected_suffix {
+        return Err(invalid_plugin_urn(
+            raw,
+            format!("expected kind `{expected_suffix}`, found `{kind}`"),
+        ));
+    }
+    Ok(())
+}
+
+fn parse_kind(raw: &str, kind: &str) -> Result<NodeKind, Error> {
+    match kind {
+        "receiver" => Ok(NodeKind::Receiver),
+        "processor" => Ok(NodeKind::Processor),
+        "exporter" => Ok(NodeKind::Exporter),
+        _ => Err(invalid_plugin_urn(
+            raw,
+            format!("expected kind `receiver`, `processor`, or `exporter`, found `{kind}`"),
+        )),
     }
 }
 
@@ -121,16 +170,6 @@ fn validate_segments(raw: &str, namespace: &str, segs: &[&str]) -> Result<(), Er
     Ok(())
 }
 
-fn validate_kind(raw: &str, kind: &str, expected_suffix: &str) -> Result<(), Error> {
-    if kind != expected_suffix {
-        return Err(invalid_plugin_urn(
-            raw,
-            format!("expected kind `{expected_suffix}`, found `{kind}`"),
-        ));
-    }
-    Ok(())
-}
-
 fn is_valid_segment(seg: &str) -> bool {
     seg.chars()
         .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
@@ -174,6 +213,15 @@ mod tests {
         assert!(
             validate_plugin_urn("urn:vendor_product:custom:exporter", NodeKind::Exporter).is_ok()
         );
+
+        assert!(matches!(
+            infer_node_kind("urn:otel:otlp:receiver").unwrap(),
+            NodeKind::Receiver
+        ));
+        assert!(matches!(
+            infer_node_kind("debug:processor").unwrap(),
+            NodeKind::Processor
+        ));
     }
 
     #[test]
@@ -194,6 +242,9 @@ mod tests {
 
         // Wrong kind mapping
         assert!(validate_plugin_urn("urn:otel:otlp:exporter", NodeKind::Receiver).is_err());
+
+        // Unknown kind
+        assert!(infer_node_kind("urn:otel:otlp:sink").is_err());
 
         // Legacy forms rejected (extra segments)
         assert!(

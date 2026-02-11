@@ -6,14 +6,12 @@
   },
   "nodes": {
     "receiver1": {
-      "kind": "receiver",
-      "plugin_urn": "urn:test:example:receiver",
+      "type": "urn:test:example:receiver",
       "config": null,
       "out_ports": {}
     },
     "exporter1": {
-      "kind": "exporter",
-      "plugin_urn": "urn:test:example:exporter",
+      "type": "urn:test:example:exporter",
       "config": null,
       "out_ports": {}
     }

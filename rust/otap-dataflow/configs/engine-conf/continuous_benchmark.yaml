@@ -28,8 +28,7 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:traffic_generator:receiver"
+            type: traffic_generator:receiver
             out_ports:
               out_port:
                 destinations:
@@ -45,8 +44,7 @@ pipeline_groups:
                 trace_weight: 0
                 log_weight: 30
           exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
       # Second group of traffic generators based on on-the-fly data generation
@@ -62,8 +60,7 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:traffic_generator:receiver"
+            type: traffic_generator:receiver
             out_ports:
               out_port:
                 destinations:
@@ -78,8 +75,7 @@ pipeline_groups:
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4337"
 
@@ -96,8 +92,7 @@ pipeline_groups:
                 end: 1
         nodes:
           otlp_recv1:
-            kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
+            type: otlp:receiver
             out_ports:
               out_port:
                 destinations:
@@ -109,8 +104,7 @@ pipeline_groups:
                   listening_addr: "127.0.0.1:4327"
                   wait_for_result: true
           otlp_recv2:
-            kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
+            type: otlp:receiver
             out_ports:
               out_port:
                 destinations:
@@ -123,8 +117,7 @@ pipeline_groups:
                   wait_for_result: true
 
           router:
-            kind: processor
-            plugin_urn: "urn:otel:type_router:processor"
+            type: type_router:processor
             out_ports:
               logs:
                 destinations:
@@ -141,8 +134,7 @@ pipeline_groups:
             config: {}
 
           retry:
-            kind: processor
-            plugin_urn: "urn:otel:retry:processor"
+            type: retry:processor
             out_ports:
               out_port:
                 destinations:
@@ -152,20 +144,17 @@ pipeline_groups:
               multiplier: 1.5
 
           logs_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4328"
               max_in_flight: 6
 
           metrics_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
+            type: noop:exporter
             config:
 
           spans_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
+            type: noop:exporter
             config:
 
 
@@ -183,8 +172,7 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: urn:otel:otlp:receiver
+            type: otlp:receiver
             out_ports:
               out_port:
                 destinations:
@@ -196,6 +184,5 @@ pipeline_groups:
                   listening_addr: 127.0.0.1:4328
 
           perf_noop:
-            kind: exporter
-            plugin_urn: urn:otel:noop:exporter
+            type: noop:exporter
             config: null

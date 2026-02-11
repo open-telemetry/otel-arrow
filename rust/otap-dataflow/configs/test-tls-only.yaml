@@ -5,8 +5,7 @@
 
   nodes:
     receiver:
-      kind: receiver
-      plugin_urn: "urn:otel:otlp:receiver"
+      type: otlp:receiver
       out_ports:
         out_port:
           destinations:
@@ -21,8 +20,7 @@
               key_file: "./test-certs/server.key"
 
     exporter:
-      kind: exporter
-      plugin_urn: "urn:otel:otlp:exporter"
+      type: otlp:exporter
       config:
         grpc_endpoint: "https://127.0.0.1:4319"
         tls:

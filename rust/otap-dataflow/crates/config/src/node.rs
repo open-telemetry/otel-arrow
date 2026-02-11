@@ -24,17 +24,14 @@ use std::collections::{HashMap, HashSet};
 ///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NodeUserConfig {
-    /// The kind of this node, which determines its role in the pipeline.
-    /// 4 kinds are currently specified:
-    /// - `Receiver`: A node that receives data from an external source.
-    /// - `Processor`: A node that processes data, transforming it in some way.
-    /// - `Exporter`: A node that exports data to an external destination.
-    /// - `Connector`: A node that connects 2 pipelines together, allowing data to flow between them.
-    pub kind: NodeKind,
-
-    /// The URN identifying the plugin (factory) to use for this node.
-    /// This determines which implementation is loaded and instantiated.
-    pub plugin_urn: NodeUrn,
+    /// The node type URN identifying the plugin (factory) to use for this node.
+    ///
+    /// Expected format:
+    /// - `urn:<namespace>:<id>:<kind>`
+    /// - `<id>:<kind>` (shortcut form for the `otel` namespace)
+    ///
+    /// The node kind is inferred from the `<kind>` segment.
+    pub r#type: NodeUrn,
 
     /// An optional description of this node.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,11 +121,10 @@ impl From<NodeKind> for Cow<'static, str> {
 }
 
 impl NodeUserConfig {
-    /// Creates a new Receiver `NodeUserConfig` with the plugin URN.
-    pub fn new_receiver_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Receiver `NodeUserConfig` with the node type URN.
+    pub fn new_receiver_config<U: Into<NodeUrn>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Receiver,
-            plugin_urn: plugin_urn.into(),
+            r#type: node_type.into(),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -136,11 +132,10 @@ impl NodeUserConfig {
         }
     }
 
-    /// Creates a new Exporter `NodeUserConfig` with the plugin URN.
-    pub fn new_exporter_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Exporter `NodeUserConfig` with the node type URN.
+    pub fn new_exporter_config<U: Into<NodeUrn>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Exporter,
-            plugin_urn: plugin_urn.into(),
+            r#type: node_type.into(),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -148,11 +143,10 @@ impl NodeUserConfig {
         }
     }
 
-    /// Creates a new Processor `NodeUserConfig` with the plugin URN.
-    pub fn new_processor_config<U: Into<NodeUrn>>(plugin_urn: U) -> Self {
+    /// Creates a new Processor `NodeUserConfig` with the node type URN.
+    pub fn new_processor_config<U: Into<NodeUrn>>(node_type: U) -> Self {
         Self {
-            kind: NodeKind::Processor,
-            plugin_urn: plugin_urn.into(),
+            r#type: node_type.into(),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -160,12 +154,11 @@ impl NodeUserConfig {
         }
     }
 
-    /// Creates a new `NodeUserConfig` with the specified kind, plugin URN, and user configuration.
+    /// Creates a new `NodeUserConfig` with the specified node type URN and user configuration.
     #[must_use]
-    pub fn with_user_config(kind: NodeKind, plugin_urn: NodeUrn, user_config: Value) -> Self {
+    pub fn with_user_config(node_type: NodeUrn, user_config: Value) -> Self {
         Self {
-            kind,
-            plugin_urn,
+            r#type: node_type,
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -186,6 +179,11 @@ impl NodeUserConfig {
     pub fn set_default_out_port<P: Into<PortName>>(&mut self, port: P) {
         self.default_out_port = Some(port.into());
     }
+
+    /// Infers this node's kind from its URN suffix.
+    pub fn kind(&self) -> Result<NodeKind, crate::error::Error> {
+        crate::urn::infer_node_kind(self.r#type.as_ref())
+    }
 }
 
 #[cfg(test)]
@@ -195,20 +193,18 @@ mod tests {
     #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
-            "kind": "receiver",
-            "plugin_urn": "urn:example:demo:receiver",
+            "type": "urn:example:demo:receiver",
             "out_ports": {}
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        assert!(matches!(cfg.kind, NodeKind::Receiver));
+        assert!(matches!(cfg.kind().unwrap(), NodeKind::Receiver));
         assert!(cfg.out_ports.is_empty());
     }
 
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"
-kind: processor
-plugin_urn: "urn:otel:type_router:processor"
+type: "urn:otel:type_router:processor"
 out_ports:
   logs:
     destinations:
@@ -225,7 +221,7 @@ out_ports:
 config: {}
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(cfg.kind, NodeKind::Processor));
+        assert!(matches!(cfg.kind().unwrap(), NodeKind::Processor));
         assert_eq!(cfg.out_ports.len(), 3);
     }
 }

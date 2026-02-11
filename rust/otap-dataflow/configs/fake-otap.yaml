@@ -5,8 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
+    type: traffic_generator:receiver
     out_ports:
       out_port:
         destinations:
@@ -21,7 +20,6 @@ nodes:
         log_weight: 30
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4327"
