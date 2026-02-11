@@ -1080,7 +1080,7 @@ mod tests {
 
         let config = Config::new(listening_addr, Protocol::Udp);
         // create our UDP receiver
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(config),
             test_node(test_runtime.config().name.clone()),
@@ -1107,7 +1107,7 @@ mod tests {
         // create our TCP receiver - we need to modify the receiver to support TCP
         let receiver = SyslogCefReceiver::new(config);
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),
@@ -1134,7 +1134,7 @@ mod tests {
         // create our TCP receiver
         let receiver = SyslogCefReceiver::new(config);
 
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(SYSLOG_CEF_RECEIVER_URN));
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver_wrapper = ReceiverWrapper::local(
             receiver,
             test_node(test_runtime.config().name.clone()),

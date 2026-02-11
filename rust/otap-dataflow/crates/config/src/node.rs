@@ -122,9 +122,13 @@ impl From<NodeKind> for Cow<'static, str> {
 
 impl NodeUserConfig {
     /// Creates a new Receiver `NodeUserConfig` with the node type URN.
-    pub fn new_receiver_config<U: Into<NodeUrn>>(node_type: U) -> Self {
+    pub fn new_receiver_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            r#type: node_type.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Receiver,
+            )
+            .expect("invalid receiver node type"),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -133,9 +137,13 @@ impl NodeUserConfig {
     }
 
     /// Creates a new Exporter `NodeUserConfig` with the node type URN.
-    pub fn new_exporter_config<U: Into<NodeUrn>>(node_type: U) -> Self {
+    pub fn new_exporter_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            r#type: node_type.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Exporter,
+            )
+            .expect("invalid exporter node type"),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -144,9 +152,13 @@ impl NodeUserConfig {
     }
 
     /// Creates a new Processor `NodeUserConfig` with the node type URN.
-    pub fn new_processor_config<U: Into<NodeUrn>>(node_type: U) -> Self {
+    pub fn new_processor_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
-            r#type: node_type.into(),
+            r#type: crate::node_urn::normalize_plugin_urn_for_kind(
+                node_type.as_ref(),
+                NodeKind::Processor,
+            )
+            .expect("invalid processor node type"),
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
@@ -180,9 +192,10 @@ impl NodeUserConfig {
         self.default_out_port = Some(port.into());
     }
 
-    /// Infers this node's kind from its URN suffix.
-    pub fn kind(&self) -> Result<NodeKind, crate::error::Error> {
-        crate::urn::infer_node_kind(self.r#type.as_ref())
+    /// Returns this node kind from its URN.
+    #[must_use]
+    pub const fn kind(&self) -> NodeKind {
+        self.r#type.kind()
     }
 }
 
@@ -197,7 +210,7 @@ mod tests {
             "out_ports": {}
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
-        assert!(matches!(cfg.kind().unwrap(), NodeKind::Receiver));
+        assert!(matches!(cfg.kind(), NodeKind::Receiver));
         assert!(cfg.out_ports.is_empty());
     }
 
@@ -221,7 +234,7 @@ out_ports:
 config: {}
 "#;
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(cfg.kind().unwrap(), NodeKind::Processor));
+        assert!(matches!(cfg.kind(), NodeKind::Processor));
         assert_eq!(cfg.out_ports.len(), 3);
     }
 }

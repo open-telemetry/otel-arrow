@@ -199,7 +199,7 @@ impl PipelineNodes {
     ) -> Result<(), Error> {
         for (node_id, node) in self.0.iter_mut() {
             let mut updated = (**node).clone();
-            let normalized = crate::urn::canonicalize_plugin_urn(updated.r#type.as_ref()).map_err(|e| {
+            let normalized = crate::node_urn::canonicalize_plugin_urn(updated.r#type.as_ref()).map_err(|e| {
                 if let Error::InvalidUserConfig { error } = e {
                     Error::InvalidUserConfig {
                         error: format!(
@@ -210,7 +210,7 @@ impl PipelineNodes {
                     e
                 }
             })?;
-            updated.r#type = normalized.into();
+            updated.r#type = normalized;
             *node = Arc::new(updated);
         }
         Ok(())

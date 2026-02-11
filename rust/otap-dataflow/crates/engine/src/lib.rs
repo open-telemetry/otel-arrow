@@ -384,7 +384,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let node_kind = otap_df_config::urn::infer_node_kind(node_config.r#type.as_ref())
+            let node_kind = otap_df_config::node_urn::infer_node_kind(node_config.r#type.as_ref())
                 .map_err(|e| Error::ConfigError(Box::new(e)))?;
             let base_ctx =
                 pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
@@ -1004,7 +1004,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Receiver,
         )
@@ -1013,8 +1013,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownReceiver {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownReceiver {
+                plugin_urn: normalized,
             })?;
         let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
@@ -1068,7 +1068,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Processor,
         )
@@ -1077,8 +1077,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_processor_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownProcessor {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownProcessor {
+                plugin_urn: normalized,
             })?;
         let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
@@ -1132,7 +1132,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
             node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Exporter,
         )
@@ -1141,8 +1141,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_exporter_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownExporter {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownExporter {
+                plugin_urn: normalized,
             })?;
         let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;

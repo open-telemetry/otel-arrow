@@ -2,25 +2,164 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Plugin URN parsing and validation helpers.
-//!
-//! Uses the `urn` crate for RFC 8141 parsing (see RFC 8141), then applies project-specific
-//! rules for plugin URNs.
-//!
-//! References:
-//! - RFC 8141: https://datatracker.ietf.org/doc/html/rfc8141
 
 use crate::error::Error;
 use crate::node::NodeKind;
-use urn::Urn;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+use std::ops::Range;
 
 const URN_DOCS_PATH: &str = "rust/otap-dataflow/docs/urns.md";
 const EXPECTED_SEGMENT_COUNT: usize = 2;
 
-/// Parse a raw URN string.
-pub fn parse_urn(raw: &str) -> Result<Urn, Error> {
-    raw.parse::<Urn>().map_err(|e| Error::InvalidUserConfig {
-        error: format!("invalid urn `{raw}`: {e}"),
-    })
+/// Canonical node URN with zero-copy access to namespace and id segments.
+///
+/// The canonical representation is always `urn:<namespace>:<id>:<kind>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct NodeUrn {
+    raw: String,
+    namespace_range: Range<usize>,
+    id_range: Range<usize>,
+    kind: NodeKind,
+}
+
+impl NodeUrn {
+    #[must_use]
+    pub(crate) fn from_canonical_parts(
+        raw: String,
+        namespace_range: Range<usize>,
+        id_range: Range<usize>,
+        kind: NodeKind,
+    ) -> Self {
+        Self {
+            raw,
+            namespace_range,
+            id_range,
+            kind,
+        }
+    }
+
+    /// Returns the canonical URN string (`urn:<namespace>:<id>:<kind>`).
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.raw
+    }
+
+    /// Returns the namespace segment.
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.raw[self.namespace_range.clone()]
+    }
+
+    /// Returns the id segment.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.raw[self.id_range.clone()]
+    }
+
+    /// Returns the node kind segment.
+    #[must_use]
+    pub const fn kind(&self) -> NodeKind {
+        self.kind
+    }
+
+    /// Returns the owned canonical URN string.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.raw
+    }
+
+    /// Parses and canonicalizes a node URN.
+    pub fn parse(raw: &str) -> Result<Self, Error> {
+        let raw = raw.trim();
+        let parts: Vec<&str> = raw.split(':').collect();
+
+        match parts.as_slice() {
+            [_id, _kind] => {
+                validate_segments(raw, "otel", parts.as_slice())?;
+                let (id, kind) = split_segments(raw, parts.as_slice())?;
+                let inferred_kind = parse_kind(raw, kind)?;
+                Ok(build_node_urn("otel", id, kind, inferred_kind))
+            }
+            [scheme, namespace, _id, _kind] => {
+                if !scheme.eq_ignore_ascii_case("urn") {
+                    return Err(invalid_plugin_urn(
+                        raw,
+                        "expected `urn:<namespace>:<id>:<kind>`".to_string(),
+                    ));
+                }
+                let namespace = namespace.to_ascii_lowercase();
+                let id_kind = &parts[2..];
+                validate_segments(raw, &namespace, id_kind)?;
+                let (id, kind) = split_segments(raw, id_kind)?;
+                let inferred_kind = parse_kind(raw, kind)?;
+                Ok(build_node_urn(namespace.as_str(), id, kind, inferred_kind))
+            }
+            _ => Err(invalid_plugin_urn(
+                raw,
+                "expected `urn:<namespace>:<id>:<kind>` or `<id>:<kind>` for otel".to_string(),
+            )),
+        }
+    }
+}
+
+impl Default for NodeUrn {
+    fn default() -> Self {
+        Self::from("unknown:receiver")
+    }
+}
+
+impl std::fmt::Display for NodeUrn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for NodeUrn {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for NodeUrn {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl From<NodeUrn> for String {
+    fn from(value: NodeUrn) -> Self {
+        value.raw
+    }
+}
+
+impl From<NodeUrn> for Cow<'static, str> {
+    fn from(value: NodeUrn) -> Self {
+        Cow::Owned(value.raw)
+    }
+}
+
+impl From<&NodeUrn> for Cow<'static, str> {
+    fn from(value: &NodeUrn) -> Self {
+        Cow::Owned(value.raw.clone())
+    }
+}
+
+impl TryFrom<String> for NodeUrn {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value.as_str())
+    }
+}
+
+impl From<&'static str> for NodeUrn {
+    fn from(value: &'static str) -> Self {
+        Self::parse(value).expect("invalid static node urn literal")
+    }
 }
 
 /// Validate a plugin URN against the expected node kind and return the canonical form.
@@ -28,63 +167,40 @@ pub fn parse_urn(raw: &str) -> Result<Urn, Error> {
 /// Accepted patterns:
 /// - full form: `urn:<namespace>:<id>:<kind>`
 /// - shortcut form (OTel only): `<id>:<kind>` (expanded to `urn:otel:<id>:<kind>`)
-pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<String, Error> {
-    let (normalized, _inferred_kind, inferred_kind_suffix) = normalize_plugin_urn(raw)?;
-    validate_expected_kind(raw.trim(), expected_kind, inferred_kind_suffix)?;
+pub fn validate_plugin_urn(raw: &str, expected_kind: NodeKind) -> Result<NodeUrn, Error> {
+    let normalized = NodeUrn::parse(raw)?;
+    validate_expected_kind(raw.trim(), expected_kind, normalized.kind())?;
     Ok(normalized)
 }
 
-/// Validate and canonicalize a node type URN while inferring its node kind.
-pub fn normalize_plugin_urn(raw: &str) -> Result<(String, NodeKind, &'static str), Error> {
-    let raw = raw.trim();
-    let parts: Vec<&str> = raw.split(':').collect();
-
-    match parts.as_slice() {
-        [_id, _kind] => {
-            validate_segments(raw, "otel", parts.as_slice())?;
-            let (id, kind) = split_segments(raw, parts.as_slice())?;
-            let inferred_kind = parse_kind(raw, kind)?;
-            Ok((
-                format!("urn:otel:{id}:{kind}"),
-                inferred_kind,
-                kind_suffix(inferred_kind),
-            ))
-        }
-        [scheme, namespace, _id, _kind] => {
-            if !scheme.eq_ignore_ascii_case("urn") {
-                return Err(invalid_plugin_urn(
-                    raw,
-                    "expected `urn:<namespace>:<id>:<kind>`".to_string(),
-                ));
-            }
-            let namespace = namespace.to_ascii_lowercase();
-            let id_kind = &parts[2..];
-            validate_segments(raw, &namespace, id_kind)?;
-            let (id, kind) = split_segments(raw, id_kind)?;
-            let inferred_kind = parse_kind(raw, kind)?;
-            Ok((
-                format!("urn:{namespace}:{id}:{kind}"),
-                inferred_kind,
-                kind_suffix(inferred_kind),
-            ))
-        }
-        _ => Err(invalid_plugin_urn(
-            raw,
-            "expected `urn:<namespace>:<id>:<kind>` or `<id>:<kind>` for otel".to_string(),
-        )),
+/// Canonicalize a node type URN with an expected kind.
+///
+/// For compatibility with constructor call sites, this additionally accepts a bare id
+/// (`<id>`) and expands it to `urn:otel:<id>:<expected_kind>`.
+pub fn normalize_plugin_urn_for_kind(raw: &str, expected_kind: NodeKind) -> Result<NodeUrn, Error> {
+    if let Ok(normalized) = validate_plugin_urn(raw, expected_kind) {
+        return Ok(normalized);
     }
+
+    let raw = raw.trim();
+    if raw.contains(':') {
+        return validate_plugin_urn(raw, expected_kind);
+    }
+
+    validate_segments(raw, "otel", &[raw])?;
+    let expected_suffix = kind_suffix(expected_kind);
+    let kind = parse_kind(raw, expected_suffix)?;
+    Ok(build_node_urn("otel", raw, expected_suffix, kind))
 }
 
 /// Canonicalize a node type URN.
-pub fn canonicalize_plugin_urn(raw: &str) -> Result<String, Error> {
-    let (normalized, _kind, _kind_suffix) = normalize_plugin_urn(raw)?;
-    Ok(normalized)
+pub fn canonicalize_plugin_urn(raw: &str) -> Result<NodeUrn, Error> {
+    NodeUrn::parse(raw)
 }
 
 /// Infer node kind from a node type URN.
 pub fn infer_node_kind(raw: &str) -> Result<NodeKind, Error> {
-    let (_normalized, kind, _kind_suffix) = normalize_plugin_urn(raw)?;
-    Ok(kind)
+    NodeUrn::parse(raw).map(|urn| urn.kind())
 }
 
 const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
@@ -95,12 +211,13 @@ const fn kind_suffix(expected_kind: NodeKind) -> &'static str {
     }
 }
 
-fn validate_expected_kind(raw: &str, expected_kind: NodeKind, kind: &str) -> Result<(), Error> {
+fn validate_expected_kind(raw: &str, expected_kind: NodeKind, kind: NodeKind) -> Result<(), Error> {
     let expected_suffix = kind_suffix(expected_kind);
-    if kind != expected_suffix {
+    let actual_suffix = kind_suffix(kind);
+    if actual_suffix != expected_suffix {
         return Err(invalid_plugin_urn(
             raw,
-            format!("expected kind `{expected_suffix}`, found `{kind}`"),
+            format!("expected kind `{expected_suffix}`, found `{actual_suffix}`"),
         ));
     }
     Ok(())
@@ -175,6 +292,15 @@ fn is_valid_segment(seg: &str) -> bool {
         .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
 }
 
+fn build_node_urn(namespace: &str, id: &str, kind_str: &str, kind: NodeKind) -> NodeUrn {
+    let raw = format!("urn:{namespace}:{id}:{kind_str}");
+    let namespace_start = "urn:".len();
+    let namespace_end = namespace_start + namespace.len();
+    let id_start = namespace_end + 1;
+    let id_end = id_start + id.len();
+    NodeUrn::from_canonical_parts(raw, namespace_start..namespace_end, id_start..id_end, kind)
+}
+
 fn invalid_plugin_urn(raw: &str, details: String) -> Error {
     Error::InvalidUserConfig {
         error: format!(
@@ -186,6 +312,15 @@ fn invalid_plugin_urn(raw: &str, details: String) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_and_exposes_parts() {
+        let urn = NodeUrn::parse("otlp:receiver").unwrap();
+        assert_eq!(urn.as_str(), "urn:otel:otlp:receiver");
+        assert_eq!(urn.namespace(), "otel");
+        assert_eq!(urn.id(), "otlp");
+        assert!(matches!(urn.kind(), NodeKind::Receiver));
+    }
 
     #[test]
     fn accepts_known_patterns() {
@@ -205,7 +340,9 @@ mod tests {
 
         // Shortcut form for otel
         assert_eq!(
-            validate_plugin_urn("otlp:receiver", NodeKind::Receiver).unwrap(),
+            validate_plugin_urn("otlp:receiver", NodeKind::Receiver)
+                .unwrap()
+                .as_ref(),
             "urn:otel:otlp:receiver"
         );
 
