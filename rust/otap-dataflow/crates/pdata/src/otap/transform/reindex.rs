@@ -363,7 +363,7 @@ fn extract_id_column(batch: &RecordBatch, column_path: &str) -> Result<ArrayRef>
     })
 }
 
-fn sort_vec_to_indices<T: Ord>(values: &Vec<T>) -> Vec<u32> {
+fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
     let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
     indices.sort_by_key(|&i| &values[i as usize]);
     indices
@@ -479,7 +479,7 @@ where
 {
     let mut remaining_slice = &mut sorted_ids[..];
     for mapping in mappings.iter() {
-        if remaining_slice.len() == 0 {
+        if remaining_slice.is_empty() {
             break;
         }
 
