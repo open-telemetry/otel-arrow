@@ -594,6 +594,110 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn test_logs_referential_integrity_violations() {
+        // Referential integrity violations can cause problems because we may end up
+        // encountering Ids that are not in any mapped range. We need to make
+        // sure that in such cases all valid ids are remapped and what 
+        // happens to the others can be undefined for now. 
+        //
+        // FIXME [JD]: Is this the right behavior or should we error? If we touch the
+        // invalid ids by mapping them accidentally, we might add attributes to
+        // some logs that didn't previously exist. More of a problem in a multi-tenant
+        // scenario.
+        //
+        // Three different violations here:
+        //
+        // - One that is in the middle, meaning
+        // it will probably just get remapped since it's a part of one of the
+        // valid ranges
+        // - One that is at the start, so it can't get remapped at all
+        // - One that is at the end, so it also can't get remapped
+        let parent_ids   = vec![1, 2, 4];
+        let child_ids   = vec![1, 0, 2, 3, 5, 4];
+
+        // Log Attrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_complex() {
+        // Overlapping ranges, not in order, many to many child relations
+        let parent_ids   = vec![0, 5, 3, 10, 7, 11];
+        let child_ids   = vec![0, 10, 10, 10, 7, 7, 3, 11, 3, 11, 3, 11];
+
+        // Log Attrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_logs(&mut vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn test_logs_range_gaps() {
         // Both batches use the same IDs, so reindexing must remap to avoid overlap
         let parent_ids   = vec![0, 1, 10, 11, 15, 16];
@@ -755,9 +859,9 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
-        // for rb in batches.to_vec().into_iter().flatten().filter_map(|rb| rb) {
-        //     pretty::print_batches(&[rb]).unwrap();
-        // }
+        for rb in batches.to_vec().into_iter().flatten().filter_map(|rb| rb) {
+            pretty::print_batches(&[rb]).unwrap();
+        }
 
         // Assert equivalence
         assert_equivalent(&before_otlp, &after_otlp);
