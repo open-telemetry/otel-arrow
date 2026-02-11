@@ -5,8 +5,8 @@ use arrow::array::{RecordBatch, TimestampNanosecondArray, UInt16Array, UInt32Arr
 
 use crate::{
     arrays::{
-        NullableArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt,
-        get_u16_array, get_u32_array_opt,
+        NullableArrayAccessor, StringArrayAccessor, UInt32ArrayAccessor,
+        get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
     },
     error::{Error, Result},
     otlp::{
@@ -26,7 +26,7 @@ use crate::{
 };
 
 pub struct SpanEventArrays<'a> {
-    pub id: Option<&'a UInt32Array>,
+    pub id: Option<UInt32ArrayAccessor<'a>>,
     pub parent_id: &'a UInt16Array,
     pub time_unix_nano: Option<&'a TimestampNanosecondArray>,
     pub name: Option<StringArrayAccessor<'a>>,
@@ -38,7 +38,10 @@ impl<'a> TryFrom<&'a RecordBatch> for SpanEventArrays<'a> {
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         Ok(Self {
-            id: get_u32_array_opt(rb, consts::ID)?,
+            id: rb
+                .column_by_name(consts::ID)
+                .map(UInt32ArrayAccessor::try_new)
+                .transpose()?,
             parent_id: get_u16_array(rb, consts::PARENT_ID)?,
             time_unix_nano: get_timestamp_nanosecond_array_opt(rb, consts::TIME_UNIX_NANO)?,
             name: rb
