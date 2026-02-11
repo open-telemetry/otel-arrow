@@ -33,7 +33,7 @@ use otap_df_config::{
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
-use otap_df_telemetry::{otel_debug, otel_debug_span, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
@@ -385,14 +385,30 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let unconnected = config.remove_unconnected_nodes();
         for (node_id, node_kind) in &unconnected {
             let kind: Cow<'static, str> = (*node_kind).into();
-            otel_warn!(
-                "pipeline.build.unconnected_node",
+            otel_info!(
+                "pipeline.build.unconnected_node.removed",
+                message = "Removed unconnected node from pipeline.",
                 pipeline_group_id = pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_id.as_ref(),
                 core_id = core_id,
                 node_id = node_id.as_ref(),
                 node_kind = kind.as_ref(),
             );
+        }
+        if !unconnected.is_empty() {
+            otel_warn!(
+                "pipeline.build.unconnected_nodes",
+                message = "Some pipeline nodes were removed because they had no active incoming or outgoing edges. These nodes will not participate in data processing. Check pipeline configuration if this is unintentional.",
+                pipeline_group_id = pipeline_group_id.as_ref(),
+                pipeline_id = pipeline_id.as_ref(),
+                core_id = core_id,
+                removed_count = unconnected.len(),
+            );
+        }
+
+        // If every node was removed, the pipeline config is broken — fail early.
+        if config.nodes().is_empty() {
+            return Err(Error::EmptyPipeline);
         }
 
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
