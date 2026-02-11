@@ -231,21 +231,20 @@ impl SegmentStore {
         self.read_mode
     }
 
-    /// Registers a newly finalized segment.
+    /// Registers an existing segment discovered at startup.
     ///
-    /// Called by the engine after writing a segment file. If a callback was
-    /// set via [`set_on_segment_registered`](Self::set_on_segment_registered),
-    /// it will be invoked with the segment sequence and bundle count.
+    /// Called during `scan_existing` to load segments from a previous run.
+    /// The segment's file size is recorded to the disk budget via
+    /// `budget.add()` so that startup accounting reflects on-disk state.
     ///
-    /// The segment's file size is recorded to the disk budget if one was configured.
-    /// Use this for loading existing segments at startup.
-    /// For newly written segments where budget was already reserved, use
-    /// [`register_new_segment`](Self::register_new_segment) instead.
+    /// For newly written segments where `budget.add()` was already called
+    /// by the engine, use [`register_new_segment`](Self::register_new_segment)
+    /// instead to avoid double-counting.
     ///
     /// # Errors
     ///
     /// Returns an error if the segment file cannot be opened.
-    pub fn register_segment(&self, seq: SegmentSeq) -> Result<u32> {
+    pub fn register_existing_segment(&self, seq: SegmentSeq) -> Result<u32> {
         let path = self.segment_path(seq);
         let handle = SegmentHandle::open(seq, path, self.read_mode)?;
         let bundle_count = handle.bundle_count;
@@ -271,8 +270,8 @@ impl SegmentStore {
 
     /// Registers a newly written segment without budget accounting.
     ///
-    /// Use this when the segment was just written and budget was already reserved
-    /// via the reservation pattern. This avoids double-counting bytes.
+    /// Use this when the segment was just written and `budget.add()` was
+    /// already called by the engine. This avoids double-counting bytes.
     ///
     /// # Errors
     ///
@@ -287,7 +286,7 @@ impl SegmentStore {
             let _ = segments.insert(seq, Arc::new(handle));
         }
 
-        // Note: No budget recording - caller already committed the reservation
+        // Note: No budget recording - caller already called budget.add()
 
         // Notify callback (outside of segments lock)
         if let Some(callback) = self.on_segment_registered.lock().as_ref() {
@@ -541,7 +540,7 @@ impl SegmentStore {
                         }
                     }
 
-                    match self.register_segment(seq) {
+                    match self.register_existing_segment(seq) {
                         Ok(bundle_count) => found.push((seq, bundle_count)),
                         Err(e) => {
                             otel_error!(
