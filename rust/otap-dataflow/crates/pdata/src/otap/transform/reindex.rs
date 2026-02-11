@@ -552,12 +552,92 @@ mod tests {
     use crate::record_batch;
     use crate::schema::FieldExt;
 
-    /// Takes a vec of (ArrowPayloadType, RecordBatch) tuples and assembles them into
-    /// a single batch array. For each provided batch, missing required columns are
-    /// filled in with default values of the correct length.
+    /// Known ID column names that need plain encoding metadata
+    const ID_COLUMNS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
+
+    /// Creates a single `[Option<RecordBatch>; N]` from a list of (payload_type, batch) tuples.
+    /// Fills in missing required columns for each batch based on its payload type.
+    /// Marks known ID columns as plain-encoded so transport decoding is skipped.
     ///
-    /// Panics if duplicate payload types are provided or if a payload type is not
-    /// allowed for the store. Call this once per batch group.
+    /// Panics on duplicate or disallowed payload types.
+    macro_rules! logs {
+        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
+            {
+                use $crate::otap::Logs;
+                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+                make_test_batch::<Logs, { Logs::COUNT }>(vec![
+                    $((
+                        ArrowPayloadType::$payload,
+                        $crate::record_batch!($($record_batch_args)*).unwrap(),
+                    ),)*
+                ])
+            }
+        };
+    }
+
+    #[test]
+    fn test_logs_reindex_u16() {
+        let mut batches = vec![
+            logs!(
+                (Logs, ("id", UInt16, [1, 0])),
+                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, [1, 0])),
+                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+        ];
+
+        let expected = vec![
+            logs!(
+                (Logs, ("id", UInt16, [1, 0])),
+                (LogAttrs, ("parent_id", UInt16, [0, 0, 1, 1]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, [3, 2])),
+                (LogAttrs, ("parent_id", UInt16, [2, 2, 3, 3]))
+            ),
+        ];
+
+        reindex_logs(&mut batches).unwrap();
+        assert_batches_eq(&batches, &expected);
+    }
+
+    #[test]
+    fn test_logs_reindex_u16_noop() {
+        let mut batches = vec![
+            logs!(
+                (Logs, ("id", UInt16, [0, 2, 1, 3])),
+                (LogAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, [4, 6, 5, 7])),
+                (LogAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
+            ),
+        ];
+
+        let expected = vec![
+            logs!(
+                (Logs, ("id", UInt16, [0, 2, 1, 3])),
+                (LogAttrs, ("parent_id", UInt16, [1, 2, 2, 0, 3]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, [4, 6, 5, 7])),
+                (LogAttrs, ("parent_id", UInt16, [6, 6, 5, 5, 7, 4]))
+            ),
+        ];
+
+        reindex_logs(&mut batches).unwrap();
+        assert_batches_eq(&batches, &expected);
+    }
+
+    fn assert_batches_eq<const N: usize>(
+        actual: &[[Option<RecordBatch>; N]],
+        expected: &[[Option<RecordBatch>; N]],
+    ) {
+    }
+
     fn make_test_batch<S: OtapBatchStore, const N: usize>(
         inputs: Vec<(ArrowPayloadType, RecordBatch)>,
     ) -> [Option<RecordBatch>; N] {
@@ -584,38 +664,23 @@ mod tests {
         result
     }
 
-    /// Marks all fields in a record batch as plain-encoded so that
-    /// `remove_transport_optimized_encodings` does not try to decode them.
-    fn mark_all_plain(batch: RecordBatch) -> RecordBatch {
-        let (schema, columns, _) = batch.into_parts();
-        let fields: Vec<Arc<Field>> = schema
-            .fields()
-            .iter()
-            .map(|f| Arc::new(f.as_ref().clone().with_plain_encoding()))
-            .collect();
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to mark fields as plain")
-    }
-
-    /// Dispatches to the appropriate batch completion function based on payload type
     fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
-        match payload_type {
+        let batch = match payload_type {
             ArrowPayloadType::Logs => complete_logs_batch(batch),
             ArrowPayloadType::LogAttrs
             | ArrowPayloadType::ResourceAttrs
             | ArrowPayloadType::ScopeAttrs => complete_attrs_batch(batch),
             _ => batch,
-        }
+        };
+        mark_id_columns_plain(batch)
     }
 
-    /// Fills in missing required columns for a Logs batch.
-    /// Required: `id` (UInt16), `body` (Struct { type: UInt8, int: Int64 })
     fn complete_logs_batch(batch: RecordBatch) -> RecordBatch {
         let num_rows = batch.num_rows();
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
 
-        if schema.index_of("body").is_err() {
+        if schema.fields.find("body").is_none() {
             let body_fields = vec![
                 Field::new("type", DataType::UInt8, false),
                 Field::new("int", DataType::Int64, true),
@@ -635,184 +700,48 @@ mod tests {
             columns.push(Arc::new(body));
         }
 
-        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed logs batch");
-        mark_all_plain(batch)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed logs batch")
     }
 
-    /// Fills in missing required columns for an Attrs batch.
-    /// Required: `parent_id` (UInt16), `key` (Utf8), `type` (UInt8), `int` (Int64)
     fn complete_attrs_batch(batch: RecordBatch) -> RecordBatch {
         let num_rows = batch.num_rows();
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
 
-        if schema.index_of("key").is_err() {
+        if schema.fields.find("key").is_none() {
             fields.push(Arc::new(Field::new("key", DataType::Utf8, false)));
             columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
         }
 
-        if schema.index_of("type").is_err() {
+        if schema.fields.find("type").is_none() {
             fields.push(Arc::new(Field::new("type", DataType::UInt8, false)));
             columns.push(Arc::new(UInt8Array::from(vec![0u8; num_rows])));
         }
 
-        if schema.index_of("int").is_err() {
+        if schema.fields.find("int").is_none() {
             fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
             columns.push(Arc::new(Int64Array::from(vec![0i64; num_rows])));
         }
 
-        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed attrs batch");
-        mark_all_plain(batch)
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed attrs batch")
     }
 
-    use crate::otap::Logs;
-
-    #[test]
-    fn test_logs_reindex_u16() {
-        let mut batches = vec![
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
-                ),
-            ]),
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
-                ),
-            ]),
-        ];
-
-        let expected = vec![
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [1, 0])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [0, 0, 1, 1])).unwrap(),
-                ),
-            ]),
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [3, 2])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [2, 2, 3, 3])).unwrap(),
-                ),
-            ]),
-        ];
-
-        reindex_logs(&mut batches).unwrap();
-        assert_batches_eq(&batches, &expected);
-    }
-
-    #[test]
-    fn test_logs_reindex_u16_noop() {
-        let mut batches = vec![
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap(),
-                ),
-            ]),
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap(),
-                ),
-            ]),
-        ];
-
-        let expected = vec![
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [0, 2, 1, 3])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [1, 2, 2, 0, 3])).unwrap(),
-                ),
-            ]),
-            make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                (
-                    ArrowPayloadType::Logs,
-                    record_batch!(("id", UInt16, [4, 6, 5, 7])).unwrap(),
-                ),
-                (
-                    ArrowPayloadType::LogAttrs,
-                    record_batch!(("parent_id", UInt16, [6, 6, 5, 5, 7, 4])).unwrap(),
-                ),
-            ]),
-        ];
-
-        reindex_logs(&mut batches).unwrap();
-        assert_batches_eq(&batches, &expected);
-    }
-
-    fn assert_batches_eq<const N: usize>(
-        actual: &[[Option<RecordBatch>; N]],
-        expected: &[[Option<RecordBatch>; N]],
-    ) {
-        assert_eq!(
-            actual.len(),
-            expected.len(),
-            "Different number of batch groups"
-        );
-        for (i, (actual_group, expected_group)) in actual.iter().zip(expected.iter()).enumerate() {
-            for (j, (actual_batch, expected_batch)) in
-                actual_group.iter().zip(expected_group.iter()).enumerate()
-            {
-                match (actual_batch, expected_batch) {
-                    (Some(a), Some(e)) => {
-                        // Compare only the columns that exist in the expected batch
-                        for field in e.schema().fields() {
-                            let a_col = a.column_by_name(field.name()).unwrap_or_else(|| {
-                                panic!(
-                                    "Group {}, slot {}: missing column '{}' in actual",
-                                    i,
-                                    j,
-                                    field.name()
-                                )
-                            });
-                            let e_col = e.column_by_name(field.name()).unwrap();
-                            assert_eq!(
-                                a_col,
-                                e_col,
-                                "Group {}, slot {}: column '{}' mismatch",
-                                i,
-                                j,
-                                field.name()
-                            );
-                        }
-                    }
-                    (None, None) => {}
-                    _ => panic!("Group {}, slot {}: one is Some and the other is None", i, j),
+    fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
+        let (schema, columns, _) = batch.into_parts();
+        let fields: Vec<Arc<Field>> = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                if ID_COLUMNS.contains(&f.name().as_str()) {
+                    Arc::new(f.as_ref().clone().with_plain_encoding())
+                } else {
+                    f.clone()
                 }
-            }
-        }
+            })
+            .collect();
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to mark id columns as plain")
     }
 }
