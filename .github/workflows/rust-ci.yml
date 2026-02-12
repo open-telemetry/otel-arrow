@@ -340,3 +340,51 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Add the label \`cargobench\` to your PR to run micro benchmarks." >> $GITHUB_STEP_SUMMARY
           echo "- More info: [link to docs](https://github.com/open-telemetry/otel-arrow/blob/main/CONTRIBUTING.md#micro-benchmarks)" >> $GITHUB_STEP_SUMMARY
+
+  # Aggregated status check for all Rust CI jobs
+  # This job can be set as a required status check in GitHub branch protection
+  # to simplify maintenance - add/remove jobs from the needs list as needed
+  required-status-check:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - test_and_coverage
+      - fmt
+      - pest-fmt
+      - clippy
+      - deny
+      - docs
+      - structure_check
+    steps:
+      - name: Check if all jobs succeeded
+        run: |
+          # Check if any required job failed or was cancelled
+          if [[ "${{ needs.test_and_coverage.result }}" != "success" ]]; then
+            echo "test_and_coverage failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.fmt.result }}" != "success" ]]; then
+            echo "fmt failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.pest-fmt.result }}" != "success" ]]; then
+            echo "pest-fmt failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
+            echo "clippy failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.deny.result }}" != "success" ]]; then
+            echo "deny failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.docs.result }}" != "success" ]]; then
+            echo "docs failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.structure_check.result }}" != "success" ]]; then
+            echo "structure_check failed or was cancelled"
+            exit 1
+          fi
+          echo "All required checks passed!"
