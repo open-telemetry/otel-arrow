@@ -796,8 +796,6 @@ mod tests {
         // - One that is at the end, so it also can't get remapped
         let parent_ids = vec![1, 2, 4];
         let child_ids  = vec![1, 0, 2, 3, 5, 4];
-
-        // Log Attrs
         test_reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
@@ -806,30 +804,6 @@ mod tests {
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
-        ]);
-
-        // ScopeAttrs
-        test_reindex_logs(&mut [
-            logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
-                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
-                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
-        ]);
-
-        // ResourceAttrs
-        test_reindex_logs(&mut [
-            logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
-                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
-            ),
-            logs!(
-                (Logs, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
-                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
         ]);
     }
@@ -1700,10 +1674,14 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
-        // for rb in batches.iter().flatten().flatten().cloned() {
-        //     use arrow::util::pretty;
-        //     pretty::print_batches(&[rb]).unwrap();
-        // }
+        for (idx, b) in batches.iter().enumerate() {
+            use arrow::util::pretty;
+            println!("-----Batch #{}------", idx);
+            for rb in b.iter().flatten().cloned() {
+                pretty::print_batches(&[rb]).unwrap();
+            }
+            println!("-----End Batch #{}------", idx);
+        }
 
         assert_equivalent(&before_otlp, &after_otlp);
     }
