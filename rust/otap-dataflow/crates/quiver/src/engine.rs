@@ -132,11 +132,11 @@ pub struct QuiverEngine {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = QuiverConfig::default().with_data_dir("/var/lib/quiver/data");
-///     let budget = Arc::new(DiskBudget::new(
+///     let budget = Arc::new(DiskBudget::for_config(
 ///         1024 * 1024 * 1024,      // 1 GB hard cap
-///         32 * 1024 * 1024,         // 32 MB segment headroom
+///         &config,
 ///         RetentionPolicy::Backpressure,
-///     ));
+///     ).expect("valid budget config"));
 ///
 ///     let engine = QuiverEngineBuilder::new(config)
 ///         .with_budget(budget)
@@ -234,12 +234,11 @@ impl QuiverEngine {
         config.validate()?;
 
         // Validate budget is large enough for WAL + two segments.
-        // The hard cap must accommodate the maximum WAL size plus two segment
-        // target sizes: one for the soft_cap headroom, and one for the segment
-        // that could be written while at the soft_cap.
+        // Uses DiskBudget::minimum_hard_cap() as the single source of truth
+        // for the constraint: hard_cap >= wal_max + 2 * segment_target_size.
         let segment_size = config.segment.target_size_bytes.get();
         let wal_max = config.wal.max_size_bytes.get();
-        let min_budget = wal_max.saturating_add(2 * segment_size);
+        let min_budget = crate::budget::DiskBudget::minimum_hard_cap(segment_size, wal_max);
         if budget.hard_cap() < min_budget && budget.hard_cap() != u64::MAX {
             let message = format!(
                 "disk budget must be at least 2x segment size to prevent deadlock: \
@@ -257,6 +256,18 @@ impl QuiverEngine {
                 message = message,
             );
             return Err(QuiverError::invalid_config(message));
+        }
+
+        // Validate segment headroom is at least segment_target_size.
+        // The soft_cap headroom must reserve room for one full segment
+        // finalization, otherwise used can overshoot the hard_cap.
+        let headroom = budget.hard_cap().saturating_sub(budget.soft_cap());
+        if headroom < segment_size && budget.hard_cap() != u64::MAX {
+            return Err(QuiverError::invalid_config(format!(
+                "budget segment_headroom ({headroom} bytes) must be at least segment_target_size \
+                 ({segment_size} bytes); use DiskBudget::for_config() to construct a correctly \
+                 configured budget",
+            )));
         }
 
         // Ensure directories exist

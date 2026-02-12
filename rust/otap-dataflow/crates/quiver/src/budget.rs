@@ -49,6 +49,44 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::config::RetentionPolicy;
 
+/// Error returned when budget configuration is invalid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetConfigError {
+    /// The hard cap is too small for the required WAL + segment headroom.
+    CapTooSmall {
+        /// The requested hard cap.
+        hard_cap: u64,
+        /// The minimum hard cap required.
+        minimum: u64,
+        /// The segment target size used in the calculation.
+        segment_target_size: u64,
+        /// The WAL max size used in the calculation.
+        wal_max_size: u64,
+    },
+}
+
+impl std::fmt::Display for BudgetConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BudgetConfigError::CapTooSmall {
+                hard_cap,
+                minimum,
+                segment_target_size,
+                wal_max_size,
+            } => {
+                write!(
+                    f,
+                    "disk budget hard_cap ({hard_cap} bytes) is too small; \
+                     minimum is WAL max ({wal_max_size}) + 2 * segment size \
+                     ({segment_target_size}) = {minimum} bytes"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BudgetConfigError {}
+
 /// Watermark-based disk budget for enforcing storage caps.
 ///
 /// Thread-safe for sharing between WAL writer, segment store,
@@ -103,6 +141,58 @@ impl DiskBudget {
     #[must_use]
     pub fn unlimited() -> Self {
         Self::new(u64::MAX, 0, RetentionPolicy::Backpressure)
+    }
+
+    /// Creates a budget validated against a [`QuiverConfig`].
+    ///
+    /// This is the recommended constructor for production use. It reads
+    /// `segment_target_size` and `wal_max_size` directly from the config
+    /// to guarantee the budget matches the engine configuration. It then
+    /// computes `segment_headroom = segment_target_size` and validates:
+    ///
+    /// ```text
+    /// hard_cap >= wal_max_size + 2 * segment_target_size
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `hard_cap` — Maximum bytes allowed on disk.
+    /// * `config` — The engine configuration (segment and WAL sizes are read from this).
+    /// * `policy` — Retention policy when the soft cap is exceeded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BudgetConfigError::CapTooSmall`] if `hard_cap` is below the
+    /// minimum required for safe operation.
+    pub fn for_config(
+        hard_cap: u64,
+        config: &crate::config::QuiverConfig,
+        policy: RetentionPolicy,
+    ) -> Result<Self, BudgetConfigError> {
+        let segment_target_size = config.segment.target_size_bytes.get();
+        let wal_max_size = config.wal.max_size_bytes.get();
+        let minimum = Self::minimum_hard_cap(segment_target_size, wal_max_size);
+        if hard_cap < minimum && hard_cap != u64::MAX {
+            return Err(BudgetConfigError::CapTooSmall {
+                hard_cap,
+                minimum,
+                segment_target_size,
+                wal_max_size,
+            });
+        }
+        Ok(Self::new(hard_cap, segment_target_size, policy))
+    }
+
+    /// Returns the minimum `hard_cap` required for the given segment and WAL sizes.
+    ///
+    /// Formula: `wal_max_size + 2 * segment_target_size`
+    ///
+    /// One `segment_target_size` is the soft-cap headroom (reserves room for
+    /// finalization), and the second is the working space for accumulating
+    /// the next segment.
+    #[must_use]
+    pub const fn minimum_hard_cap(segment_target_size: u64, wal_max_size: u64) -> u64 {
+        wal_max_size.saturating_add(2 * segment_target_size)
     }
 
     /// Returns the hard cap (maximum bytes on disk).

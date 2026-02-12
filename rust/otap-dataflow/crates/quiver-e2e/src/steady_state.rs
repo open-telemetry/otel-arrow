@@ -91,13 +91,16 @@ impl OutputMode {
 /// `global_cap / num_engines` as its quota, which it enforces independently
 /// without any cross-engine coordination.
 ///
+/// Takes the engine's [`QuiverConfig`] to read actual segment/WAL sizes
+/// (which may be staggered per engine), ensuring the budget always matches
+/// the engine that will use it.
+///
 /// Returns a 100 GB budget per engine if disk_budget_mb is 0 (effectively unlimited).
 fn create_per_engine_budget(
     global_disk_budget_mb: u64,
     num_engines: usize,
     policy: RetentionPolicy,
-    segment_size_mb: u64,
-    wal_max_size_mb: u64,
+    config: &QuiverConfig,
 ) -> Result<Arc<DiskBudget>, String> {
     // Phase 1: Static quota per engine = global_cap / num_engines
     let global_cap_bytes = if global_disk_budget_mb == 0 {
@@ -107,36 +110,20 @@ fn create_per_engine_budget(
     };
     let per_engine_cap = global_cap_bytes / num_engines as u64;
 
-    let segment_bytes = segment_size_mb * 1024 * 1024;
-    let wal_bytes = wal_max_size_mb * 1024 * 1024;
-
-    // Validate: cap must be at least wal_max + 2 * segment_size (same check
-    // the engine performs at open time).
-    let minimum_cap = wal_bytes + 2 * segment_bytes;
-    if per_engine_cap < minimum_cap {
-        let min_global_mb = minimum_cap * num_engines as u64 / (1024 * 1024);
-        return Err(format!(
-            "disk budget ({} bytes) must be at least WAL max ({} bytes) + \
-             2 * segment size ({} bytes) = {} bytes \
-             (global {} MB / {} engines = {} MB per engine). \
-             Minimum global for {} engines: {} MB",
-            per_engine_cap,
-            wal_bytes,
-            segment_bytes,
-            minimum_cap,
-            global_disk_budget_mb,
-            num_engines,
-            per_engine_cap / (1024 * 1024),
-            num_engines,
-            min_global_mb,
-        ));
-    }
-
-    Ok(Arc::new(DiskBudget::new(
-        per_engine_cap,
-        segment_bytes,
-        policy,
-    )))
+    DiskBudget::for_config(per_engine_cap, config, policy)
+        .map(Arc::new)
+        .map_err(|e| {
+            let segment_bytes = config.segment.target_size_bytes.get();
+            let wal_bytes = config.wal.max_size_bytes.get();
+            let min_global_mb =
+                DiskBudget::minimum_hard_cap(segment_bytes, wal_bytes) * num_engines as u64
+                    / (1024 * 1024);
+            format!(
+                "{e} (global {global_disk_budget_mb} MB / {num_engines} engines = {} MB per engine). \
+                 Minimum global for {num_engines} engines: {min_global_mb} MB",
+                per_engine_cap / (1024 * 1024),
+            )
+        })
 }
 
 /// Configuration for steady-state test.
@@ -801,15 +788,14 @@ async fn create_engines(
             num_engines,
         );
 
-        // Create per-engine disk budget (Phase 1: static quota per engine)
-        // WAL max is set to 128 MB in create_engine_config
-        let wal_size_mb = if no_wal { 0 } else { 128 };
+        // Create per-engine disk budget (Phase 1: static quota per engine).
+        // Budget reads segment/WAL sizes directly from the engine config,
+        // which includes any per-engine staggering applied above.
         let budget = create_per_engine_budget(
             disk_budget_mb,
             num_engines,
             retention_policy,
-            segment_size_mb,
-            wal_size_mb,
+            &engine_config,
         )?;
 
         // Engine now owns segment store and registry internally - using async open
