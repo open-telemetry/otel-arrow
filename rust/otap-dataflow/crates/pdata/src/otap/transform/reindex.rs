@@ -1243,17 +1243,19 @@ mod tests {
         // Three-level relationship: Spans -> SpanEvents -> SpanEventAttrs
         // SpanEvents.id is UInt32, SpanEventAttrs.parent_id is UInt32
         //
-        // We test four encoding variants for the UInt32 id columns:
-        // 1. Plain UInt32
-        // 2. Dict<UInt8, UInt32>
-        // 3. Dict<UInt16, UInt32>
-        // 4. Mixed encodings across columns and batches
+        // UInt32 id columns are always plain (not dictionary encoded).
+        // UInt32 parent_id columns may be dictionary encoded.
+        // We test encoding variants for parent_id columns:
+        // 1. Plain UInt32 parent_ids
+        // 2. Dict<UInt8, UInt32> parent_ids
+        // 3. Dict<UInt16, UInt32> parent_ids
+        // 4. Mixed encodings across parent_id columns and batches
         let span_ids     = vec![0u16, 1];
         let span_ids_2   = vec![2u16, 3];
         let event_pids   = vec![0u16, 0, 1];
         let event_pids_2 = vec![2u16, 3, 3];
 
-        // UInt32
+        // Plain UInt32 parent_ids
         test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
@@ -1267,40 +1269,40 @@ mod tests {
             ),
         ]);
 
-        // Dict<UInt8, UInt32>
+        // Dict<UInt8, UInt32> parent_ids
         test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
-                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1, 2], vec![0u32, 1, 2])))
             ),
             traces!(
                 (Spans, ("id", UInt16, span_ids_2.clone())),
-                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids_2.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
             ),
         ]);
 
-        // Dict<UInt16, UInt32>
+        // Dict<UInt16, UInt32> parent_ids
         test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
-                (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
             ),
             traces!(
                 (Spans, ("id", UInt16, span_ids_2.clone())),
-                (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids_2.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
             ),
         ]);
 
-        // Mixed: Dict<UInt8, UInt32> event ids, Dict<UInt16, UInt32> event attr parent ids,
-        // plain UInt32 in second batch event ids, Dict<UInt8, UInt32> in second batch event attr parent ids
+        // Mixed: Dict<UInt16, UInt32> event attr parent_ids in first batch,
+        // Dict<UInt8, UInt32> event attr parent_ids in second batch
         test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
-                (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
             ),
             traces!(
@@ -1654,61 +1656,63 @@ mod tests {
     #[rustfmt::skip]
     fn test_metrics_number_dp_chain_with_dicts() {
         // Four-level chain: Metrics -> NumberDataPoints -> NumberDpExemplars -> NumberDpExemplarAttrs
-        // Tests dictionary encoding variants for the UInt32 id columns:
-        // 1. Dict<UInt8, UInt32>
-        // 2. Dict<UInt16, UInt32>
-        // 3. Mixed encodings across columns and batches
+        //
+        // UInt32 id columns are always plain (not dictionary encoded).
+        // UInt32 parent_id columns may be dictionary encoded.
+        // Tests dictionary encoding variants for parent_id columns:
+        // 1. Dict<UInt8, UInt32> parent_ids
+        // 2. Dict<UInt16, UInt32> parent_ids
+        // 3. Mixed encodings across parent_id columns and batches
         let metric_ids           = vec![0u16, 1];
         let metric_ids_2         = vec![2u16, 3];
         let dp_pids              = vec![0u16, 0, 1];
         let dp_pids_2            = vec![2u16, 3, 3];
-        let exemplar_pids        = vec![0u32, 1, 2];
 
-        // Dict<UInt8, UInt32> for all UInt32 id columns
+        // Dict<UInt8, UInt32> for all UInt32 parent_id columns
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
-                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
-                (NumberDpExemplars, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
                 (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1, 2], vec![0u32, 1, 2])))
             ),
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
-                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids_2.clone())),
-                (NumberDpExemplars, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
                 (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
             ),
         ]);
 
-        // Dict<UInt16, UInt32> for all UInt32 id columns
+        // Dict<UInt16, UInt32> for all UInt32 parent_id columns
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
-                (NumberDataPoints, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
-                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
-                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
-            ),
-            metrics!(
-                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
-                (NumberDataPoints, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids_2.clone())),
-                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
-                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
-            ),
-        ]);
-
-        // Mixed: Dict<UInt8, UInt32> dp ids, Dict<UInt16, UInt32> exemplar ids and parent ids,
-        // plain UInt32 in second batch dp ids, Dict<UInt8, UInt32> in second batch exemplar attr parent ids
-        test_reindex_metrics(&mut[
-            metrics!(
-                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
-                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
-                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt32, exemplar_pids.clone())),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
                 (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
             ),
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
                 (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids_2.clone())),
                 (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
+            ),
+        ]);
+
+        // Mixed: Dict<UInt16, UInt32> exemplar parent_ids and exemplar attr parent_ids in first batch,
+        // Dict<UInt8, UInt32> exemplar attr parent_ids in second batch
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt32, vec![0u32, 1, 2])),
                 (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
             ),
         ]);
@@ -1795,7 +1799,7 @@ mod tests {
 
     /// Validates reindexing for any signal:
     /// 1. Converts input to OTLP (before reindex)
-    /// 2. Snapshots parent→child relation fingerprints (before reindex)
+    /// 2. Snapshots parent -> child relation fingerprints (before reindex)
     /// 3. Reindexes the batches
     /// 4. Asserts no ID overlaps across batch groups
     /// 5. Asserts relation fingerprints are unchanged
@@ -1810,19 +1814,6 @@ mod tests {
     {
         let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
         let before_relations = extract_relation_fingerprints::<S, N>(batches);
-        // Transport optimize every batch. We do this after extracting the fingerprints
-        // because they don't make sense otherwise.
-        for batch in batches.iter_mut() {
-            for (idx, rb) in batch.iter_mut().enumerate() {
-                let payload_type = S::payload_type_at_idx(idx);
-
-                if let Some(rb) = rb {
-                    *rb = apply_transport_optimized_encodings(&payload_type, rb)
-                        .unwrap()
-                        .0;
-                }
-            }
-        }
 
         reindex_fn(batches).unwrap();
         assert_no_id_overlaps::<S, N>(batches);
