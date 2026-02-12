@@ -47,7 +47,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::config::RetentionPolicy;
+use crate::config::{DurabilityMode, RetentionPolicy};
 
 /// Error returned when budget configuration is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +154,9 @@ impl DiskBudget {
     /// hard_cap >= wal_max_size + 2 * segment_target_size
     /// ```
     ///
+    /// When [`DurabilityMode::SegmentOnly`] is configured, no WAL is written,
+    /// so the WAL contribution to the minimum is zero.
+    ///
     /// # Arguments
     ///
     /// * `hard_cap` — Maximum bytes allowed on disk.
@@ -170,7 +173,7 @@ impl DiskBudget {
         policy: RetentionPolicy,
     ) -> Result<Self, BudgetConfigError> {
         let segment_target_size = config.segment.target_size_bytes.get();
-        let wal_max_size = config.wal.max_size_bytes.get();
+        let wal_max_size = Self::effective_wal_size(config);
         let minimum = Self::minimum_hard_cap(segment_target_size, wal_max_size);
         if hard_cap < minimum && hard_cap != u64::MAX {
             return Err(BudgetConfigError::CapTooSmall {
@@ -183,6 +186,18 @@ impl DiskBudget {
         Ok(Self::new(hard_cap, segment_target_size, policy))
     }
 
+    /// Returns the effective WAL size for budget calculations.
+    ///
+    /// Returns 0 when [`DurabilityMode::SegmentOnly`] is configured (no WAL
+    /// on disk), otherwise returns `config.wal.max_size_bytes`.
+    #[must_use]
+    pub fn effective_wal_size(config: &crate::config::QuiverConfig) -> u64 {
+        match config.durability {
+            DurabilityMode::Wal => config.wal.max_size_bytes.get(),
+            DurabilityMode::SegmentOnly => 0,
+        }
+    }
+
     /// Returns the minimum `hard_cap` required for the given segment and WAL sizes.
     ///
     /// Formula: `wal_max_size + 2 * segment_target_size`
@@ -190,6 +205,10 @@ impl DiskBudget {
     /// One `segment_target_size` is the soft-cap headroom (reserves room for
     /// finalization), and the second is the working space for accumulating
     /// the next segment.
+    ///
+    /// Pass 0 for `wal_max_size` when [`DurabilityMode::SegmentOnly`] is
+    /// configured, or use [`effective_wal_size`](Self::effective_wal_size)
+    /// to compute it from the config.
     #[must_use]
     pub const fn minimum_hard_cap(segment_target_size: u64, wal_max_size: u64) -> u64 {
         wal_max_size.saturating_add(2 * segment_target_size)

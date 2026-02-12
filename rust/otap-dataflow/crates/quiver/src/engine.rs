@@ -236,8 +236,9 @@ impl QuiverEngine {
         // Validate budget is large enough for WAL + two segments.
         // Uses DiskBudget::minimum_hard_cap() as the single source of truth
         // for the constraint: hard_cap >= wal_max + 2 * segment_target_size.
+        // WAL contribution is zero when DurabilityMode::SegmentOnly.
         let segment_size = config.segment.target_size_bytes.get();
-        let wal_max = config.wal.max_size_bytes.get();
+        let wal_max = crate::budget::DiskBudget::effective_wal_size(&config);
         let min_budget = crate::budget::DiskBudget::minimum_hard_cap(segment_size, wal_max);
         if budget.hard_cap() < min_budget && budget.hard_cap() != u64::MAX {
             let message = format!(

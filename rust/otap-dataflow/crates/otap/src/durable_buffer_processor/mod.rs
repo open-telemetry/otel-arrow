@@ -384,7 +384,7 @@ impl DurableBuffer {
         let total_size_cap = config.size_cap_bytes();
         let per_core_size_cap = total_size_cap / num_cores.max(1) as u64;
         let segment_size = quiver_config.segment.target_size_bytes.get();
-        let wal_max = quiver_config.wal.max_size_bytes.get();
+        let wal_max = DiskBudget::effective_wal_size(&quiver_config);
         let min_per_core = DiskBudget::minimum_hard_cap(segment_size, wal_max);
 
         if per_core_size_cap < min_per_core {

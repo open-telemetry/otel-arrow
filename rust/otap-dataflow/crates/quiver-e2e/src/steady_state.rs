@@ -114,7 +114,7 @@ fn create_per_engine_budget(
         .map(Arc::new)
         .map_err(|e| {
             let segment_bytes = config.segment.target_size_bytes.get();
-            let wal_bytes = config.wal.max_size_bytes.get();
+            let wal_bytes = DiskBudget::effective_wal_size(config);
             let min_global_mb =
                 DiskBudget::minimum_hard_cap(segment_bytes, wal_bytes) * num_engines as u64
                     / (1024 * 1024);
