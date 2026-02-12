@@ -273,7 +273,8 @@ where
         // TODO: We can optimize here by reusing some storage:
         //
         //  - The vectors to store the sort indices and to hold the sorted Ids is
-        //  just scratch space and reusasble. We may need one per Native type
+        //  while we create mappings is just scratch space and reusasble. We may
+        //  need one scratch buffer per Native type
         //  - The vector to hold the mappings is also reusable and just scratch
         //  space
         //
