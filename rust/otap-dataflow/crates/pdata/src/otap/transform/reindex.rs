@@ -254,18 +254,18 @@ where
     let mut offset = T::Native::from(0);
 
     for i in 0..store.len() {
-        let Some(parent_batch) = store.get_mut(i)[parent_idx].take() else {
+        let Some(parent_rb) = store.get_mut(i)[parent_idx].take() else {
             continue;
         };
 
         // TODO: Consider unwrapping if we feel like id being present is an invariant.
         // that needs to be upheld at this point.
         // Extract ID column - if it doesn't exist, skip reindexing for this batch
-        let id_col = match extract_id_column(&parent_batch, id_column_path) {
+        let id_col = match extract_id_column(&parent_rb, id_column_path) {
             Ok(col) => col,
             Err(_) => {
                 // No ID column, put the batch back and continue
-                store.get_mut(i)[parent_idx] = Some(parent_batch);
+                store.get_mut(i)[parent_idx] = Some(parent_rb);
                 continue;
             }
         };
@@ -290,20 +290,20 @@ where
         offset = new_offset;
         apply_mappings::<T>(&mut sorted_ids, &mappings);
         untake_vec(&sorted_ids, &mut ids, &sort_indices);
-        let parent_batch = replace_id_column::<T>(parent_batch, id_column_path, ids)?;
+        let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
 
         // Put parent batch back
-        store.get_mut(i)[parent_idx] = Some(parent_batch);
+        store.get_mut(i)[parent_idx] = Some(parent_rb);
 
-        // Apply mappings to each child batch one at a time
+        // Apply mappings to each child record batch one at a time
         for &child_payload_type in child_payload_types {
             let child_idx = payload_to_idx(child_payload_type);
 
-            if let Some(child_batch) = store.get_mut(i)[child_idx].take() {
-                let child_batch = reindex_child_column::<T>(child_batch, PARENT_ID, &mappings)?;
+            if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
+                let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
 
                 // Put child batch back
-                store.get_mut(i)[child_idx] = Some(child_batch);
+                store.get_mut(i)[child_idx] = Some(child_rb);
             }
         }
     }
@@ -357,12 +357,12 @@ where
     let (schema, mut columns, _) = rb.into_parts();
     let new_column = replace_ids::<T>(id_col.as_ref(), new_ids_array);
     replace_column(column_path, None, &schema, &mut columns, new_column);
-    let batch =
+    let rb =
         RecordBatch::try_new(schema, columns).map_err(|e| Error::UnexpectedRecordBatchState {
             reason: format!("Failed to create batch: {}", e),
         })?;
 
-    Ok(batch)
+    Ok(rb)
 }
 
 /// Extracts an ID column from a record batch
@@ -1820,13 +1820,14 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
+        // FIXME: Comment out
         for (idx, b) in batches.iter().enumerate() {
             use arrow::util::pretty;
-            println!("-----Batch #{}------", idx);
+            eprintln!("-----Batch #{}------", idx);
             for rb in b.iter().flatten().cloned() {
-                pretty::print_batches(&[rb]).unwrap();
+                eprintln!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
             }
-            println!("-----End Batch #{}------", idx);
+            eprintln!("-----End Batch #{}------", idx);
         }
 
         assert_equivalent(&before_otlp, &after_otlp);
