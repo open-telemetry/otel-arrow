@@ -123,7 +123,8 @@ where
         //
         // FIXME: We are vulnerable to issues here with resource and scope id
         // columns which do not have a primary id column defining them in any
-        // payload type.
+        // payload type. This is planned to be addressed alongside some upcoming
+        // optimizations.
         //
         // See: https://github.com/open-telemetry/otel-arrow/pull/2021#discussion_r2800261547
         // See: https://github.com/open-telemetry/otel-arrow/issues/1926
