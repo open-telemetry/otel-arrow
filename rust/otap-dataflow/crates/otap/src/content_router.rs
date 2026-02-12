@@ -771,7 +771,7 @@ mod tests {
         default: Option<String>,
     ) -> ContentRouterConfig {
         ContentRouterConfig {
-            routing_key: "microsoft.resourceId".to_string(),
+            routing_key: "service.namespace".to_string(),
             routes,
             default_output: default,
             case_sensitive: true,
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn test_config_deserialization() {
         let config_json = json!({
-            "routing_key": "microsoft.resourceId",
+            "routing_key": "service.namespace",
             "routes": {
                 "/subscriptions/aaa": "tenant_a",
                 "/subscriptions/bbb": "tenant_b"
@@ -794,7 +794,7 @@ mod tests {
             "case_sensitive": false
         });
         let cfg: ContentRouterConfig = serde_json::from_value(config_json).unwrap();
-        assert_eq!(cfg.routing_key, "microsoft.resourceId");
+        assert_eq!(cfg.routing_key, "service.namespace");
         assert_eq!(cfg.routes.len(), 2);
         assert_eq!(cfg.default_output, Some("fallback".to_string()));
         assert!(!cfg.case_sensitive);
@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn test_factory_creation_ok() {
         let config = json!({
-            "routing_key": "microsoft.resourceId",
+            "routing_key": "service.namespace",
             "routes": { "/sub/a": "tenant_a" }
         });
         let processor_config = ProcessorConfig::new("test_content_router");
@@ -934,7 +934,7 @@ mod tests {
         ]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_logs_with_resource_attr("service.namespace", "/subscriptions/aaa");
         let data = RawLogsData::new(&bytes);
         match router.resolve_logs_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -947,8 +947,7 @@ mod tests {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes =
-            create_logs_with_resource_attr("microsoft.resourceId", "/subscriptions/unknown");
+        let bytes = create_logs_with_resource_attr("service.namespace", "/subscriptions/unknown");
         let data = RawLogsData::new(&bytes);
         assert!(matches!(
             router.resolve_logs_route(&data),
@@ -973,14 +972,14 @@ mod tests {
     fn test_resolve_case_insensitive() {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let config = ContentRouterConfig {
-            routing_key: "microsoft.resourceId".to_string(),
+            routing_key: "service.namespace".to_string(),
             routes,
             default_output: None,
             case_sensitive: false,
         };
         let router = ContentRouter::new(config);
 
-        let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/Subscriptions/AAA");
+        let bytes = create_logs_with_resource_attr("service.namespace", "/Subscriptions/AAA");
         let data = RawLogsData::new(&bytes);
         match router.resolve_logs_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -997,7 +996,7 @@ mod tests {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes = create_metrics_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_metrics_with_resource_attr("service.namespace", "/subscriptions/aaa");
         let data = RawMetricsData::new(&bytes);
         match router.resolve_metrics_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -1010,7 +1009,7 @@ mod tests {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes = create_traces_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_traces_with_resource_attr("service.namespace", "/subscriptions/aaa");
         let data = RawTraceData::new(&bytes);
         match router.resolve_traces_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -1032,11 +1031,11 @@ mod tests {
 
         let bytes = create_multi_resource_logs(vec![
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/bbb"),
             )],
         ]);
@@ -1054,11 +1053,11 @@ mod tests {
 
         let bytes = create_multi_resource_logs(vec![
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
         ]);
@@ -1077,7 +1076,7 @@ mod tests {
         // First resource has routing key, second doesn't
         let bytes = create_multi_resource_logs(vec![
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
             vec![], // no routing key
@@ -1098,7 +1097,7 @@ mod tests {
         let bytes = create_multi_resource_logs(vec![
             vec![], // no routing key
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
         ]);
@@ -1118,7 +1117,7 @@ mod tests {
         // Both are "unroutable" (go to default_output or NACK), so NOT mixed.
         let bytes = create_multi_resource_logs(vec![
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/unknown"),
             )],
             vec![], // no routing key
@@ -1155,7 +1154,7 @@ mod tests {
 
         // Routing key exists but has an integer value — should be NoMatch, not MissingKey
         let bytes = create_multi_resource_logs(vec![vec![KeyValue::new(
-            "microsoft.resourceId",
+            "service.namespace",
             AnyValue::new_int(42),
         )]]);
         let data = RawLogsData::new(&bytes);
@@ -1173,11 +1172,11 @@ mod tests {
         // First resource matches, second has unrecognized value → MixedBatch
         let bytes = create_multi_resource_logs(vec![
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/aaa"),
             )],
             vec![KeyValue::new(
-                "microsoft.resourceId",
+                "service.namespace",
                 AnyValue::new_string("/subscriptions/unknown"),
             )],
         ]);
@@ -1215,7 +1214,7 @@ mod tests {
     fn test_process_control_message() {
         let test_runtime = TestRuntime::new();
         let config = ContentRouterConfig {
-            routing_key: "microsoft.resourceId".to_string(),
+            routing_key: "service.namespace".to_string(),
             routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
             default_output: None,
             case_sensitive: true,
@@ -1303,7 +1302,7 @@ mod tests {
                 let node_id = test_node("content_router_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "microsoft.resourceId".to_string(),
+                    routing_key: "service.namespace".to_string(),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
@@ -1316,7 +1315,7 @@ mod tests {
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
-                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/a");
+                let bytes = create_logs_with_resource_attr("service.namespace", "/sub/a");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
@@ -1358,7 +1357,7 @@ mod tests {
                 let node_id = test_node("content_router_nack_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "microsoft.resourceId".to_string(),
+                    routing_key: "service.namespace".to_string(),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
@@ -1369,7 +1368,7 @@ mod tests {
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
-                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
+                let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
@@ -1409,7 +1408,7 @@ mod tests {
                 let node_id = test_node("content_router_default_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "microsoft.resourceId".to_string(),
+                    routing_key: "service.namespace".to_string(),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: Some("fallback".to_string()),
                     case_sensitive: true,
@@ -1423,7 +1422,7 @@ mod tests {
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 // Send with non-matching route - should go to default
-                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
+                let bytes = create_logs_with_resource_attr("service.namespace", "/sub/unknown");
                 let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
@@ -1470,7 +1469,7 @@ mod tests {
                 let node_id = test_node("content_router_conversion_error_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "microsoft.resourceId".to_string(),
+                    routing_key: "service.namespace".to_string(),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
