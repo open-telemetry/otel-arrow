@@ -105,6 +105,76 @@ pub enum Error {
         details: Box<HyperEdgeSpecDetails>,
     },
 
+    /// A connection source selector is malformed.
+    #[error("Invalid connection source `{selector}`: {message}")]
+    #[diagnostic(code(data_plane::invalid_connection_source), url(docsrs))]
+    InvalidConnectionSource {
+        /// The raw connection source selector.
+        selector: String,
+        /// A description of why parsing failed.
+        message: String,
+    },
+
+    /// A node has an invalid type URN in pipeline configuration.
+    #[error("Invalid node `type` for node `{node_id}`: {details}\nContext: {context}")]
+    #[diagnostic(code(data_plane::invalid_node_type), url(docsrs))]
+    InvalidNodeType {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// The node containing the invalid type.
+        node_id: NodeId,
+        /// Validation details from the URN parser.
+        details: String,
+    },
+
+    /// A connection uses an unsupported dispatch policy for the requested topology.
+    #[error(
+        "Unsupported dispatch policy `{dispatch_policy:?}` for connection {source_nodes:?} -> {target_nodes:?}\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::unsupported_dispatch_policy), url(docsrs))]
+    UnsupportedConnectionDispatchPolicy {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// The dispatch policy configured on the connection.
+        dispatch_policy: DispatchPolicy,
+        /// Source node ids for the connection.
+        source_nodes: Box<[NodeId]>,
+        /// Destination node ids for the connection.
+        target_nodes: Box<[NodeId]>,
+    },
+
+    /// A connection selects an output that is not declared by the source node.
+    #[error(
+        "Connection source `{source_node}` selects output `{selected_output}` which is not declared in `outputs` ({declared_outputs:?})\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::undeclared_connection_output), url(docsrs))]
+    UndeclaredConnectionOutput {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// The source node id.
+        source_node: NodeId,
+        /// The selected output name.
+        selected_output: PortName,
+        /// The output names declared on the source node.
+        declared_outputs: Box<[PortName]>,
+    },
+
+    /// A fanout node output is connected to more than one destination.
+    #[error(
+        "fanout node `{source_node}` output `{output}` must target exactly one destination, found {target_nodes:?}\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::fanout_multiple_destinations), url(docsrs))]
+    FanoutOutputMultipleDestinations {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// The source fanout node id.
+        source_node: NodeId,
+        /// The source output name.
+        output: PortName,
+        /// The resolved target nodes.
+        target_nodes: Box<[NodeId]>,
+    },
+
     /// An invalid user configuration occurred.
     #[error("An invalid user configuration occurred: {error}")]
     InvalidUserConfig {

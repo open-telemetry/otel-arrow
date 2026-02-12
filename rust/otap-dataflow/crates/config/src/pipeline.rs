@@ -220,25 +220,30 @@ impl ConnectionSource {
 }
 
 impl TryFrom<String> for ConnectionSource {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         let value = value.trim();
         if value.is_empty() {
-            return Err("connection source must be non-empty".to_string());
+            return Err(Error::InvalidConnectionSource {
+                selector: value.to_string(),
+                message: "connection source must be non-empty".to_string(),
+            });
         }
 
         if let Some(open) = value.find('[') {
             if !value.ends_with(']') {
-                return Err(format!(
-                    "invalid connection source `{value}`: expected `<node>[\"<port>\"]`"
-                ));
+                return Err(Error::InvalidConnectionSource {
+                    selector: value.to_string(),
+                    message: "expected `<node>[\"<output>\"]`".to_string(),
+                });
             }
             let node = value[..open].trim();
             if node.is_empty() {
-                return Err(format!(
-                    "invalid connection source `{value}`: missing node id before `[`"
-                ));
+                return Err(Error::InvalidConnectionSource {
+                    selector: value.to_string(),
+                    message: "missing node id before `[`".to_string(),
+                });
             }
             let selector = value[open + 1..value.len() - 1].trim();
             let quoted_port = if selector.len() >= 2
@@ -247,14 +252,16 @@ impl TryFrom<String> for ConnectionSource {
             {
                 &selector[1..selector.len() - 1]
             } else {
-                return Err(format!(
-                    "invalid connection source `{value}`: expected quoted port selector"
-                ));
+                return Err(Error::InvalidConnectionSource {
+                    selector: value.to_string(),
+                    message: "expected quoted output selector".to_string(),
+                });
             };
             if quoted_port.is_empty() {
-                return Err(format!(
-                    "invalid connection source `{value}`: port selector must be non-empty"
-                ));
+                return Err(Error::InvalidConnectionSource {
+                    selector: value.to_string(),
+                    message: "output selector must be non-empty".to_string(),
+                });
             }
             Ok(Self::from_node_with_port(
                 node.to_string().into(),
@@ -262,9 +269,10 @@ impl TryFrom<String> for ConnectionSource {
             ))
         } else {
             if value.contains(']') {
-                return Err(format!(
-                    "invalid connection source `{value}`: unexpected closing `]`"
-                ));
+                return Err(Error::InvalidConnectionSource {
+                    selector: value.to_string(),
+                    message: "unexpected closing `]`".to_string(),
+                });
             }
             Ok(Self::from_node(value.to_string().into()))
         }
@@ -464,17 +472,21 @@ impl PipelineNodes {
     ) -> Result<(), Error> {
         for (node_id, node) in self.0.iter_mut() {
             let mut updated = (**node).clone();
-            let normalized = crate::node_urn::canonicalize_plugin_urn(updated.r#type.as_ref()).map_err(|e| {
-                if let Error::InvalidUserConfig { error } = e {
-                    Error::InvalidUserConfig {
-                        error: format!(
-                            "node `{node_id}` in pipeline group `{pipeline_group_id}` pipeline `{pipeline_id}`: {error}"
-                        ),
+            let normalized = crate::node_urn::canonicalize_plugin_urn(updated.r#type.as_ref())
+                .map_err(|e| {
+                    if let Error::InvalidUserConfig { error } = e {
+                        Error::InvalidNodeType {
+                            context: Box::new(Context::new(
+                                pipeline_group_id.clone(),
+                                pipeline_id.clone(),
+                            )),
+                            node_id: node_id.clone(),
+                            details: error,
+                        }
+                    } else {
+                        e
                     }
-                } else {
-                    e
-                }
-            })?;
+                })?;
             updated.r#type = normalized;
             *node = Arc::new(updated);
         }
@@ -842,10 +854,11 @@ impl PipelineConfig {
             if let Some(DispatchPolicy::Broadcast) = &connection.policies.dispatch
                 && target_nodes.len() > 1
             {
-                errors.push(Error::InvalidUserConfig {
-                    error:
-                        "invalid `policies.dispatch`: `broadcast` is not supported yet for multi-destination connections"
-                            .into(),
+                errors.push(Error::UnsupportedConnectionDispatchPolicy {
+                    context: Box::new(Context::new(pipeline_group_id.clone(), pipeline_id.clone())),
+                    dispatch_policy: DispatchPolicy::Broadcast,
+                    source_nodes: connection.from_nodes().into_boxed_slice(),
+                    target_nodes: target_nodes.into_boxed_slice(),
                 });
                 continue;
             }
@@ -881,10 +894,14 @@ impl PipelineConfig {
                             .iter()
                             .any(|output| output == &resolved_port)
                     {
-                        errors.push(Error::InvalidUserConfig {
-                            error: format!(
-                                "connection source `{source_node}` uses output port `{resolved_port}` which is not declared in `outputs`"
-                            ),
+                        errors.push(Error::UndeclaredConnectionOutput {
+                            context: Box::new(Context::new(
+                                pipeline_group_id.clone(),
+                                pipeline_id.clone(),
+                            )),
+                            source_node: source_node.clone(),
+                            selected_output: resolved_port.clone(),
+                            declared_outputs: node_cfg.outputs.clone().into_boxed_slice(),
                         });
                     }
                     let entry = targets_by_source_port
@@ -906,16 +923,11 @@ impl PipelineConfig {
             {
                 let mut target_nodes = targets.into_iter().collect::<Vec<_>>();
                 target_nodes.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
-                errors.push(Error::InvalidUserConfig {
-                    error: format!(
-                        "fanout: output port `{source_port}` on node `{source_node}` must target exactly one destination, found {} targets ({})",
-                        target_nodes.len(),
-                        target_nodes
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
+                errors.push(Error::FanoutOutputMultipleDestinations {
+                    context: Box::new(Context::new(pipeline_group_id.clone(), pipeline_id.clone())),
+                    source_node: source_node.clone(),
+                    output: source_port,
+                    target_nodes: target_nodes.into_boxed_slice(),
                 });
             }
         }
@@ -2319,10 +2331,25 @@ mod tests {
 
         let err =
             super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("uses output port `logs` which is not declared in `outputs`")
-        );
+        match err {
+            Error::InvalidConfiguration { errors } => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::UndeclaredConnectionOutput {
+                        source_node,
+                        selected_output,
+                        declared_outputs,
+                        ..
+                    } => {
+                        assert_eq!(source_node.as_ref(), "router");
+                        assert_eq!(selected_output.as_ref(), "logs");
+                        assert_eq!(declared_outputs.as_ref(), ["metrics"]);
+                    }
+                    other => panic!("expected UndeclaredConnectionOutput, got {other:?}"),
+                }
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2408,7 +2435,24 @@ mod tests {
 
         let err =
             super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(err.to_string().contains("invalid `policies.dispatch`"));
-        assert!(err.to_string().contains("`broadcast` is not supported yet"));
+        match err {
+            Error::InvalidConfiguration { errors } => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::UnsupportedConnectionDispatchPolicy {
+                        dispatch_policy,
+                        source_nodes,
+                        target_nodes,
+                        ..
+                    } => {
+                        assert!(matches!(dispatch_policy, DispatchPolicy::Broadcast));
+                        assert_eq!(source_nodes.as_ref(), ["receiver"]);
+                        assert_eq!(target_nodes.as_ref(), ["exporter_a", "exporter_b"]);
+                    }
+                    other => panic!("expected UnsupportedConnectionDispatchPolicy, got {other:?}"),
+                }
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
     }
 }
