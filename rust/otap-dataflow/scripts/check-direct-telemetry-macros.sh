@@ -20,12 +20,14 @@ check_banned_pattern() {
     #   - .git/           git internals
     #   - crates/telemetry/  implements the otel_* wrappers (legitimate tracing usage)
     #   - crates/quiver/src/logging.rs     implements the otel_* wrappers internal to quiver (legitimate tracing usage)
+    #   - crates/quiver-e2e/  end-to-end tests may legitimately use tracing directly
     #   - benchmarks/        benchmarks may legitimately use tracing directly
     files=$(find . -name "*.rs" -type f \
         | grep -v target/ \
         | grep -v .git/ \
         | grep -v crates/telemetry/ \
         | grep -v crates/quiver/src/logging.rs \
+        | grep -v crates/quiver-e2e/ \
         | grep -v benchmarks/ \
         || true)
 
