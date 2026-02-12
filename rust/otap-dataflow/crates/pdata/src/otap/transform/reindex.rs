@@ -1,13 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Range, RangeInclusive, Sub, SubAssign};
 use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
+use arrow::compute::kernels::take;
 use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
@@ -288,7 +289,11 @@ where
 
         let (mappings, new_offset) = create_mappings::<T>(&sorted_ids, offset)?;
         offset = new_offset;
-        apply_mappings::<T>(&mut sorted_ids, &mappings);
+
+        // safety: Mappings should always be valid when applied to the ids that
+        // generated them. If not then we've made a serious error.
+        assert!(apply_mappings::<T>(&mut sorted_ids, &mappings).is_none());
+
         untake_vec(&sorted_ids, &mut ids, &sort_indices);
         let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
 
@@ -316,7 +321,7 @@ where
 /// creation of the mappings from applying those mappings to potentially multiple
 /// child batches.
 fn reindex_child_column<T>(
-    rb: RecordBatch,
+    mut rb: RecordBatch,
     column_path: &str,
     mappings: &[IdMapping<T::Native>],
 ) -> Result<RecordBatch>
@@ -332,15 +337,39 @@ where
     // Sort the ids. If we already did this in the parent batch, we can skip it here
     // and reuse the same allocation.
     let sort_indices = sort_vec_to_indices(&ids);
+    let sort_indices = PrimitiveArray::from(sort_indices);
     let mut new_ids = vec![T::Native::default(); ids.len()];
-    take_vec(&ids, &mut new_ids, &sort_indices);
-    apply_mappings::<T>(&mut new_ids, mappings);
+    take_vec(&ids, &mut new_ids, sort_indices.values());
+    if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
+        // We have integrity violations in some number of ranges. We need to eliminate
+        // them because we're on the reindexing path where we're squashing all ids
+        // to contiguous ranges starting at 0, so any strays left behind may accidentally
+        // be associated to ids in other batches.
+        //
+        // Process is as follows:
+        // 1. Sort the entire record batch by the indices so that the ranges correspond to
+        // the violation ranges.
+        // 2. Remove all rows in those ranges and reconstruct the record batch.
+        rb = sort_record_batch_by_indices(rb, &sort_indices)?;
+    }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
-    untake_vec(&new_ids, &mut ids, &sort_indices);
+    untake_vec(&new_ids, &mut ids, sort_indices.values());
     let new_rb = replace_id_column::<T>(rb, column_path, ids)?;
     Ok(new_rb)
+}
+
+fn sort_record_batch_by_indices(rb: RecordBatch, indices: &dyn Array) -> Result<RecordBatch> {
+    let (schema, columns, _) = rb.into_parts();
+    let new_columns: Vec<_> = columns
+        .iter()
+        .map(|c| arrow::compute::take(c, indices, None))
+        .collect::<arrow::error::Result<Vec<_>>>()
+        .map_err(|e| Error::Batching { source: e })?;
+
+    // safety: We did a valid tranformation on all columns
+    Ok(RecordBatch::try_new(schema, new_columns).expect("valid record batch"))
 }
 
 fn replace_id_column<T>(
@@ -511,43 +540,73 @@ where
     Ok((mappings, current_offset))
 }
 
-/// Applies mappings to a sorted ID buffer by scanning and applying offsets
+/// Applies mappings to a sorted ID buffer that were produced by processing the
+/// corresponding id column of the parent record batch.
 ///
-/// This function scans through the sorted IDs and applies the appropriate offset
-/// from the mappings. The mappings are processed in order.
-fn apply_mappings<T>(sorted_ids: &mut [T::Native], mappings: &[IdMapping<T::Native>])
+/// Returns ranges of indices where referential integrity violations were found.
+/// Referential integrity violations are when and ID is found in the child record
+/// batch that is not a part of the primary ID column from the parent that defines
+/// them.
+///
+/// For example if the parent record batch has idx [0, 1, 2] and the child
+/// record batch has parent_ids [0, 1, 3] then the parent_id 3 at position 2
+/// in the child record batch has a violation.
+#[must_use]
+fn apply_mappings<T>(
+    sorted_ids: &mut [T::Native],
+    mappings: &[IdMapping<T::Native>],
+) -> Option<Vec<Range<usize>>>
 where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign,
 {
+    dbg!(&mappings);
+    dbg!(&sorted_ids);
+    let mut violations = Vec::new();
     let mut remaining_slice = &mut sorted_ids[..];
+    let mut idx = 0;
     for mapping in mappings.iter() {
         if remaining_slice.is_empty() {
             break;
         }
 
         // If there are elements left that come before the current mapping then these
-        // were never re-mapped. In this case we can either return an error, drop
-        // them, or try to remove them entirely from the record batch by nulling
-        // them out.
-        let start_idx = remaining_slice
+        // were never a part of the parent column
+        let map_start_idx = remaining_slice
             .iter()
             .position(|id| *id >= mapping.start_id)
             .unwrap_or(remaining_slice.len());
-        remaining_slice = &mut remaining_slice[start_idx..];
+        idx += map_start_idx;
+        if map_start_idx != 0 {
+            violations.push(idx..idx + map_start_idx);
+        }
 
+        remaining_slice = &mut remaining_slice[map_start_idx..];
         let end_idx = remaining_slice
             .iter()
             .position(|id| *id > mapping.end_id)
             .unwrap_or(remaining_slice.len());
 
         let slice_to_map = &mut remaining_slice[0..end_idx];
+        idx += slice_to_map.len();
+
         // TODO: Anything we need to do here to make sure this is vectorized?
         match mapping.sign {
             Sign::Positive => slice_to_map.iter_mut().for_each(|id| *id += mapping.offset),
             Sign::Negative => slice_to_map.iter_mut().for_each(|id| *id -= mapping.offset),
         }
         remaining_slice = &mut remaining_slice[end_idx..];
+    }
+
+    // If there are elements left after processing all mappings, these were also
+    // never a part of the parent column
+    if !remaining_slice.is_empty() {
+        violations.push(idx..idx + remaining_slice.len());
+    }
+
+    match violations.is_empty() {
+        true => None,
+        false => Some(violations),
     }
 }
 
@@ -937,7 +996,7 @@ mod tests {
         // verify that reindexing does not error. We do not assert relation
         // fingerprint preservation here.
         let parent_ids = vec![1, 2, 4];
-        let child_ids  = vec![1, 0, 2, 3, 5, 4];
+        let child_ids  = vec![1, 0, 2, 3, 3, 5, 4];
         reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
