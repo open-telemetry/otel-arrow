@@ -486,11 +486,14 @@ where
             break;
         }
 
-        // We don't have stuff in this mapping range, which is a little weird
-        // but not impossible if items were filtered for example.
-        if remaining_slice[0] < mapping.start_id {
-            continue;
-        }
+        // Skip over elements of remaining_slice that come before this mapping range even starts.
+        // It could be the case that we have an integrity violation here, but for
+        // now we're just going to continue to remap it.
+        let start_idx = remaining_slice
+            .iter()
+            .position(|id| *id >= mapping.start_id)
+            .unwrap_or(remaining_slice.len());
+        remaining_slice = &mut remaining_slice[start_idx..];
 
         let end_idx = remaining_slice
             .iter()
@@ -498,8 +501,7 @@ where
             .unwrap_or(remaining_slice.len());
 
         let slice_to_map = &mut remaining_slice[0..end_idx];
-        // TODO [JD]: Anything we need to do here to make sure this is vectorized?
-        // Might be beneficial to use chunks which vectorizes better.
+        // TODO: Anything we need to do here to make sure this is vectorized?
         match mapping.sign {
             Sign::Positive => slice_to_map.iter_mut().for_each(|id| *id += mapping.offset),
             Sign::Negative => slice_to_map.iter_mut().for_each(|id| *id -= mapping.offset),
