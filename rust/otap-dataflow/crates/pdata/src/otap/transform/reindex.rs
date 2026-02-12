@@ -270,18 +270,26 @@ where
             }
         };
 
+        // TODO: We can optimize here by reusing some storage:
+        //
+        //  - The vectors to store the sort indices and to hold the sorted Ids is
+        //  just scratch space and reusasble. We may need one per Native type
+        //  - The vector to hold the mappings is also reusable and just scratch
+        //  space
+        //
         // Create mappings for the parent IDs
-        let ids = materialize_id_column::<T>(id_col.as_ref())?;
-        let ids = ids.values().to_vec();
+        let mut ids = materialize_id_column::<T>(id_col.as_ref())?
+            .values()
+            .to_vec();
         let sort_indices = sort_vec_to_indices(&ids);
         let mut sorted_ids = vec![T::Native::default(); ids.len()];
         take_vec(&ids, &mut sorted_ids, &sort_indices);
 
         let (mappings, new_offset) = create_mappings::<T>(&sorted_ids, offset)?;
         offset = new_offset;
-
-        // Reindex parent batch using the mappings
-        let parent_batch = reindex_batch_column::<T>(parent_batch, id_column_path, &mappings)?;
+        apply_mappings::<T>(&mut sorted_ids, &mappings);
+        untake_vec(&sorted_ids, &mut ids, &sort_indices);
+        let parent_batch = replace_id_column::<T>(parent_batch, id_column_path, ids)?;
 
         // Put parent batch back
         store.get_mut(i)[parent_idx] = Some(parent_batch);
@@ -291,7 +299,9 @@ where
             let child_idx = payload_to_idx(child_payload_type);
 
             if let Some(child_batch) = store.get_mut(i)[child_idx].take() {
-                let child_batch = reindex_batch_column::<T>(child_batch, PARENT_ID, &mappings)?;
+                let child_batch = reindex_child_column::<T>(child_batch, PARENT_ID, &mappings)?;
+
+                // Put child batch back
                 store.get_mut(i)[child_idx] = Some(child_batch);
             }
         }
@@ -300,11 +310,12 @@ where
     Ok(())
 }
 
-/// Reindexes a single ID column in a record batch using the provided mappings
-///
-/// Returns the updated batch
-fn reindex_batch_column<T>(
-    batch: RecordBatch,
+/// Reindexes a child id column in a record batch using the provided mappings.
+/// Parent ids take a slightly different path because they need to separate the
+/// creation of the mappings from applying those mappings to potentially multiple
+/// child batches.
+fn reindex_child_column<T>(
+    rb: RecordBatch,
     column_path: &str,
     mappings: &[IdMapping<T::Native>],
 ) -> Result<RecordBatch>
@@ -313,28 +324,37 @@ where
     T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
 {
     // Extract ID column
-    let id_col = extract_id_column(&batch, column_path)?;
+    let id_col = extract_id_column(&rb, column_path)?;
     let ids = materialize_id_column::<T>(id_col.as_ref())?;
     let mut ids = ids.values().to_vec();
 
-    // Sort the ids
+    // Sort the ids. If we already did this in the parent batch, we can skip it here
+    // and reuse the same allocation.
     let sort_indices = sort_vec_to_indices(&ids);
     let mut new_ids = vec![T::Native::default(); ids.len()];
     take_vec(&ids, &mut new_ids, &sort_indices);
-
-    // Apply the mappings
     apply_mappings::<T>(&mut new_ids, mappings);
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
     untake_vec(&new_ids, &mut ids, &sort_indices);
-    let new_ids_array = PrimitiveArray::<T>::new(ScalarBuffer::from(ids), None);
+    let new_rb = replace_id_column::<T>(rb, column_path, ids)?;
+    Ok(new_rb)
+}
 
-    // Build the replacement column, preserving dictionary encoding if present
+fn replace_id_column<T>(
+    rb: RecordBatch,
+    column_path: &str,
+    new_ids: Vec<T::Native>,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    T::Native: ArrowNativeType,
+{
+    let id_col = extract_id_column(&rb, column_path)?;
+    let new_ids_array = PrimitiveArray::<T>::new(ScalarBuffer::from(new_ids), None);
+    let (schema, mut columns, _) = rb.into_parts();
     let new_column = replace_ids::<T>(id_col.as_ref(), new_ids_array);
-
-    // Replace ID column in batch
-    let (schema, mut columns, _) = batch.into_parts();
     replace_column(column_path, None, &schema, &mut columns, new_column);
     let batch =
         RecordBatch::try_new(schema, columns).map_err(|e| Error::UnexpectedRecordBatchState {
@@ -345,11 +365,9 @@ where
 }
 
 /// Extracts an ID column from a record batch
-fn extract_id_column(batch: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
-    access_column(column_path, &batch.schema(), batch.columns()).ok_or_else(|| {
-        Error::ColumnNotFound {
-            name: column_path.to_string(),
-        }
+fn extract_id_column(rb: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
+    access_column(column_path, &rb.schema(), rb.columns()).ok_or_else(|| Error::ColumnNotFound {
+        name: column_path.to_string(),
     })
 }
 
