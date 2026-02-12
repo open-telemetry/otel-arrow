@@ -205,7 +205,7 @@ pub enum Error {
     TooManyItems {
         payload_type: ArrowPayloadType,
         count: usize,
-        max: usize,
+        max: u64,
         message: String,
     },
 

@@ -188,9 +188,6 @@ pub trait OtapBatchStore: Default + Clone {
     /// The number of `RecordBatch`es needed for this kind of telemetry.
     const COUNT: usize;
 
-    /// The root payload type for the signal type represented by this OTAP batch
-    const ROOT_PAYLOAD_TYPE: ArrowPayloadType;
-
     /// The type of array used to store the record batches.
     type BatchArray;
 
@@ -350,8 +347,6 @@ impl OtapBatchStore for Logs {
 
     const COUNT: usize = 4;
 
-    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::Logs;
-
     type BatchArray = [Option<RecordBatch>; Logs::COUNT];
 
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>] {
@@ -497,8 +492,6 @@ impl OtapBatchStore for Metrics {
         + (1 << ArrowPayloadType::MetricAttrs as u64);
 
     const COUNT: usize = 19;
-
-    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::UnivariateMetrics;
 
     type BatchArray = [Option<RecordBatch>; Metrics::COUNT];
 
@@ -733,8 +726,6 @@ impl OtapBatchStore for Traces {
         + (1 << ArrowPayloadType::SpanLinkAttrs as u64);
 
     const COUNT: usize = 8;
-
-    const ROOT_PAYLOAD_TYPE: ArrowPayloadType = ArrowPayloadType::Spans;
 
     type BatchArray = [Option<RecordBatch>; Traces::COUNT];
 

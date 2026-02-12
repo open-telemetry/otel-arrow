@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::ops::{Add, AddAssign, Range, RangeInclusive, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
 use arrow::array::{
@@ -110,25 +110,6 @@ fn reindex_batch_store<S, const N: usize>(store: &mut MultiBatchStore<'_, S, N>)
 where
     S: OtapBatchStore,
 {
-    let primary_item_count: usize = store
-        .select(S::ROOT_PAYLOAD_TYPE)
-        .map(|rb| rb.num_rows())
-        .sum();
-
-    // TODO: Consider supporting u16::MAX + 1. This is a little tricky because we
-    // do offset math with the Native type which causes us to overflow right
-    // at the top. We could maybe try to do offset math with u64, but we will
-    // have to constantly cast back and forth and it won't be as clear if we've
-    // made a mistake somewhere. Only consequence is max batch size is 1 less.
-    if primary_item_count > u16::MAX as usize {
-        return Err(Error::TooManyItems {
-            payload_type: S::ROOT_PAYLOAD_TYPE,
-            count: primary_item_count,
-            max: u16::MAX as usize,
-            message: "Too many items to reindex".to_string(),
-        });
-    }
-
     for payload_type in S::allowed_payload_types() {
         store.remove_transport_optimized_encodings(*payload_type)?;
     }
@@ -137,9 +118,59 @@ where
     for &payload_type in S::allowed_payload_types() {
         // Get all relations (parent-child relationships) for this payload type
         let info = payload_relations(payload_type);
+
+        // Check for obvious overflow.
+        //
+        // FIXME: We are vulnerable to issues here with resource and scope id
+        // columns which do not have a primary id column defining them in any
+        // payload type.
+        //
+        // See: https://github.com/open-telemetry/otel-arrow/pull/2021#discussion_r2800261547
+        // See: https://github.com/open-telemetry/otel-arrow/issues/1926
+        if let Some(primary_id_info) = info.primary_id {
+            check_primary_id_for_overflow(store, payload_type, &primary_id_info)?;
+        }
+
         for relation in info.relations {
             reindex_id_column_dynamic(store, payload_type, relation.child_types, relation.key_col)?;
         }
+    }
+
+    Ok(())
+}
+
+// For a given primary id column, determine the count of Ids that exist across
+// every record batch and determine if it will fit in the type for that column.
+//
+// # Returns
+// * `Ok(())` if the primary id column will fit in the type
+// * `Err` if the primary id column will not fit in the type
+fn check_primary_id_for_overflow<S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    payload_type: ArrowPayloadType,
+    id_info: &PrimaryIdInfo,
+) -> Result<()>
+where
+    S: OtapBatchStore,
+{
+    let mut count: u64 = 0;
+    for batch in store.select(payload_type) {
+        let id_col = extract_id_column(batch, id_info.name)?;
+        count += id_col.len() as u64;
+    }
+
+    // TODO: Consider supporting u16::MAX + 1. This is a little tricky because we
+    // do offset math with the Native type which causes us to overflow right
+    // at the top. We could maybe try to do offset math with u64, but we will
+    // have to constantly cast back and forth and it won't be as clear if we've
+    // made a mistake somewhere. Only consequence is max batch size is 1 less.
+    if count > id_info.size.max() {
+        return Err(Error::TooManyItems {
+            payload_type,
+            count: count as usize,
+            max: id_info.size.max(),
+            message: "Too many items to reindex".to_string(),
+        });
     }
 
     Ok(())
@@ -690,10 +721,6 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     pos
 }
 
-fn idx_to_payload_type<T: OtapBatchStore>(idx: usize) -> ArrowPayloadType {
-    T::allowed_payload_types()[idx]
-}
-
 struct PayloadRelationInfo {
     primary_id: Option<PrimaryIdInfo>,
     relations: &'static [Relation],
@@ -702,6 +729,15 @@ struct PayloadRelationInfo {
 enum IdColumnType {
     U16,
     U32,
+}
+
+impl IdColumnType {
+    fn max(&self) -> u64 {
+        match self {
+            IdColumnType::U16 => u16::MAX as u64,
+            IdColumnType::U32 => u32::MAX as u64,
+        }
+    }
 }
 
 struct PrimaryIdInfo {
