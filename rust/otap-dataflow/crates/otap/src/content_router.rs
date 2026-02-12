@@ -144,10 +144,7 @@ impl ContentRouterConfig {
             }
             if port.trim().is_empty() {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "route for value '{}' has an empty port name",
-                        value
-                    ),
+                    error: format!("route for value '{}' has an empty port name", value),
                 });
             }
         }
@@ -243,10 +240,7 @@ impl ContentRouter {
 
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
     /// Returns the resolved port name or None if the key is missing/not a route match.
-    fn extract_route_from_resource<R: ResourceView>(
-        &self,
-        resource: &R,
-    ) -> RouteResolution {
+    fn extract_route_from_resource<R: ResourceView>(&self, resource: &R) -> RouteResolution {
         let key_bytes = self.routing_key.as_bytes();
 
         for attr in resource.attributes() {
@@ -286,10 +280,7 @@ impl ContentRouter {
     /// Returns MixedBatch only when resources would route to different destinations.
     /// NoMatch and MissingKey are treated as equivalent (both go to default_output or NACK),
     /// so a batch mixing them is NOT considered mixed.
-    fn fold_resolution(
-        acc: Option<RouteResolution>,
-        next: RouteResolution,
-    ) -> RouteResolution {
+    fn fold_resolution(acc: Option<RouteResolution>, next: RouteResolution) -> RouteResolution {
         match acc {
             None => next,
             Some(RouteResolution::MixedBatch) => RouteResolution::MixedBatch,
@@ -298,15 +289,17 @@ impl ContentRouter {
                     (RouteResolution::Matched(a), RouteResolution::Matched(b)) => a == b,
                     // NoMatch and MissingKey both route to default_output (or NACK),
                     // so any combination of them is destination-consistent.
-                    (RouteResolution::NoMatch | RouteResolution::MissingKey,
-                     RouteResolution::NoMatch | RouteResolution::MissingKey) => true,
+                    (
+                        RouteResolution::NoMatch | RouteResolution::MissingKey,
+                        RouteResolution::NoMatch | RouteResolution::MissingKey,
+                    ) => true,
                     _ => false,
                 };
                 if consistent {
                     // Prefer MissingKey over NoMatch to preserve metric accuracy
                     match (&next, prev) {
-                        (RouteResolution::NoMatch, RouteResolution::MissingKey) |
-                        (RouteResolution::MissingKey, _) => RouteResolution::MissingKey,
+                        (RouteResolution::NoMatch, RouteResolution::MissingKey)
+                        | (RouteResolution::MissingKey, _) => RouteResolution::MissingKey,
                         _ => next,
                     }
                 } else {
@@ -487,10 +480,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         // Try default output if configured
                         if let Some(ref default_port) = self.default_output {
                             match effect_handler
-                                .send_message_with_source_node_to(
-                                    default_port.clone(),
-                                    data,
-                                )
+                                .send_message_with_source_node_to(default_port.clone(), data)
                                 .await
                             {
                                 Ok(()) => {
@@ -582,11 +572,9 @@ pub fn create_content_router(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    let router_config: ContentRouterConfig =
-        serde_json::from_value(node_config.config.clone()).map_err(|e| {
-            ConfigError::InvalidUserConfig {
-                error: format!("Failed to parse ContentRouter configuration: {e}"),
-            }
+    let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
+        .map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("Failed to parse ContentRouter configuration: {e}"),
         })?;
     router_config.validate()?;
 
@@ -609,11 +597,9 @@ pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              proc_cfg: &ProcessorConfig| {
-        let router_config: ContentRouterConfig =
-            serde_json::from_value(node_config.config.clone()).map_err(|e| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("Failed to parse ContentRouter configuration: {e}"),
-                }
+        let router_config: ContentRouterConfig = serde_json::from_value(node_config.config.clone())
+            .map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("Failed to parse ContentRouter configuration: {e}"),
             })?;
         router_config.validate()?;
 
@@ -646,10 +632,12 @@ mod tests {
             },
             vec![ScopeLogs::new(
                 InstrumentationScope::default(),
-                vec![LogRecord::build()
-                    .time_unix_nano(1u64)
-                    .severity_number(SeverityNumber::Info)
-                    .finish()],
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .finish(),
+                ],
             )],
         )]);
         let mut buf = Vec::new();
@@ -666,10 +654,12 @@ mod tests {
             },
             vec![ScopeLogs::new(
                 InstrumentationScope::default(),
-                vec![LogRecord::build()
-                    .time_unix_nano(1u64)
-                    .severity_number(SeverityNumber::Info)
-                    .finish()],
+                vec![
+                    LogRecord::build()
+                        .time_unix_nano(1u64)
+                        .severity_number(SeverityNumber::Info)
+                        .finish(),
+                ],
             )],
         )]);
         let mut buf = Vec::new();
@@ -689,10 +679,12 @@ mod tests {
                     },
                     vec![ScopeLogs::new(
                         InstrumentationScope::default(),
-                        vec![LogRecord::build()
-                            .time_unix_nano(1u64)
-                            .severity_number(SeverityNumber::Info)
-                            .finish()],
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(1u64)
+                                .severity_number(SeverityNumber::Info)
+                                .finish(),
+                        ],
                     )],
                 )
             })
@@ -941,8 +933,7 @@ mod tests {
         ]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes =
-            create_logs_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
         let data = RawLogsData::new(&bytes);
         match router.resolve_logs_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -988,8 +979,7 @@ mod tests {
         };
         let router = ContentRouter::new(config);
 
-        let bytes =
-            create_logs_with_resource_attr("microsoft.resourceId", "/Subscriptions/AAA");
+        let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/Subscriptions/AAA");
         let data = RawLogsData::new(&bytes);
         match router.resolve_logs_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -1006,8 +996,7 @@ mod tests {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes =
-            create_metrics_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_metrics_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
         let data = RawMetricsData::new(&bytes);
         match router.resolve_metrics_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -1020,8 +1009,7 @@ mod tests {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
-        let bytes =
-            create_traces_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
+        let bytes = create_traces_with_resource_attr("microsoft.resourceId", "/subscriptions/aaa");
         let data = RawTraceData::new(&bytes);
         match router.resolve_traces_route(&data) {
             RouteResolution::Matched(port) => assert_eq!(port, "tenant_a"),
@@ -1060,9 +1048,7 @@ mod tests {
 
     #[test]
     fn test_resolve_same_tenant_multi_resource_ok() {
-        let routes = HashMap::from([
-            ("/subscriptions/aaa".to_string(), "tenant_a".to_string()),
-        ]);
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
         let bytes = create_multi_resource_logs(vec![
@@ -1084,9 +1070,7 @@ mod tests {
 
     #[test]
     fn test_resolve_matched_plus_missing_key_is_mixed() {
-        let routes = HashMap::from([
-            ("/subscriptions/aaa".to_string(), "tenant_a".to_string()),
-        ]);
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
         // First resource has routing key, second doesn't
@@ -1106,9 +1090,7 @@ mod tests {
 
     #[test]
     fn test_resolve_missing_key_plus_matched_is_mixed() {
-        let routes = HashMap::from([
-            ("/subscriptions/aaa".to_string(), "tenant_a".to_string()),
-        ]);
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
         // Reversed order: missing key first, then matched
@@ -1128,9 +1110,7 @@ mod tests {
 
     #[test]
     fn test_resolve_no_match_plus_missing_key_is_consistent() {
-        let routes = HashMap::from([
-            ("/subscriptions/aaa".to_string(), "tenant_a".to_string()),
-        ]);
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
         // One resource has unrecognized value, other has no key at all.
@@ -1158,9 +1138,7 @@ mod tests {
     fn test_resolve_arrow_logs_conversion_error() {
         use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 
-        let routes = HashMap::from([
-            ("/subscriptions/aaa".to_string(), "tenant_a".to_string()),
-        ]);
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let router = ContentRouter::new(make_config(routes, None));
 
         // Default Logs has no record batches, so OtapLogsView::try_from fails
@@ -1276,15 +1254,12 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
-                let _ =
-                    senders.insert("tenant_a".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let _ = senders.insert("tenant_a".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
-                let bytes =
-                    create_logs_with_resource_attr("microsoft.resourceId", "/sub/a");
-                let pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/a");
+                let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -1333,17 +1308,11 @@ mod tests {
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
                 let senders = HashMap::new();
-                let mut eh = LocalEffectHandler::new(
-                    node_id.clone(),
-                    senders,
-                    None,
-                    reporter.clone(),
-                );
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
-                let bytes =
-                    create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
-                let pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
+                let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -1391,16 +1360,13 @@ mod tests {
 
                 let (tx, rx) = mpsc::Channel::new(4);
                 let mut senders = HashMap::new();
-                let _ =
-                    senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
+                let _ = senders.insert("fallback".into(), Sender::Local(LocalSender::mpsc(tx)));
                 let mut eh =
                     LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 // Send with non-matching route - should go to default
-                let bytes =
-                    create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
-                let pdata =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                let bytes = create_logs_with_resource_attr("microsoft.resourceId", "/sub/unknown");
+                let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
                 router
                     .process(Message::PData(pdata), &mut eh)
                     .await
@@ -1454,12 +1420,8 @@ mod tests {
                 let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
 
                 let senders = HashMap::new();
-                let mut eh = LocalEffectHandler::new(
-                    node_id.clone(),
-                    senders,
-                    None,
-                    reporter.clone(),
-                );
+                let mut eh =
+                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
 
                 // Default Logs Arrow records have no batches -> ConversionError
                 let arrow = OtapArrowRecords::Logs(Logs::default());
