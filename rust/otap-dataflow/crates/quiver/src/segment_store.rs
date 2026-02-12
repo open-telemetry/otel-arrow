@@ -7,7 +7,7 @@
 //! via memory mapping or standard file I/O. It implements [`SegmentProvider`]
 //! for integration with the subscriber registry.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -158,9 +158,10 @@ pub struct SegmentStore {
     on_segment_registered: Mutex<Option<SegmentCallback>>,
     /// Optional disk budget for tracking segment storage usage.
     budget: Option<Arc<DiskBudget>>,
-    /// Segments pending deletion (e.g., file deletion failed due to sharing violation on Windows).
+    /// Segments pending deletion (e.g., file still in use or transient I/O error).
+    /// Maps segment sequence → file size so the budget can be released on successful retry.
     /// These will be retried during the next maintenance cycle.
-    pending_deletes: Mutex<HashSet<SegmentSeq>>,
+    pending_deletes: Mutex<HashMap<SegmentSeq, u64>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -190,7 +191,7 @@ impl SegmentStore {
             segments: RwLock::new(BTreeMap::new()),
             on_segment_registered: Mutex::new(None),
             budget: None,
-            pending_deletes: Mutex::new(HashSet::new()),
+            pending_deletes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -208,7 +209,7 @@ impl SegmentStore {
             segments: RwLock::new(BTreeMap::new()),
             on_segment_registered: Mutex::new(None),
             budget: Some(budget),
-            pending_deletes: Mutex::new(HashSet::new()),
+            pending_deletes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -311,51 +312,63 @@ impl SegmentStore {
     /// This is called when all subscribers have completed consuming a segment
     /// and it is safe to permanently delete.
     ///
-    /// The segment's file size is released from the disk budget if one was configured.
-    ///
-    /// If the file cannot be deleted (e.g., due to a sharing violation on Windows
-    /// when the segment is still memory-mapped), the segment is added to a pending
-    /// delete list and will be retried during the next maintenance cycle via
-    /// [`retry_pending_deletes`](Self::retry_pending_deletes).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be deleted (e.g., permissions).
-    /// Note: On Windows, sharing violations are handled gracefully by deferring deletion.
+    /// The segment's file size is released from the disk budget only when the
+    /// file is actually removed (or confirmed already absent). If deletion
+    /// fails (sharing violation, permission error, etc.), the segment is added
+    /// to a pending-delete list and the budget is released later when
+    /// [`retry_pending_deletes`](Self::retry_pending_deletes) succeeds.
     pub fn delete_segment(&self, seq: SegmentSeq) -> std::io::Result<()> {
-        // First remove from in-memory map and get file size for budget release
+        // Remove from in-memory map and capture file size for budget accounting.
         let file_size = {
             let mut segments = self.segments.write();
             segments.remove(&seq).map(|h| h.file_size_bytes)
         };
 
-        // Delete the file from disk
+        // Attempt to delete the file from disk.
         let path = self.segment_path(seq);
         if path.exists() {
             match Self::remove_readonly_file(&path) {
-                Ok(_) => {}
+                Ok(()) => {
+                    // File deleted — release budget bytes.
+                    if let (Some(budget), Some(size)) = (&self.budget, file_size) {
+                        budget.remove(size);
+                    }
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // File was already deleted externally since the call to path.exists(). Treat as success.
+                    // Raced with external deletion — file is gone, release budget.
+                    if let (Some(budget), Some(size)) = (&self.budget, file_size) {
+                        budget.remove(size);
+                    }
                 }
-                Err(e) if Self::is_sharing_violation(&e) => {
-                    // On Windows, the file may still be memory-mapped by outstanding
-                    // BundleHandles. Add to pending deletes for retry later.
-                    otel_debug!(
+                Err(e) => {
+                    // File still on disk (sharing violation, permission error, etc.).
+                    // Defer deletion and keep the budget charged until the file is
+                    // actually removed.
+                    if Self::is_sharing_violation(&e) {
+                        otel_debug!(
                         "quiver.segment.drop",
-                        segment = seq.raw(),
-                        phase = "deferred",
-                    );
-                    let _ = self.pending_deletes.lock().insert(seq);
-                    // Don't return error - we've handled it by deferring
+                            segment = seq.raw(),
+                            phase = "deferred",
+                        );
+                    } else {
+                        otel_warn!(
+                        "quiver.segment.drop",
+                            segment = seq.raw(),
+                            error = %e,
+                            phase = "deferred",
+                            message = "Failed to delete segment, deferring for retry",
+                        );
+                    }
+                    let _ = self.pending_deletes
+                        .lock()
+                        .insert(seq, file_size.unwrap_or(0));
                 }
-                Err(e) => return Err(e),
             }
-        }
-
-        // Release bytes from budget regardless of whether the file existed on disk.
-        // If the file was externally deleted, we still need to release our accounting.
-        if let (Some(budget), Some(size)) = (&self.budget, file_size) {
-            budget.remove(size);
+        } else {
+            // File doesn't exist on disk — release budget.
+            if let (Some(budget), Some(size)) = (&self.budget, file_size) {
+                budget.remove(size);
+            }
         }
 
         Ok(())
@@ -398,13 +411,17 @@ impl SegmentStore {
         std::fs::remove_file(path)
     }
 
-    /// Retries deletion of segments that previously failed due to sharing violations.
+    /// Retries deletion of segments that previously failed.
+    ///
+    /// On success (or if the file has been removed externally), releases the
+    /// segment's tracked bytes from the disk budget. On failure the segment
+    /// stays in the pending list for the next maintenance cycle.
     ///
     /// Returns the number of segments successfully deleted.
     pub fn retry_pending_deletes(&self) -> usize {
-        let pending: Vec<SegmentSeq> = {
+        let pending: Vec<(SegmentSeq, u64)> = {
             let pending = self.pending_deletes.lock();
-            pending.iter().copied().collect()
+            pending.iter().map(|(&seq, &size)| (seq, size)).collect()
         };
 
         if pending.is_empty() {
@@ -412,42 +429,50 @@ impl SegmentStore {
         }
 
         let mut deleted = 0;
-        for seq in pending {
+        for (seq, size) in pending {
             let path = self.segment_path(seq);
             if !path.exists() {
-                // File was deleted externally
+                // File was deleted externally — release budget and remove from pending.
                 let _ = self.pending_deletes.lock().remove(&seq);
+                if let Some(budget) = &self.budget {
+                    budget.remove(size);
+                }
                 deleted += 1;
                 continue;
             }
 
             match Self::remove_readonly_file(&path) {
-                Ok(_) => {
+                Ok(()) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
+                    if let Some(budget) = &self.budget {
+                        budget.remove(size);
+                    }
                     otel_debug!(
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
+                        message = "Successfully deleted deferred segment on retry",
                     );
                     deleted += 1;
                 }
                 Err(e) if Self::is_sharing_violation(&e) => {
-                    // Still in use, keep in pending list
+                    // Still in use, keep in pending list for next cycle.
                     otel_debug!(
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
+                        message = "Segment still in use, will retry deletion in next cycle",
                     );
                 }
                 Err(e) => {
-                    // Other error - remove from pending and log
-                    let _ = self.pending_deletes.lock().remove(&seq);
+                    // Other transient error — keep in pending list for retry.
                     otel_warn!(
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         error = %e,
                         error_type = "io",
                         phase = "deferred",
+                        "Failed to delete deferred segment, will retry in next cycle",
                     );
                 }
             }
@@ -653,6 +678,7 @@ impl SegmentProvider for SegmentStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::RetentionPolicy;
     use tempfile::tempdir;
 
     #[test]
@@ -759,7 +785,7 @@ mod tests {
         // Manually add a segment to pending deletes (simulating a failed delete)
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(SegmentSeq::new(1));
+            let _ = pending.insert(SegmentSeq::new(1), 0);
         }
         assert_eq!(store.pending_delete_count(), 1);
 
@@ -785,7 +811,7 @@ mod tests {
         // Manually add to pending deletes
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(seq);
+            let _ = pending.insert(seq, 0);
         }
         assert_eq!(store.pending_delete_count(), 1);
 
@@ -950,5 +976,150 @@ mod tests {
             !SegmentStore::is_file_before_cutoff(&file_path, ancient_cutoff),
             "file with mtime after cutoff should not be considered expired"
         );
+    }
+
+    // ── Budget interaction tests ─────────────────────────────────────────
+
+    /// Helper: creates a store with a budget and writes a real segment file
+    /// that can be registered. Returns (store, budget, segment_seq, file_size).
+    fn store_with_budget_and_segment() -> (SegmentStore, Arc<DiskBudget>, SegmentSeq, u64) {
+        use crate::segment::OpenSegment;
+        use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_fingerprint, test_schema};
+        use crate::segment::SegmentWriter;
+
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.keep().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
+        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Build a minimal segment file via the writer.
+        let seq = SegmentSeq::new(1);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        let schema = test_schema();
+        let batch = make_batch(&schema, &[1, 2], &["a", "b"]);
+        let fp = test_fingerprint();
+        let mut open_segment = OpenSegment::new();
+        let bundle = TestBundle::new(slot_descriptors()).with_payload(
+            crate::record_bundle::SlotId::new(0),
+            fp,
+            batch,
+        );
+        let _ = open_segment.append(&bundle).unwrap();
+        let writer = SegmentWriter::new(seq);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (bytes_written, _) = rt.block_on(writer.write_segment(&path, open_segment)).unwrap();
+        assert!(bytes_written > 0);
+
+        (store, budget, seq, bytes_written)
+    }
+
+    #[test]
+    fn delete_segment_releases_budget_on_success() {
+        let (store, budget, seq, file_size) = store_with_budget_and_segment();
+
+        // Register the segment (adds file_size to budget via register_existing_segment).
+        let _ = store.register_existing_segment(seq).unwrap();
+        assert_eq!(budget.used(), file_size);
+
+        // Delete the segment — file should be removed and budget released.
+        store.delete_segment(seq).unwrap();
+        assert_eq!(budget.used(), 0, "budget should be zero after successful delete");
+        assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    #[test]
+    fn delete_segment_releases_budget_when_file_already_gone() {
+        let (store, budget, seq, file_size) = store_with_budget_and_segment();
+
+        // Register the segment.
+        let _ = store.register_existing_segment(seq).unwrap();
+        assert_eq!(budget.used(), file_size);
+
+        // Externally remove the file before calling delete_segment.
+        let path = store.segment_path(seq);
+        std::fs::remove_file(&path).unwrap();
+
+        // delete_segment should still release budget (file doesn't exist on disk).
+        store.delete_segment(seq).unwrap();
+        assert_eq!(budget.used(), 0, "budget should be released even if file was already gone");
+        assert_eq!(store.pending_delete_count(), 0);
+    }
+
+    #[test]
+    fn retry_pending_deletes_releases_budget_on_success() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
+        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Simulate a segment whose delete was deferred: file on disk, size in budget.
+        let seq = SegmentSeq::new(42);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        let tracked_size: u64 = 5000;
+        std::fs::write(&path, vec![0u8; tracked_size as usize]).unwrap();
+
+        // Pre-charge budget and insert into pending_deletes.
+        budget.add(tracked_size);
+        assert_eq!(budget.used(), tracked_size);
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(seq, tracked_size);
+        }
+
+        // Retry should delete the file and release the budget.
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.pending_delete_count(), 0);
+        assert!(!path.exists());
+        assert_eq!(budget.used(), 0, "budget should be released after retry succeeds");
+    }
+
+    #[test]
+    fn retry_pending_deletes_releases_budget_when_file_externally_removed() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
+        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Simulate deferred delete where the file no longer exists.
+        let seq = SegmentSeq::new(7);
+        let tracked_size: u64 = 3000;
+        budget.add(tracked_size);
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(seq, tracked_size);
+        }
+
+        // File doesn't exist — retry should release budget and clear pending.
+        let deleted = store.retry_pending_deletes();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.pending_delete_count(), 0);
+        assert_eq!(budget.used(), 0, "budget should be released when file is externally gone");
+    }
+
+    #[test]
+    fn delete_segment_without_budget_does_not_panic() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        // Store without a budget.
+        let store = SegmentStore::new(&segment_dir);
+
+        // Create a dummy segment file and manually insert into pending deletes.
+        let seq = SegmentSeq::new(1);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::write(&path, "test data").unwrap();
+
+        // delete_segment should succeed without a budget configured.
+        store.delete_segment(seq).unwrap();
+        assert!(!path.exists());
+        assert_eq!(store.pending_delete_count(), 0);
     }
 }
