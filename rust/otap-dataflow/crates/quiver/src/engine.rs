@@ -526,7 +526,7 @@ impl QuiverEngine {
         }
 
         // Step 1: Append to WAL for durability (if enabled)
-        // WAL bytes are tracked in the budget's WAL pool by the WalWriter/WalCoordinator.
+        // WAL bytes are tracked in the shared disk budget by the WalWriter/WalCoordinator.
         // They are released when WAL files are purged after segment finalization.
         let cursor = if self.config.durability == DurabilityMode::Wal {
             let wal_offset = self.append_to_wal_with_capacity_handling(bundle).await?;
@@ -2901,7 +2901,7 @@ mod tests {
             .await
             .expect("engine created");
 
-        // Budget starts with WAL header bytes (tracked in the WAL pool)
+        // Budget starts with WAL header bytes (tracked in the shared disk budget)
         let initial_used = budget.used();
         assert!(
             initial_used > 0,
