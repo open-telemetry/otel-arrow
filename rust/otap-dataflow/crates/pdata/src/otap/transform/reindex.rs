@@ -553,11 +553,13 @@ mod tests {
     use arrow::util::pretty;
 
     use crate::error::Error;
-    use crate::otap::transform::reindex::{payload_to_idx, reindex_logs, reindex_traces};
+    use crate::otap::transform::reindex::{
+        payload_to_idx, reindex_logs, reindex_metrics, reindex_traces,
+    };
     use crate::otap::transform::transport_optimize::{
         access_column, replace_column, struct_column_name, update_field_encoding_metadata,
     };
-    use crate::otap::{Logs, OtapArrowRecords, OtapBatchStore, Traces};
+    use crate::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
     use crate::testing::equiv::assert_equivalent;
@@ -590,6 +592,22 @@ mod tests {
                 use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
                 make_test_batch::<Traces, { Traces::COUNT }>(vec![
+                    $((
+                        ArrowPayloadType::$payload,
+                        $crate::record_batch!($($record_batch_args)*).unwrap(),
+                    ),)*
+                ])
+            }
+        };
+    }
+
+    macro_rules! metrics {
+        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
+            {
+                use $crate::otap::Metrics;
+                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+
+                make_test_batch::<Metrics, { Metrics::COUNT }>(vec![
                     $((
                         ArrowPayloadType::$payload,
                         $crate::record_batch!($($record_batch_args)*).unwrap(),
@@ -1020,10 +1038,7 @@ mod tests {
         ]);
 
         // Dict<UInt8, UInt32>
-        // Note: OTLP conversion doesn't handle dict columns, so we verify reindex
-        // directly without the round-trip check. The plain UInt32 case above
-        // already validates OTLP equivalence.
-        let mut batches = [
+        test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
@@ -1034,12 +1049,10 @@ mod tests {
                 (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
             ),
-        ];
-        reindex_traces(&mut batches).unwrap();
-        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
+        ]);
 
         // Dict<UInt16, UInt32>
-        let mut batches = [
+        test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
@@ -1050,13 +1063,11 @@ mod tests {
                 (SpanEvents, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids_2.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
             ),
-        ];
-        reindex_traces(&mut batches).unwrap();
-        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
+        ]);
 
         // Mixed: Dict<UInt8, UInt32> event ids, Dict<UInt16, UInt32> event attr parent ids,
         // plain UInt32 in second batch event ids, Dict<UInt8, UInt32> in second batch event attr parent ids
-        let mut batches = [
+        test_reindex_traces(&mut[
             traces!(
                 (Spans, ("id", UInt16, span_ids.clone())),
                 (SpanEvents, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, event_pids.clone())),
@@ -1067,9 +1078,7 @@ mod tests {
                 (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, event_pids_2.clone())),
                 (SpanEventAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
             ),
-        ];
-        reindex_traces(&mut batches).unwrap();
-        assert_no_id_overlaps::<Traces, { Traces::COUNT }>(&batches);
+        ]);
     }
 
     #[test]
@@ -1109,6 +1118,367 @@ mod tests {
         ]);
     }
 
+    // ---- Metrics tests ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_reindex_attrs() {
+        // Test resource, scope, and metric attrs reindexing with overlapping IDs
+        let parent_ids = vec![1u16, 0];
+        let child_ids  = vec![0u16, 0, 1, 1];
+
+        // MetricAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone())),
+                (MetricAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone())),
+                (MetricAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ScopeAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("scope.id", UInt16, parent_ids.clone())),
+                (ScopeAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+
+        // ResourceAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, parent_ids.clone()), ("resource.id", UInt16, parent_ids.clone())),
+                (ResourceAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_data_points() {
+        // Test Metrics.id → DataPoints.parent_id for each data point type
+        // with overlapping IDs across batches
+        let metric_ids    = vec![0u16, 1, 2];
+        let metric_ids_2  = vec![1u16, 3, 4];
+        let dp_pids       = vec![0u16, 0, 1, 2, 2];
+        let dp_pids_2     = vec![1u16, 3, 3, 4];
+        let dp_ids        = vec![0u32, 1, 2, 3, 4];
+        let dp_ids_2      = vec![0u32, 1, 2, 3];
+
+        // NumberDataPoints (Gauge, metric_type=1)
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone()))
+            ),
+        ]);
+
+        // SummaryDataPoints (metric_type=5)
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (SummaryDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (SummaryDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone()))
+            ),
+        ]);
+
+        // HistogramDataPoints (metric_type=3)
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone()))
+            ),
+        ]);
+
+        // ExpHistogramDataPoints (metric_type=4)
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_dp_with_attrs() {
+        // Three-level relationship: Metrics → DataPoints → DpAttrs
+        let metric_ids     = vec![0u16, 1];
+        let metric_ids_2   = vec![2u16, 3];
+        let dp_pids        = vec![0u16, 0, 1];
+        let dp_pids_2      = vec![2u16, 3, 3];
+        let dp_ids         = vec![0u32, 1, 2];
+        let dp_ids_2       = vec![0u32, 1, 2];
+        let dp_attr_pids   = vec![0u32, 1, 1, 2];
+        let dp_attr_pids_2 = vec![0u32, 2, 2];
+
+        // NumberDataPoints → NumberDpAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpAttrs, ("parent_id", UInt32, dp_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpAttrs, ("parent_id", UInt32, dp_attr_pids_2.clone()))
+            ),
+        ]);
+
+        // SummaryDataPoints → SummaryDpAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (SummaryDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (SummaryDpAttrs, ("parent_id", UInt32, dp_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (SummaryDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (SummaryDpAttrs, ("parent_id", UInt32, dp_attr_pids_2.clone()))
+            ),
+        ]);
+
+        // HistogramDataPoints → HistogramDpAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (HistogramDpAttrs, ("parent_id", UInt32, dp_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (HistogramDpAttrs, ("parent_id", UInt32, dp_attr_pids_2.clone()))
+            ),
+        ]);
+
+        // ExpHistogramDataPoints → ExpHistogramDpAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (ExpHistogramDpAttrs, ("parent_id", UInt32, dp_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (ExpHistogramDpAttrs, ("parent_id", UInt32, dp_attr_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_dp_with_exemplars() {
+        // Three-level relationship: Metrics → DataPoints → Exemplars
+        // (Summary does not have exemplars)
+        let metric_ids      = vec![0u16, 1];
+        let metric_ids_2    = vec![2u16, 3];
+        let dp_pids         = vec![0u16, 0, 1];
+        let dp_pids_2       = vec![2u16, 3, 3];
+        let dp_ids          = vec![0u32, 1, 2];
+        let dp_ids_2        = vec![0u32, 1, 2];
+        let exemplar_pids   = vec![0u32, 1, 1, 2];
+        let exemplar_pids_2 = vec![0u32, 2, 2];
+        let exemplar_ids    = vec![0u32, 1, 2, 3];
+        let exemplar_ids_2  = vec![0u32, 1, 2];
+
+        // NumberDataPoints → NumberDpExemplars
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone()))
+            ),
+        ]);
+
+        // HistogramDataPoints → HistogramDpExemplars
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (HistogramDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (HistogramDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone()))
+            ),
+        ]);
+
+        // ExpHistogramDataPoints → ExpHistogramDpExemplars
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (ExpHistogramDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (ExpHistogramDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_exemplar_attrs() {
+        // Four-level relationship: Metrics → DataPoints → Exemplars → ExemplarAttrs
+        let metric_ids          = vec![0u16, 1];
+        let metric_ids_2        = vec![2u16, 3];
+        let dp_pids             = vec![0u16, 0, 1];
+        let dp_pids_2           = vec![2u16, 3, 3];
+        let dp_ids              = vec![0u32, 1, 2];
+        let dp_ids_2            = vec![0u32, 1, 2];
+        let exemplar_pids       = vec![0u32, 1, 2];
+        let exemplar_pids_2     = vec![0u32, 1, 2];
+        let exemplar_ids        = vec![0u32, 1, 2];
+        let exemplar_ids_2      = vec![0u32, 1, 2];
+        let exemplar_attr_pids  = vec![0u32, 1, 1, 2];
+        let exemplar_attr_pids_2 = vec![0u32, 2, 2];
+
+        // NumberDataPoints → NumberDpExemplars → NumberDpExemplarAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone())),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone())),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids_2.clone()))
+            ),
+        ]);
+
+        // HistogramDataPoints → HistogramDpExemplars → HistogramDpExemplarAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (HistogramDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone())),
+                (HistogramDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (HistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (HistogramDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone())),
+                (HistogramDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids_2.clone()))
+            ),
+        ]);
+
+        // ExpHistogramDataPoints → ExpHistogramDpExemplars → ExpHistogramDpExemplarAttrs
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids.clone()), ("parent_id", UInt16, dp_pids.clone())),
+                (ExpHistogramDpExemplars, ("id", UInt32, exemplar_ids.clone()), ("parent_id", UInt32, exemplar_pids.clone())),
+                (ExpHistogramDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (ExpHistogramDataPoints, ("id", UInt32, dp_ids_2.clone()), ("parent_id", UInt16, dp_pids_2.clone())),
+                (ExpHistogramDpExemplars, ("id", UInt32, exemplar_ids_2.clone()), ("parent_id", UInt32, exemplar_pids_2.clone())),
+                (ExpHistogramDpExemplarAttrs, ("parent_id", UInt32, exemplar_attr_pids_2.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_complex() {
+        // Complex case: multiple DP types + attrs + exemplars + exemplar attrs
+        let metric_ids            = vec![0u16, 5, 3, 10];
+        let metric_ids_2          = vec![2u16, 7, 4, 12];
+
+        // NumberDataPoints chain
+        let num_dp_pids           = vec![0u16, 0, 3];
+        let num_dp_pids_2         = vec![2u16, 7, 7];
+        let num_dp_ids            = vec![0u32, 1, 2];
+        let num_dp_ids_2          = vec![0u32, 1, 2];
+        let num_dp_attr_pids      = vec![0u32, 1, 2];
+        let num_dp_attr_pids_2    = vec![0u32, 1, 2];
+        let num_exemplar_pids     = vec![0u32, 1];
+        let num_exemplar_pids_2   = vec![0u32, 2];
+        let num_exemplar_ids      = vec![0u32, 1];
+        let num_exemplar_ids_2    = vec![0u32, 1];
+        let num_ex_attr_pids      = vec![0u32, 1];
+        let num_ex_attr_pids_2    = vec![0u32, 1];
+
+        // HistogramDataPoints chain
+        let hist_dp_pids          = vec![5u16, 10, 10];
+        let hist_dp_pids_2        = vec![4u16, 12, 12];
+        let hist_dp_ids           = vec![0u32, 1, 2];
+        let hist_dp_ids_2         = vec![0u32, 1, 2];
+        let hist_exemplar_pids    = vec![0u32, 2];
+        let hist_exemplar_pids_2  = vec![1u32, 2];
+        let hist_exemplar_ids     = vec![0u32, 1];
+        let hist_exemplar_ids_2   = vec![0u32, 1];
+
+        // MetricAttrs
+        let metric_attr_pids      = vec![0u16, 5, 3, 10];
+        let metric_attr_pids_2    = vec![2u16, 7, 12];
+
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", UInt32, num_dp_ids.clone()), ("parent_id", UInt16, num_dp_pids.clone())),
+                (NumberDpAttrs, ("parent_id", UInt32, num_dp_attr_pids.clone())),
+                (NumberDpExemplars, ("id", UInt32, num_exemplar_ids.clone()), ("parent_id", UInt32, num_exemplar_pids.clone())),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, num_ex_attr_pids.clone())),
+                (HistogramDataPoints, ("id", UInt32, hist_dp_ids.clone()), ("parent_id", UInt16, hist_dp_pids.clone())),
+                (HistogramDpExemplars, ("id", UInt32, hist_exemplar_ids.clone()), ("parent_id", UInt32, hist_exemplar_pids.clone())),
+                (MetricAttrs, ("parent_id", UInt16, metric_attr_pids.clone()))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, num_dp_ids_2.clone()), ("parent_id", UInt16, num_dp_pids_2.clone())),
+                (NumberDpAttrs, ("parent_id", UInt32, num_dp_attr_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, num_exemplar_ids_2.clone()), ("parent_id", UInt32, num_exemplar_pids_2.clone())),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, num_ex_attr_pids_2.clone())),
+                (HistogramDataPoints, ("id", UInt32, hist_dp_ids_2.clone()), ("parent_id", UInt16, hist_dp_pids_2.clone())),
+                (HistogramDpExemplars, ("id", UInt32, hist_exemplar_ids_2.clone()), ("parent_id", UInt32, hist_exemplar_pids_2.clone())),
+                (MetricAttrs, ("parent_id", UInt16, metric_attr_pids_2.clone()))
+            ),
+        ]);
+    }
+
     // ---- Test helpers ----
 
     fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
@@ -1120,6 +1490,12 @@ mod tests {
     fn test_reindex_traces(batches: &mut [[Option<RecordBatch>; Traces::COUNT]]) {
         test_reindex::<Traces, { Traces::COUNT }>(batches, reindex_traces, |b| {
             OtapArrowRecords::Traces(Traces { batches: b.clone() })
+        });
+    }
+
+    fn test_reindex_metrics(batches: &mut [[Option<RecordBatch>; Metrics::COUNT]]) {
+        test_reindex::<Metrics, { Metrics::COUNT }>(batches, reindex_metrics, |b| {
+            OtapArrowRecords::Metrics(Metrics { batches: b.clone() })
         });
     }
 
@@ -1214,6 +1590,8 @@ mod tests {
     ) -> [Option<RecordBatch>; N] {
         let allowed = S::allowed_payload_types();
         let mut result: [Option<RecordBatch>; N] = std::array::from_fn(|_| None);
+        let all_payload_types: Vec<ArrowPayloadType> =
+            inputs.iter().map(|(pt, _)| *pt).collect();
 
         for (payload_type, batch) in inputs {
             assert!(
@@ -1229,28 +1607,124 @@ mod tests {
                 payload_type
             );
 
-            result[idx] = Some(complete_batch(payload_type, batch));
+            result[idx] = Some(complete_batch(payload_type, batch, &all_payload_types));
         }
 
         result
     }
 
-    fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> RecordBatch {
+    fn complete_batch(
+        payload_type: ArrowPayloadType,
+        batch: RecordBatch,
+        all_payload_types: &[ArrowPayloadType],
+    ) -> RecordBatch {
         let batch = match payload_type {
             ArrowPayloadType::Logs => complete_logs_batch(batch),
             ArrowPayloadType::Spans => complete_spans_batch(batch),
             ArrowPayloadType::SpanEvents => complete_span_events_batch(batch),
             ArrowPayloadType::SpanLinks => complete_span_links_batch(batch),
+
+            // Root metrics table
+            ArrowPayloadType::UnivariateMetrics => {
+                complete_metrics_batch(batch, infer_metric_type(all_payload_types))
+            }
+
+            // Attrs with UInt16 parent_id
             ArrowPayloadType::LogAttrs
             | ArrowPayloadType::SpanAttrs
+            | ArrowPayloadType::MetricAttrs
             | ArrowPayloadType::ResourceAttrs
             | ArrowPayloadType::ScopeAttrs => complete_attrs_batch(batch),
-            ArrowPayloadType::SpanEventAttrs | ArrowPayloadType::SpanLinkAttrs => {
-                complete_attrs_u32_batch(batch)
-            }
+
+            // Attrs with UInt32 parent_id
+            ArrowPayloadType::SpanEventAttrs
+            | ArrowPayloadType::SpanLinkAttrs
+            | ArrowPayloadType::NumberDpAttrs
+            | ArrowPayloadType::SummaryDpAttrs
+            | ArrowPayloadType::HistogramDpAttrs
+            | ArrowPayloadType::ExpHistogramDpAttrs
+            | ArrowPayloadType::NumberDpExemplarAttrs
+            | ArrowPayloadType::HistogramDpExemplarAttrs
+            | ArrowPayloadType::ExpHistogramDpExemplarAttrs => complete_attrs_u32_batch(batch),
+
+            // Data points and exemplars: only id/parent_id needed
+            ArrowPayloadType::NumberDataPoints
+            | ArrowPayloadType::SummaryDataPoints
+            | ArrowPayloadType::HistogramDataPoints
+            | ArrowPayloadType::ExpHistogramDataPoints
+            | ArrowPayloadType::NumberDpExemplars
+            | ArrowPayloadType::HistogramDpExemplars
+            | ArrowPayloadType::ExpHistogramDpExemplars => batch,
+
             _ => batch,
         };
         mark_id_columns_plain(batch)
+    }
+
+    fn infer_metric_type(payload_types: &[ArrowPayloadType]) -> u8 {
+        for pt in payload_types {
+            match pt {
+                ArrowPayloadType::HistogramDataPoints
+                | ArrowPayloadType::HistogramDpAttrs
+                | ArrowPayloadType::HistogramDpExemplars
+                | ArrowPayloadType::HistogramDpExemplarAttrs => return 3,
+                ArrowPayloadType::ExpHistogramDataPoints
+                | ArrowPayloadType::ExpHistogramDpAttrs
+                | ArrowPayloadType::ExpHistogramDpExemplars
+                | ArrowPayloadType::ExpHistogramDpExemplarAttrs => return 4,
+                ArrowPayloadType::SummaryDataPoints | ArrowPayloadType::SummaryDpAttrs => {
+                    return 5
+                }
+                ArrowPayloadType::NumberDataPoints
+                | ArrowPayloadType::NumberDpAttrs
+                | ArrowPayloadType::NumberDpExemplars
+                | ArrowPayloadType::NumberDpExemplarAttrs => return 1,
+                _ => {}
+            }
+        }
+        1 // Default: Gauge
+    }
+
+    /// Metrics batch: struct wrapping for resource.id/scope.id, plus metric_type and name
+    fn complete_metrics_batch(batch: RecordBatch, metric_type: u8) -> RecordBatch {
+        let num_rows = batch.num_rows();
+        let (schema, mut columns, _) = batch.into_parts();
+        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
+
+        // Wrap flat "resource.id" / "scope.id" columns into struct columns
+        for &path in ID_COLUMN_PATHS {
+            let Some(struct_name) = struct_column_name(path) else {
+                continue;
+            };
+            let Some((idx, _)) = schema.fields.find(path) else {
+                continue;
+            };
+            let id_col = columns.remove(idx);
+            let _ = fields.remove(idx);
+            let id_field = Field::new("id", id_col.data_type().clone(), true);
+            let struct_col =
+                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
+                    .expect("Failed to create struct");
+            fields.push(Arc::new(Field::new(
+                struct_name,
+                DataType::Struct(vec![id_field].into()),
+                true,
+            )));
+            columns.push(Arc::new(struct_col));
+        }
+
+        if schema.fields.find("metric_type").is_none() {
+            fields.push(Arc::new(Field::new("metric_type", DataType::UInt8, false)));
+            columns.push(Arc::new(UInt8Array::from(vec![metric_type; num_rows])));
+        }
+
+        if schema.fields.find("name").is_none() {
+            fields.push(Arc::new(Field::new("name", DataType::Utf8, false)));
+            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
+        }
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("Failed to create completed metrics batch")
     }
 
     fn complete_logs_batch(batch: RecordBatch) -> RecordBatch {
