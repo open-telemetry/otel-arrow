@@ -29,6 +29,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
 use crate::error::{QuiverError, Result};
+use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::record_bundle::RecordBundle;
 use crate::segment::{OpenSegment, SegmentError, SegmentSeq, SegmentWriter};
 use crate::segment_store::SegmentStore;
@@ -235,6 +236,14 @@ impl QuiverEngine {
         let segment_size = config.segment.target_size_bytes.get();
         let min_budget = segment_size.saturating_mul(2);
         if budget.cap() < min_budget && budget.cap() != u64::MAX {
+            otel_error!(
+                "quiver.engine.init",
+                budget_cap = budget.cap(),
+                segment_size,
+                min_budget,
+                reason = "budget_too_small",
+                message = "disk budget must be at least 2x segment size to prevent deadlock",
+            );
             return Err(QuiverError::invalid_config(format!(
                 "disk budget ({} bytes) must be at least 2x segment size ({} bytes = {} bytes) \
                  to prevent deadlock; increase budget to at least {} bytes or reduce segment size",
@@ -247,10 +256,27 @@ impl QuiverEngine {
 
         // Ensure directories exist
         let segment_dir = segment_dir(&config);
-        fs::create_dir_all(&segment_dir).map_err(|e| SegmentError::io(segment_dir.clone(), e))?;
+        fs::create_dir_all(&segment_dir).map_err(|e| {
+            otel_error!(
+                "quiver.engine.init",
+                path = %segment_dir.display(),
+                error = %e,
+                error_type = "io",
+                reason = "dir_create_failed",
+            );
+            SegmentError::io(segment_dir.clone(), e)
+        })?;
 
         // Use async WAL initialization
-        let wal_writer = initialize_wal_writer(&config, &budget).await?;
+        let wal_writer = initialize_wal_writer(&config, &budget).await.map_err(|e| {
+            otel_error!(
+                "quiver.engine.init",
+                error = %e,
+                error_type = "io",
+                reason = "wal_init_failed",
+            );
+            e
+        })?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -275,33 +301,44 @@ impl QuiverEngine {
                 }
 
                 if !scan_result.found.is_empty() {
-                    tracing::info!(
+                    otel_info!(
+                        "quiver.segment.scan",
                         segment_count = scan_result.found.len(),
                         next_segment_seq,
-                        "recovered existing segments from previous run"
+                        message = "recovered segments from previous run",
                     );
                 }
                 if !scan_result.deleted.is_empty() {
-                    tracing::info!(
+                    otel_info!(
+                        "quiver.segment.scan",
                         deleted_count = scan_result.deleted.len(),
                         next_segment_seq,
-                        "deleted expired segments during startup scan"
                     );
                 }
                 deleted_during_scan = scan_result.deleted;
             }
             Err(e) => {
-                tracing::warn!(
+                otel_error!(
+                    "quiver.segment.scan",
                     error = %e,
-                    "failed to scan existing segments during startup; continuing with empty store"
+                    error_type = "io",
+                    message = "continuing with empty store, previously finalized data may be inaccessible",
                 );
             }
         }
 
         // Create subscriber registry with segment store as provider
         let registry_config = RegistryConfig::new(&config.data_dir);
-        let registry = SubscriberRegistry::open(registry_config, segment_store.clone())
-            .map_err(|e| SegmentError::io(config.data_dir.clone(), std::io::Error::other(e)))?;
+        let registry =
+            SubscriberRegistry::open(registry_config, segment_store.clone()).map_err(|e| {
+                otel_error!(
+                    "quiver.engine.init",
+                    error = %e,
+                    error_type = "io",
+                    reason = "registry_open_failed",
+                );
+                SegmentError::io(config.data_dir.clone(), std::io::Error::other(e))
+            })?;
 
         // If any segments were deleted during scan, force-complete them in the
         // registry so that subscribers restored from progress.json don't try to
@@ -370,7 +407,7 @@ impl QuiverEngine {
         // This uses the same ingest path as live ingestion (minus WAL writes)
         let replayed = engine.replay_wal().await?;
         if replayed > 0 {
-            tracing::info!(replayed, "replayed WAL entries during startup");
+            otel_info!("quiver.wal.replay", replayed,);
         }
 
         Ok(engine)
@@ -586,9 +623,12 @@ impl QuiverEngine {
             Ok(data) => match CursorSidecar::decode(&data) {
                 Ok(c) => c.wal_position,
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.wal.cursor.load",
                         error = %e,
-                        "failed to decode cursor sidecar, replaying from beginning - duplicates may occur"
+                        error_type = "decode",
+                        reason = "decode_failed",
+                        message = "replaying from start, duplicates may occur",
                     );
                     cursor_may_cause_duplicates = true;
                     0
@@ -596,9 +636,12 @@ impl QuiverEngine {
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
             Err(e) => {
-                tracing::warn!(
+                otel_warn!(
+                    "quiver.wal.cursor.load",
                     error = %e,
-                    "failed to read cursor sidecar, replaying from beginning - duplicates may occur"
+                    error_type = "io",
+                    reason = "read_failed",
+                    message = "replaying from start, duplicates may occur",
                 );
                 cursor_may_cause_duplicates = true;
                 0
@@ -610,9 +653,10 @@ impl QuiverEngine {
             Ok(r) => r,
             Err(e) => {
                 // WAL files don't exist or are invalid - this is fine on first run
-                tracing::debug!(
+                otel_debug!(
+                    "quiver.wal.replay",
                     error = %e,
-                    "no WAL files found for replay, starting fresh"
+                    error_type = "io",
                 );
                 return Ok(0);
             }
@@ -621,10 +665,12 @@ impl QuiverEngine {
         // Clamp cursor_position to actual WAL bounds to handle stale/corrupted sidecar values
         let wal_end = reader.wal_end_position();
         let cursor_position = if cursor_position > wal_end {
-            tracing::warn!(
+            otel_warn!(
+                "quiver.wal.cursor.load",
                 cursor_position,
                 wal_end,
-                "cursor sidecar position exceeds WAL bounds, clamping to WAL end"
+                reason = "clamped",
+                message = "cursor position beyond WAL bounds, clamped to end",
             );
             wal_end
         } else {
@@ -633,9 +679,11 @@ impl QuiverEngine {
 
         // Log warning if cursor was missing/corrupted and we're replaying from a non-zero position
         if cursor_may_cause_duplicates && cursor_position > 0 {
-            tracing::warn!(
+            otel_warn!(
+                "quiver.wal.cursor.load",
                 cursor_position,
-                "cursor sidecar was invalid, replaying from beginning - duplicates may have been written to segments"
+                reason = "invalid",
+                message = "replaying from start with invalid cursor, duplicates possible",
             );
         }
 
@@ -644,10 +692,12 @@ impl QuiverEngine {
         let iter = match reader.iter_from(cursor_position) {
             Ok(iter) => iter,
             Err(e) => {
-                tracing::warn!(
+                otel_warn!(
+                    "quiver.wal.replay",
                     error = %e,
+                    error_type = "io",
                     cursor_position,
-                    "failed to create WAL iterator, starting fresh"
+                    message = "starting fresh",
                 );
                 return Ok(0);
             }
@@ -675,10 +725,12 @@ impl QuiverEngine {
                     // UnexpectedEof is expected during crash recovery - it means the
                     // last write was incomplete when the process died. This is normal
                     // and we should stop replay here (the partial entry is discarded).
-                    tracing::debug!(
+                    otel_debug!(
+                        "quiver.wal.replay",
                         context,
                         replayed_so_far = replayed_count,
-                        "WAL replay stopped at incomplete entry (expected after crash)"
+                        status = "stopped_incomplete",
+                        message = "stopped at incomplete entry, expected after crash",
                     );
                     break;
                 }
@@ -688,10 +740,13 @@ impl QuiverEngine {
                     // We can't safely read past corruption (entry boundaries unknown),
                     // so stop replay here.
                     stopped_at_corruption = true;
-                    tracing::error!(
+                    otel_error!(
+                        "quiver.wal.replay",
                         error = %e,
+                        error_type = "corruption",
                         replayed_so_far = replayed_count,
-                        "WAL corruption detected during replay, stopping replay"
+                        reason = "corruption",
+                        message = "stopping replay at corruption boundary",
                     );
                     break;
                 }
@@ -729,10 +784,11 @@ impl QuiverEngine {
                 Some(b) => b,
                 None => {
                     // Decode failure logged by from_wal_entry with slot details
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.wal.entry.decode",
                         sequence = entry.sequence,
                         slot_count = entry.slots.len(),
-                        "failed to decode WAL entry for replay, skipping"
+                        scope = "entry",
                     );
                     // Still update cursor past this entry so we don't retry it
                     let cursor = WalConsumerCursor::after(&entry);
@@ -751,10 +807,11 @@ impl QuiverEngine {
                 .await
             {
                 // Log segment errors prominently - these could indicate disk issues
-                tracing::error!(
+                otel_error!(
+                    "quiver.wal.replay",
                     error = %e,
+                    error_type = "io",
                     sequence = entry.sequence,
-                    "failed to replay WAL entry to segment"
                 );
                 // For critical errors like disk full, we should stop replay
                 // to avoid silent data loss. The next restart will retry.
@@ -765,9 +822,10 @@ impl QuiverEngine {
         }
 
         if skipped_expired > 0 {
-            tracing::info!(
+            otel_info!(
+                "quiver.wal.replay",
                 skipped_expired,
-                "skipped expired WAL entries during replay (max_age)"
+                message = "skipped expired WAL entries during replay (max_age)"
             );
             let _ = self
                 .expired_bundles
@@ -783,11 +841,11 @@ impl QuiverEngine {
         }
 
         if replayed_count > 0 || stopped_at_corruption {
-            tracing::info!(
+            otel_info!(
+                "quiver.wal.replay",
                 replayed_count,
                 stopped_at_corruption,
                 cursor_position,
-                "WAL replay completed"
             );
         }
 
@@ -817,6 +875,10 @@ impl QuiverEngine {
             Err(ref e) if e.is_at_capacity() => {
                 // WAL is full - finalize the current segment to advance the cursor
                 // and free WAL space, then retry the append.
+                otel_warn!(
+                    "quiver.wal.backpressure",
+                    message = "finalizing segment to free space before retry",
+                );
                 self.finalize_current_segment().await?;
 
                 // Retry the append after finalization freed space
@@ -859,7 +921,31 @@ impl QuiverEngine {
     ///
     /// Returns an error if segment finalization fails.
     pub async fn shutdown(&self) -> Result<()> {
-        self.finalize_current_segment().await
+        let result = self.finalize_current_segment().await;
+        if let Err(ref e) = result {
+            if self.config.durability == DurabilityMode::Wal {
+                otel_warn!(
+                    "quiver.engine.stop",
+                    error = %e,
+                    error_type = "io",
+                    message = "data recoverable via WAL replay",
+                );
+            } else {
+                otel_error!(
+                    "quiver.engine.stop",
+                    error = %e,
+                    error_type = "io",
+                    message = "data in open segment will be lost, WAL is disabled",
+                );
+            }
+        }
+        otel_info!(
+            "quiver.engine.stop",
+            cumulative_segment_bytes = self.cumulative_segment_bytes.load(Ordering::Relaxed),
+            force_dropped_segments = self.force_dropped_segments.load(Ordering::Relaxed),
+            force_dropped_bundles = self.force_dropped_bundles.load(Ordering::Relaxed),
+        );
+        result
     }
 
     /// Finalizes the current open segment and writes it to disk asynchronously.
@@ -901,7 +987,22 @@ impl QuiverEngine {
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
         let writer = SegmentWriter::new(seq);
-        let (bytes_written, _checksum) = writer.write_segment(&segment_path, segment).await?;
+        let (bytes_written, _checksum) = writer
+            .write_segment(&segment_path, segment)
+            .await
+            .map_err(|e| {
+                otel_error!(
+                    "quiver.segment.flush",
+                    segment = seq.raw(),
+                    path = %segment_path.display(),
+                    error = %e,
+                    error_type = "io",
+                    message = "data may only be recoverable via WAL replay",
+                );
+                e
+            })?;
+
+        otel_debug!("quiver.segment.flush", segment = seq.raw(), bytes_written,);
 
         // Track cumulative bytes (never decreases, for accurate throughput measurement)
         let _ = self
@@ -914,7 +1015,16 @@ impl QuiverEngine {
         // Step 5: Advance WAL cursor now that segment is durable
         {
             let mut wal_writer = self.wal_writer.lock().await;
-            wal_writer.persist_cursor(&cursor).await?;
+            wal_writer.persist_cursor(&cursor).await.map_err(|e| {
+                otel_error!(
+                    "quiver.segment.flush",
+                    segment = seq.raw(),
+                    error = %e,
+                    error_type = "io",
+                    message = "WAL replay may produce duplicates on restart",
+                );
+                e
+            })?;
         }
 
         // Step 6: Register segment with store (triggers subscriber notification)
@@ -1075,7 +1185,7 @@ impl QuiverEngine {
         for seq in self.segment_store.segment_sequences() {
             if seq < delete_boundary {
                 if let Err(e) = self.segment_store.delete_segment(seq) {
-                    tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete segment");
+                    otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "completed");
                 } else {
                     deleted += 1;
                 }
@@ -1119,11 +1229,12 @@ impl QuiverEngine {
                 bundles_dropped += count as u64;
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
-                tracing::warn!(segment = seq.raw(), error = %e, "Failed to delete force-dropped segment");
+                otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
             } else {
-                tracing::info!(
+                otel_info!(
+                    "quiver.segment.drop",
                     segment = seq.raw(),
-                    "Force-dropped pending segment (DropOldest policy)"
+                    reason = "force_drop",
                 );
                 deleted += 1;
             }
@@ -1184,16 +1295,19 @@ impl QuiverEngine {
             }
 
             if let Err(e) = self.segment_store.delete_segment(*seq) {
-                tracing::warn!(
+                otel_warn!(
+                    "quiver.segment.drop",
                     segment = seq.raw(),
                     error = %e,
-                    "Failed to delete expired segment"
+                    error_type = "io",
+                    reason = "expired",
                 );
             } else {
-                tracing::info!(
+                otel_info!(
+                    "quiver.segment.drop",
                     segment = seq.raw(),
                     max_age_secs = max_age.as_secs(),
-                    "Deleted expired segment (max_age retention)"
+                    reason = "expired",
                 );
                 deleted += 1;
             }
@@ -1241,6 +1355,17 @@ impl QuiverEngine {
         let deleted = self.cleanup_completed_segments()?;
         let expired = self.cleanup_expired_segments()?;
         let pending_deletes_cleared = self.segment_store.retry_pending_deletes();
+
+        if flushed > 0 || deleted > 0 || expired > 0 || pending_deletes_cleared > 0 {
+            otel_debug!(
+                "quiver.engine.tick",
+                flushed,
+                deleted,
+                expired,
+                pending_deletes_cleared,
+            );
+        }
+
         Ok(MaintenanceStats {
             flushed,
             deleted,
