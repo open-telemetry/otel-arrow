@@ -1,4 +1,3 @@
-use crate::otap::payload_relations;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 use std::sync::Arc;
 
@@ -14,7 +13,9 @@ use crate::otap::transform::transport_optimize::{
 };
 use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::consts::PARENT_ID;
+use crate::schema::consts::{ID, PARENT_ID};
+
+use super::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 
 pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     if batches.is_empty() || batches.len() == 1 {
@@ -539,6 +540,122 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     let pos = POSITION_LOOKUP[payload_type as usize];
     assert_ne!(pos, UNUSED_INDEX);
     pos
+}
+
+struct Relation {
+    key_col: &'static str,
+    child_types: &'static [ArrowPayloadType],
+}
+
+/// Get the foreign relations for the given payload type, the name of the id column
+/// for the parent and the corresponding id column for the child.
+pub fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
+    match parent_type {
+        // Logs
+        ArrowPayloadType::Logs => &[
+            Relation {
+                key_col: RESOURCE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: SCOPE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::LogAttrs],
+            },
+        ],
+        // Traces
+        ArrowPayloadType::Spans => &[
+            Relation {
+                key_col: RESOURCE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: SCOPE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: ID,
+                child_types: &[
+                    ArrowPayloadType::SpanAttrs,
+                    ArrowPayloadType::SpanEvents,
+                    ArrowPayloadType::SpanLinks,
+                ],
+            },
+        ],
+        ArrowPayloadType::SpanEvents => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::SpanEventAttrs],
+        }],
+        ArrowPayloadType::SpanLinkAttrs => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::SpanEventAttrs],
+        }],
+
+        // Metrics
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
+            Relation {
+                key_col: RESOURCE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ResourceAttrs],
+            },
+            Relation {
+                key_col: SCOPE_ID_COL_PATH,
+                child_types: &[ArrowPayloadType::ScopeAttrs],
+            },
+            Relation {
+                key_col: ID,
+                child_types: &[
+                    ArrowPayloadType::MetricAttrs,
+                    ArrowPayloadType::NumberDataPoints,
+                    ArrowPayloadType::SummaryDataPoints,
+                    ArrowPayloadType::HistogramDataPoints,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                ],
+            },
+        ],
+
+        ArrowPayloadType::NumberDataPoints => &[Relation {
+            key_col: ID,
+            child_types: &[
+                ArrowPayloadType::NumberDpAttrs,
+                ArrowPayloadType::NumberDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::NumberDpExemplars => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
+        }],
+        ArrowPayloadType::SummaryDataPoints => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::SummaryDpAttrs],
+        }],
+        ArrowPayloadType::HistogramDataPoints => &[Relation {
+            key_col: ID,
+            child_types: &[
+                ArrowPayloadType::HistogramDpAttrs,
+                ArrowPayloadType::HistogramDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::HistogramDpExemplars => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
+        }],
+        ArrowPayloadType::ExpHistogramDataPoints => &[Relation {
+            key_col: ID,
+            child_types: &[
+                ArrowPayloadType::ExpHistogramDpAttrs,
+                ArrowPayloadType::ExpHistogramDpExemplars,
+            ],
+        }],
+        ArrowPayloadType::ExpHistogramDpExemplars => &[Relation {
+            key_col: ID,
+            child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
+        }],
+
+        _ => &[],
+    }
 }
 
 #[cfg(test)]
@@ -1422,6 +1539,70 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
+    fn test_metrics_number_dp_chain_with_dicts() {
+        // Four-level chain: Metrics → NumberDataPoints → NumberDpExemplars → NumberDpExemplarAttrs
+        // Tests dictionary encoding variants for the UInt32 id columns:
+        // 1. Dict<UInt8, UInt32>
+        // 2. Dict<UInt16, UInt32>
+        // 3. Mixed encodings across columns and batches
+        let metric_ids           = vec![0u16, 1];
+        let metric_ids_2         = vec![2u16, 3];
+        let dp_pids              = vec![0u16, 0, 1];
+        let dp_pids_2            = vec![2u16, 3, 3];
+        let exemplar_pids        = vec![0u32, 1, 2];
+
+        // Dict<UInt8, UInt32> for all UInt32 id columns
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
+            ),
+        ]);
+
+        // Dict<UInt16, UInt32> for all UInt32 id columns
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1], vec![0u32, 2])))
+            ),
+        ]);
+
+        // Mixed: Dict<UInt8, UInt32> dp ids, Dict<UInt16, UInt32> exemplar ids and parent ids,
+        // plain UInt32 in second batch dp ids, Dict<UInt8, UInt32> in second batch exemplar attr parent ids
+        test_reindex_metrics(&mut[
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
+                (NumberDataPoints, ("id", (UInt8, UInt32), (vec![0u8, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt16, dp_pids.clone())),
+                (NumberDpExemplars, ("id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2])), ("parent_id", UInt32, exemplar_pids.clone())),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 1, 2], vec![0u32, 1, 2])))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, metric_ids_2.clone())),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, dp_pids_2.clone())),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2], vec![0u32, 1, 2]))),
+                (NumberDpExemplarAttrs, ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 1], vec![0u32, 2])))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
     fn test_metrics_complex() {
         // Complex case: multiple DP types + attrs + exemplars + exemplar attrs
         let metric_ids            = vec![0u16, 5, 3, 10];
@@ -1590,8 +1771,7 @@ mod tests {
     ) -> [Option<RecordBatch>; N] {
         let allowed = S::allowed_payload_types();
         let mut result: [Option<RecordBatch>; N] = std::array::from_fn(|_| None);
-        let all_payload_types: Vec<ArrowPayloadType> =
-            inputs.iter().map(|(pt, _)| *pt).collect();
+        let all_payload_types: Vec<ArrowPayloadType> = inputs.iter().map(|(pt, _)| *pt).collect();
 
         for (payload_type, batch) in inputs {
             assert!(
@@ -1672,9 +1852,7 @@ mod tests {
                 | ArrowPayloadType::ExpHistogramDpAttrs
                 | ArrowPayloadType::ExpHistogramDpExemplars
                 | ArrowPayloadType::ExpHistogramDpExemplarAttrs => return 4,
-                ArrowPayloadType::SummaryDataPoints | ArrowPayloadType::SummaryDpAttrs => {
-                    return 5
-                }
+                ArrowPayloadType::SummaryDataPoints | ArrowPayloadType::SummaryDpAttrs => return 5,
                 ArrowPayloadType::NumberDataPoints
                 | ArrowPayloadType::NumberDpAttrs
                 | ArrowPayloadType::NumberDpExemplars
