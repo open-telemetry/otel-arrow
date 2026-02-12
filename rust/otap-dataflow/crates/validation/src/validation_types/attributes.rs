@@ -93,7 +93,8 @@ pub struct AttributeCheck {
 
 impl AttributeCheck {
     /// Run the configured checks against a list of OTLP proto messages.
-    pub fn check(&self, messages: &[OtlpProtoMessage]) -> bool {
+    #[must_use]
+    pub fn check_attributes(&self, messages: &[OtlpProtoMessage]) -> bool {
         if messages.is_empty() {
             return false;
         }
@@ -117,11 +118,8 @@ impl AttributeCheck {
 
     fn validate_attr_list(&self, attrs: &[ProtoKeyValue]) -> bool {
         // Pre-convert required key/value pairs to Proto form once per list to reduce repeat work.
-        let required_proto: Vec<ProtoKeyValue> = self
-            .require
-            .iter()
-            .filter_map(|kv| keyvalue_to_proto(kv))
-            .collect();
+        let required_proto: Vec<ProtoKeyValue> =
+            self.require.iter().filter_map(keyvalue_to_proto).collect();
 
         // Fail fast on forbidden keys.
         if attrs
@@ -367,7 +365,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(check.check(&[msg]));
+        assert!(check.check_attributes(&[msg]));
     }
 
     #[test]
@@ -379,7 +377,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!check.check(&[msg]));
+        assert!(!check.check_attributes(&[msg]));
     }
 
     #[test]
@@ -392,6 +390,6 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(check.check(&[msg]));
+        assert!(check.check_attributes(&[msg]));
     }
 }

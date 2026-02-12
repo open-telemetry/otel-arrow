@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Collection of validation checks.
 //!
 //! These helpers operate on `&[OtlpProtoMessage]` so the validation exporter
@@ -43,6 +46,7 @@ pub enum ValidationKind {
 
 impl ValidationKind {
     /// Evaluate this validation against control and system-under-validation messages.
+    #[must_use]
     pub fn evaluate(&self, control: &[OtlpProtoMessage], suv: &[OtlpProtoMessage]) -> bool {
         match self {
             ValidationKind::Equivalence => {
@@ -54,7 +58,7 @@ impl ValidationKind {
                 min_batch_size,
                 max_batch_size,
             } => check_batch_size(suv, *min_batch_size, *max_batch_size),
-            ValidationKind::Attributes { config } => config.check(suv),
+            ValidationKind::Attributes { config } => config.check_attributes(suv),
         }
     }
 }
@@ -62,8 +66,9 @@ impl ValidationKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::validation_types::attributes::{AttributeCheck, AttributeDomain};
-    use crate::validation_types::{AnyValue, KeyValue};
+    use crate::validation_types::attributes::{
+        AnyValue, AttributeCheck, AttributeDomain, KeyValue,
+    };
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue as ProtoAny, KeyValue as ProtoKV, any_value::Value as ProtoVal,
     };
