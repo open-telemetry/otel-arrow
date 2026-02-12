@@ -8,7 +8,6 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::compute::kernels::take;
 use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
@@ -349,17 +348,25 @@ where
         // Process is as follows:
         // 1. Sort the entire record batch by the indices so that the ranges correspond to
         // the violation ranges.
-        // 2. Remove all rows in those ranges
-        // 3. Remove all rows in the new_ids and sort_indices vectors
-        // 4. Continue on
+        // 2. Remove all rows in those ranges by constructing the valid slices
+        // of the record batch (opposite of the violations), slicing the record
+        // batch to remove them, and then `concat`ing them back together.
+        // 3. Remove all rows in the new_ids vector.
+        // 4. The record batch is now sorted and violation-free. Replace the id
+        // column directly with the remapped ids and return.
+        //
+        // Note: We don't need to unsort new_ids anymore because the whole record
+        // batch is sorted.
         rb = sort_record_batch_by_indices(rb, &sort_indices)?;
+        rb = remove_record_batch_ranges(rb, &violations)?;
+        remove_vec_ranges(&mut new_ids, &violations);
+        return replace_id_column::<T>(rb, column_path, new_ids);
     }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
     untake_vec(&new_ids, &mut ids, sort_indices.values());
-    let new_rb = replace_id_column::<T>(rb, column_path, ids)?;
-    Ok(new_rb)
+    replace_id_column::<T>(rb, column_path, ids)
 }
 
 fn sort_record_batch_by_indices(rb: RecordBatch, indices: &dyn Array) -> Result<RecordBatch> {
@@ -372,6 +379,45 @@ fn sort_record_batch_by_indices(rb: RecordBatch, indices: &dyn Array) -> Result<
 
     // safety: We did a valid tranformation on all columns
     Ok(RecordBatch::try_new(schema, new_columns).expect("valid record batch"))
+}
+
+/// Removes rows at the given ranges from a record batch by slicing out the
+/// valid (non-violation) ranges and concatenating them back together.
+fn remove_record_batch_ranges(rb: RecordBatch, ranges: &[Range<usize>]) -> Result<RecordBatch> {
+    let total_len = rb.num_rows();
+    let schema = rb.schema();
+
+    let mut valid_ranges = Vec::new();
+    let mut pos = 0;
+    for r in ranges {
+        if pos < r.start {
+            valid_ranges.push(pos..r.start);
+        }
+        pos = r.end;
+    }
+    if pos < total_len {
+        valid_ranges.push(pos..total_len);
+    }
+
+    if valid_ranges.is_empty() {
+        return Ok(RecordBatch::new_empty(schema));
+    }
+
+    let slices: Vec<RecordBatch> = valid_ranges
+        .iter()
+        .map(|r| rb.slice(r.start, r.end - r.start))
+        .collect();
+
+    arrow::compute::concat_batches(&schema, &slices).map_err(|e| Error::Batching { source: e })
+}
+
+/// Removes elements at the given ranges from a vector in place.
+/// Ranges must be sorted and non-overlapping.
+fn remove_vec_ranges<T>(vec: &mut Vec<T>, ranges: &[Range<usize>]) {
+    // Process in reverse so earlier indices remain valid
+    for range in ranges.iter().rev() {
+        drop(vec.drain(range.clone()));
+    }
 }
 
 fn replace_id_column<T>(
@@ -562,8 +608,6 @@ where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign,
 {
-    dbg!(&mappings);
-    dbg!(&sorted_ids);
     let mut violations = Vec::new();
     let mut remaining_slice = &mut sorted_ids[..];
     let mut idx = 0;
@@ -578,10 +622,10 @@ where
             .iter()
             .position(|id| *id >= mapping.start_id)
             .unwrap_or(remaining_slice.len());
-        idx += map_start_idx;
         if map_start_idx != 0 {
             violations.push(idx..idx + map_start_idx);
         }
+        idx += map_start_idx;
 
         remaining_slice = &mut remaining_slice[map_start_idx..];
         let end_idx = remaining_slice
@@ -974,32 +1018,23 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_logs_referential_integrity_violations() {
-        // Referential integrity violations can cause problems because we may end up
-        // encountering Ids that are not in any mapped range. We need to make
-        // sure that in such cases all valid ids are remapped and what happens to
-        // the others is undefined for now.
+        // Referential integrity violations occur when a child has parent_ids that
+        // don't exist in the parent's id column. These orphaned rows are removed
+        // during reindexing.
         //
-        // FIXME [JD]: Is this the right behavior or should we error? If we touch the
-        // invalid ids by mapping them accidentally, we might add attributes to
-        // some logs that didn't previously exist. More of a problem in a multi-tenant
-        // scenario. This might be very expensive to detect for missing ids in the
-        // middle and would require us to go through the motions for a full
-        // join.
+        // Three different violation positions:
+        // - At the start (id 0 not in parent [1, 2, 4])
+        // - In the middle (id 3 not in parent [1, 2, 4])
+        // - At the end (id 5 not in parent [1, 2, 4])
         //
-        // Three different violations here:
-        //
-        // - One that is in the middle, meaning
-        // it will probably just get remapped since it's a part of one of the
-        // valid ranges
-        // - One that is at the start, so it can't get remapped at all
-        // - One that is at the end, so it also can't get remapped
-        //
-        // Since orphan child IDs have undefined remapping behavior, we only
-        // verify that reindexing does not error. We do not assert relation
-        // fingerprint preservation here.
-        let parent_ids = vec![1, 2, 4];
-        let child_ids  = vec![1, 0, 2, 3, 3, 5, 4];
-        reindex_logs(&mut [
+        // Valid children: ids 1, 2, 4 -> 3 valid rows out of 7.
+        let parent_ids = vec![1u16, 2, 4];
+        let child_ids  = vec![1u16, 0, 2, 2, 3, 3, 4, 5, 4];
+
+        let parent_set: HashSet<u16> = parent_ids.iter().copied().collect();
+        let expected_child_count = child_ids.iter().filter(|id| parent_set.contains(id)).count();
+
+        let mut batches = vec![
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -1008,7 +1043,17 @@ mod tests {
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
-        ]).unwrap();
+        ];
+
+        reindex_logs(&mut batches).unwrap();
+        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(&batches);
+
+        // Verify orphaned rows were removed
+        let child_idx = payload_to_idx(ArrowPayloadType::LogAttrs);
+        for group in &batches {
+            let child_batch = group[child_idx].as_ref().unwrap();
+            assert_eq!(child_batch.num_rows(), expected_child_count);
+        }
     }
 
     #[test]
