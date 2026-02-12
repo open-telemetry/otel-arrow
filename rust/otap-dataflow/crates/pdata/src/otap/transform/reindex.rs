@@ -5,9 +5,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
-};
+use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
 use crate::otap::transform::transport_optimize::{
@@ -326,7 +324,6 @@ where
 }
 
 /// Extracts an ID column from a record batch
-/// TODO [JD]: Probably get rid of this
 fn extract_id_column(batch: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
     access_column(column_path, &batch.schema(), batch.columns()).ok_or_else(|| {
         Error::ColumnNotFound {
@@ -335,6 +332,7 @@ fn extract_id_column(batch: &RecordBatch, column_path: &str) -> Result<ArrayRef>
     })
 }
 
+/// Sorts a vector of values and returns the resulting sort indices
 fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
     let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
     indices.sort_by_key(|&i| &values[i as usize]);
@@ -672,7 +670,9 @@ mod tests {
     use arrow::array::{
         Array, ArrayRef, AsArray, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
     };
-    use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
+    use arrow::datatypes::{
+        ArrowDictionaryKeyType, DataType, Field, Schema, UInt16Type, UInt32Type,
+    };
 
     use crate::error::Error;
     use crate::otap::transform::transport_optimize::{
@@ -1836,7 +1836,6 @@ mod tests {
     }
 
     /// Collects per-row logical ID values, resolving dictionary encoding.
-    /// Used by `extract_relation_fingerprints` where we need the value for each row.
     fn collect_row_ids(col: &dyn Array) -> Vec<u64> {
         match col.data_type() {
             DataType::UInt16 => col
