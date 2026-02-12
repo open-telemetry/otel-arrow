@@ -3,9 +3,9 @@
 
 //! This module defines structs to describe the traffic being created and captured for validation
 
+use crate::ValidationKind;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
-use crate::ValidationKind;
 
 const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
 const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";

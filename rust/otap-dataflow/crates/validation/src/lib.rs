@@ -84,6 +84,6 @@ pub enum ValidationKind {
     /// Check attribute presence/absence rules (applied to SUV messages).
     Attributes {
         /// Attribute rules to enforce.
-        config: AttributeCheck
+        config: AttributeCheck,
     },
 }

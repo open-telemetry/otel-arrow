@@ -8,7 +8,7 @@
 
 use otap_df_pdata::proto::OtlpProtoMessage;
 
-/// Ensure every message has at least `min_items` items. 
+/// Ensure every message has at least `min_items` items.
 /// returns false if any message has fewer items than `min_items`.
 /// if min_items is set to 0 will always return true
 pub fn check_min_batch_size(messages: &[OtlpProtoMessage], min_items: usize) -> bool {
