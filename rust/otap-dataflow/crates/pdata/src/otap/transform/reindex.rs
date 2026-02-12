@@ -67,6 +67,16 @@ impl<'a, T: OtapBatchStore, const N: usize> MultiBatchStore<'a, T, N> {
             .filter_map(move |batch| batch[payload_to_idx(payload_type)].as_ref())
     }
 
+    fn remove_transport_optimized_encodings(
+        &mut self,
+        payload_type: ArrowPayloadType,
+    ) -> Result<()> {
+        for rb in self.select_mut(payload_type) {
+            *rb = remove_transport_optimized_encodings(payload_type, rb)?;
+        }
+        Ok(())
+    }
+
     fn select_mut(
         &mut self,
         payload_type: ArrowPayloadType,
@@ -119,12 +129,12 @@ where
         });
     }
 
+    for payload_type in S::allowed_payload_types() {
+        store.remove_transport_optimized_encodings(*payload_type)?;
+    }
+
     // Iterate over all allowed payload types for this signal
     for &payload_type in S::allowed_payload_types() {
-        for rb in store.select_mut(payload_type) {
-            *rb = remove_transport_optimized_encodings(payload_type, rb)?;
-        }
-
         // Get all relations (parent-child relationships) for this payload type
         for relation in payload_relations(payload_type) {
             reindex_id_column_dynamic(store, payload_type, relation.child_types, relation.key_col)?;
@@ -555,6 +565,21 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     pos
 }
 
+struct PayloadRelationInfo {
+    primary_id: Option<PrimaryIdInfo>,
+    relations: &'static [Relation],
+}
+
+enum IdColumnType {
+    U16,
+    U32,
+}
+
+struct PrimaryIdInfo {
+    name: &'static str,
+    size: IdColumnType,
+}
+
 struct Relation {
     key_col: &'static str,
     child_types: &'static [ArrowPayloadType],
@@ -562,7 +587,7 @@ struct Relation {
 
 /// Get the foreign relations for the given payload type, the name of the id column
 /// for the parent and the corresponding id column for the child.
-fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
+fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelationInfo {
     match parent_type {
         // Logs
         ArrowPayloadType::Logs => &[
