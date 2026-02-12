@@ -302,7 +302,7 @@ fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
             .map(|source| {
                 (
                     source.node_id().to_string(),
-                    source.resolved_out_port(&connection.out_port).to_string(),
+                    source.resolved_output_port().to_string(),
                 )
             })
             .collect::<Vec<_>>();
@@ -313,7 +313,7 @@ fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
         sources.dedup();
 
         let key = EdgeKey {
-            dispatch: std::mem::discriminant(&connection.dispatch_strategy),
+            dispatch: std::mem::discriminant(&connection.effective_dispatch_strategy()),
             destinations: destinations.clone(),
         };
 

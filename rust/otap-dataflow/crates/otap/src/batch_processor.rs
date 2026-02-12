@@ -1471,8 +1471,8 @@ mod tests {
                 },
             }),
         );
-        nuc.add_output("out_port");
-        nuc.set_default_output("out_port");
+        nuc.add_output("main_output");
+        nuc.set_default_output("main_output");
         let nuc = Arc::new(nuc);
 
         // Create processor via factory and ensure the provided NodeUserConfig is preserved
@@ -1482,8 +1482,8 @@ mod tests {
             .expect("factory should succeed");
 
         let uc = wrapper.user_config();
-        assert!(uc.outputs.iter().any(|port| port.as_ref() == "out_port"));
-        assert_eq!(uc.default_output.as_deref(), Some("out_port"));
+        assert!(uc.outputs.iter().any(|port| port.as_ref() == "main_output"));
+        assert_eq!(uc.default_output.as_deref(), Some("main_output"));
     }
 
     #[test]

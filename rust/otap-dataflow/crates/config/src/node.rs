@@ -39,7 +39,7 @@ pub struct NodeUserConfig {
     pub outputs: Vec<PortName>,
 
     /// Optional default output port name to use when a node emits pdata without specifying a port.
-    /// If omitted and multiple out ports are configured, the engine will treat the default as
+    /// If omitted and multiple output ports are configured, the engine will treat the default as
     /// ambiguous and require explicit port selection at runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_output: Option<PortName>,

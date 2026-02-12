@@ -1564,7 +1564,7 @@ fn collect_hyper_edges_runtime_from_connections<PData>(
             }
             sources.push(NodeIdPortName {
                 node_id: registration.node_id.clone(),
-                port: source.resolved_out_port(&connection.out_port),
+                port: source.resolved_output_port(),
             });
         }
         if sources.is_empty() {
@@ -1579,7 +1579,7 @@ fn collect_hyper_edges_runtime_from_connections<PData>(
             left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
         });
 
-        let dispatch_strategy = connection.dispatch_strategy.clone();
+        let dispatch_strategy = connection.effective_dispatch_strategy();
         let key = HyperEdgeKey {
             dispatch_strategy: std::mem::discriminant(&dispatch_strategy),
             destinations: destinations.clone(),

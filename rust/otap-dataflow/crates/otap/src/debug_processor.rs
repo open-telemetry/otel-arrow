@@ -186,8 +186,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let active_signals = self.config.signals();
         let output_mode = self.config.output();
 
-        // if the outputmode is via outports then we can have multiple outports configured
-        // so there is no clear default we need to determine which portnames are for the main port
+        // if the output mode is via output ports then we can have multiple output ports configured
+        // so there is no clear default; we need to determine which port names are for the main port
         let main_ports: Option<Vec<PortName>> = if let OutputMode::Outports(ref ports) = output_mode
         {
             let connected_ports = effect_handler.connected_ports();

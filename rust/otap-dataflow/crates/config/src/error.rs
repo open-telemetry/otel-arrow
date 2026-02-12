@@ -76,12 +76,12 @@ pub enum Error {
         node_id: NodeId,
     },
 
-    /// The same out‐port was connected more than once on a single node.
+    /// The same output port was connected more than once on a single node.
     #[error(
-        "The same out-port `{port}` was connected more than once on the node `{source_node}`\nContext: {context}"
+        "The same output port `{port}` was connected more than once on the node `{source_node}`\nContext: {context}"
     )]
     #[diagnostic(code(data_plane::duplicate_out_port), url(docsrs))]
-    DuplicateOutPort {
+    DuplicateOutputPort {
         /// The context in which the error occurred.
         context: Context,
         /// The node on which the port was duplicated.

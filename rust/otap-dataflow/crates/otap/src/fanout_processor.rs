@@ -93,7 +93,7 @@ struct FanoutConfig {
     /// Ack policy.
     #[serde(default)]
     pub await_ack: AwaitAck,
-    /// Destinations. Each must map to a dedicated out port with exactly one downstream edge.
+    /// Destinations. Each must map to a dedicated output port with exactly one downstream edge.
     #[serde(default)]
     pub destinations: Vec<DestinationConfig>,
     /// Interval for timeout checks when any destination declares a timeout.
@@ -1581,7 +1581,7 @@ mod tests {
             .process(Message::PData(data), &mut h.effect)
             .await
             .expect("process ok");
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
         let mut ack = AckMsg::new(sent.pop().unwrap());
         ack.calldata = ack.accepted.current_calldata().unwrap();
@@ -2324,7 +2324,7 @@ mod tests {
             .expect("process ok");
 
         // Get the sent message (now has both receiver and fanout frames)
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
 
         // Simulate downstream exporter acking - in real pipeline, Context::next_ack
@@ -2393,7 +2393,7 @@ mod tests {
             .await
             .expect("process ok");
 
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
 
         // Simulate downstream exporter nacking
@@ -2631,7 +2631,7 @@ mod tests {
 
             // Drain outputs periodically to prevent channel backpressure
             if (i + 1) % 3 == 0 {
-                let _ = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+                let _ = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
             }
         }
         assert_eq!(

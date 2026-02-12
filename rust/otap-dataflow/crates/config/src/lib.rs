@@ -65,7 +65,7 @@ pub type NodeId = Cow<'static, str>;
 /// The URN of a node type.
 pub use node_urn::NodeUrn;
 
-/// The name of a node out port in the pipeline.
+/// The name of a node output port in the pipeline.
 pub type PortName = Cow<'static, str>;
 
 /// The description of a pipeline or a node.
