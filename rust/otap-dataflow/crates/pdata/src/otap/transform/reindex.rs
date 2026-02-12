@@ -17,6 +17,13 @@ use crate::schema::consts::{ID, PARENT_ID};
 
 use super::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 
+/// Reindex the provided record batches in place such that all IDs are unique
+/// for each payload type across all batches. This makes it safe to concatenate
+/// these record batches.
+///
+/// Note: reindex also removes the transport optimized encoding.
+/// Note: There are opportunities for optimization here, some of which are captured
+/// in https://github.com/open-telemetry/otel-arrow/issues/1926
 pub fn reindex<const N: usize>(batches: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     if batches.is_empty() || batches.len() == 1 {
         return Ok(());
@@ -69,12 +76,6 @@ impl<'a, T: OtapBatchStore, const N: usize> MultiBatchStore<'a, T, N> {
 
 pub fn reindex_logs<const N: usize>(logs: &mut [[Option<RecordBatch>; N]]) -> Result<()> {
     let mut store = MultiBatchStore::<Logs, { N }>::new(logs);
-    // FIXME [JD]: File an item for this - We should be able to support one more
-    // item (u16::MAX + 1), but when computing offsets in create_mappings, it is
-    // possible to overflow the offset which is of Native type when we're at the limit.
-    //
-    // The solution might be to do offset math with u64 so that we're always
-    // ok, but we'll have to constantly cast back and forth.
     reindex_batch_store(&mut store)
 }
 
@@ -101,6 +102,11 @@ where
         .map(|rb| rb.num_rows())
         .sum();
 
+    // TODO: Consider supporting u16::MAX + 1. This is a little tricky because we
+    // do offset math with the Native type which causes us to overflow right
+    // at the top. We could maybe try to do offset math with u64, but we will
+    // have to constantly cast back and forth and it won't be as clear if we've
+    // made a mistake somewhere. Only consequence is max batch size is 1 less.
     if primary_item_count > u16::MAX as usize {
         return Err(Error::TooManyItems {
             payload_type: S::ROOT_PAYLOAD_TYPE,
