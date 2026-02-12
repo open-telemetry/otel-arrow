@@ -5,7 +5,9 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
+};
 
 use crate::error::{Error, Result};
 use crate::otap::transform::transport_optimize::{
@@ -486,9 +488,10 @@ where
             break;
         }
 
-        // Skip over elements of remaining_slice that come before this mapping range even starts.
-        // It could be the case that we have an integrity violation here, but for
-        // now we're just going to continue to remap it.
+        // If there are elements left that come before the current mapping then these
+        // were never re-mapped. In this case we can either return an error, drop
+        // them, or try to remove them entirely from the record batch by nulling
+        // them out.
         let start_idx = remaining_slice
             .iter()
             .position(|id| *id >= mapping.start_id)
@@ -796,9 +799,13 @@ mod tests {
         // valid ranges
         // - One that is at the start, so it can't get remapped at all
         // - One that is at the end, so it also can't get remapped
+        //
+        // Since orphan child IDs have undefined remapping behavior, we only
+        // verify that reindexing does not error. We do not assert relation
+        // fingerprint preservation here.
         let parent_ids = vec![1, 2, 4];
         let child_ids  = vec![1, 0, 2, 3, 5, 4];
-        test_reindex_logs(&mut [
+        reindex_logs(&mut [
             logs!(
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
@@ -807,7 +814,7 @@ mod tests {
                 (Logs, ("id", UInt16, parent_ids.clone())),
                 (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
             ),
-        ]);
+        ]).unwrap();
     }
 
     #[test]
@@ -1655,10 +1662,12 @@ mod tests {
 
     /// Validates reindexing for any signal:
     /// 1. Converts input to OTLP (before reindex)
-    /// 2. Reindexes the batches
-    /// 3. Asserts no ID overlaps across batch groups
-    /// 4. Converts output to OTLP (after reindex)
-    /// 5. Asserts the OTLP data is equivalent
+    /// 2. Snapshots parent→child relation fingerprints (before reindex)
+    /// 3. Reindexes the batches
+    /// 4. Asserts no ID overlaps across batch groups
+    /// 5. Asserts relation fingerprints are unchanged
+    /// 6. Converts output to OTLP (after reindex)
+    /// 7. Asserts the OTLP data is equivalent
     fn test_reindex<S, const N: usize>(
         batches: &mut [[Option<RecordBatch>; N]],
         reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
@@ -1667,9 +1676,16 @@ mod tests {
         S: OtapBatchStore,
     {
         let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
+        let before_relations = extract_relation_fingerprints::<S, N>(batches);
 
         reindex_fn(batches).unwrap();
         assert_no_id_overlaps::<S, N>(batches);
+
+        let after_relations = extract_relation_fingerprints::<S, N>(batches);
+        assert_eq!(
+            before_relations, after_relations,
+            "Parent-child relations changed after reindexing"
+        );
 
         let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
 
@@ -1686,6 +1702,71 @@ mod tests {
         }
 
         assert_equivalent(&before_otlp, &after_otlp);
+    }
+
+    /// For each batch group, relation, and child type, records which child row
+    /// indices map to each parent by ordinal position (smallest parent ID = 0,
+    /// second smallest = 1, etc). This captures structural relationships
+    /// independent of actual ID values, so it should be identical before and
+    /// after reindexing.
+    fn extract_relation_fingerprints<S: OtapBatchStore, const N: usize>(
+        batches: &[[Option<RecordBatch>; N]],
+    ) -> Vec<Vec<Vec<usize>>> {
+        let mut fingerprints = Vec::new();
+
+        for group in batches.iter() {
+            for &payload_type in S::allowed_payload_types() {
+                let parent_idx = payload_to_idx(payload_type);
+                let Some(parent_batch) = &group[parent_idx] else {
+                    continue;
+                };
+
+                for relation in payload_relations(payload_type) {
+                    let Some(parent_col) = access_column(
+                        relation.key_col,
+                        &parent_batch.schema(),
+                        parent_batch.columns(),
+                    ) else {
+                        continue;
+                    };
+                    let parent_ids = collect_row_ids(parent_col.as_ref());
+
+                    // Sort and deduplicate to get ordinal mapping
+                    let mut unique_sorted: Vec<u64> = parent_ids.clone();
+                    unique_sorted.sort();
+                    unique_sorted.dedup();
+
+                    for &child_type in relation.child_types {
+                        let child_idx = payload_to_idx(child_type);
+                        let Some(child_batch) = &group[child_idx] else {
+                            continue;
+                        };
+
+                        let Some(child_col) = access_column(
+                            "parent_id",
+                            &child_batch.schema(),
+                            child_batch.columns(),
+                        ) else {
+                            continue;
+                        };
+                        let child_parent_ids = collect_row_ids(child_col.as_ref());
+
+                        // For each parent ordinal, record which child row indices reference it
+                        let mut ordinal_to_children: Vec<Vec<usize>> =
+                            vec![vec![]; unique_sorted.len()];
+                        for (child_row, &child_pid) in child_parent_ids.iter().enumerate() {
+                            if let Ok(ordinal) = unique_sorted.binary_search(&child_pid) {
+                                ordinal_to_children[ordinal].push(child_row);
+                            }
+                        }
+
+                        fingerprints.push(ordinal_to_children);
+                    }
+                }
+            }
+        }
+
+        fingerprints
     }
 
     /// Validates that no ID column has overlapping values across batch groups.
@@ -1723,6 +1804,8 @@ mod tests {
         }
     }
 
+    /// Collects unique ID values from a column (for dictionary arrays, returns the
+    /// dictionary VALUES, not per-row values). Used by `assert_no_id_overlaps`.
     fn collect_ids(col: &dyn Array) -> Vec<u64> {
         match col.data_type() {
             DataType::Dictionary(ktype, _) => match ktype.as_ref() {
@@ -1749,6 +1832,59 @@ mod tests {
                 .map(|&v| v as u64)
                 .collect(),
             _ => unreachable!(),
+        }
+    }
+
+    /// Collects per-row logical ID values, resolving dictionary encoding.
+    /// Used by `extract_relation_fingerprints` where we need the value for each row.
+    fn collect_row_ids(col: &dyn Array) -> Vec<u64> {
+        match col.data_type() {
+            DataType::UInt16 => col
+                .as_primitive::<UInt16Type>()
+                .values()
+                .iter()
+                .map(|&v| v as u64)
+                .collect(),
+            DataType::UInt32 => col
+                .as_primitive::<UInt32Type>()
+                .values()
+                .iter()
+                .map(|&v| v as u64)
+                .collect(),
+            DataType::Dictionary(key_type, _) => match key_type.as_ref() {
+                DataType::UInt8 => collect_dict_row_ids::<UInt8Type>(col),
+                DataType::UInt16 => collect_dict_row_ids::<UInt16Type>(col),
+                _ => unreachable!("Unsupported dictionary key type"),
+            },
+            _ => unreachable!("Unsupported column type: {:?}", col.data_type()),
+        }
+    }
+
+    fn collect_dict_row_ids<K>(col: &dyn Array) -> Vec<u64>
+    where
+        K: ArrowDictionaryKeyType,
+        K::Native: ArrowNativeType,
+    {
+        let dict = col.as_dictionary::<K>();
+        let values = dict.values();
+        match values.data_type() {
+            DataType::UInt16 => {
+                let vals = values.as_primitive::<UInt16Type>();
+                dict.keys()
+                    .values()
+                    .iter()
+                    .map(|k: &K::Native| vals.value(k.as_usize()) as u64)
+                    .collect()
+            }
+            DataType::UInt32 => {
+                let vals = values.as_primitive::<UInt32Type>();
+                dict.keys()
+                    .values()
+                    .iter()
+                    .map(|k: &K::Native| vals.value(k.as_usize()) as u64)
+                    .collect()
+            }
+            _ => unreachable!("Unsupported dictionary value type"),
         }
     }
 
