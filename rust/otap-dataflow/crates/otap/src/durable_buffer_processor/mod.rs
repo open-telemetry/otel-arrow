@@ -114,6 +114,11 @@ use otap_df_telemetry_macros::metric_set;
 /// URN for the durable buffer.
 pub const DURABLE_BUFFER_URN: &str = "urn:otel:durable_buffer:processor";
 
+/// Minimum interval between repeated warning logs for the same condition
+/// (backpressure, flush failures). Prevents log flooding when the timer
+/// tick fires every poll_interval (~100 ms).
+const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
+
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
 
@@ -391,13 +396,22 @@ impl DurableBuffer {
             let min_total = min_per_core * num_cores as u64;
             let max_cores = total_size_cap / min_per_core;
             return Err(ConfigError::InvalidUserConfig {
-                error: format!(
-                    "retention_size_cap ({total_size_cap} bytes) is too small for {num_cores} core(s): \
-                     per-core capacity is {per_core_size_cap} bytes, but the engine requires at \
-                     least {min_per_core} bytes per core (WAL max {wal_max} + 2 * segment size {segment_size}). \
-                     Either increase retention_size_cap to at least {min_total} bytes, \
-                     or reduce the core count to at most {max_cores}",
-                ),
+                error: if max_cores == 0 {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small: \
+                         the engine requires at least {min_per_core} bytes per core \
+                         (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Increase retention_size_cap to at least {min_total} bytes",
+                    )
+                } else {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small for {num_cores} core(s): \
+                         per-core capacity is {per_core_size_cap} bytes, but the engine requires at \
+                         least {min_per_core} bytes per core (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Either increase retention_size_cap to at least {min_total} bytes, \
+                         or reduce the core count to at most {max_cores}",
+                    )
+                },
             });
         }
 
@@ -795,7 +809,7 @@ impl DurableBuffer {
                     let now = Instant::now();
                     let should_log = self
                         .last_backpressure_warn
-                        .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10));
+                        .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
                     if should_log {
                         self.last_backpressure_warn = Some(now);
                         otel_warn!("durable_buffer.ingest.backpressure", error = %e);
@@ -838,12 +852,12 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                // Rate-limit flush warnings to at most once every 10 seconds
-                // since the timer tick fires every poll_interval (~100ms).
+                // Rate-limit flush warnings since the timer tick fires every
+                // poll_interval (~100ms).
                 let now = Instant::now();
                 let should_log = self
                     .last_flush_warn
-                    .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(10));
+                    .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
                 if should_log {
                     self.last_flush_warn = Some(now);
                     otel_warn!("durable_buffer.flush.failed", error = %e);
