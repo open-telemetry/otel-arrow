@@ -359,7 +359,8 @@ impl SegmentStore {
                             message = "Failed to delete segment, deferring for retry",
                         );
                     }
-                    let _ = self.pending_deletes
+                    let _ = self
+                        .pending_deletes
                         .lock()
                         .insert(seq, file_size.unwrap_or(0));
                 }
@@ -984,15 +985,22 @@ mod tests {
     /// that can be registered. Returns (store, budget, segment_seq, file_size).
     fn store_with_budget_and_segment() -> (SegmentStore, Arc<DiskBudget>, SegmentSeq, u64) {
         use crate::segment::OpenSegment;
-        use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_fingerprint, test_schema};
         use crate::segment::SegmentWriter;
+        use crate::segment::test_utils::{
+            TestBundle, make_batch, slot_descriptors, test_fingerprint, test_schema,
+        };
 
         let dir = tempdir().unwrap();
         let segment_dir = dir.keep().join("segments");
         std::fs::create_dir_all(&segment_dir).unwrap();
 
-        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
-        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
 
         // Build a minimal segment file via the writer.
         let seq = SegmentSeq::new(1);
@@ -1008,8 +1016,13 @@ mod tests {
         );
         let _ = open_segment.append(&bundle).unwrap();
         let writer = SegmentWriter::new(seq);
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let (bytes_written, _) = rt.block_on(writer.write_segment(&path, open_segment)).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (bytes_written, _) = rt
+            .block_on(writer.write_segment(&path, open_segment))
+            .unwrap();
         assert!(bytes_written > 0);
 
         (store, budget, seq, bytes_written)
@@ -1025,7 +1038,11 @@ mod tests {
 
         // Delete the segment — file should be removed and budget released.
         store.delete_segment(seq).unwrap();
-        assert_eq!(budget.used(), 0, "budget should be zero after successful delete");
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should be zero after successful delete"
+        );
         assert_eq!(store.pending_delete_count(), 0);
     }
 
@@ -1043,7 +1060,11 @@ mod tests {
 
         // delete_segment should still release budget (file doesn't exist on disk).
         store.delete_segment(seq).unwrap();
-        assert_eq!(budget.used(), 0, "budget should be released even if file was already gone");
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should be released even if file was already gone"
+        );
         assert_eq!(store.pending_delete_count(), 0);
     }
 
@@ -1053,8 +1074,13 @@ mod tests {
         let segment_dir = dir.path().join("segments");
         std::fs::create_dir_all(&segment_dir).unwrap();
 
-        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
-        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
 
         // Simulate a segment whose delete was deferred: file on disk, size in budget.
         let seq = SegmentSeq::new(42);
@@ -1075,7 +1101,11 @@ mod tests {
         assert_eq!(deleted, 1);
         assert_eq!(store.pending_delete_count(), 0);
         assert!(!path.exists());
-        assert_eq!(budget.used(), 0, "budget should be released after retry succeeds");
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should be released after retry succeeds"
+        );
     }
 
     #[test]
@@ -1084,8 +1114,13 @@ mod tests {
         let segment_dir = dir.path().join("segments");
         std::fs::create_dir_all(&segment_dir).unwrap();
 
-        let budget = Arc::new(DiskBudget::new(10_000_000, 1_000_000, RetentionPolicy::Backpressure));
-        let store = SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
 
         // Simulate deferred delete where the file no longer exists.
         let seq = SegmentSeq::new(7);
@@ -1100,7 +1135,11 @@ mod tests {
         let deleted = store.retry_pending_deletes();
         assert_eq!(deleted, 1);
         assert_eq!(store.pending_delete_count(), 0);
-        assert_eq!(budget.used(), 0, "budget should be released when file is externally gone");
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should be released when file is externally gone"
+        );
     }
 
     #[test]
