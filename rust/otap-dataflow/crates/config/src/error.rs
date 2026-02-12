@@ -3,7 +3,7 @@
 
 //! Errors for the config crate.
 
-use crate::node::DispatchStrategy;
+use crate::pipeline::DispatchPolicy;
 use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
@@ -13,8 +13,8 @@ use std::fmt::Display;
 pub struct HyperEdgeSpecDetails {
     /// The target nodes of the hyper-edge.
     pub target_nodes: Vec<NodeId>,
-    /// The dispatch strategy for the hyper-edge.
-    pub dispatch_strategy: DispatchStrategy,
+    /// The dispatch policy for the hyper-edge.
+    pub dispatch_policy: DispatchPolicy,
     /// The target nodes that are missing in the pipeline.
     pub missing_targets: Vec<NodeId>,
 }

@@ -27,8 +27,8 @@ use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
-    node::{DispatchStrategy, NodeUserConfig},
-    pipeline::PipelineConfig,
+    node::NodeUserConfig,
+    pipeline::{DispatchPolicy, PipelineConfig},
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -536,12 +536,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Determines the best channel type from the following parameters:
     /// - The number of sources connected to the channel.
     /// - The number of destinations connected to the channel.
-    /// - The dispatch strategy for the channel (not yet supported).
+    ///
+    /// Current behavior:
+    /// - multi-destination edges use competing consumers over a shared channel
+    ///   (`one_of` semantics).
+    /// - broadcast semantics are not yet implemented.
     ///
     /// This function returns a tuple containing one sender per source and one receiver per
     /// destination.
-    ///
-    /// ToDo (LQ): Support dispatch strategies.
     fn select_channel_type(
         src_nodes: &[&dyn Node<PData>],
         dest_nodes: &[&dyn Node<PData>],
@@ -1367,12 +1369,12 @@ where
 }
 
 /// Represents a hyper-edge in the runtime graph, corresponding to one or more source ports,
-/// its dispatch strategy, and the set of destination node ids connected to those ports.
+/// its dispatch policy, and the set of destination node ids connected to those ports.
 struct HyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
 
     #[allow(dead_code)]
-    dispatch_strategy: DispatchStrategy,
+    dispatch_policy: DispatchPolicy,
 
     // names are from the configuration, not yet resolved
     destinations: Vec<NodeName>,
@@ -1382,14 +1384,14 @@ struct HyperEdgeRuntime {
 struct ResolvedHyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
     destinations: Vec<NodeId>,
-    dispatch_strategy: DispatchStrategy,
+    dispatch_policy: DispatchPolicy,
     source_ids_display: String,
     destination_ids_display: String,
 }
 
 #[derive(Hash, PartialEq, Eq)]
 struct HyperEdgeKey {
-    dispatch_strategy: std::mem::Discriminant<DispatchStrategy>,
+    dispatch_policy: std::mem::Discriminant<DispatchPolicy>,
     destinations: Vec<NodeName>,
 }
 impl HyperEdgeRuntime {
@@ -1416,7 +1418,7 @@ impl HyperEdgeRuntime {
         Ok(ResolvedHyperEdgeRuntime {
             sources: self.sources,
             destinations,
-            dispatch_strategy: self.dispatch_strategy,
+            dispatch_policy: self.dispatch_policy,
             source_ids_display,
             destination_ids_display,
         })
@@ -1439,7 +1441,7 @@ impl ResolvedHyperEdgeRuntime {
             "src:[{}]|dst:[{}]|dispatch:{}",
             sources.join(","),
             destinations.join(","),
-            dispatch_strategy_label(&self.dispatch_strategy)
+            dispatch_policy_label(&self.dispatch_policy)
         );
         let hash = stable_hash64(&signature);
         format!("hyperedge:{:016x}", hash).into()
@@ -1462,7 +1464,7 @@ impl ResolvedHyperEdgeRuntime {
         let ResolvedHyperEdgeRuntime {
             sources,
             destinations,
-            dispatch_strategy: _,
+            dispatch_policy: _,
             source_ids_display,
             destination_ids_display,
         } = self;
@@ -1579,9 +1581,9 @@ fn collect_hyper_edges_runtime_from_connections<PData>(
             left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
         });
 
-        let dispatch_strategy = connection.effective_dispatch_strategy();
+        let dispatch_policy = connection.effective_dispatch_policy();
         let key = HyperEdgeKey {
-            dispatch_strategy: std::mem::discriminant(&dispatch_strategy),
+            dispatch_policy: std::mem::discriminant(&dispatch_policy),
             destinations: destinations.clone(),
         };
 
@@ -1607,7 +1609,7 @@ fn collect_hyper_edges_runtime_from_connections<PData>(
         } else {
             edges.push(HyperEdgeRuntime {
                 sources,
-                dispatch_strategy,
+                dispatch_policy,
                 destinations,
             });
             edge_index.entry(key).or_default().push(edges.len() - 1);
@@ -1628,12 +1630,10 @@ fn collect_hyper_edges_runtime_from_connections<PData>(
     Ok(edges)
 }
 
-const fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
-    match strategy {
-        DispatchStrategy::Broadcast => "broadcast",
-        DispatchStrategy::RoundRobin => "round_robin",
-        DispatchStrategy::Random => "random",
-        DispatchStrategy::LeastLoaded => "least_loaded",
+const fn dispatch_policy_label(policy: &DispatchPolicy) -> &'static str {
+    match policy {
+        DispatchPolicy::OneOf => "one_of",
+        DispatchPolicy::Broadcast => "broadcast",
     }
 }
 

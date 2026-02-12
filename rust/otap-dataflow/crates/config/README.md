@@ -106,6 +106,9 @@ Pipeline wiring is defined at `PipelineConfig.connections` (not inside node decl
 Connection defaults:
 
 - source output defaults to `"default"` when `from` has no selector
-- `fanout_policy` is optional and defaults to balanced fanout with `round_robin`
+- `policies.dispatch` is optional and defaults to `one_of` (will most likely be
+  changed to `broadcast` in the future once its implementation is complete)
+- with multiple destinations, `one_of` means each message is consumed by exactly
+  one destination (competing consumers)
 
 `outputs`/`default_output` are optional in many single-output pipelines and mainly useful for explicit multi-output-port declaration and validation.

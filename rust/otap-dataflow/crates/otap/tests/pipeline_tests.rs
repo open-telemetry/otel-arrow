@@ -8,9 +8,10 @@
 //! pipeline until a graceful shutdown, and then confirms that all related entities
 //! and metric sets are unregistered to avoid registry leaks.
 
-use otap_df_config::node::DispatchStrategy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
+use otap_df_config::pipeline::{
+    DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
+};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -184,7 +185,7 @@ fn build_test_pipeline_config(
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:noop:exporter", None)
-        .round_robin("receiver", "out", ["exporter"])
+        .one_of("receiver", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -207,8 +208,8 @@ fn build_fan_in_pipeline_config(
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:noop:exporter", None)
-        .round_robin("receiver_a", "out", ["exporter"])
-        .round_robin("receiver_b", "out", ["exporter"])
+        .one_of("receiver_a", ["exporter"])
+        .one_of("receiver_b", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -226,14 +227,14 @@ fn build_mixed_receiver_pipeline_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
             Some(local_receiver_config_value),
         )
-        .round_robin("local_receiver", "out", ["exporter"])
+        .one_of("local_receiver", ["exporter"])
         .add_receiver(
             "shared_receiver",
             OTLP_RECEIVER_URN,
             Some(shared_receiver_config_value),
         )
         .add_exporter("exporter", NOOP_EXPORTER_URN, None)
-        .round_robin("shared_receiver", "out", ["exporter"])
+        .one_of("shared_receiver", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -271,7 +272,7 @@ fn expected_entity_count(config: &PipelineConfig) -> usize {
 fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
     #[derive(Hash, PartialEq, Eq, Clone)]
     struct EdgeKey {
-        dispatch: std::mem::Discriminant<DispatchStrategy>,
+        dispatch: std::mem::Discriminant<DispatchPolicy>,
         destinations: Vec<String>,
     }
 
@@ -313,7 +314,7 @@ fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
         sources.dedup();
 
         let key = EdgeKey {
-            dispatch: std::mem::discriminant(&connection.effective_dispatch_strategy()),
+            dispatch: std::mem::discriminant(&connection.effective_dispatch_policy()),
             destinations: destinations.clone(),
         };
 

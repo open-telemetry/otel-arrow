@@ -7,7 +7,7 @@ pub mod service;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
-use crate::node::{DispatchStrategy, NodeUserConfig};
+use crate::node::NodeUserConfig;
 use crate::pipeline::service::ServiceConfig;
 use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
@@ -23,10 +23,9 @@ use std::sync::Arc;
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
 /// - "Hyper" because the edges connecting the nodes can be hyper-edges.
 /// - A node can be connected to multiple outgoing nodes.
-/// - The way messages are dispatched over each hyper-edge is defined by a dispatch strategy representing
-///   different communication model semantics. For example, it could be a broadcast channel that sends
-///   the same message to all destination nodes, or it might have a round-robin or least-loaded semantic,
-///   similar to an SPMC channel.
+/// - The way messages are dispatched over each hyper-edge is defined by a dispatch policy representing
+///   communication semantics. For example, it can route each message to one destination (`one_of`), or
+///   in the future it can broadcast to every destination.
 ///
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 ///
@@ -331,11 +330,9 @@ pub struct PipelineConnection {
     pub from: ConnectionSourceSet,
     /// Destination node id(s). A list denotes fan-out.
     pub to: ConnectionNodeSet,
-    /// Optional fanout policy for this connection.
-    ///
-    /// When omitted, the engine uses balanced fanout with a round-robin strategy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fanout_policy: Option<FanoutPolicy>,
+    /// Optional policy set for this connection.
+    #[serde(default, skip_serializing_if = "ConnectionPolicies::is_empty")]
+    pub policies: ConnectionPolicies,
 }
 
 impl PipelineConnection {
@@ -360,104 +357,62 @@ impl PipelineConnection {
         self.to.nodes()
     }
 
-    /// Returns the effective dispatch strategy for this connection.
-    #[must_use]
-    pub fn effective_dispatch_strategy(&self) -> DispatchStrategy {
-        self.fanout_policy.as_ref().map_or(
-            DispatchStrategy::RoundRobin,
-            FanoutPolicy::dispatch_strategy,
-        )
-    }
-}
-
-/// Fanout policy for a connection.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct FanoutPolicy {
-    /// Fanout mode.
-    pub mode: FanoutMode,
-    /// Strategy used in `balanced` mode.
+    /// Returns the effective dispatch policy for this connection.
     ///
-    /// If omitted, `round_robin` is used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<BalancingStrategy>,
-}
-
-impl FanoutPolicy {
-    /// Returns the runtime dispatch strategy represented by this fanout policy.
+    /// For single-destination connections this always resolves to `one_of`,
+    /// regardless of the configured policy.
     #[must_use]
-    pub fn dispatch_strategy(&self) -> DispatchStrategy {
-        match self.mode {
-            FanoutMode::Broadcast => DispatchStrategy::Broadcast,
-            FanoutMode::Balanced => self
-                .strategy
-                .as_ref()
-                .unwrap_or(&BalancingStrategy::RoundRobin)
-                .dispatch_strategy(),
+    pub fn effective_dispatch_policy(&self) -> DispatchPolicy {
+        if !self.has_multiple_destinations() {
+            return DispatchPolicy::OneOf;
         }
+        self.policies
+            .dispatch
+            .clone()
+            .unwrap_or(DispatchPolicy::OneOf)
     }
 
-    fn validate(&self) -> Result<(), String> {
-        if matches!(self.mode, FanoutMode::Broadcast) && self.strategy.is_some() {
-            return Err(
-                "invalid `fanout_policy`: `strategy` is only allowed when `mode` is `balanced`"
-                    .to_string(),
-            );
+    #[must_use]
+    const fn has_multiple_destinations(&self) -> bool {
+        match &self.to {
+            ConnectionNodeSet::One(_) => false,
+            ConnectionNodeSet::Many(node_ids) => node_ids.len() > 1,
         }
-        Ok(())
     }
 }
 
-/// Fanout mode used by `fanout_policy`.
+/// Policy set for a connection.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionPolicies {
+    /// Optional dispatch policy for this connection.
+    ///
+    /// When omitted, `one_of` is used.
+    /// For single-destination connections this field has no runtime effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchPolicy>,
+}
+
+impl ConnectionPolicies {
+    /// Returns whether this policy set has no configured policies.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.dispatch.is_none()
+    }
+}
+
+/// Dispatch policy for a connection.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum FanoutMode {
+pub enum DispatchPolicy {
+    /// Send each message to exactly one destination.
+    ///
+    /// When `to` contains multiple destinations, they act as competing
+    /// consumers of the same queue. Selection is runtime-driven and
+    /// best-effort balanced (not strict deterministic round-robin).
+    OneOf,
     /// Send each message to every destination.
     Broadcast,
-    /// Send each message to one destination selected by a balancing strategy.
-    Balanced,
-}
-
-/// Balancing strategy used when fanout mode is `balanced`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum BalancingStrategy {
-    /// Round-robin dispatching to the targets.
-    RoundRobin,
-    /// Randomly select a target node to dispatch the data to.
-    Random,
-    /// Dispatch the data to the least loaded target node.
-    LeastLoaded,
-}
-
-impl BalancingStrategy {
-    /// Converts this balancing strategy into the corresponding runtime dispatch strategy.
-    #[must_use]
-    pub const fn dispatch_strategy(&self) -> DispatchStrategy {
-        match self {
-            Self::RoundRobin => DispatchStrategy::RoundRobin,
-            Self::Random => DispatchStrategy::Random,
-            Self::LeastLoaded => DispatchStrategy::LeastLoaded,
-        }
-    }
-}
-
-fn fanout_policy_from_dispatch_strategy(strategy: DispatchStrategy) -> Option<FanoutPolicy> {
-    match strategy {
-        DispatchStrategy::RoundRobin => None,
-        DispatchStrategy::Broadcast => Some(FanoutPolicy {
-            mode: FanoutMode::Broadcast,
-            strategy: None,
-        }),
-        DispatchStrategy::Random => Some(FanoutPolicy {
-            mode: FanoutMode::Balanced,
-            strategy: Some(BalancingStrategy::Random),
-        }),
-        DispatchStrategy::LeastLoaded => Some(FanoutPolicy {
-            mode: FanoutMode::Balanced,
-            strategy: Some(BalancingStrategy::LeastLoaded),
-        }),
-    }
 }
 
 /// A collection of nodes forming a pipeline graph.
@@ -883,14 +838,18 @@ impl PipelineConfig {
             HashMap::new();
 
         for connection in connections {
-            if let Some(fanout_policy) = &connection.fanout_policy
-                && let Err(error) = fanout_policy.validate()
+            let target_nodes = connection.to_nodes();
+            if let Some(DispatchPolicy::Broadcast) = &connection.policies.dispatch
+                && target_nodes.len() > 1
             {
-                errors.push(Error::InvalidUserConfig { error });
+                errors.push(Error::InvalidUserConfig {
+                    error:
+                        "invalid `policies.dispatch`: `broadcast` is not supported yet for multi-destination connections"
+                            .into(),
+                });
                 continue;
             }
 
-            let target_nodes = connection.to_nodes();
             let missing_targets: Vec<_> = target_nodes
                 .iter()
                 .filter(|target| !nodes.contains_key(target.as_ref()))
@@ -907,7 +866,7 @@ impl PipelineConfig {
                         missing_source,
                         details: Box::new(HyperEdgeSpecDetails {
                             target_nodes: target_nodes.clone(),
-                            dispatch_strategy: connection.effective_dispatch_strategy(),
+                            dispatch_policy: connection.effective_dispatch_policy(),
                             missing_targets: missing_targets.clone(),
                         }),
                     });
@@ -1059,7 +1018,7 @@ struct PendingConnection {
     src: NodeId,
     output_port: PortName,
     targets: HashSet<NodeId>,
-    strategy: DispatchStrategy,
+    dispatch: DispatchPolicy,
 }
 
 impl PipelineConfigBuilder {
@@ -1139,13 +1098,13 @@ impl PipelineConfigBuilder {
     }
 
     /// Connects a source node output port to one or more target nodes
-    /// with a given dispatch strategy.
+    /// with a given dispatch policy.
     pub fn connect<S, P, T, I>(
         mut self,
         src: S,
         output_port: P,
         targets: I,
-        strategy: DispatchStrategy,
+        dispatch: DispatchPolicy,
     ) -> Self
     where
         S: Into<NodeId>,
@@ -1157,57 +1116,76 @@ impl PipelineConfigBuilder {
             src: src.into(),
             output_port: output_port.into(),
             targets: targets.into_iter().map(Into::into).collect(),
-            strategy,
+            dispatch,
         });
         self
     }
 
-    /// Connects a source node output port to one or more target nodes
-    /// with a round-robin dispatch strategy.
-    pub fn broadcast<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
+    /// Connects a source node default output port to one or more target nodes
+    /// with a broadcast dispatch policy.
+    pub fn broadcast<S, T, I>(self, src: S, targets: I) -> Self
     where
         S: Into<NodeId>,
-        P: Into<PortName>,
         T: Into<NodeId>,
         I: IntoIterator<Item = T>,
     {
-        self.connect(src, output_port, targets, DispatchStrategy::Broadcast)
+        self.broadcast_output(src, DEFAULT_CONNECTION_SOURCE_PORT, targets)
     }
 
     /// Connects a source node output port to one or more target nodes
-    /// with a round-robin dispatch strategy.
-    pub fn round_robin<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
+    /// with a broadcast dispatch policy.
+    pub fn broadcast_output<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
     where
         S: Into<NodeId>,
         P: Into<PortName>,
         T: Into<NodeId>,
         I: IntoIterator<Item = T>,
     {
-        self.connect(src, output_port, targets, DispatchStrategy::RoundRobin)
+        self.connect(src, output_port, targets, DispatchPolicy::Broadcast)
+    }
+
+    /// Connects a source node default output port to one or more target nodes
+    /// with a one-of dispatch policy.
+    pub fn one_of<S, T, I>(self, src: S, targets: I) -> Self
+    where
+        S: Into<NodeId>,
+        T: Into<NodeId>,
+        I: IntoIterator<Item = T>,
+    {
+        self.one_of_output(src, DEFAULT_CONNECTION_SOURCE_PORT, targets)
     }
 
     /// Connects a source node output port to one or more target nodes
-    /// with a random dispatch strategy.
-    pub fn random<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
+    /// with a one-of dispatch policy.
+    pub fn one_of_output<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
     where
         S: Into<NodeId>,
         P: Into<PortName>,
         T: Into<NodeId>,
         I: IntoIterator<Item = T>,
     {
-        self.connect(src, output_port, targets, DispatchStrategy::Random)
+        self.connect(src, output_port, targets, DispatchPolicy::OneOf)
     }
 
-    /// Connects a source node output port to one or more target nodes
-    /// with a least-loaded dispatch strategy.
-    pub fn least_loaded<S, P, T, I>(self, src: S, output_port: P, targets: I) -> Self
+    /// Connects a source node default output to a single destination node
+    /// using one-of dispatch.
+    pub fn to<S, T>(self, src: S, dst: T) -> Self
+    where
+        S: Into<NodeId>,
+        T: Into<NodeId>,
+    {
+        self.one_of(src, std::iter::once(dst))
+    }
+
+    /// Connects a source node named output to a single destination node
+    /// using one-of dispatch.
+    pub fn to_output<S, P, T>(self, src: S, output_port: P, dst: T) -> Self
     where
         S: Into<NodeId>,
         P: Into<PortName>,
         T: Into<NodeId>,
-        I: IntoIterator<Item = T>,
     {
-        self.connect(src, output_port, targets, DispatchStrategy::LeastLoaded)
+        self.one_of_output(src, output_port, std::iter::once(dst))
     }
 
     /// Validate and build the pipeline specification.
@@ -1257,7 +1235,7 @@ impl PipelineConfigBuilder {
         let mut inserted_ports = HashSet::new();
         let mut built_connections = Vec::new();
         for conn in self.pending_connections {
-            let strategy = conn.strategy.clone();
+            let dispatch_policy = conn.dispatch.clone();
             let key = (conn.src.clone(), conn.output_port.clone());
             if !inserted_ports.insert(key.clone()) {
                 // skip this duplicate
@@ -1281,7 +1259,7 @@ impl PipelineConfigBuilder {
                     missing_source: !src_exists,
                     details: Box::new(HyperEdgeSpecDetails {
                         target_nodes: conn.targets.iter().cloned().collect(),
-                        dispatch_strategy: strategy.clone(),
+                        dispatch_policy: dispatch_policy.clone(),
                         missing_targets: missing,
                     }),
                 });
@@ -1303,7 +1281,9 @@ impl PipelineConfigBuilder {
             built_connections.push(PipelineConnection {
                 from: ConnectionSourceSet::One(source),
                 to: ConnectionNodeSet::Many(targets),
-                fanout_policy: fanout_policy_from_dispatch_strategy(strategy),
+                policies: ConnectionPolicies {
+                    dispatch: (dispatch_policy != DispatchPolicy::OneOf).then_some(dispatch_policy),
+                },
             });
         }
 
@@ -1342,7 +1322,7 @@ impl Default for PipelineConfigBuilder {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
-    use crate::node::DispatchStrategy;
+    use crate::pipeline::DispatchPolicy;
     use crate::pipeline::service::telemetry::metrics::MetricsConfig;
     use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
     use crate::pipeline::service::telemetry::metrics::readers::{
@@ -1409,8 +1389,8 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:example:receiver", None)
             .add_exporter("B", "urn:test:example:exporter", None)
-            .round_robin("A", "p", ["B"])
-            .round_robin("A", "p", ["B"]) // duplicate port on A
+            .one_of_output("A", "p", ["B"])
+            .one_of_output("A", "p", ["B"]) // duplicate port on A
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -1432,7 +1412,7 @@ mod tests {
     fn test_missing_source_error() {
         let result = PipelineConfigBuilder::new()
             .add_receiver("B", "urn:test:example:receiver", None)
-            .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
+            .connect("X", "out", ["B"], DispatchPolicy::Broadcast) // X does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -1458,7 +1438,7 @@ mod tests {
     fn test_missing_target_error() {
         let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:example:receiver", None)
-            .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
+            .connect("A", "out", ["Y"], DispatchPolicy::Broadcast) // Y does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -1486,8 +1466,8 @@ mod tests {
         let result = PipelineConfigBuilder::new()
             .add_processor("A", "urn:test:example:processor", None)
             .add_processor("B", "urn:test:example:processor", None)
-            .round_robin("A", "p", ["B"])
-            .round_robin("B", "p", ["A"])
+            .one_of_output("A", "p", ["B"])
+            .one_of_output("B", "p", ["A"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -1517,7 +1497,7 @@ mod tests {
                 Some(json!({"foo": 1})),
             )
             .add_exporter("End", "urn:test:example:exporter", None)
-            .broadcast("Start", "out", ["End"])
+            .broadcast_output("Start", "out", ["End"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match dag {
@@ -1544,6 +1524,68 @@ mod tests {
                         .map(|id| id.as_ref())
                         .collect::<Vec<_>>(),
                     vec!["End"]
+                );
+            }
+            Err(e) => panic!("expected successful build, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_builder_to_uses_default_output() {
+        let dag = PipelineConfigBuilder::new()
+            .add_receiver(
+                "Start",
+                "urn:test:example:receiver",
+                Some(json!({"foo": 1})),
+            )
+            .add_exporter("End", "urn:test:example:exporter", None)
+            .to("Start", "End")
+            .build(PipelineType::Otap, "pgroup", "pipeline");
+
+        match dag {
+            Ok(pipeline_spec) => {
+                let start = &pipeline_spec.nodes["Start"];
+                assert_eq!(start.outputs, vec![crate::PortName::from("default")]);
+                let conn = pipeline_spec
+                    .connection_iter()
+                    .next()
+                    .expect("missing connection");
+                assert!(
+                    conn.from_sources()
+                        .iter()
+                        .all(|source| source.output_port().is_none()),
+                    "default output should be implicit in source selector"
+                );
+            }
+            Err(e) => panic!("expected successful build, got {e:?}"),
+        }
+    }
+
+    #[test]
+    fn test_builder_to_output_uses_named_output() {
+        let dag = PipelineConfigBuilder::new()
+            .add_receiver(
+                "Start",
+                "urn:test:example:receiver",
+                Some(json!({"foo": 1})),
+            )
+            .add_exporter("End", "urn:test:example:exporter", None)
+            .to_output("Start", "alt", "End")
+            .build(PipelineType::Otap, "pgroup", "pipeline");
+
+        match dag {
+            Ok(pipeline_spec) => {
+                let start = &pipeline_spec.nodes["Start"];
+                assert_eq!(start.outputs, vec![crate::PortName::from("alt")]);
+                let conn = pipeline_spec
+                    .connection_iter()
+                    .next()
+                    .expect("missing connection");
+                let from_sources = conn.from_sources();
+                assert_eq!(from_sources.len(), 1);
+                assert_eq!(
+                    from_sources[0].output_port().map(|port| port.as_ref()),
+                    Some("alt")
                 );
             }
             Err(e) => panic!("expected successful build, got {e:?}"),
@@ -1579,18 +1621,10 @@ mod tests {
                 "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP trace exporter"})),
             )
-            .round_robin("receiver_otlp_traces", "out", ["processor_batch_traces"])
-            .round_robin(
-                "processor_batch_traces",
-                "out",
-                ["processor_resource_traces"],
-            )
-            .round_robin(
-                "processor_resource_traces",
-                "out",
-                ["processor_traces_to_metrics"],
-            )
-            .round_robin(
+            .one_of("receiver_otlp_traces", ["processor_batch_traces"])
+            .one_of("processor_batch_traces", ["processor_resource_traces"])
+            .one_of("processor_resource_traces", ["processor_traces_to_metrics"])
+            .one_of_output(
                 "processor_resource_traces",
                 "out2",
                 ["exporter_otlp_traces"],
@@ -1621,19 +1655,11 @@ mod tests {
                 "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP metric exporter"})),
             )
-            .round_robin("receiver_otlp_metrics", "out", ["processor_batch_metrics"])
-            .round_robin(
-                "processor_batch_metrics",
-                "out",
-                ["processor_metrics_to_events"],
-            )
-            .round_robin("processor_batch_metrics", "out2", ["exporter_prometheus"])
-            .round_robin("processor_batch_metrics", "out3", ["exporter_otlp_metrics"])
-            .round_robin(
-                "processor_traces_to_metrics",
-                "out",
-                ["processor_batch_metrics"],
-            )
+            .one_of("receiver_otlp_metrics", ["processor_batch_metrics"])
+            .one_of("processor_batch_metrics", ["processor_metrics_to_events"])
+            .one_of_output("processor_batch_metrics", "out2", ["exporter_prometheus"])
+            .one_of_output("processor_batch_metrics", "out3", ["exporter_otlp_metrics"])
+            .one_of("processor_traces_to_metrics", ["processor_batch_metrics"])
             // ----- LOGS pipeline -----
             .add_receiver(
                 "receiver_filelog",
@@ -1660,10 +1686,10 @@ mod tests {
                 "urn:test:example:exporter",
                 Some(json!({"desc": "OTLP log exporter"})),
             )
-            .round_robin("receiver_filelog", "out", ["processor_filter_logs"])
-            .round_robin("receiver_syslog", "out", ["processor_filter_logs"])
-            .round_robin("processor_filter_logs", "out", ["processor_logs_to_events"])
-            .round_robin("processor_filter_logs", "out2", ["exporter_otlp_logs"])
+            .one_of("receiver_filelog", ["processor_filter_logs"])
+            .one_of("receiver_syslog", ["processor_filter_logs"])
+            .one_of("processor_filter_logs", ["processor_logs_to_events"])
+            .one_of_output("processor_filter_logs", "out2", ["exporter_otlp_logs"])
             // ----- EVENTS pipeline -----
             .add_receiver(
                 "receiver_some_events",
@@ -1680,18 +1706,10 @@ mod tests {
                 "urn:test:example:exporter",
                 Some(json!({"desc": "push events to queue"})),
             )
-            .round_robin("receiver_some_events", "out", ["processor_enrich_events"])
-            .round_robin("processor_enrich_events", "out", ["exporter_queue_events"])
-            .round_robin(
-                "processor_logs_to_events",
-                "out",
-                ["processor_enrich_events"],
-            )
-            .round_robin(
-                "processor_metrics_to_events",
-                "out",
-                ["processor_enrich_events"],
-            )
+            .one_of("receiver_some_events", ["processor_enrich_events"])
+            .one_of("processor_enrich_events", ["exporter_queue_events"])
+            .one_of("processor_logs_to_events", ["processor_enrich_events"])
+            .one_of("processor_metrics_to_events", ["processor_enrich_events"])
             // Finalize build
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -2153,7 +2171,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_from_yaml_rejects_legacy_urns_with_doc_link() {
+    fn test_pipeline_from_yaml_rejects_invalid_urns_with_doc_link() {
         let yaml = r#"
             nodes:
               exporter:
@@ -2198,8 +2216,8 @@ mod tests {
                 assert!(source.output_port().is_none());
             }
             assert!(matches!(
-                connection.effective_dispatch_strategy(),
-                DispatchStrategy::RoundRobin
+                connection.effective_dispatch_policy(),
+                DispatchPolicy::OneOf
             ));
         }
         assert_eq!(
@@ -2308,52 +2326,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_from_yaml_rejects_legacy_node_out_ports() {
-        let yaml = r#"
-            nodes:
-              receiver:
-                type: "otlp:receiver"
-                out_ports:
-                  out:
-                    destinations: [missing_node]
-                    dispatch_strategy: round_robin
-                config: {}
-              exporter:
-                type: "noop:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-        "#;
-
-        let err =
-            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field `out_ports`"));
-    }
-
-    #[test]
-    fn test_pipeline_from_yaml_rejects_connection_out_port_field() {
-        let yaml = r#"
-            nodes:
-              receiver:
-                type: "otlp:receiver"
-                config: {}
-              exporter:
-                type: "noop:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-                out_port: default
-        "#;
-
-        let err =
-            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(err.to_string().contains("unknown field `out_port`"));
-    }
-
-    #[test]
-    fn test_pipeline_from_yaml_with_fanout_policy_broadcast() {
+    fn test_pipeline_from_yaml_with_policies_dispatch_one_of() {
         let yaml = r#"
             nodes:
               receiver:
@@ -2368,8 +2341,8 @@ mod tests {
             connections:
               - from: receiver
                 to: [exporter_a, exporter_b]
-                fanout_policy:
-                  mode: broadcast
+                policies:
+                  dispatch: one_of
         "#;
 
         let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
@@ -2379,13 +2352,42 @@ mod tests {
             .next()
             .expect("missing expected connection");
         assert!(matches!(
-            connection.effective_dispatch_strategy(),
-            DispatchStrategy::Broadcast
+            connection.effective_dispatch_policy(),
+            DispatchPolicy::OneOf
         ));
     }
 
     #[test]
-    fn test_pipeline_from_yaml_with_fanout_policy_balanced_random() {
+    fn test_pipeline_from_yaml_with_single_destination_broadcast_noop() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "otlp:receiver"
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: receiver
+                to: exporter
+                policies:
+                  dispatch: broadcast
+        "#;
+
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("should parse");
+        let connection = config
+            .connection_iter()
+            .next()
+            .expect("missing expected connection");
+        assert!(matches!(
+            connection.effective_dispatch_policy(),
+            DispatchPolicy::OneOf
+        ));
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_multi_destination_broadcast_dispatch() {
         let yaml = r#"
             nodes:
               receiver:
@@ -2400,68 +2402,13 @@ mod tests {
             connections:
               - from: receiver
                 to: [exporter_a, exporter_b]
-                fanout_policy:
-                  mode: balanced
-                  strategy: random
-        "#;
-
-        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
-            .expect("should parse");
-        let connection = config
-            .connection_iter()
-            .next()
-            .expect("missing expected connection");
-        assert!(matches!(
-            connection.effective_dispatch_strategy(),
-            DispatchStrategy::Random
-        ));
-    }
-
-    #[test]
-    fn test_pipeline_from_yaml_rejects_legacy_connection_dispatch_strategy_field() {
-        let yaml = r#"
-            nodes:
-              receiver:
-                type: "otlp:receiver"
-                config: {}
-              exporter:
-                type: "noop:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-                dispatch_strategy: round_robin
+                policies:
+                  dispatch: broadcast
         "#;
 
         let err =
             super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown field `dispatch_strategy`")
-        );
-    }
-
-    #[test]
-    fn test_pipeline_from_yaml_rejects_strategy_in_broadcast_fanout_policy() {
-        let yaml = r#"
-            nodes:
-              receiver:
-                type: "otlp:receiver"
-                config: {}
-              exporter:
-                type: "noop:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-                fanout_policy:
-                  mode: broadcast
-                  strategy: round_robin
-        "#;
-
-        let err =
-            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
-        assert!(err.to_string().contains("invalid `fanout_policy`"));
-        assert!(err.to_string().contains("`mode` is `balanced`"));
+        assert!(err.to_string().contains("invalid `policies.dispatch`"));
+        assert!(err.to_string().contains("`broadcast` is not supported yet"));
     }
 }

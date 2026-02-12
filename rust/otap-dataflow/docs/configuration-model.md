@@ -29,7 +29,7 @@ At connection level:
 
 - `from`: source node id, source selector, or source array (fan-in)
 - `to`: destination node id or destination array (fan-out)
-- `fanout_policy` (optional)
+- `policies.dispatch` (optional)
 
 Important behavior:
 
@@ -132,15 +132,14 @@ Port selection rules:
 - If `from` omits selector, output port `"default"` is used.
 - If `outputs` is declared on a node, referenced source ports must belong to that list.
 
-Fanout policy rules:
+Dispatch policy rules:
 
-- If `fanout_policy` is omitted, behavior is balanced fanout with `round_robin`.
-  This will most likely change in the future as we add more policies.
-- `mode: broadcast` sends each item to every destination.
-- `mode: balanced` selects one destination using `strategy`.
-- Balanced strategies currently supported: `round_robin`, `random`, `least_loaded`.
-
-Important note: The `broadcast` mode is not yet supported. 
+- If `policies.dispatch` is omitted, behavior defaults to `one_of`.
+- `dispatch: one_of` sends each item to exactly one destination.
+- With multiple destinations, `one_of` uses competing consumers on the same channel.
+- Destination selection is runtime-driven and best-effort balanced, not strict deterministic round-robin.
+- `dispatch: broadcast` is parsed but not yet supported when `to` has multiple destinations.
+- For single-destination connections, `policies.dispatch` is accepted but has no runtime effect.
 
 ## Validation Behavior
 

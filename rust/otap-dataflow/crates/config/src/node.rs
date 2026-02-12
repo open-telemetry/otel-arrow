@@ -8,12 +8,11 @@
 //!
 //! A node can expose multiple named output ports.
 
-use crate::{Description, NodeId, NodeUrn, PortName};
+use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::collections::HashSet;
 
 /// User configuration for a node in the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -56,34 +55,6 @@ pub struct NodeUserConfig {
     // The preserve-unknown-fields extension allows this to be correctly interpreted as "Any JSON type"
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub config: Value,
-}
-
-/// Describes a hyper-edge from a node output port to one or more destination nodes,
-/// and defines the dispatching strategy for this port.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HyperEdgeConfig {
-    /// List of downstream node IDs this port connects to.
-    ///
-    /// When there is only one target node, the hyper-edge is a simple edge and the dispatch
-    /// strategy is ignored.
-    pub destinations: HashSet<NodeId>,
-
-    /// Dispatch strategy for sending messages (broadcast, round-robin, ...).
-    pub dispatch_strategy: DispatchStrategy,
-}
-
-/// Dispatching strategies for hyper-edges.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DispatchStrategy {
-    /// Broadcast the data to all targeted nodes.
-    Broadcast,
-    /// Round-robin dispatching to the targets.
-    RoundRobin,
-    /// Randomly select a target node to dispatch the data to.
-    Random,
-    /// Dispatch the data to the least loaded target node.
-    LeastLoaded,
 }
 
 /// Node kinds
