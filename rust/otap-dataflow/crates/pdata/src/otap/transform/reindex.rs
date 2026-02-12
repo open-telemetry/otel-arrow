@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_data_points() {
-        // Test Metrics.id → DataPoints.parent_id for each data point type
+        // Test Metrics.id -> DataPoints.parent_id for each data point type
         // with overlapping IDs across batches
         let metric_ids    = vec![0u16, 1, 2];
         let metric_ids_2  = vec![1u16, 3, 4];
@@ -1291,7 +1291,7 @@ mod tests {
         let dp_ids        = vec![0u32, 1, 2, 3, 4];
         let dp_ids_2      = vec![0u32, 1, 2, 3];
 
-        // NumberDataPoints (Gauge, metric_type=1)
+        // NumberDataPoints
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1303,7 +1303,7 @@ mod tests {
             ),
         ]);
 
-        // SummaryDataPoints (metric_type=5)
+        // SummaryDataPoints
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1315,7 +1315,7 @@ mod tests {
             ),
         ]);
 
-        // HistogramDataPoints (metric_type=3)
+        // HistogramDataPoints
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1327,7 +1327,7 @@ mod tests {
             ),
         ]);
 
-        // ExpHistogramDataPoints (metric_type=4)
+        // ExpHistogramDataPoints
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1343,7 +1343,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_dp_with_attrs() {
-        // Three-level relationship: Metrics → DataPoints → DpAttrs
+        // Three-level relationship: Metrics -> DataPoints -> DpAttrs
         let metric_ids     = vec![0u16, 1];
         let metric_ids_2   = vec![2u16, 3];
         let dp_pids        = vec![0u16, 0, 1];
@@ -1353,7 +1353,7 @@ mod tests {
         let dp_attr_pids   = vec![0u32, 1, 1, 2];
         let dp_attr_pids_2 = vec![0u32, 2, 2];
 
-        // NumberDataPoints → NumberDpAttrs
+        // NumberDataPoints -> NumberDpAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1367,7 +1367,7 @@ mod tests {
             ),
         ]);
 
-        // SummaryDataPoints → SummaryDpAttrs
+        // SummaryDataPoints -> SummaryDpAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1381,7 +1381,7 @@ mod tests {
             ),
         ]);
 
-        // HistogramDataPoints → HistogramDpAttrs
+        // HistogramDataPoints -> HistogramDpAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1395,7 +1395,7 @@ mod tests {
             ),
         ]);
 
-        // ExpHistogramDataPoints → ExpHistogramDpAttrs
+        // ExpHistogramDataPoints -> ExpHistogramDpAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1413,7 +1413,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_dp_with_exemplars() {
-        // Three-level relationship: Metrics → DataPoints → Exemplars
+        // Three-level relationship: Metrics -> DataPoints -> Exemplars
         // (Summary does not have exemplars)
         let metric_ids      = vec![0u16, 1];
         let metric_ids_2    = vec![2u16, 3];
@@ -1426,7 +1426,7 @@ mod tests {
         let exemplar_ids    = vec![0u32, 1, 2, 3];
         let exemplar_ids_2  = vec![0u32, 1, 2];
 
-        // NumberDataPoints → NumberDpExemplars
+        // NumberDataPoints -> NumberDpExemplars
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1440,7 +1440,7 @@ mod tests {
             ),
         ]);
 
-        // HistogramDataPoints → HistogramDpExemplars
+        // HistogramDataPoints -> HistogramDpExemplars
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1454,7 +1454,7 @@ mod tests {
             ),
         ]);
 
-        // ExpHistogramDataPoints → ExpHistogramDpExemplars
+        // ExpHistogramDataPoints -> ExpHistogramDpExemplars
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1472,7 +1472,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_exemplar_attrs() {
-        // Four-level relationship: Metrics → DataPoints → Exemplars → ExemplarAttrs
+        // Four-level relationship: Metrics -> DataPoints -> Exemplars → ExemplarAttrs
         let metric_ids          = vec![0u16, 1];
         let metric_ids_2        = vec![2u16, 3];
         let dp_pids             = vec![0u16, 0, 1];
@@ -1486,7 +1486,7 @@ mod tests {
         let exemplar_attr_pids  = vec![0u32, 1, 1, 2];
         let exemplar_attr_pids_2 = vec![0u32, 2, 2];
 
-        // NumberDataPoints → NumberDpExemplars → NumberDpExemplarAttrs
+        // NumberDataPoints -> NumberDpExemplars -> NumberDpExemplarAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1502,7 +1502,7 @@ mod tests {
             ),
         ]);
 
-        // HistogramDataPoints → HistogramDpExemplars → HistogramDpExemplarAttrs
+        // HistogramDataPoints -> HistogramDpExemplars -> HistogramDpExemplarAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1518,7 +1518,7 @@ mod tests {
             ),
         ]);
 
-        // ExpHistogramDataPoints → ExpHistogramDpExemplars → ExpHistogramDpExemplarAttrs
+        // ExpHistogramDataPoints -> ExpHistogramDpExemplars -> ExpHistogramDpExemplarAttrs
         test_reindex_metrics(&mut[
             metrics!(
                 (UnivariateMetrics, ("id", UInt16, metric_ids.clone())),
@@ -1538,7 +1538,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_number_dp_chain_with_dicts() {
-        // Four-level chain: Metrics → NumberDataPoints → NumberDpExemplars → NumberDpExemplarAttrs
+        // Four-level chain: Metrics -> NumberDataPoints -> NumberDpExemplars -> NumberDpExemplarAttrs
         // Tests dictionary encoding variants for the UInt32 id columns:
         // 1. Dict<UInt8, UInt32>
         // 2. Dict<UInt16, UInt32>
@@ -1701,9 +1701,9 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
-        for rb in batches.iter().flatten().flatten().cloned() {
-            pretty::print_batches(&[rb]).unwrap();
-        }
+        // for rb in batches.iter().flatten().flatten().cloned() {
+        //     pretty::print_batches(&[rb]).unwrap();
+        // }
 
         assert_equivalent(&before_otlp, &after_otlp);
     }
@@ -1743,7 +1743,6 @@ mod tests {
         }
     }
 
-    /// Extracts all ID values from a column as u64, handling UInt16 and UInt32 types
     fn collect_ids(col: &dyn Array) -> Vec<u64> {
         match col.data_type() {
             DataType::Dictionary(ktype, _) => match ktype.as_ref() {
@@ -1990,7 +1989,7 @@ mod tests {
     }
 
     /// Wraps flat "resource.id" / "scope.id" columns into struct columns
-    /// (e.g. "resource.id" UInt16 → "resource" Struct { "id": UInt16 })
+    /// (e.g. "resource.id" UInt16 -> "resource" Struct { "id": UInt16 })
     fn wrap_struct_id_columns(
         schema: &Schema,
         fields: &mut Vec<Arc<Field>>,
