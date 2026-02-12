@@ -41,11 +41,10 @@ connections:
 internal:
   telemetry:
     type: "internal_telemetry:receiver"
-    outputs: ["out_port"]
     config: {}
   console:
     type: "console:exporter"
     config: {}
 internal_connections:
-  - from: telemetry["out_port"]
+  - from: telemetry
     to: console
