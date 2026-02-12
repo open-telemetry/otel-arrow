@@ -1746,6 +1746,17 @@ mod tests {
     /// Extracts all ID values from a column as u64, handling UInt16 and UInt32 types
     fn collect_ids(col: &dyn Array) -> Vec<u64> {
         match col.data_type() {
+            DataType::Dictionary(ktype, _) => match ktype.as_ref() {
+                DataType::UInt8 => {
+                    let values = col.as_dictionary::<UInt8Type>().values();
+                    collect_ids(values)
+                }
+                DataType::UInt16 => {
+                    let values = col.as_dictionary::<UInt16Type>().values();
+                    collect_ids(values)
+                }
+                _ => unreachable!(),
+            },
             DataType::UInt16 => col
                 .as_primitive::<UInt16Type>()
                 .values()
@@ -1758,7 +1769,7 @@ mod tests {
                 .iter()
                 .map(|&v| v as u64)
                 .collect(),
-            _ => vec![],
+            _ => unreachable!(),
         }
     }
 
@@ -1805,15 +1816,13 @@ mod tests {
                 complete_metrics_batch(batch, infer_metric_type(all_payload_types))
             }
 
-            // Attrs with UInt16 parent_id
+            // Attrs (adds key/type/int columns if missing)
             ArrowPayloadType::LogAttrs
             | ArrowPayloadType::SpanAttrs
             | ArrowPayloadType::MetricAttrs
             | ArrowPayloadType::ResourceAttrs
-            | ArrowPayloadType::ScopeAttrs => complete_attrs_batch(batch),
-
-            // Attrs with UInt32 parent_id
-            ArrowPayloadType::SpanEventAttrs
+            | ArrowPayloadType::ScopeAttrs
+            | ArrowPayloadType::SpanEventAttrs
             | ArrowPayloadType::SpanLinkAttrs
             | ArrowPayloadType::NumberDpAttrs
             | ArrowPayloadType::SummaryDpAttrs
@@ -1821,7 +1830,7 @@ mod tests {
             | ArrowPayloadType::ExpHistogramDpAttrs
             | ArrowPayloadType::NumberDpExemplarAttrs
             | ArrowPayloadType::HistogramDpExemplarAttrs
-            | ArrowPayloadType::ExpHistogramDpExemplarAttrs => complete_attrs_u32_batch(batch),
+            | ArrowPayloadType::ExpHistogramDpExemplarAttrs => complete_attrs_batch(batch),
 
             // Data points and exemplars: only id/parent_id needed
             ArrowPayloadType::NumberDataPoints
@@ -1859,33 +1868,11 @@ mod tests {
         1 // Default: Gauge
     }
 
-    /// Metrics batch: struct wrapping for resource.id/scope.id, plus metric_type and name
     fn complete_metrics_batch(batch: RecordBatch, metric_type: u8) -> RecordBatch {
         let num_rows = batch.num_rows();
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        // Wrap flat "resource.id" / "scope.id" columns into struct columns
-        for &path in ID_COLUMN_PATHS {
-            let Some(struct_name) = struct_column_name(path) else {
-                continue;
-            };
-            let Some((idx, _)) = schema.fields.find(path) else {
-                continue;
-            };
-            let id_col = columns.remove(idx);
-            let _ = fields.remove(idx);
-            let id_field = Field::new("id", id_col.data_type().clone(), true);
-            let struct_col =
-                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
-                    .expect("Failed to create struct");
-            fields.push(Arc::new(Field::new(
-                struct_name,
-                DataType::Struct(vec![id_field].into()),
-                true,
-            )));
-            columns.push(Arc::new(struct_col));
-        }
+        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
 
         if schema.fields.find("metric_type").is_none() {
             fields.push(Arc::new(Field::new("metric_type", DataType::UInt8, false)));
@@ -1905,28 +1892,7 @@ mod tests {
         let num_rows = batch.num_rows();
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        // Wrap flat "resource.id" / "scope.id" columns into struct columns
-        for &path in ID_COLUMN_PATHS {
-            let Some(struct_name) = struct_column_name(path) else {
-                continue;
-            };
-            let Some((idx, _)) = schema.fields.find(path) else {
-                continue;
-            };
-            let id_col = columns.remove(idx);
-            let _ = fields.remove(idx);
-            let id_field = Field::new("id", id_col.data_type().clone(), true);
-            let struct_col =
-                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
-                    .expect("Failed to create struct");
-            fields.push(Arc::new(Field::new(
-                struct_name,
-                DataType::Struct(vec![id_field].into()),
-                true,
-            )));
-            columns.push(Arc::new(struct_col));
-        }
+        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
 
         if schema.fields.find("body").is_none() {
             let body_fields = vec![
@@ -1976,56 +1942,10 @@ mod tests {
             .expect("Failed to create completed attrs batch")
     }
 
-    /// Same as complete_attrs_batch but uses UInt32 for parent_id (for SpanEventAttrs, SpanLinkAttrs)
-    fn complete_attrs_u32_batch(batch: RecordBatch) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        if schema.fields.find("key").is_none() {
-            fields.push(Arc::new(Field::new("key", DataType::Utf8, false)));
-            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
-        }
-
-        if schema.fields.find("type").is_none() {
-            fields.push(Arc::new(Field::new("type", DataType::UInt8, false)));
-            columns.push(Arc::new(UInt8Array::from(vec![0u8; num_rows])));
-        }
-
-        if schema.fields.find("int").is_none() {
-            fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
-            columns.push(Arc::new(Int64Array::from(vec![0i64; num_rows])));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed u32 attrs batch")
-    }
-
-    /// Spans batch: same struct wrapping as logs, but no body column needed
     fn complete_spans_batch(batch: RecordBatch) -> RecordBatch {
         let (schema, mut columns, _) = batch.into_parts();
         let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        for &path in ID_COLUMN_PATHS {
-            let Some(struct_name) = struct_column_name(path) else {
-                continue;
-            };
-            let Some((idx, _)) = schema.fields.find(path) else {
-                continue;
-            };
-            let id_col = columns.remove(idx);
-            let _ = fields.remove(idx);
-            let id_field = Field::new("id", id_col.data_type().clone(), true);
-            let struct_col =
-                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
-                    .expect("Failed to create struct");
-            fields.push(Arc::new(Field::new(
-                struct_name,
-                DataType::Struct(vec![id_field].into()),
-                true,
-            )));
-            columns.push(Arc::new(struct_col));
-        }
+        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
             .expect("Failed to create completed spans batch")
@@ -2067,6 +1987,35 @@ mod tests {
 
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
             .expect("Failed to create completed span links batch")
+    }
+
+    /// Wraps flat "resource.id" / "scope.id" columns into struct columns
+    /// (e.g. "resource.id" UInt16 → "resource" Struct { "id": UInt16 })
+    fn wrap_struct_id_columns(
+        schema: &Schema,
+        fields: &mut Vec<Arc<Field>>,
+        columns: &mut Vec<ArrayRef>,
+    ) {
+        for &path in ID_COLUMN_PATHS {
+            let Some(struct_name) = struct_column_name(path) else {
+                continue;
+            };
+            let Some((idx, _)) = schema.fields.find(path) else {
+                continue;
+            };
+            let id_col = columns.remove(idx);
+            let _ = fields.remove(idx);
+            let id_field = Field::new("id", id_col.data_type().clone(), true);
+            let struct_col =
+                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
+                    .expect("Failed to create struct");
+            fields.push(Arc::new(Field::new(
+                struct_name,
+                DataType::Struct(vec![id_field].into()),
+                true,
+            )));
+            columns.push(Arc::new(struct_col));
+        }
     }
 
     fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
