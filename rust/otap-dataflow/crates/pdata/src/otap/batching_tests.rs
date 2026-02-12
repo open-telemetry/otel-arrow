@@ -102,7 +102,6 @@ fn generate_metrics_batching_test_cases() -> Vec<MetricsBatchingTestCase> {
     }
 
     // All four metric types present - temporarily disabled due to schema compatibility issues
-    // TODO: Investigate and fix schema merging for mixed metric types
     for limit in [10, 20, 50] {
         add_case(
             &format!("all_types_small_limit_{}", limit),
@@ -143,7 +142,6 @@ fn generate_metrics_batching_test_cases() -> Vec<MetricsBatchingTestCase> {
     }
 
     // Complex multi-type scenarios - temporarily disabled
-    // TODO: Investigate and fix schema merging for mixed metric types
     for limit in [25, 50, 100] {
         add_case(
             &format!("complex_all_types_limit_{}", limit),
