@@ -19,7 +19,6 @@ use serde::ser::Serializer;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::fmt;
-use std::ops::Deref;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
@@ -27,7 +26,7 @@ use tracing::{Event, Level, Metadata};
 ///
 /// The returned bytes can be appended directly to a `ProtoBuffer` when
 /// building a `LogRecord`, avoiding re-encoding on every log event.
-fn encode_custom_attrs_to_bytes(attrs: &HashMap<String, AttributeValue>) -> bytes::Bytes {
+pub fn encode_custom_attrs_to_bytes(attrs: &HashMap<String, AttributeValue>) -> bytes::Bytes {
     if attrs.is_empty() {
         return bytes::Bytes::new();
     }
@@ -103,18 +102,17 @@ impl LogContext {
         }
     }
 
-    /// Create a context with entity keys and custom node attributes.
+    /// Create a context with entity keys and pre-encoded custom node attribute bytes.
     ///
-    /// The attributes are pre-encoded to protobuf bytes so they can be
-    /// appended directly when constructing log records.
+    /// The attribute bytes are appended directly when constructing log records.
     #[must_use]
     pub fn with_custom_attrs(
         entity_keys: SmallVec<[EntityKey; 1]>,
-        custom_attrs: HashMap<String, AttributeValue>,
+        custom_attrs_bytes: bytes::Bytes,
     ) -> Self {
         Self {
             entity_keys,
-            custom_attrs_bytes: encode_custom_attrs_to_bytes(&custom_attrs),
+            custom_attrs_bytes,
         }
     }
 }
@@ -122,15 +120,6 @@ impl LogContext {
 impl Default for LogContext {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Allow iterating entity keys via `Deref` to the inner SmallVec.
-impl Deref for LogContext {
-    type Target = SmallVec<[EntityKey; 1]>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.entity_keys
     }
 }
 

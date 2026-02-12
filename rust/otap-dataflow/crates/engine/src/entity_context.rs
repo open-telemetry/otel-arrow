@@ -9,6 +9,7 @@ use otap_df_config::PortName;
 use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
+use otap_df_telemetry::self_tracing::encode_custom_attrs_to_bytes;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -97,13 +98,13 @@ pub fn node_entity_key() -> Option<EntityKey> {
         .flatten()
 }
 
-/// Returns the custom node attributes for the current node.
+/// Returns the pre-encoded custom node attribute bytes for the current node.
 ///
 /// At runtime, reads from the task-local `NODE_TASK_CONTEXT`.
 /// During build time, falls back to the thread-local `BUILD_NODE_TELEMETRY_HANDLE`.
 #[inline]
 #[must_use]
-pub fn node_custom_attrs() -> HashMap<String, AttributeValue> {
+pub fn node_custom_attrs() -> bytes::Bytes {
     // Runtime: check task-local first.
     if let Ok(attrs) = NODE_TASK_CONTEXT.try_with(|ctx| {
         ctx.telemetry_handle
@@ -206,8 +207,8 @@ impl Debug for NodeTelemetryHandle {
 // Per-node mutable lifecycle state used for metric/entity tracking and cleanup.
 struct NodeTelemetryState {
     entity_key: EntityKey,
-    /// Custom node attributes to be encoded as log record attributes.
-    custom_attrs: HashMap<String, AttributeValue>,
+    /// Pre-encoded custom node attribute bytes for log record attributes.
+    custom_attrs: bytes::Bytes,
     metric_keys: Vec<MetricSetKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
@@ -217,6 +218,9 @@ struct NodeTelemetryState {
 
 impl NodeTelemetryHandle {
     /// Create a handle that owns registry access and per-node cleanup state.
+    ///
+    /// The `custom_attrs` HashMap is serialized to binary (protobuf bytes) eagerly
+    /// so that log record encoding avoids repeated serialization.
     pub(crate) fn new(
         registry: TelemetryRegistryHandle,
         entity_key: EntityKey,
@@ -226,7 +230,7 @@ impl NodeTelemetryHandle {
             registry,
             state: Rc::new(RefCell::new(NodeTelemetryState {
                 entity_key,
-                custom_attrs,
+                custom_attrs: encode_custom_attrs_to_bytes(&custom_attrs),
                 metric_keys: Vec::new(),
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
@@ -241,8 +245,8 @@ impl NodeTelemetryHandle {
         self.state.borrow().entity_key
     }
 
-    /// Return the custom node attributes for log records.
-    pub(crate) fn custom_attrs(&self) -> HashMap<String, AttributeValue> {
+    /// Return the pre-encoded custom node attribute bytes for log records.
+    pub(crate) fn custom_attrs(&self) -> bytes::Bytes {
         self.state.borrow().custom_attrs.clone()
     }
 
@@ -477,16 +481,14 @@ mod tests {
             "attr1".to_string(),
             AttributeValue::String("value1".to_string()),
         );
-        let handle = NodeTelemetryHandle::new(registry, entity_key, attrs);
+        let handle = NodeTelemetryHandle::new(registry, entity_key, attrs.clone());
 
         with_node_telemetry_handle(handle, || {
-            let custom_attrs = node_custom_attrs();
+            let custom_attrs_bytes = node_custom_attrs();
+            let expected_bytes = encode_custom_attrs_to_bytes(&attrs);
 
-            if let Some(attrs) = custom_attrs.get("attr1") {
-                assert_eq!(attrs, &AttributeValue::String("value1".to_string()));
-            } else {
-                panic!("Expected attr1 not found");
-            }
+            assert_eq!(custom_attrs_bytes, expected_bytes);
+            assert!(!custom_attrs_bytes.is_empty());
         });
     }
 }

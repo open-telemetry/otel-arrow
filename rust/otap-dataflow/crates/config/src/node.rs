@@ -53,7 +53,11 @@ pub struct NodeUserConfig {
     pub default_out_port: Option<PortName>,
 
     /// Node specific attributes to be added to internal telemetry.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        deserialize_with = "deserialize_telemetry_attributes"
+    )]
     pub telemetry_attributes: HashMap<String, AttributeValue>,
 
     /// Node-specific configuration.
@@ -197,6 +201,25 @@ impl NodeUserConfig {
     }
 }
 
+/// Deserializes `telemetry_attributes` and rejects any attribute with an `Array` value,
+/// which is not supported for log record attributes.
+fn deserialize_telemetry_attributes<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, AttributeValue>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attrs: HashMap<String, AttributeValue> = HashMap::deserialize(deserializer)?;
+    for (key, value) in &attrs {
+        if matches!(value, AttributeValue::Array(_)) {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported telemetry attribute type for `{key}`: array attributes are not supported"
+            )));
+        }
+    }
+    Ok(attrs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +259,37 @@ config: {}
         let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
         assert!(matches!(cfg.kind, NodeKind::Processor));
         assert_eq!(cfg.out_ports.len(), 3);
+    }
+
+    #[test]
+    fn node_user_config_with_tellemetry_attributes_valid() {
+        let json = r#"{
+            "kind": "receiver",
+            "plugin_urn": "urn:example:demo:receiver",
+            "telemetry_attributes": {
+                "attr1": "value1",
+                "attr2": 123,
+                "attr3": true
+            },
+            "out_ports": {}
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        assert!(matches!(cfg.kind, NodeKind::Receiver));
+        assert!(cfg.out_ports.is_empty());
+    }
+
+    #[test]
+    fn node_user_config_with_tellemetry_attribute_array_expects_error() {
+        let json = r#"{
+            "kind": "receiver",
+            "plugin_urn": "urn:example:demo:receiver",
+            "telemetry_attributes": {
+                "attr1": "value1",
+                "attr2": [1, 2, 3]
+            },
+            "out_ports": {}
+        }"#;
+        let cfg: Result<NodeUserConfig, _> = serde_json::from_str(json);
+        assert!(cfg.is_err());
     }
 }

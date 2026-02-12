@@ -134,7 +134,7 @@ impl ObservedStateStore {
                 let context = &log.record.context;
 
                 self.console.print_log_record(log.time, &log.record, |w| {
-                    if !context.is_empty() {
+                    if !context.entity_keys.is_empty() {
                         w.write_styled(AnsiCode::Magenta, |w| {
                             Self::format_scope_from_registry(w, context, &self.registry);
                         });
