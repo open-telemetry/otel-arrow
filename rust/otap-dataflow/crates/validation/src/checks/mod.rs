@@ -4,11 +4,6 @@
 //! can run different assertions (equivalence, batching, attribute presence,
 //! signal drops, …) without duplicating traversal logic.
 
-mod attributes;
-mod batch;
-mod signal_dropped;
-
-pub use attributes::{AttributeCheck, AttributeDomain, check_attributes};
-pub use batch::check_min_batch_size;
-pub use otap_df_pdata::otap::filter::{AnyValue, KeyValue};
-pub use signal_dropped::check_signal_drop;
+pub mod attributes;
+pub mod batch;
+pub mod signal_dropped;

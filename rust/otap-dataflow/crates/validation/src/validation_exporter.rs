@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::ValidationKind;
-use crate::checks::{check_min_batch_size, check_signal_drop};
+use crate::checks::{batch::check_min_batch_size, signal_dropped::check_signal_drop};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::NodeId as NodeName;

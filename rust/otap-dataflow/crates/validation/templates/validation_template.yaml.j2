@@ -79,8 +79,8 @@ pipeline_groups:
             config:
               control_input: control_receiver
               suv_input: suv_receiver
-              validate:
-{{ validate | indent(11, true)}}
+              validations:
+{{ validate | indent(16, true)}}
 
       # ======================================================================
       # System Under Validation pipeline

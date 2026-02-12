@@ -8,6 +8,7 @@
 //! scope, or the signal itself).
 
 use otap_df_pdata::proto::OtlpProtoMessage;
+use otap_df_pdata::proto::opentelemetry::common::v1 as proto_common;
 use otap_df_pdata::proto::opentelemetry::common::v1::{
     AnyValue as ProtoValue, KeyValue as ProtoKeyValue, any_value::Value as ProtoAnyValue,
 };
@@ -16,7 +17,7 @@ use otap_df_pdata::proto::opentelemetry::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{AnyValue, KeyValue};
+use otap_df_pdata::otap::filter::{AnyValue, KeyValue};
 
 /// Domains where attribute assertions can be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,7 +41,6 @@ fn default_domains() -> Vec<AttributeDomain> {
 ///   these keys (value is ignored).
 /// - `require`: required key/value pairs that must appear in each attribute list.
 /// - `forbid_keys`: keys that must **not** appear in each attribute list.
-/// - `forbid`: key/value pairs that must **not** appear in each attribute list.
 /// - `domains`: which domains to inspect; defaults to [`AttributeDomain::Signal`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AttributeCheck {
@@ -56,9 +56,6 @@ pub struct AttributeCheck {
     /// Keys that must not appear in any inspected attribute list.
     #[serde(default)]
     pub forbid_keys: Vec<String>,
-    /// Key/value pairs that must not appear in any inspected attribute list.
-    #[serde(default)]
-    pub forbid: Vec<KeyValue>,
 }
 
 impl AttributeCheck {
@@ -68,213 +65,191 @@ impl AttributeCheck {
             return false;
         }
 
-        // Iterate through messages and validate each one; short-circuit on first failure.
         messages.iter().all(|msg| self.check_message(msg))
     }
 
     fn check_message(&self, message: &OtlpProtoMessage) -> bool {
-        let attr_lists = extract_attributes(message, &self.domains);
+        let attr_lists = self.extract_attributes(message);
 
-        // If no attributes were found for the requested domains, only succeed when
-        // there are no expectations to verify.
         if attr_lists.is_empty() {
             return self.require_keys.is_empty()
                 && self.require.is_empty()
-                && self.forbid_keys.is_empty()
-                && self.forbid.is_empty();
+                && self.forbid_keys.is_empty();
         }
 
         attr_lists
             .iter()
-            .all(|attrs| validate_attr_list(attrs, self))
-    }
-}
-
-/// Convenience wrapper to run an [`AttributeCheck`] against a batch of messages.
-pub fn check_attributes(messages: &[OtlpProtoMessage], config: &AttributeCheck) -> bool {
-    config.check(messages)
-}
-
-fn validate_attr_list(attrs: &[ProtoKeyValue], check: &AttributeCheck) -> bool {
-    // Fail fast on forbidden keys.
-    if attrs
-        .iter()
-        .any(|kv| check.forbid_keys.iter().any(|forbid| forbid == &kv.key))
-    {
-        return false;
+            .all(|attrs| self.validate_attr_list(attrs))
     }
 
-    // Fail fast on forbidden key/value pairs.
-    if !check.forbid.is_empty()
-        && attrs
+    fn validate_attr_list(&self, attrs: &[ProtoKeyValue]) -> bool {
+        // Pre-convert required key/value pairs to Proto form once per list to reduce repeat work.
+        let required_proto: Vec<ProtoKeyValue> = self
+            .require
             .iter()
-            .any(|kv| check.forbid.iter().any(|f| proto_kv_matches(kv, f)))
-    {
-        return false;
-    }
+            .filter_map(|kv| keyvalue_to_proto(kv))
+            .collect();
 
-    // Ensure all required keys exist.
-    for required in &check.require_keys {
-        if !attrs.iter().any(|kv| kv.key == *required) {
+        // Fail fast on forbidden keys.
+        if attrs
+            .iter()
+            .any(|kv| self.forbid_keys.iter().any(|forbid| forbid == &kv.key))
+        {
             return false;
         }
-    }
 
-    // Ensure all required key/value pairs exist.
-    for required in &check.require {
-        if !attrs.iter().any(|kv| proto_kv_matches(kv, required)) {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Get all attribute lists from a message for the selected domains.
-fn extract_attributes(
-    message: &OtlpProtoMessage,
-    domains: &[AttributeDomain],
-) -> Vec<Vec<ProtoKeyValue>> {
-    match message {
-        OtlpProtoMessage::Logs(logs) => extract_log_attributes(logs, domains),
-        OtlpProtoMessage::Traces(traces) => extract_span_attributes(traces, domains),
-        OtlpProtoMessage::Metrics(metrics) => extract_metrics_attributes(metrics, domains),
-    }
-}
-
-fn extract_log_attributes(
-    logs: &proto_logs::LogsData,
-    domains: &[AttributeDomain],
-) -> Vec<Vec<ProtoKeyValue>> {
-    let mut out = Vec::new();
-
-    let include_resource = domains.contains(&AttributeDomain::Resource);
-    let include_scope = domains.contains(&AttributeDomain::Scope);
-    let include_signal = domains.contains(&AttributeDomain::Signal);
-
-    for resource_logs in &logs.resource_logs {
-        if include_resource {
-            if let Some(resource) = resource_logs.resource.as_ref() {
-                out.push(resource.attributes.clone());
+        // Ensure all required keys exist.
+        for required in &self.require_keys {
+            if !attrs.iter().any(|kv| kv.key == *required) {
+                return false;
             }
         }
 
-        for scope_logs in &resource_logs.scope_logs {
-            if include_scope {
-                if let Some(scope) = scope_logs.scope.as_ref() {
-                    out.push(scope.attributes.clone());
+        // Ensure all required key/value pairs exist.
+        for req in &required_proto {
+            if !attrs
+                .iter()
+                .any(|kv| kv.key == req.key && kv.value == req.value)
+            {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Get all attribute lists from a message for the selected domains.
+    fn extract_attributes(&self, message: &OtlpProtoMessage) -> Vec<Vec<ProtoKeyValue>> {
+        match message {
+            OtlpProtoMessage::Logs(logs) => self.extract_log_attributes(logs),
+            OtlpProtoMessage::Traces(traces) => self.extract_span_attributes(traces),
+            OtlpProtoMessage::Metrics(metrics) => self.extract_metrics_attributes(metrics),
+        }
+    }
+
+    fn extract_log_attributes(&self, logs: &proto_logs::LogsData) -> Vec<Vec<ProtoKeyValue>> {
+        let mut out = Vec::new();
+
+        let include_resource = self.domains.contains(&AttributeDomain::Resource);
+        let include_scope = self.domains.contains(&AttributeDomain::Scope);
+        let include_signal = self.domains.contains(&AttributeDomain::Signal);
+
+        for resource_logs in &logs.resource_logs {
+            if include_resource {
+                if let Some(resource) = resource_logs.resource.as_ref() {
+                    out.push(resource.attributes.clone());
                 }
             }
 
-            if include_signal {
-                for record in &scope_logs.log_records {
-                    out.push(record.attributes.clone());
-                }
-            }
-        }
-    }
-
-    out
-}
-
-fn extract_span_attributes(
-    traces: &proto_trace::TracesData,
-    domains: &[AttributeDomain],
-) -> Vec<Vec<ProtoKeyValue>> {
-    let mut out = Vec::new();
-
-    let include_resource = domains.contains(&AttributeDomain::Resource);
-    let include_scope = domains.contains(&AttributeDomain::Scope);
-    let include_signal = domains.contains(&AttributeDomain::Signal);
-
-    for resource_spans in &traces.resource_spans {
-        if include_resource {
-            if let Some(resource) = resource_spans.resource.as_ref() {
-                out.push(resource.attributes.clone());
-            }
-        }
-
-        for scope_spans in &resource_spans.scope_spans {
-            if include_scope {
-                if let Some(scope) = scope_spans.scope.as_ref() {
-                    out.push(scope.attributes.clone());
-                }
-            }
-
-            if include_signal {
-                for span in &scope_spans.spans {
-                    out.push(span.attributes.clone());
-                    // Span events and links carry their own attributes.
-                    for event in &span.events {
-                        out.push(event.attributes.clone());
+            for scope_logs in &resource_logs.scope_logs {
+                if include_scope {
+                    if let Some(scope) = scope_logs.scope.as_ref() {
+                        out.push(scope.attributes.clone());
                     }
-                    for link in &span.links {
-                        out.push(link.attributes.clone());
+                }
+
+                if include_signal {
+                    for record in &scope_logs.log_records {
+                        out.push(record.attributes.clone());
                     }
                 }
             }
         }
+
+        out
     }
 
-    out
-}
+    fn extract_span_attributes(&self, traces: &proto_trace::TracesData) -> Vec<Vec<ProtoKeyValue>> {
+        let mut out = Vec::new();
 
-fn extract_metrics_attributes(
-    metrics: &proto_metrics::MetricsData,
-    domains: &[AttributeDomain],
-) -> Vec<Vec<ProtoKeyValue>> {
-    use proto_metrics::metric::Data as MetricData;
+        let include_resource = self.domains.contains(&AttributeDomain::Resource);
+        let include_scope = self.domains.contains(&AttributeDomain::Scope);
+        let include_signal = self.domains.contains(&AttributeDomain::Signal);
 
-    let mut out = Vec::new();
-    let include_resource = domains.contains(&AttributeDomain::Resource);
-    let include_scope = domains.contains(&AttributeDomain::Scope);
-    let include_signal = domains.contains(&AttributeDomain::Signal);
-
-    for resource_metrics in &metrics.resource_metrics {
-        if include_resource {
-            if let Some(resource) = resource_metrics.resource.as_ref() {
-                out.push(resource.attributes.clone());
-            }
-        }
-
-        for scope_metrics in &resource_metrics.scope_metrics {
-            if include_scope {
-                if let Some(scope) = scope_metrics.scope.as_ref() {
-                    out.push(scope.attributes.clone());
+        for resource_spans in &traces.resource_spans {
+            if include_resource {
+                if let Some(resource) = resource_spans.resource.as_ref() {
+                    out.push(resource.attributes.clone());
                 }
             }
 
-            if include_signal {
-                for metric in &scope_metrics.metrics {
-                    if let Some(data) = &metric.data {
-                        match data {
-                            MetricData::Gauge(g) => {
-                                for dp in &g.data_points {
-                                    out.push(dp.attributes.clone());
-                                    push_exemplar_attrs(&mut out, &dp.exemplars);
+            for scope_spans in &resource_spans.scope_spans {
+                if include_scope {
+                    if let Some(scope) = scope_spans.scope.as_ref() {
+                        out.push(scope.attributes.clone());
+                    }
+                }
+
+                if include_signal {
+                    for span in &scope_spans.spans {
+                        out.push(span.attributes.clone());
+                        for event in &span.events {
+                            out.push(event.attributes.clone());
+                        }
+                        for link in &span.links {
+                            out.push(link.attributes.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    fn extract_metrics_attributes(
+        &self,
+        metrics: &proto_metrics::MetricsData,
+    ) -> Vec<Vec<ProtoKeyValue>> {
+        use proto_metrics::metric::Data as MetricData;
+
+        let mut out = Vec::new();
+        let include_resource = self.domains.contains(&AttributeDomain::Resource);
+        let include_scope = self.domains.contains(&AttributeDomain::Scope);
+        let include_signal = self.domains.contains(&AttributeDomain::Signal);
+
+        for resource_metrics in &metrics.resource_metrics {
+            if include_resource {
+                if let Some(resource) = resource_metrics.resource.as_ref() {
+                    out.push(resource.attributes.clone());
+                }
+            }
+
+            for scope_metrics in &resource_metrics.scope_metrics {
+                if include_scope {
+                    if let Some(scope) = scope_metrics.scope.as_ref() {
+                        out.push(scope.attributes.clone());
+                    }
+                }
+
+                if include_signal {
+                    for metric in &scope_metrics.metrics {
+                        if let Some(data) = &metric.data {
+                            match data {
+                                MetricData::Gauge(g) => {
+                                    for dp in &g.data_points {
+                                        out.push(dp.attributes.clone());
+                                    }
                                 }
-                            }
-                            MetricData::Sum(s) => {
-                                for dp in &s.data_points {
-                                    out.push(dp.attributes.clone());
-                                    push_exemplar_attrs(&mut out, &dp.exemplars);
+                                MetricData::Sum(s) => {
+                                    for dp in &s.data_points {
+                                        out.push(dp.attributes.clone());
+                                    }
                                 }
-                            }
-                            MetricData::Histogram(h) => {
-                                for dp in &h.data_points {
-                                    out.push(dp.attributes.clone());
-                                    push_exemplar_attrs(&mut out, &dp.exemplars);
+                                MetricData::Histogram(h) => {
+                                    for dp in &h.data_points {
+                                        out.push(dp.attributes.clone());
+                                    }
                                 }
-                            }
-                            MetricData::ExponentialHistogram(eh) => {
-                                for dp in &eh.data_points {
-                                    out.push(dp.attributes.clone());
-                                    push_exemplar_attrs(&mut out, &dp.exemplars);
+                                MetricData::ExponentialHistogram(eh) => {
+                                    for dp in &eh.data_points {
+                                        out.push(dp.attributes.clone());
+                                    }
                                 }
-                            }
-                            MetricData::Summary(s) => {
-                                for dp in &s.data_points {
-                                    out.push(dp.attributes.clone());
+                                MetricData::Summary(s) => {
+                                    for dp in &s.data_points {
+                                        out.push(dp.attributes.clone());
+                                    }
                                 }
                             }
                         }
@@ -282,54 +257,36 @@ fn extract_metrics_attributes(
                 }
             }
         }
-    }
 
-    out
-}
-
-fn push_exemplar_attrs(out: &mut Vec<Vec<ProtoKeyValue>>, exemplars: &[proto_metrics::Exemplar]) {
-    for exemplar in exemplars {
-        if !exemplar.filtered_attributes.is_empty() {
-            out.push(exemplar.filtered_attributes.clone());
-        }
+        out
     }
 }
 
-fn proto_kv_matches(proto: &ProtoKeyValue, expected: &KeyValue) -> bool {
-    if proto.key != expected.key {
-        return false;
-    }
-
-    match proto.value.as_ref() {
-        None => false,
-        Some(value) => proto_any_matches(value, &expected.value),
-    }
+fn keyvalue_to_proto(kv: &KeyValue) -> Option<ProtoKeyValue> {
+    anyvalue_to_proto(&kv.value).map(|val| ProtoKeyValue {
+        key: kv.key.clone(),
+        value: Some(val),
+    })
 }
 
-fn proto_any_matches(value: &ProtoValue, expected: &AnyValue) -> bool {
-    match (value.value.as_ref(), expected) {
-        (Some(ProtoAnyValue::StringValue(v)), AnyValue::String(e)) => v == e,
-        (Some(ProtoAnyValue::IntValue(v)), AnyValue::Int(e)) => v == e,
-        (Some(ProtoAnyValue::DoubleValue(v)), AnyValue::Double(e)) => (v - e).abs() < f64::EPSILON,
-        (Some(ProtoAnyValue::BoolValue(v)), AnyValue::Boolean(e)) => v == e,
-        (Some(ProtoAnyValue::ArrayValue(arr)), AnyValue::Array(expected_vals)) => {
-            if arr.values.len() != expected_vals.len() {
-                return false;
-            }
-            arr.values
+fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
+    let proto = match val {
+        AnyValue::String(s) => ProtoAnyValue::StringValue(s.clone()),
+        AnyValue::Int(i) => ProtoAnyValue::IntValue(*i),
+        AnyValue::Double(d) => ProtoAnyValue::DoubleValue(*d),
+        AnyValue::Boolean(b) => ProtoAnyValue::BoolValue(*b),
+        AnyValue::Array(values) => ProtoAnyValue::ArrayValue(proto_common::ArrayValue {
+            values: values
                 .iter()
-                .zip(expected_vals.iter())
-                .all(|(pv, ev)| proto_any_matches(pv, ev))
-        }
-        (Some(ProtoAnyValue::KvlistValue(list)), AnyValue::KeyValue(expected_kvs)) => {
-            expected_kvs.iter().all(|expected_kv| {
-                list.values
-                    .iter()
-                    .any(|kv| proto_kv_matches(kv, expected_kv))
-            })
-        }
-        _ => false,
-    }
+                .filter_map(anyvalue_to_proto)
+                .collect::<Vec<_>>(),
+        }),
+        AnyValue::KeyValue(kvs) => ProtoAnyValue::KvlistValue(proto_common::KeyValueList {
+            values: kvs.iter().filter_map(keyvalue_to_proto).collect::<Vec<_>>(),
+        }),
+    };
+
+    Some(ProtoValue { value: Some(proto) })
 }
 
 #[cfg(test)]
