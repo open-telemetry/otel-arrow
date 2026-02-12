@@ -249,16 +249,18 @@ impl ContentRouter {
                     return RouteResolution::MissingKey;
                 };
 
+                // Key exists but value is not a usable string type — treat as NoMatch,
+                // not MissingKey, since the attribute is present.
                 if value.value_type() != ValueType::String {
-                    return RouteResolution::MissingKey;
+                    return RouteResolution::NoMatch;
                 };
 
                 let Some(str_bytes) = value.as_string() else {
-                    return RouteResolution::MissingKey;
+                    return RouteResolution::NoMatch;
                 };
 
                 let Ok(str_value) = std::str::from_utf8(str_bytes) else {
-                    return RouteResolution::MissingKey;
+                    return RouteResolution::NoMatch;
                 };
 
                 let lookup: Cow<'_, str> = if self.case_sensitive {
@@ -1127,6 +1129,63 @@ mod tests {
         assert!(matches!(
             router.resolve_logs_route(&data),
             RouteResolution::MissingKey
+        ));
+    }
+
+    #[test]
+    fn test_resolve_empty_batch() {
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
+        let router = ContentRouter::new(make_config(routes, None));
+
+        // Empty batch (0 resources) should resolve to MissingKey
+        let request = ExportLogsServiceRequest::new(vec![]);
+        let mut buf = Vec::new();
+        request.encode(&mut buf).unwrap();
+        let bytes = Bytes::from(buf);
+        let data = RawLogsData::new(&bytes);
+        assert!(matches!(
+            router.resolve_logs_route(&data),
+            RouteResolution::MissingKey
+        ));
+    }
+
+    #[test]
+    fn test_resolve_non_string_attribute_returns_no_match() {
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
+        let router = ContentRouter::new(make_config(routes, None));
+
+        // Routing key exists but has an integer value — should be NoMatch, not MissingKey
+        let bytes = create_multi_resource_logs(vec![vec![KeyValue::new(
+            "microsoft.resourceId",
+            AnyValue::new_int(42),
+        )]]);
+        let data = RawLogsData::new(&bytes);
+        assert!(matches!(
+            router.resolve_logs_route(&data),
+            RouteResolution::NoMatch
+        ));
+    }
+
+    #[test]
+    fn test_resolve_matched_plus_no_match_is_mixed() {
+        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
+        let router = ContentRouter::new(make_config(routes, None));
+
+        // First resource matches, second has unrecognized value → MixedBatch
+        let bytes = create_multi_resource_logs(vec![
+            vec![KeyValue::new(
+                "microsoft.resourceId",
+                AnyValue::new_string("/subscriptions/aaa"),
+            )],
+            vec![KeyValue::new(
+                "microsoft.resourceId",
+                AnyValue::new_string("/subscriptions/unknown"),
+            )],
+        ]);
+        let data = RawLogsData::new(&bytes);
+        assert!(matches!(
+            router.resolve_logs_route(&data),
+            RouteResolution::MixedBatch
         ));
     }
 
