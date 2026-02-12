@@ -1777,6 +1777,76 @@ mod tests {
         ]);
     }
 
+    // ---- Transport optimized encoding tests ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_transport_optimized() {
+        let mut batches = vec![
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3])),
+                (LogAttrs, ("parent_id", UInt16, vec![1u16, 2, 2, 0, 3, 3, 2, 2]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 3, 3, 2, 2, 1, 1, 2, 2, 0, 0]))
+            ),
+        ];
+        test_reindex_transport_optimized::<Logs, { Logs::COUNT }>(
+            &mut batches, reindex_logs, |b| OtapArrowRecords::Logs(Logs { batches: b.clone() }),
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_transport_optimized() {
+        let mut batches = vec![
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1, 2])),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
+                (SpanEventAttrs, ("parent_id", UInt32, vec![0u32, 1, 1, 2])),
+                (SpanLinks, ("id", UInt32, vec![0u32, 1]), ("parent_id", UInt16, vec![1u16, 2])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1, 2])),
+                (SpanEvents, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![1u16, 2, 2])),
+                (SpanEventAttrs, ("parent_id", UInt32, vec![0u32, 2, 2])),
+                (SpanLinks, ("id", UInt32, vec![0u32, 1]), ("parent_id", UInt16, vec![0u16, 1])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+        ];
+        test_reindex_transport_optimized::<Traces, { Traces::COUNT }>(
+            &mut batches, reindex_traces, |b| OtapArrowRecords::Traces(Traces { batches: b.clone() }),
+        );
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_transport_optimized() {
+        let mut batches = vec![
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
+                (NumberDpAttrs, ("parent_id", UInt32, vec![0u32, 1, 2])),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1]), ("parent_id", UInt32, vec![0u32, 2])),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, vec![0u32, 1])),
+                (MetricAttrs, ("parent_id", UInt16, vec![0u16, 0, 1]))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 1, 1])),
+                (NumberDpAttrs, ("parent_id", UInt32, vec![0u32, 1])),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1]), ("parent_id", UInt32, vec![1u32, 2])),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, vec![0u32, 1])),
+                (MetricAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+        ];
+        test_reindex_transport_optimized::<Metrics, { Metrics::COUNT }>(
+            &mut batches, reindex_metrics, |b| OtapArrowRecords::Metrics(Metrics { batches: b.clone() }),
+        );
+    }
+
     // ---- Test helpers ----
 
     fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
@@ -1840,6 +1910,45 @@ mod tests {
         }
 
         assert_equivalent(&before_otlp, &after_otlp);
+    }
+
+    /// Reindexes transport-optimized batches and verifies OTLP equivalence.
+    ///
+    /// Fingerprinting doesn't work on transport-optimized batches (IDs are
+    /// delta-encoded), so we only verify OTLP equivalence before and after.
+    fn test_reindex_transport_optimized<S, const N: usize>(
+        batches: &mut [[Option<RecordBatch>; N]],
+        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
+        to_otap: impl Fn(&[Option<RecordBatch>; N]) -> OtapArrowRecords,
+    ) where
+        S: OtapBatchStore,
+    {
+        apply_transport_encodings::<S, N>(batches);
+
+        // Convert to OTLP *after* encoding but *before* reindex to get the
+        // reference. `otap_to_otlp` internally strips transport encodings.
+        let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
+
+        reindex_fn(batches).unwrap();
+
+        let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
+        assert_equivalent(&before_otlp, &after_otlp);
+    }
+
+    /// Applies transport optimized encodings to all payload types in each batch group.
+    fn apply_transport_encodings<S: OtapBatchStore, const N: usize>(
+        batches: &mut [[Option<RecordBatch>; N]],
+    ) {
+        for group in batches.iter_mut() {
+            for &payload_type in S::allowed_payload_types() {
+                let idx = payload_to_idx(payload_type);
+                if let Some(rb) = group[idx].take() {
+                    let (encoded, _) =
+                        apply_transport_optimized_encodings(&payload_type, &rb).unwrap();
+                    group[idx] = Some(encoded);
+                }
+            }
+        }
     }
 
     /// For each batch group, relation, and child type, records which child row
