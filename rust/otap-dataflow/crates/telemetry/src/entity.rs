@@ -146,7 +146,7 @@ pub enum RegisterOutcome {
 impl RegisterOutcome {
     /// Returns the entity key, consumes the outcome.
     #[must_use]
-    pub fn key(self) -> EntityKey {
+    pub const fn key(self) -> EntityKey {
         match self {
             Self::Created(k) => k,
             Self::Existing(k) => k,
@@ -262,7 +262,7 @@ fn hash_attribute_value<H: Hasher>(value: &AttributeValue, state: &mut H) {
     }
 }
 
-fn attribute_value_type_rank(value_type: AttributeValueType) -> u8 {
+const fn attribute_value_type_rank(value_type: AttributeValueType) -> u8 {
     match value_type {
         AttributeValueType::String => 0,
         AttributeValueType::Int => 1,

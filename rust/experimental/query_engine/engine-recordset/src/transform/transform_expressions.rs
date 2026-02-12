@@ -367,7 +367,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                                 match target_map.remove(k) {
                                     ValueMutRemoveResult::NotFound => {
                                         execution_context.add_diagnostic_if_enabled(
-                                            RecordSetEngineDiagnosticLevel::Warn,
+                                            RecordSetEngineDiagnosticLevel::Info,
                                             r,
                                             || format!("Map key {key} could not be found on target map"),
                                         );

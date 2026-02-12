@@ -151,14 +151,14 @@ impl Protocols {
     /// Returns `true` if at least one protocol is configured.
     #[inline]
     #[must_use]
-    pub fn is_valid(&self) -> bool {
+    pub const fn is_valid(&self) -> bool {
         self.grpc.is_some() || self.http.is_some()
     }
 
     /// Returns `true` if both protocols are configured.
     #[inline]
     #[must_use]
-    pub fn has_both(&self) -> bool {
+    pub const fn has_both(&self) -> bool {
         self.grpc.is_some() && self.http.is_some()
     }
 }
@@ -383,6 +383,7 @@ impl OTLPReceiver {
     ) -> Result<Option<TerminalState>, Error> {
         match msg {
             NodeControlMsg::Shutdown { deadline, .. } => {
+                otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
                 let snapshot = self.metrics.lock().snapshot();
                 if let Some(handle) = telemetry_cancel_handle.take() {
                     _ = handle.cancel().await;

@@ -1188,14 +1188,17 @@ fn get_attribute_value<'a>(
 }
 
 #[allow(dead_code)]
-fn get_schema_url_for_resource<'a>(_batch: &'a RecordBatch, _resource_id: u16) -> Option<Str<'a>> {
+const fn get_schema_url_for_resource<'a>(
+    _batch: &'a RecordBatch,
+    _resource_id: u16,
+) -> Option<Str<'a>> {
     // TODO: Implement schema_url lookup for resource
     // Would need to look up in a separate resource table or nested struct
     None
 }
 
 #[allow(dead_code)]
-fn get_schema_url_for_scope<'a>(_batch: &'a RecordBatch, _scope_id: u16) -> Option<Str<'a>> {
+const fn get_schema_url_for_scope<'a>(_batch: &'a RecordBatch, _scope_id: u16) -> Option<Str<'a>> {
     // TODO: Implement schema_url lookup for scope
     // Would need to look up in a separate scope table or nested struct
     None

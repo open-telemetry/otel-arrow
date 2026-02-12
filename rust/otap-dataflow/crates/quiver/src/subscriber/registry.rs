@@ -184,7 +184,7 @@ impl<P: SegmentProvider> SubscriberRegistry<P> {
 
     /// Returns the registry configuration.
     #[must_use]
-    pub fn config(&self) -> &RegistryConfig {
+    pub const fn config(&self) -> &RegistryConfig {
         &self.config
     }
 

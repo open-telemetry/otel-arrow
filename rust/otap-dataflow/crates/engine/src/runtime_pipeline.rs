@@ -57,7 +57,7 @@ pub(crate) struct PipeNode {
 impl PipeNode {
     /// Construct a pipe node with index referring to one an entry in
     /// the appropriate RuntimePipeline Vec.
-    pub(crate) fn new(index: usize) -> Self {
+    pub(crate) const fn new(index: usize) -> Self {
         Self { index }
     }
 }
@@ -88,13 +88,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
 
     /// Returns the number of nodes in the pipeline.
     #[must_use]
-    pub fn node_count(&self) -> usize {
+    pub const fn node_count(&self) -> usize {
         self.receivers.len() + self.processors.len() + self.exporters.len()
     }
 
     /// Returns a reference to the pipeline configuration.
     #[must_use]
-    pub fn config(&self) -> &PipelineConfig {
+    pub const fn config(&self) -> &PipelineConfig {
         &self.config
     }
 

@@ -56,7 +56,7 @@ pub struct RawMetricsData<'a> {
 impl<'a> RawMetricsData<'a> {
     /// Create a new [`RawMetricsData`]
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 }

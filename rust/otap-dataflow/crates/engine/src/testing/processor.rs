@@ -39,7 +39,7 @@ pub struct ValidateContext {
 impl<PData> TestContext<PData> {
     /// Creates a new TestContext from a ProcessorWrapperRuntime.
     #[must_use]
-    pub fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
+    pub const fn new(runtime: ProcessorWrapperRuntime<PData>) -> Self {
         Self {
             runtime,
             output_receiver: None,
@@ -186,7 +186,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Returns the current receiver configuration.
-    pub fn config(&self) -> &ProcessorConfig {
+    pub const fn config(&self) -> &ProcessorConfig {
         &self.config
     }
 

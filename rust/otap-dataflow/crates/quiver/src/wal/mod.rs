@@ -217,7 +217,7 @@ impl WalError {
     /// WAL capacity errors are recoverable—the caller should wait for
     /// segment finalization to advance the cursor and reclaim space.
     #[must_use]
-    pub fn is_at_capacity(&self) -> bool {
+    pub const fn is_at_capacity(&self) -> bool {
         matches!(self, Self::WalAtCapacity(_))
     }
 }

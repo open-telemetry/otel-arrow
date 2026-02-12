@@ -45,7 +45,7 @@ pub struct TraceID([u8; 16]);
 impl TraceID {
     /// creates a new instance of the TraceID by copying the bytes
     #[must_use]
-    pub fn new(value: &[u8; 16]) -> TraceID {
+    pub const fn new(value: &[u8; 16]) -> TraceID {
         TraceID(*value)
     }
 }
@@ -78,7 +78,7 @@ pub struct SpanID([u8; 8]);
 impl SpanID {
     /// creates a new instance of the SpanID by copying the bytes
     #[must_use]
-    pub fn new(value: &[u8; 8]) -> SpanID {
+    pub const fn new(value: &[u8; 8]) -> SpanID {
         SpanID(*value)
     }
 }

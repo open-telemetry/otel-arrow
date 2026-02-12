@@ -73,7 +73,7 @@ pub struct KeyValue {
 impl KeyValue {
     /// create a new key value pair
     #[must_use]
-    pub fn new(key: String, value: AnyValue) -> Self {
+    pub const fn new(key: String, value: AnyValue) -> Self {
         Self { key, value }
     }
 }

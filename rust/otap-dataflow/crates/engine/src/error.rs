@@ -374,6 +374,12 @@ pub enum Error {
         message: String,
     },
 
+    /// All nodes were removed from the pipeline (none are connected).
+    #[error(
+        "Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration"
+    )]
+    EmptyPipeline,
+
     /// Too many nodes are configured.
     #[error("Too many nodes defined")]
     TooManyNodes {},
@@ -422,6 +428,7 @@ impl Error {
             Error::ChannelRecvError(_) => "ChannelRecvError",
             Error::ChannelSendError { .. } => "ChannelSendError",
             Error::ConfigError(_) => "ConfigError",
+            Error::EmptyPipeline => "EmptyPipeline",
             Error::ExporterAlreadyExists { .. } => "ExporterAlreadyExists",
             Error::ExporterError { .. } => "ExporterError",
             Error::InternalError { .. } => "InternalError",

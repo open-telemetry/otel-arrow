@@ -57,7 +57,7 @@ pub struct ParamConfig {
 }
 
 /// Create a parameter config with required fields
-fn simple(fields: Vec<&'static str>) -> ParamConfig {
+const fn simple(fields: Vec<&'static str>) -> ParamConfig {
     ParamConfig {
         required: fields,
         ignored: vec![],
@@ -65,7 +65,7 @@ fn simple(fields: Vec<&'static str>) -> ParamConfig {
 }
 
 /// Create a parameter config with no required fields (all via builder)
-fn detailed() -> ParamConfig {
+const fn detailed() -> ParamConfig {
     ParamConfig {
         required: vec![],
         ignored: vec![],
@@ -73,7 +73,7 @@ fn detailed() -> ParamConfig {
 }
 
 /// Create a parameter config with some required and some ignored fields
-fn some_simple(required: Vec<&'static str>, ignored: Vec<&'static str>) -> ParamConfig {
+const fn some_simple(required: Vec<&'static str>, ignored: Vec<&'static str>) -> ParamConfig {
     ParamConfig { required, ignored }
 }
 
@@ -84,7 +84,7 @@ pub struct EnumField {
     pub fieldtype: &'static str,
 }
 
-fn enumfield(dt: &'static str, ft: &'static str) -> EnumField {
+const fn enumfield(dt: &'static str, ft: &'static str) -> EnumField {
     EnumField {
         datatype: dt,
         fieldtype: ft,

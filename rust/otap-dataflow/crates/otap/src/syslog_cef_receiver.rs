@@ -82,7 +82,7 @@ struct Config {
 impl Config {
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+    pub const fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
         Self {
             listening_addr,
             protocol,

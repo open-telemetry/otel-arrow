@@ -166,7 +166,7 @@ struct OtlpBytesCodec {
 }
 
 impl OtlpBytesCodec {
-    fn new(
+    const fn new(
         signal: SignalType,
         preallocate_frame: bool,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
@@ -201,7 +201,7 @@ struct OtlpResponseEncoder {
 }
 
 impl OtlpResponseEncoder {
-    fn new(signal: SignalType) -> Self {
+    const fn new(signal: SignalType) -> Self {
         Self { signal }
     }
 }
@@ -227,7 +227,7 @@ struct OtlpBytesDecoder {
 }
 
 impl OtlpBytesDecoder {
-    fn new(
+    const fn new(
         signal: SignalType,
         preallocate_frame: bool,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
@@ -296,7 +296,7 @@ struct OtapBatchService {
 }
 
 impl OtapBatchService {
-    fn new(
+    const fn new(
         effect_handler: EffectHandler<OtapPdata>,
         state: Option<AckSlot>,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,

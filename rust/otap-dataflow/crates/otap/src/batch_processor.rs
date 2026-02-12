@@ -279,7 +279,7 @@ impl Config {
 
 impl FormatConfig {
     #[cfg(test)]
-    fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_items(min_size: usize, max_size: usize) -> FormatConfig {
         FormatConfig {
             min_size: NonZeroUsize::new(min_size),
             max_size: NonZeroUsize::new(max_size),
@@ -288,7 +288,7 @@ impl FormatConfig {
     }
 
     #[cfg(test)]
-    fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
+    const fn new_bytes(min_size: usize, max_size: usize) -> FormatConfig {
         FormatConfig {
             min_size: NonZeroUsize::new(min_size),
             max_size: NonZeroUsize::new(max_size),
@@ -696,7 +696,7 @@ impl<'a, T: OtapPayloadHelpers> BatchProcessorFormat<'a, T>
 where
     SignalBuffer<T>: Batcher<T>,
 {
-    fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
+    const fn for_signal(&mut self, signal: SignalType) -> BatchProcessorSignal<'_, T> {
         BatchProcessorSignal {
             signal,
             config: self.config,
@@ -1108,11 +1108,11 @@ impl<T: OtapPayloadHelpers> Default for Inputs<T> {
 }
 
 impl BatchingFormat {
-    fn has_otlp(&self) -> bool {
+    const fn has_otlp(&self) -> bool {
         !matches!(self, Self::Otap)
     }
 
-    fn has_otap(&self) -> bool {
+    const fn has_otap(&self) -> bool {
         !matches!(self, Self::Otlp)
     }
 }
@@ -1131,13 +1131,13 @@ where
 }
 
 impl BatchPortion {
-    fn new(inkey: Option<SlotKey>, items: usize) -> Self {
+    const fn new(inkey: Option<SlotKey>, items: usize) -> Self {
         Self { inkey, items }
     }
 }
 
 impl MultiContext {
-    fn new(inputs: Vec<BatchPortion>) -> Self {
+    const fn new(inputs: Vec<BatchPortion>) -> Self {
         Self { inputs, pos: 0 }
     }
 }
@@ -1151,11 +1151,11 @@ impl<T: OtapPayloadHelpers> Inputs<T> {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.items == 0
     }
 
-    fn requests(&self) -> usize {
+    const fn requests(&self) -> usize {
         self.pending.len()
     }
 
