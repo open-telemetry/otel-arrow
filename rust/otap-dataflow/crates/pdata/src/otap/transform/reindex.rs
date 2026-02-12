@@ -668,7 +668,6 @@ mod tests {
         Array, ArrayRef, AsArray, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
-    use arrow::util::pretty;
 
     use crate::error::Error;
     use crate::otap::transform::transport_optimize::{
@@ -1702,6 +1701,7 @@ mod tests {
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
         // for rb in batches.iter().flatten().flatten().cloned() {
+        //     use arrow::util::pretty;
         //     pretty::print_batches(&[rb]).unwrap();
         // }
 
