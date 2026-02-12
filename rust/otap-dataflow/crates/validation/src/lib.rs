@@ -3,10 +3,6 @@
 
 //! Validation test module to validate the encoding/decoding process for otlp messages
 
-use serde::{Deserialize, Serialize};
-
-/// invariants/checks helpers (attribute diff, filtering detection, etc.)
-pub mod checks;
 /// validate the encode_decoding of otlp messages
 pub mod encode_decode;
 /// error definitions for the validation test
@@ -25,32 +21,20 @@ mod simulate;
 pub mod traffic;
 /// validation exporter to receive messages and assert their equivalence
 pub mod validation_exporter;
+/// invariants/checks helpers (attribute diff, filtering detection, etc.)
+pub mod validation_types;
 
-/// Supported validation kinds executed by the validation exporter.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ValidationKind {
-    /// Check semantic equivalence between control and suv outputs.
-    Equivalence,
-    /// Check that after contains fewer signals than before.
-    SignalDrop,
-    /// Check that each message meets a minimum batch size (applied to SUV messages).
-    Batch {
-        /// Minimum items required in each message.
-        min_batch_size: usize,
-    },
-    /// Check attribute presence/absence rules (applied to SUV messages).
-    Attributes {
-        /// Attribute rules to enforce.
-        config: checks::attributes::AttributeCheck,
-    },
-}
+pub use validation_types::ValidationKind;
 
 #[cfg(test)]
 mod tests {
+    use crate::ValidationKind;
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
+    use crate::validation_types::attributes::{
+        AnyValue, AttributeCheck, AttributeDomain, KeyValue,
+    };
     use std::time::Duration;
 
     #[test]
@@ -83,5 +67,59 @@ mod tests {
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("validation scenario failed");
+    }
+
+    #[test]
+    fn attribute_processor_pipeline() {
+        let attr_check = AttributeCheck {
+            domains: vec![AttributeDomain::Signal],
+            forbid_keys: vec!["ios.app.state".into()],
+            ..Default::default()
+        };
+
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/attribute-processor.yaml")
+                    .expect("failed to read pipeline yaml")
+                    .wire_otlp_grpc_receiver("receiver")
+                    .wire_otap_grpc_exporter("exporter"),
+            )
+            .input(Generator::logs().fixed_count(500).otlp_grpc())
+            .observe(
+                Capture::default()
+                    .otap_grpc()
+                    .validate(vec![ValidationKind::Attributes { config: attr_check }]),
+            )
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("attribute processor validation failed");
+    }
+
+    #[test]
+    fn filter_processor_pipeline() {
+        let attr_check = AttributeCheck {
+            domains: vec![AttributeDomain::Signal],
+            require: vec![KeyValue::new(
+                "ios.app.state".into(),
+                AnyValue::String("active".into()),
+            )],
+            ..Default::default()
+        };
+
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
+                    .expect("failed to read pipeline yaml")
+                    .wire_otlp_grpc_receiver("receiver")
+                    .wire_otap_grpc_exporter("exporter"),
+            )
+            .input(Generator::logs().fixed_count(500).otlp_grpc())
+            .observe(Capture::default().otap_grpc().validate(vec![
+                ValidationKind::SignalDrop,
+                ValidationKind::Attributes { config: attr_check },
+            ]))
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("filter processor validation failed");
     }
 }

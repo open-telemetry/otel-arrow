@@ -17,7 +17,40 @@ use otap_df_pdata::proto::opentelemetry::{
 };
 use serde::{Deserialize, Serialize};
 
-use otap_df_pdata::otap::filter::{AnyValue, KeyValue};
+/// enum to describe attribute value types
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AnyValue {
+    /// string type
+    String(String),
+    /// int type
+    Int(i64),
+    /// double type
+    Double(f64),
+    /// boolean type
+    Boolean(bool),
+    /// array of any type
+    Array(Vec<AnyValue>),
+    /// keyvalue type
+    KeyValue(Vec<KeyValue>),
+}
+
+/// struct to match key value pairs
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyValue {
+    /// Attribute key.
+    pub key: String,
+    /// Attribute value.
+    pub value: AnyValue,
+}
+
+impl KeyValue {
+    /// create a key value pair
+    #[must_use]
+    pub fn new(key: String, value: AnyValue) -> Self {
+        Self { key, value }
+    }
+}
 
 /// Domains where attribute assertions can be applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

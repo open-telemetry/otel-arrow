@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::ValidationKind;
-use crate::checks::{batch::check_min_batch_size, signal_dropped::check_signal_drop};
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::NodeId as NodeName;
@@ -22,11 +21,9 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
-use otap_df_pdata::testing::equiv::assert_equivalent;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::time::Duration;
 
@@ -95,7 +92,7 @@ impl ValidationExporter {
     fn evaluate_and_record(&mut self) {
         let mut valid = true;
         for validate in &self.config.validations {
-            valid &= self.evaluate(validate);
+            valid &= validate.evaluate(&self.control_msgs, &self.suv_msgs)
         }
 
         if valid {
@@ -106,23 +103,24 @@ impl ValidationExporter {
         self.metrics.valid.set(valid as u64);
     }
 
-    /// Evaluate a single rule; always returns a pass/fail boolean.
-    fn evaluate(&self, kind: &ValidationKind) -> bool {
-        match kind {
-            ValidationKind::Equivalence => {
-                let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    assert_equivalent(&self.control_msgs, &self.suv_msgs)
-                }))
-                .is_ok();
-                equiv
-            }
-            ValidationKind::SignalDrop => check_signal_drop(&self.control_msgs, &self.suv_msgs),
-            ValidationKind::Batch { min_batch_size } => {
-                check_min_batch_size(&self.suv_msgs, *min_batch_size)
-            }
-            ValidationKind::Attributes { config } => config.check(&self.suv_msgs),
-        }
-    }
+    // /// Evaluate a single rule; always returns a pass/fail boolean.
+    // fn evaluate(&self, kind: &ValidationKind) -> bool {
+    //     match kind {
+    //         ValidationKind::Equivalence => {
+    //             let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
+    //                 assert_equivalent(&self.control_msgs, &self.suv_msgs)
+    //             }))
+    //             .is_ok();
+    //             equiv
+    //         }
+    //         ValidationKind::SignalDrop => check_signal_drop(&self.control_msgs, &self.suv_msgs),
+    //         ValidationKind::Batch {
+    //             min_batch_size,
+    //             max_batch_size,
+    //         } => check_batch_size(&self.suv_msgs, *min_batch_size, *max_batch_size),
+    //         ValidationKind::Attributes { config } => config.check(&self.suv_msgs),
+    //     }
+    // }
 
     /// Build a new exporter instance from user configuration embedded in the pipeline.
     pub fn from_config(

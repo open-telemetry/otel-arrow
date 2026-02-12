@@ -104,6 +104,13 @@ impl Generator {
         self
     }
 
+    /// Set the maximum batch size for emitted signals.
+    #[must_use]
+    pub fn max_batch_size(mut self, batch_size: usize) -> Self {
+        self.max_batch_size = batch_size;
+        self
+    }
+
     /// Emit over OTLP gRPC.
     #[must_use]
     pub fn otlp_grpc(mut self) -> Self {
