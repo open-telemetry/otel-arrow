@@ -137,6 +137,11 @@ impl ContentRouterConfig {
             });
         }
         for (value, port) in &self.routes {
+            if value.trim().is_empty() {
+                return Err(ConfigError::InvalidUserConfig {
+                    error: "route key (attribute value) must not be empty".to_string(),
+                });
+            }
             if port.trim().is_empty() {
                 return Err(ConfigError::InvalidUserConfig {
                     error: format!(
@@ -586,12 +591,11 @@ pub fn create_content_router(
     router_config.validate()?;
 
     let router = ContentRouter::new(router_config);
-    let user_config = Arc::new(NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN));
 
     Ok(ProcessorWrapper::local(
         router,
         node,
-        user_config,
+        node_config,
         processor_config,
     ))
 }
@@ -852,6 +856,17 @@ mod tests {
         let cfg = ContentRouterConfig {
             routing_key: "key".to_string(),
             routes: HashMap::from([("value".into(), "".into())]),
+            default_output: None,
+            case_sensitive: true,
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validation_empty_route_key() {
+        let cfg = ContentRouterConfig {
+            routing_key: "key".to_string(),
+            routes: HashMap::from([("".into(), "port_a".into())]),
             default_output: None,
             case_sensitive: true,
         };
