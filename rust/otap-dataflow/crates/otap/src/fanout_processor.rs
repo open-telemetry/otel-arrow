@@ -1244,7 +1244,7 @@ mod tests {
             description: None,
             out_ports,
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({
                 "mode": mode,
                 "await_ack": await_ack,
@@ -1304,7 +1304,7 @@ mod tests {
             )]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({
                 "destinations": [
                     { "port": TEST_OUT_PORT_NAME, "primary": true }
@@ -1370,7 +1370,7 @@ mod tests {
             description: None,
             out_ports,
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         let err = cfg
@@ -1424,7 +1424,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1471,7 +1471,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1501,7 +1501,7 @@ mod tests {
             )]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1551,7 +1551,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         let err = cfg
@@ -1591,7 +1591,7 @@ mod tests {
             )]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         let err = cfg
@@ -1660,7 +1660,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         let err = cfg
@@ -1725,7 +1725,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({}),
         };
         let err = cfg
@@ -1786,7 +1786,7 @@ mod tests {
             ]
             .into(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: json!({
                 "destinations": [
                     { "port": "p1", "primary": true },
@@ -2671,7 +2671,7 @@ mod tests {
             description: None,
             out_ports,
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config,
         };
 

@@ -54,7 +54,7 @@ pub struct NodeUserConfig {
 
     /// Node specific attributes to be added to internal telemetry.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub attributes: HashMap<String, AttributeValue>,
+    pub telemetry_attributes: HashMap<String, AttributeValue>,
 
     /// Node-specific configuration.
     ///
@@ -137,7 +137,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -150,7 +150,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -163,7 +163,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: Value::Null,
         }
     }
@@ -177,7 +177,7 @@ impl NodeUserConfig {
             description: None,
             out_ports: HashMap::new(),
             default_out_port: None,
-            attributes: HashMap::new(),
+            telemetry_attributes: HashMap::new(),
             config: user_config,
         }
     }

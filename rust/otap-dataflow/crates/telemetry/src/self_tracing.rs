@@ -23,6 +23,30 @@ use std::ops::Deref;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
 
+/// Pre-encode custom node attributes into protobuf bytes.
+///
+/// The returned bytes can be appended directly to a `ProtoBuffer` when
+/// building a `LogRecord`, avoiding re-encoding on every log event.
+fn encode_custom_attrs_to_bytes(attrs: &HashMap<String, AttributeValue>) -> bytes::Bytes {
+    if attrs.is_empty() {
+        return bytes::Bytes::new();
+    }
+    let mut buf = ProtoBuffer::with_capacity(128);
+    let mut visitor = DirectFieldVisitor::new(&mut buf);
+    let mut sorted_attrs: Vec<_> = attrs.iter().collect();
+    sorted_attrs.sort_by_key(|(k, _)| k.as_str());
+    for (key, value) in sorted_attrs {
+        match value {
+            AttributeValue::String(s) => visitor.encode_string_attribute(key, s),
+            AttributeValue::Bool(b) => visitor.encode_bool_attribute(key, *b),
+            AttributeValue::I64(i) => visitor.encode_int_attribute(key, *i),
+            AttributeValue::F64(f) => visitor.encode_double_attribute(key, *f),
+            AttributeValue::Array(_) => {} // Arrays not yet supported for log record attrs
+        }
+    }
+    buf.into_bytes()
+}
+
 pub use encoder::DirectLogRecordEncoder;
 pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
@@ -50,13 +74,14 @@ pub struct LogRecord {
 }
 
 /// Context for log records, including entity keys for scope encoding
-/// and optional custom node attributes for log records.
+/// and optional pre-encoded custom node attributes for log records.
 #[derive(Debug, Clone)]
 pub struct LogContext {
     /// Entity keys that identify scope attribute sets in the telemetry registry.
     pub entity_keys: SmallVec<[EntityKey; 1]>,
-    /// Custom node attributes to be encoded as log record attributes.
-    pub custom_attrs: HashMap<String, AttributeValue>,
+    /// Pre-encoded custom node attributes bytes for log record attributes.
+    /// Encoded once at context creation to avoid re-encoding on every log event.
+    pub custom_attrs_bytes: bytes::Bytes,
 }
 
 impl LogContext {
@@ -65,7 +90,7 @@ impl LogContext {
     pub fn new() -> Self {
         Self {
             entity_keys: SmallVec::new(),
-            custom_attrs: HashMap::new(),
+            custom_attrs_bytes: bytes::Bytes::new(),
         }
     }
 
@@ -74,11 +99,14 @@ impl LogContext {
     pub fn from_buf(buf: [EntityKey; 1]) -> Self {
         Self {
             entity_keys: SmallVec::from_buf(buf),
-            custom_attrs: HashMap::new(),
+            custom_attrs_bytes: bytes::Bytes::new(),
         }
     }
 
     /// Create a context with entity keys and custom node attributes.
+    ///
+    /// The attributes are pre-encoded to protobuf bytes so they can be
+    /// appended directly when constructing log records.
     #[must_use]
     pub fn with_custom_attrs(
         entity_keys: SmallVec<[EntityKey; 1]>,
@@ -86,7 +114,7 @@ impl LogContext {
     ) -> Self {
         Self {
             entity_keys,
-            custom_attrs,
+            custom_attrs_bytes: encode_custom_attrs_to_bytes(&custom_attrs),
         }
     }
 }
@@ -171,19 +199,9 @@ impl LogRecord {
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         event.record(&mut visitor);
 
-        // Encode custom node attributes from context, if any.
-        if !context.custom_attrs.is_empty() {
-            let mut sorted_attrs: Vec<_> = context.custom_attrs.iter().collect();
-            sorted_attrs.sort_by_key(|(k, _)| k.as_str());
-            for (key, value) in sorted_attrs {
-                match value {
-                    AttributeValue::String(s) => visitor.encode_string_attribute(key, s),
-                    AttributeValue::Bool(b) => visitor.encode_bool_attribute(key, *b),
-                    AttributeValue::I64(i) => visitor.encode_int_attribute(key, *i),
-                    AttributeValue::F64(f) => visitor.encode_double_attribute(key, *f),
-                    AttributeValue::Array(_) => {} // Arrays not yet supported for log record attrs
-                }
-            }
+        // Append pre-encoded custom node attributes bytes, if any.
+        if !context.custom_attrs_bytes.is_empty() {
+            buf.extend_from_slice(&context.custom_attrs_bytes);
         }
 
         Self {

@@ -27,7 +27,7 @@ nodes:
         destinations:
           - noop
         dispatch_strategy: round_robin
-    attributes:
+    telemetry_attributes:
       pipeline_name: "MyCustomPipelineName"
       node_sequence: 1
     config:
@@ -40,7 +40,7 @@ nodes:
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
-    attributes:
+    telemetry_attributes:
       pipeline_name: "MyCustomPipelineName"
       node_sequence: 2
     config: {}

@@ -391,7 +391,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_config.kind,
             );
             // Custom node attributes to be included in log records.
-            let custom_attrs = node_config.attributes.clone();
+            let custom_attrs = node_config.telemetry_attributes.clone();
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
