@@ -238,8 +238,9 @@ where
             continue;
         };
 
+        // TODO: Consider unwrapping if we feel like id being present is an invariant.
+        // that needs to be upheld at this point.
         // Extract ID column - if it doesn't exist, skip reindexing for this batch
-        // TODO [JD]: Return an error here or unwrap because id is a required column
         let id_col = match extract_id_column(&parent_batch, id_column_path) {
             Ok(col) => col,
             Err(_) => {
