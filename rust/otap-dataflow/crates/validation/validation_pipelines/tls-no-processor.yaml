@@ -1,0 +1,22 @@
+nodes:
+  receiver:
+    kind: receiver
+    plugin_urn: "urn:otel:otlp:receiver"
+    out_ports:
+      out_port:
+        destinations:
+          - exporter
+        dispatch_strategy: round_robin
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+          tls:
+            cert_file: '${TLS_SERVER_CERT}'
+            key_file: '${TLS_SERVER_KEY}'
+
+  exporter:
+    kind: exporter
+    plugin_urn: "urn:otel:otlp:exporter"
+    config:
+      grpc_endpoint: "http://127.0.0.1:4318"
