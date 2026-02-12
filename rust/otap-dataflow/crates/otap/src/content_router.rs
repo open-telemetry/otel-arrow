@@ -258,6 +258,10 @@ impl ContentRouter {
                     return RouteResolution::NoMatch;
                 };
 
+                // Note: to_lowercase() allocates per-resource when case-insensitive.
+                // Do NOT replace with eq_ignore_ascii_case — that would break Unicode
+                // case folding (e.g., Turkish İ). Accept the allocation cost here;
+                // profile before optimizing.
                 let lookup: Cow<'_, str> = if self.case_sensitive {
                     Cow::Borrowed(str_value)
                 } else {
