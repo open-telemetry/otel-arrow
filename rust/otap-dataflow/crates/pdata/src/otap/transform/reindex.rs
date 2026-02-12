@@ -549,7 +549,7 @@ struct Relation {
 
 /// Get the foreign relations for the given payload type, the name of the id column
 /// for the parent and the corresponding id column for the child.
-pub fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
+fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
     match parent_type {
         // Logs
         ArrowPayloadType::Logs => &[
@@ -660,6 +660,7 @@ pub fn payload_relations(parent_type: ArrowPayloadType) -> &'static [Relation] {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::collections::HashSet;
     use std::sync::Arc;
 
@@ -670,9 +671,6 @@ mod tests {
     use arrow::util::pretty;
 
     use crate::error::Error;
-    use crate::otap::transform::reindex::{
-        payload_to_idx, reindex_logs, reindex_metrics, reindex_traces,
-    };
     use crate::otap::transform::transport_optimize::{
         access_column, replace_column, struct_column_name, update_field_encoding_metadata,
     };
@@ -1688,7 +1686,7 @@ mod tests {
     /// 5. Asserts the OTLP data is equivalent
     fn test_reindex<S, const N: usize>(
         batches: &mut [[Option<RecordBatch>; N]],
-        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> crate::error::Result<()>,
+        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
         to_otap: impl Fn(&[Option<RecordBatch>; N]) -> OtapArrowRecords,
     ) where
         S: OtapBatchStore,
@@ -1715,8 +1713,6 @@ mod tests {
     fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
         batches: &[[Option<RecordBatch>; N]],
     ) {
-        use crate::otap::payload_relations;
-
         for &payload_type in S::allowed_payload_types() {
             let idx = payload_to_idx(payload_type);
 
