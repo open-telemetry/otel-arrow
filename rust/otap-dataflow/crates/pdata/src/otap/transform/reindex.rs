@@ -136,7 +136,8 @@ where
     // Iterate over all allowed payload types for this signal
     for &payload_type in S::allowed_payload_types() {
         // Get all relations (parent-child relationships) for this payload type
-        for relation in payload_relations(payload_type) {
+        let info = payload_relations(payload_type);
+        for relation in info.relations {
             reindex_id_column_dynamic(store, payload_type, relation.child_types, relation.key_col)?;
         }
     }
@@ -585,114 +586,187 @@ struct Relation {
     child_types: &'static [ArrowPayloadType],
 }
 
-/// Get the foreign relations for the given payload type, the name of the id column
-/// for the parent and the corresponding id column for the child.
+/// Get the primary ID column info and foreign relations for the given payload type.
 fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelationInfo {
     match parent_type {
         // Logs
-        ArrowPayloadType::Logs => &[
-            Relation {
-                key_col: RESOURCE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ResourceAttrs],
-            },
-            Relation {
-                key_col: SCOPE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ScopeAttrs],
-            },
-            Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::LogAttrs],
-            },
-        ],
+        ArrowPayloadType::Logs => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U16,
+            }),
+            relations: &[
+                Relation {
+                    key_col: RESOURCE_ID_COL_PATH,
+                    child_types: &[ArrowPayloadType::ResourceAttrs],
+                },
+                Relation {
+                    key_col: SCOPE_ID_COL_PATH,
+                    child_types: &[ArrowPayloadType::ScopeAttrs],
+                },
+                Relation {
+                    key_col: ID,
+                    child_types: &[ArrowPayloadType::LogAttrs],
+                },
+            ],
+        },
         // Traces
-        ArrowPayloadType::Spans => &[
-            Relation {
-                key_col: RESOURCE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ResourceAttrs],
-            },
-            Relation {
-                key_col: SCOPE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ScopeAttrs],
-            },
-            Relation {
+        ArrowPayloadType::Spans => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U16,
+            }),
+            relations: &[
+                Relation {
+                    key_col: RESOURCE_ID_COL_PATH,
+                    child_types: &[ArrowPayloadType::ResourceAttrs],
+                },
+                Relation {
+                    key_col: SCOPE_ID_COL_PATH,
+                    child_types: &[ArrowPayloadType::ScopeAttrs],
+                },
+                Relation {
+                    key_col: ID,
+                    child_types: &[
+                        ArrowPayloadType::SpanAttrs,
+                        ArrowPayloadType::SpanEvents,
+                        ArrowPayloadType::SpanLinks,
+                    ],
+                },
+            ],
+        },
+        ArrowPayloadType::SpanEvents => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
                 key_col: ID,
-                child_types: &[
-                    ArrowPayloadType::SpanAttrs,
-                    ArrowPayloadType::SpanEvents,
-                    ArrowPayloadType::SpanLinks,
-                ],
-            },
-        ],
-        ArrowPayloadType::SpanEvents => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::SpanEventAttrs],
-        }],
-        ArrowPayloadType::SpanLinkAttrs => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::SpanEventAttrs],
-        }],
+                child_types: &[ArrowPayloadType::SpanEventAttrs],
+            }],
+        },
+        ArrowPayloadType::SpanLinkAttrs => PayloadRelationInfo {
+            primary_id: None,
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::SpanEventAttrs],
+            }],
+        },
 
         // Metrics
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => &[
-            Relation {
-                key_col: RESOURCE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ResourceAttrs],
-            },
-            Relation {
-                key_col: SCOPE_ID_COL_PATH,
-                child_types: &[ArrowPayloadType::ScopeAttrs],
-            },
-            Relation {
+        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
+            PayloadRelationInfo {
+                primary_id: Some(PrimaryIdInfo {
+                    name: ID,
+                    size: IdColumnType::U16,
+                }),
+                relations: &[
+                    Relation {
+                        key_col: RESOURCE_ID_COL_PATH,
+                        child_types: &[ArrowPayloadType::ResourceAttrs],
+                    },
+                    Relation {
+                        key_col: SCOPE_ID_COL_PATH,
+                        child_types: &[ArrowPayloadType::ScopeAttrs],
+                    },
+                    Relation {
+                        key_col: ID,
+                        child_types: &[
+                            ArrowPayloadType::MetricAttrs,
+                            ArrowPayloadType::NumberDataPoints,
+                            ArrowPayloadType::SummaryDataPoints,
+                            ArrowPayloadType::HistogramDataPoints,
+                            ArrowPayloadType::ExpHistogramDataPoints,
+                        ],
+                    },
+                ],
+            }
+        }
+
+        ArrowPayloadType::NumberDataPoints => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
                 key_col: ID,
                 child_types: &[
-                    ArrowPayloadType::MetricAttrs,
-                    ArrowPayloadType::NumberDataPoints,
-                    ArrowPayloadType::SummaryDataPoints,
-                    ArrowPayloadType::HistogramDataPoints,
-                    ArrowPayloadType::ExpHistogramDataPoints,
+                    ArrowPayloadType::NumberDpAttrs,
+                    ArrowPayloadType::NumberDpExemplars,
                 ],
-            },
-        ],
+            }],
+        },
+        ArrowPayloadType::NumberDpExemplars => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
+            }],
+        },
+        ArrowPayloadType::SummaryDataPoints => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::SummaryDpAttrs],
+            }],
+        },
+        ArrowPayloadType::HistogramDataPoints => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[
+                    ArrowPayloadType::HistogramDpAttrs,
+                    ArrowPayloadType::HistogramDpExemplars,
+                ],
+            }],
+        },
+        ArrowPayloadType::HistogramDpExemplars => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
+            }],
+        },
+        ArrowPayloadType::ExpHistogramDataPoints => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[
+                    ArrowPayloadType::ExpHistogramDpAttrs,
+                    ArrowPayloadType::ExpHistogramDpExemplars,
+                ],
+            }],
+        },
+        ArrowPayloadType::ExpHistogramDpExemplars => PayloadRelationInfo {
+            primary_id: Some(PrimaryIdInfo {
+                name: ID,
+                size: IdColumnType::U32,
+            }),
+            relations: &[Relation {
+                key_col: ID,
+                child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
+            }],
+        },
 
-        ArrowPayloadType::NumberDataPoints => &[Relation {
-            key_col: ID,
-            child_types: &[
-                ArrowPayloadType::NumberDpAttrs,
-                ArrowPayloadType::NumberDpExemplars,
-            ],
-        }],
-        ArrowPayloadType::NumberDpExemplars => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
-        }],
-        ArrowPayloadType::SummaryDataPoints => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::SummaryDpAttrs],
-        }],
-        ArrowPayloadType::HistogramDataPoints => &[Relation {
-            key_col: ID,
-            child_types: &[
-                ArrowPayloadType::HistogramDpAttrs,
-                ArrowPayloadType::HistogramDpExemplars,
-            ],
-        }],
-        ArrowPayloadType::HistogramDpExemplars => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
-        }],
-        ArrowPayloadType::ExpHistogramDataPoints => &[Relation {
-            key_col: ID,
-            child_types: &[
-                ArrowPayloadType::ExpHistogramDpAttrs,
-                ArrowPayloadType::ExpHistogramDpExemplars,
-            ],
-        }],
-        ArrowPayloadType::ExpHistogramDpExemplars => &[Relation {
-            key_col: ID,
-            child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
-        }],
-
-        _ => &[],
+        _ => PayloadRelationInfo {
+            primary_id: None,
+            relations: &[],
+        },
     }
 }
 
@@ -1756,7 +1830,7 @@ mod tests {
                     continue;
                 };
 
-                for relation in payload_relations(payload_type) {
+                for relation in payload_relations(payload_type).relations {
                     let Some(parent_col) = access_column(
                         relation.key_col,
                         &parent_batch.schema(),
@@ -1812,7 +1886,7 @@ mod tests {
         for &payload_type in S::allowed_payload_types() {
             let idx = payload_to_idx(payload_type);
 
-            for relation in payload_relations(payload_type) {
+            for relation in payload_relations(payload_type).relations {
                 let mut seen = HashSet::new();
 
                 for group in batches.iter() {
