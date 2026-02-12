@@ -228,14 +228,9 @@ impl ContentRouter {
     #[must_use]
     pub fn with_pipeline_ctx(pipeline_ctx: PipelineContext, config: ContentRouterConfig) -> Self {
         let metrics = pipeline_ctx.register_metrics::<ContentRouterMetrics>();
-        let routes = config.normalized_routes();
-        Self {
-            routing_key: config.routing_key,
-            routes,
-            default_output: config.default_output,
-            case_sensitive: config.case_sensitive,
-            metrics: Some(metrics),
-        }
+        let mut router = Self::new(config);
+        router.metrics = Some(metrics);
+        router
     }
 
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
