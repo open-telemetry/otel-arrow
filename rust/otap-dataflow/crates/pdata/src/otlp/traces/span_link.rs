@@ -5,8 +5,8 @@ use arrow::array::{RecordBatch, UInt16Array, UInt32Array};
 
 use crate::{
     arrays::{
-        FixedSizeBinaryArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-        UInt32ArrayAccessor, get_u16_array, get_u32_array_opt,
+        FixedSizeBinaryArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_u16_array,
+        get_u32_array_opt,
     },
     error::{Error, Result},
     otlp::{
@@ -26,7 +26,7 @@ use crate::{
 };
 
 pub struct SpanLinkArrays<'a> {
-    pub id: Option<UInt32ArrayAccessor<'a>>,
+    pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,
     pub span_id: Option<FixedSizeBinaryArrayAccessor<'a>>,
     pub trace_id: Option<FixedSizeBinaryArrayAccessor<'a>>,
@@ -40,10 +40,7 @@ impl<'a> TryFrom<&'a RecordBatch> for SpanLinkArrays<'a> {
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
         Ok(Self {
-            id: rb
-                .column_by_name(consts::ID)
-                .map(UInt32ArrayAccessor::try_new)
-                .transpose()?,
+            id: get_u32_array_opt(rb, consts::ID)?,
             parent_id: get_u16_array(rb, consts::PARENT_ID)?,
             span_id: rb
                 .column_by_name(consts::SPAN_ID)

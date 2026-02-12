@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    NullableArrayAccessor, UInt32ArrayAccessor, get_f64_array_opt,
-    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array_opt,
+    NullableArrayAccessor, get_f64_array_opt, get_timestamp_nanosecond_array_opt, get_u16_array,
+    get_u32_array_opt, get_u64_array_opt,
 };
 use crate::error::{Error, Result};
 use crate::otlp::ProtoBuffer;
@@ -29,7 +29,7 @@ use arrow::datatypes::{
 
 #[allow(missing_docs)]
 pub struct HistogramDpArrays<'a> {
-    pub id: Option<UInt32ArrayAccessor<'a>>,
+    pub id: Option<&'a UInt32Array>,
     pub parent_id: &'a UInt16Array,
     pub start_time_unix_nano: Option<&'a TimestampNanosecondArray>,
     pub time_unix_nano: Option<&'a TimestampNanosecondArray>,
@@ -46,10 +46,7 @@ impl<'a> TryFrom<&'a RecordBatch> for HistogramDpArrays<'a> {
     type Error = Error;
 
     fn try_from(rb: &'a RecordBatch) -> Result<Self> {
-        let id = rb
-            .column_by_name(consts::ID)
-            .map(UInt32ArrayAccessor::try_new)
-            .transpose()?;
+        let id = get_u32_array_opt(rb, consts::ID)?;
         let parent_id = get_u16_array(rb, consts::PARENT_ID)?;
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
