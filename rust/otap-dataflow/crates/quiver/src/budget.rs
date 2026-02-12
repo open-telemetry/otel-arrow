@@ -211,7 +211,7 @@ impl DiskBudget {
     /// to compute it from the config.
     #[must_use]
     pub const fn minimum_hard_cap(segment_target_size: u64, wal_max_size: u64) -> u64 {
-        wal_max_size.saturating_add(2 * segment_target_size)
+        wal_max_size.saturating_add(2u64.saturating_mul(segment_target_size))
     }
 
     /// Returns the hard cap (maximum bytes on disk).
