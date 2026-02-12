@@ -585,6 +585,10 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     pos
 }
 
+fn idx_to_payload_type<T: OtapBatchStore>(idx: usize) -> ArrowPayloadType {
+    T::allowed_payload_types()[idx]
+}
+
 struct PayloadRelationInfo {
     primary_id: Option<PrimaryIdInfo>,
     relations: &'static [Relation],
@@ -804,7 +808,8 @@ mod tests {
 
     use crate::error::Error;
     use crate::otap::transform::transport_optimize::{
-        access_column, replace_column, struct_column_name, update_field_encoding_metadata,
+        access_column, apply_transport_optimized_encodings, replace_column, struct_column_name,
+        update_field_encoding_metadata,
     };
     use crate::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -1805,6 +1810,19 @@ mod tests {
     {
         let before_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
         let before_relations = extract_relation_fingerprints::<S, N>(batches);
+        // Transport optimize every batch. We do this after extracting the fingerprints
+        // because they don't make sense otherwise.
+        for batch in batches.iter_mut() {
+            for (idx, rb) in batch.iter_mut().enumerate() {
+                let payload_type = S::payload_type_at_idx(idx);
+
+                if let Some(rb) = rb {
+                    *rb = apply_transport_optimized_encodings(&payload_type, rb)
+                        .unwrap()
+                        .0;
+                }
+            }
+        }
 
         reindex_fn(batches).unwrap();
         assert_no_id_overlaps::<S, N>(batches);

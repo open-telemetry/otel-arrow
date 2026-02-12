@@ -208,6 +208,12 @@ pub trait OtapBatchStore: Default + Clone {
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
+    /// Returns the payload type at the given index in [BatchArray]
+    #[must_use]
+    fn payload_type_at_idx(index: usize) -> ArrowPayloadType {
+        Self::allowed_payload_types()[index]
+    }
+
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
     /// Record Batch contained in this Otap Batch
     fn decode_transport_optimized_ids(otap_batch: &mut OtapArrowRecords) -> Result<()>;
@@ -3407,23 +3413,15 @@ mod test {
     }
 
     #[test]
-    fn test_allowed_payload_type_consistency_with_lookup_table() {
-        let batches: &[OtapArrowRecords] = &[
-            Logs::new().into(),
-            Metrics::new().into(),
-            Traces::new().into(),
-        ];
+    fn test_idx_to_payload_type() {
+        test_idx_to_payload_type_impl::<Logs>();
+        test_idx_to_payload_type_impl::<Metrics>();
+        test_idx_to_payload_type_impl::<Traces>();
+    }
 
-        for batch in batches {
-            let allowed_payload_types = batch.allowed_payload_types();
-            for payload_type in allowed_payload_types {
-                let idx = POSITION_LOOKUP[*payload_type as usize];
-                assert_eq!(
-                    allowed_payload_types[idx], *payload_type,
-                    "Payload type mismatch {}",
-                    idx
-                );
-            }
+    fn test_idx_to_payload_type_impl<T: OtapBatchStore>() {
+        for i in 0..T::allowed_payload_types().len() {
+            assert_eq!(T::payload_type_at_idx(i), T::allowed_payload_types()[i]);
         }
     }
 }
