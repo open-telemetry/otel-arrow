@@ -349,7 +349,9 @@ where
         // Process is as follows:
         // 1. Sort the entire record batch by the indices so that the ranges correspond to
         // the violation ranges.
-        // 2. Remove all rows in those ranges and reconstruct the record batch.
+        // 2. Remove all rows in those ranges
+        // 3. Remove all rows in the new_ids and sort_indices vectors
+        // 4. Continue on
         rb = sort_record_batch_by_indices(rb, &sort_indices)?;
     }
 
