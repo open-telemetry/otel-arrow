@@ -15,11 +15,11 @@
 //! ```yaml
 //! processors:
 //!   content_router:
-//!     routing_key: "microsoft.resourceId"
+//!     routing_key: "service.namespace"
 //!     case_sensitive: false
 //!     routes:
-//!       "/subscriptions/aaa/resourceGroups/tenant_a": "tenant_a"
-//!       "/subscriptions/bbb/resourceGroups/tenant_b": "tenant_b"
+//!       "frontend": "frontend_pipeline"
+//!       "backend": "backend_pipeline"
 //!     default_output: "fallback"
 //! ```
 //!
@@ -97,11 +97,11 @@ pub struct ContentRouterMetrics {
 /// ```yaml
 /// processors:
 ///   content_router:
-///     routing_key: "microsoft.resourceId"
+///     routing_key: "service.namespace"
 ///     case_sensitive: false
 ///     routes:
-///       "/subscriptions/aaa/...": "tenant_a"
-///       "/subscriptions/bbb/...": "tenant_b"
+///       "frontend": "frontend_pipeline"
+///       "backend": "backend_pipeline"
 ///     default_output: "fallback"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
