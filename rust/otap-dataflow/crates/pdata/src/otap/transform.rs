@@ -8,12 +8,11 @@ use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
-    PrimitiveBuilder, RecordBatch, StringArray, UInt32Array,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array, make_array
 };
 use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
-use arrow::compute::{SortColumn, and, cast, concat, not};
+use arrow::compute::{SortColumn, and, cast, not};
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, Field, UInt8Type, UInt16Type,
 };
@@ -2178,12 +2177,16 @@ where
     if ranges.is_empty() {
         return Ok(array.slice(0, 0));
     }
-    let slices: Vec<ArrayRef> = ranges
-        .iter()
-        .map(|range| array.slice(range.start, range.len()))
-        .collect();
-    let borrowed_slices: Vec<&dyn Array> = slices.iter().map(|arr| arr.as_ref()).collect();
-    concat(&borrowed_slices).map_err(|e| Error::WriteRecordBatch { source: e })
+
+    let data = array.to_data();
+    let total_keep = ranges.iter().map(Range::len).sum();
+    let mut mutable = MutableArrayData::new(vec![&data], false, total_keep);
+    for range in ranges {
+        mutable.extend(0, range.start, range.end);
+    }
+
+    let data = mutable.freeze();
+    Ok(make_array(data))
 }
 
 /// Determines if the sequence of transformations specified in `transform_ranges` argument would
