@@ -294,6 +294,10 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 - **Metadata**: Arrow field-level metadata keys that MAY be present (see [Section 6.5.4](#654-field-metadata))
 - **Description**: Human-readable description of the field's purpose
 
+NOTE: Column names that contain a `.` character indicate the presence of a struct typed field. For
+example `resource.id` indicates a struct array column called `resource` with a field called `id`.
+The type information in the table is for the `id` field.
+
 ### 5.1 Common Payloads
 
 #### RESOURCE_ATTRS / SCOPE_ATTRS
@@ -316,14 +320,14 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Log record identifier (primary key) |
-| resource_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to `resource.id` |
-| resource_schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to `scope.id` |
-| scope_name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
-| scope_version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
-| scope_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
+| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
+| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
+| resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
+| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
+| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
+| scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
 | schema_url | Utf8 | — | Yes | No | — | — | Log schema URL |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Log timestamp in Unix nanoseconds |
 | observed_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Observation timestamp in Unix nanoseconds |
@@ -361,14 +365,14 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Metric identifier (primary key) |
-| resource_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to `resource.id` |
-| resource_schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to `scope.id` |
-| scope_name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
-| scope_version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
-| scope_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
+| id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Metric identifier (primary key) |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
+| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
+| resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
+| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
+| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
+| scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
 | schema_url | Utf8 | — | Yes | No | — | — | Metric schema URL |
 | metric_type | UInt8 | — | No | Yes | — | — | Metric type enum (Gauge, Sum, Histogram, etc.) |
 | name | Utf8 | — | No | Yes | — | — | Metric name |
@@ -381,7 +385,7 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Timestamp in Unix nanoseconds |
@@ -393,7 +397,7 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -407,7 +411,7 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -423,7 +427,7 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -461,7 +465,7 @@ Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPL
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Exemplar identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
 | parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | int_value | Int64 | — | Yes | No | — | — | Integer exemplar value |
@@ -505,14 +509,14 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Span identifier (primary key) |
-| resource_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to resource |
-| resource_schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope_id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) (remapped) | encoding | Foreign key to scope |
-| scope_name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
-| scope_version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
-| scope_dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
+| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Span identifier (primary key) |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to resource |
+| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
+| resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to scope |
+| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
+| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
+| scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
 | schema_url | Utf8 | — | Yes | No | — | — | Span schema URL |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Span start time in Unix nanoseconds |
 | duration_time_unix_nano | Duration(Nanosecond) | — | No | Yes | — | — | Span duration in nanoseconds |
@@ -546,7 +550,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Event identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Event identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (name) | encoding | Foreign key to [SPANS](#spans).id |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Event timestamp in Unix nanoseconds |
 | name | Utf8 | — | No | Yes | — | — | Event name |
@@ -570,7 +574,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Link identifier (primary key) |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#spans).id |
 | trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
 | span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
