@@ -158,6 +158,24 @@ impl OtapArrowRecords {
     }
 }
 
+impl From<Logs> for OtapArrowRecords {
+    fn from(logs: Logs) -> Self {
+        Self::Logs(logs)
+    }
+}
+
+impl From<Metrics> for OtapArrowRecords {
+    fn from(metrics: Metrics) -> Self {
+        Self::Metrics(metrics)
+    }
+}
+
+impl From<Traces> for OtapArrowRecords {
+    fn from(traces: Traces) -> Self {
+        Self::Traces(traces)
+    }
+}
+
 /// The ArrowBatchStore helper trait is used to define a common interface for
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
@@ -186,6 +204,12 @@ pub trait OtapBatchStore: Default + Clone {
 
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
+
+    /// Returns the payload type at the given index in [BatchArray]
+    #[must_use]
+    fn payload_type_at_idx(index: usize) -> ArrowPayloadType {
+        Self::allowed_payload_types()[index]
+    }
 
     /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
     /// Record Batch contained in this Otap Batch
@@ -340,9 +364,9 @@ impl OtapBatchStore for Logs {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::Logs,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Logs,
             ArrowPayloadType::LogAttrs,
         ]
     }
@@ -414,6 +438,9 @@ const DATA_POINTS_TYPES: [ArrowPayloadType; 4] = [
 ];
 
 /// Fetch the number of items as defined by the batching system
+/// TODO [JD] we don't need a unifying function like this once we remove
+/// all the usages in to groups.rs. Instead we can have each batch store
+/// define these.
 #[must_use]
 fn num_items<const N: usize>(batches: &[Option<RecordBatch>; N]) -> usize {
     match N {
@@ -482,10 +509,9 @@ impl OtapBatchStore for Metrics {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::UnivariateMetrics,
-            ArrowPayloadType::MultivariateMetrics,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::UnivariateMetrics,
             ArrowPayloadType::NumberDataPoints,
             ArrowPayloadType::SummaryDataPoints,
             ArrowPayloadType::HistogramDataPoints,
@@ -500,6 +526,7 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::NumberDpExemplarAttrs,
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::MultivariateMetrics,
             ArrowPayloadType::MetricAttrs,
         ]
     }
@@ -717,9 +744,9 @@ impl OtapBatchStore for Traces {
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         &[
-            ArrowPayloadType::Spans,
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Spans,
             ArrowPayloadType::SpanAttrs,
             ArrowPayloadType::SpanEvents,
             ArrowPayloadType::SpanLinks,
@@ -830,6 +857,7 @@ impl OtapBatchStore for Traces {
 }
 
 /// Return the child payload types for the given payload type
+/// TODO [JD]: This is pretty much made obsolete by payload_relations
 #[must_use]
 pub const fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
     match payload_type {
@@ -3372,6 +3400,19 @@ mod test {
                 "Metrics" => Metrics::is_valid_type(payload_type),
                 _ => unreachable!("Unknown service name"),
             }
+        }
+    }
+
+    #[test]
+    fn test_idx_to_payload_type() {
+        test_idx_to_payload_type_impl::<Logs>();
+        test_idx_to_payload_type_impl::<Metrics>();
+        test_idx_to_payload_type_impl::<Traces>();
+    }
+
+    fn test_idx_to_payload_type_impl<T: OtapBatchStore>() {
+        for i in 0..T::allowed_payload_types().len() {
+            assert_eq!(T::payload_type_at_idx(i), T::allowed_payload_types()[i]);
         }
     }
 }
