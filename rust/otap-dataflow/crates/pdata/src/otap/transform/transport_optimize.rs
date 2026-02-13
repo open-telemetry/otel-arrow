@@ -46,7 +46,7 @@ mod attributes;
 
 /// identifier for column encoding
 #[derive(Clone, Copy)]
-enum Encoding {
+pub(crate) enum Encoding {
     /// Delta encoding. Note that to use this encoding, the column must already be sorted.
     /// Otherwise `DeltaRemapped` is more appropriate
     Delta,
@@ -126,7 +126,7 @@ fn is_column_encoded(path: &str, schema: &Schema) -> Option<bool> {
 }
 
 /// Helper function for accessing the column associated for the (possibly nested) path
-fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
+pub(crate) fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<ArrayRef> {
     // handle special case of accessing either the resource ID or scope ID which are nested
     // within a struct
     if let Some(struct_col_name) = struct_column_name(path) {
@@ -144,7 +144,7 @@ fn access_column(path: &str, schema: &Schema, columns: &[ArrayRef]) -> Option<Ar
 }
 
 /// Replaces the column identified by `path` within the array of columns with the new column.
-fn replace_column(
+pub(crate) fn replace_column(
     path: &str,
     encoding: Option<Encoding>,
     schema: &Schema,
@@ -189,7 +189,11 @@ fn replace_column(
 /// # Arguments
 /// - encoding: if `Some`, then the encoding metadata on the field will be updated to reflect the
 ///   new encoding. `None` will be interpreted  as plain encoding.
-fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields: &mut [FieldRef]) {
+pub(crate) fn update_field_encoding_metadata(
+    path: &str,
+    encoding: Option<Encoding>,
+    fields: &mut [FieldRef],
+) {
     if let Some(struct_col_name) = struct_column_name(path) {
         // replace the field metadata in some nested struct
         let found_field = fields
@@ -232,7 +236,7 @@ fn update_field_encoding_metadata(path: &str, encoding: Option<Encoding>, fields
 
 /// if configured to encode the ID column in the nested resource/scope struct array, this
 /// helper function simply returns the name of the struct column, and otherwise returns `None`
-fn struct_column_name(path: &str) -> Option<&'static str> {
+pub(crate) fn struct_column_name(path: &str) -> Option<&'static str> {
     if path == RESOURCE_ID_COL_PATH {
         return Some(consts::RESOURCE);
     }

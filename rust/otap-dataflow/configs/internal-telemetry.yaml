@@ -20,16 +20,7 @@ service:
 
 nodes:
   generator:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
-    telemetry_attributes:
-      pipeline_name: "MyCustomPipelineName"
-      node_sequence: 1
+    type: traffic_generator:receiver
     config:
       traffic_config:
         max_signal_count: 100000
@@ -37,27 +28,30 @@ nodes:
         signals_per_second: 1000
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+    telemetry_attributes:
+      pipeline_name: "MyCustomPipelineName"
+      node_sequence: 1
   noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
+    config: {}
     telemetry_attributes:
       pipeline_name: "MyCustomPipelineName"
       node_sequence: 2
-    config: {}
+
+connections:
+  - from: generator
+    to: noop
 
 # Internal telemetry pipeline - separate from main pipeline
 # Uses hardcoded settings: single thread, no admin server
+
 internal:
   telemetry:
-    kind: receiver
-    plugin_urn: "urn:otel:internal_telemetry:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - console
-        dispatch_strategy: round_robin
+    type: "internal_telemetry:receiver"
     config: {}
   console:
-    kind: exporter
-    plugin_urn: "urn:otel:console:exporter"
+    type: "console:exporter"
     config: {}
+internal_connections:
+  - from: telemetry
+    to: console

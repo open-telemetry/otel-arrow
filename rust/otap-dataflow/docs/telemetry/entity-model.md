@@ -141,7 +141,7 @@ Attributes:
 The `otelcol.channel.id` format depends on the channel kind:
 
 - Control Channel: `control:{node.id}`
-- PData Channel: `pdata:{source_node.id}:{out_port}`
+- PData Channel: `pdata:{source_node.id}:{output_port}`
 
 ## Stability and identity guarantees
 

@@ -93,7 +93,7 @@ struct FanoutConfig {
     /// Ack policy.
     #[serde(default)]
     pub await_ack: AwaitAck,
-    /// Destinations. Each must map to a dedicated out port with exactly one downstream edge.
+    /// Destinations. Each must map to a dedicated output port with exactly one downstream edge.
     #[serde(default)]
     pub destinations: Vec<DestinationConfig>,
     /// Interval for timeout checks when any destination declares a timeout.
@@ -148,20 +148,12 @@ impl FanoutConfig {
         let mut primary_seen = false;
         let mut port_index = HashMap::new();
         let mut origins: HashSet<PortName> = HashSet::new();
+        let declared_outputs: HashSet<PortName> = node_config.outputs.iter().cloned().collect();
 
         for (idx, dest) in self.destinations.iter().enumerate() {
-            let out_port_cfg = node_config.out_ports.get(&dest.port).ok_or_else(|| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("fanout: unknown out_port `{}`", dest.port),
-                }
-            })?;
-
-            if out_port_cfg.destinations.len() != 1 {
+            if !declared_outputs.contains(&dest.port) {
                 return Err(ConfigError::InvalidUserConfig {
-                    error: format!(
-                        "fanout: out_port `{}` must target exactly one destination to avoid load-balancing",
-                        dest.port
-                    ),
+                    error: format!("fanout: unknown output `{}`", dest.port),
                 });
             }
 
@@ -1167,6 +1159,9 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
              proc_cfg: &ProcessorConfig| {
         create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract {
+        output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
+    },
 };
 
 #[cfg(test)]
@@ -1174,7 +1169,7 @@ mod tests {
     use super::*;
     use crate::pdata::Context;
     use otap_df_config::SignalType;
-    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind, NodeUserConfig};
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{NodeControlMsg, PipelineControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
@@ -1217,34 +1212,19 @@ mod tests {
         let metrics_system = InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let destinations_cfg = destinations.clone();
-        let mut out_ports = std::collections::HashMap::new();
-        let destinations_for_ports = destinations_cfg.clone();
-        if let Some(arr) = destinations_for_ports.as_array() {
-            for dest in arr {
-                let port = dest
-                    .get("port")
-                    .and_then(|v| v.as_str())
-                    .expect("port string")
-                    .to_string();
-                let port_name: PortName = port.clone().into();
-                let _ = out_ports.insert(
-                    port_name.clone(),
-                    HyperEdgeConfig {
-                        destinations: [test_node(format!("{}_dst", port)).name.clone()]
-                            .into_iter()
-                            .collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                );
-            }
-        }
+        let outputs = destinations_cfg
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|dest| dest.get("port").and_then(|v| v.as_str()))
+            .map(|port| PortName::from(port.to_string()))
+            .collect::<Vec<_>>();
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports,
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: outputs.clone(),
+            default_output: None,
             config: json!({
                 "mode": mode,
                 "await_ack": await_ack,
@@ -1259,7 +1239,7 @@ mod tests {
 
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
-        for port in node_cfg.out_ports.keys() {
+        for port in &node_cfg.outputs {
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
@@ -1268,7 +1248,7 @@ mod tests {
         let mut effect = EffectHandler::new(
             test_node("fanout"),
             senders,
-            node_cfg.default_out_port.clone(),
+            node_cfg.default_output.clone(),
             metrics_system.reporter(),
         );
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
@@ -1292,19 +1272,11 @@ mod tests {
 
     fn make_node_config() -> NodeUserConfig {
         NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [(
-                TEST_OUT_PORT_NAME.into(),
-                HyperEdgeConfig {
-                    destinations: [test_node("downstream").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                },
-            )]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec![TEST_OUT_PORT_NAME.into()],
+            default_output: None,
             config: json!({
                 "destinations": [
                     { "port": TEST_OUT_PORT_NAME, "primary": true }
@@ -1348,29 +1320,16 @@ mod tests {
                 fallback_for: None,
             })
             .collect();
-        let out_ports = destinations
-            .iter()
-            .map(|d| {
-                (
-                    d.port.clone(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                )
-            })
-            .collect();
         let cfg = FanoutConfig {
             destinations,
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports,
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: (0..65).map(|i| PortName::from(format!("p{i}"))).collect(),
+            default_output: None,
             config: json!({}),
         };
         let err = cfg
@@ -1403,28 +1362,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "p1".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "p2".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["p1".into(), "p2".into()],
+            default_output: None,
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1450,28 +1392,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "p1".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "p2".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["p1".into(), "p2".into()],
+            default_output: None,
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1489,19 +1414,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [(
-                "p1".into(),
-                HyperEdgeConfig {
-                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                },
-            )]
-            .into(),
-            default_out_port: None,
+            outputs: vec!["p1".into()],
             telemetry_attributes: HashMap::new(),
+            default_output: None,
             config: json!({}),
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1530,28 +1447,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "primary".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "backup".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["primary".into(), "backup".into()],
+            default_output: None,
             config: json!({}),
         };
         let err = cfg
@@ -1579,19 +1479,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [(
-                "dest".into(),
-                HyperEdgeConfig {
-                    destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                    dispatch_strategy: DispatchStrategy::Broadcast,
-                },
-            )]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["dest".into()],
+            default_output: None,
             config: json!({}),
         };
         let err = cfg
@@ -1632,35 +1524,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "primary".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("dp").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "a".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("da").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "b".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("db").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["primary".into(), "a".into(), "b".into()],
+            default_output: None,
             config: json!({}),
         };
         let err = cfg
@@ -1697,35 +1565,11 @@ mod tests {
             ..Default::default()
         };
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "primary".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("dp").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "fb1".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "fb2".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["primary".into(), "fb1".into(), "fb2".into()],
+            default_output: None,
             config: json!({}),
         };
         let err = cfg
@@ -1750,7 +1594,7 @@ mod tests {
             .process(Message::PData(data), &mut h.effect)
             .await
             .expect("process ok");
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
         let mut ack = AckMsg::new(sent.pop().unwrap());
         ack.calldata = ack.accepted.current_calldata().unwrap();
@@ -1765,28 +1609,11 @@ mod tests {
     #[test]
     fn duplicate_ports_are_rejected() {
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports: [
-                (
-                    "p1".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d1").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-                (
-                    "p2".into(),
-                    HyperEdgeConfig {
-                        destinations: [test_node("d2").name.clone()].into_iter().collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                ),
-            ]
-            .into(),
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: vec!["p1".into(), "p2".into()],
+            default_output: None,
             config: json!({
                 "destinations": [
                     { "port": "p1", "primary": true },
@@ -2511,7 +2338,7 @@ mod tests {
             .expect("process ok");
 
         // Get the sent message (now has both receiver and fanout frames)
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
 
         // Simulate downstream exporter acking - in real pipeline, Context::next_ack
@@ -2580,7 +2407,7 @@ mod tests {
             .await
             .expect("process ok");
 
-        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+        let mut sent = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
         assert_eq!(sent.len(), 1);
 
         // Simulate downstream exporter nacking
@@ -2631,27 +2458,13 @@ mod tests {
         let metrics_system = InternalTelemetrySystem::default();
         let controller_ctx = ControllerContext::new(metrics_system.registry());
         let destinations_cfg = destinations.clone();
-        let mut out_ports = std::collections::HashMap::new();
-        let destinations_for_ports = destinations_cfg.clone();
-        if let Some(arr) = destinations_for_ports.as_array() {
-            for dest in arr {
-                let port = dest
-                    .get("port")
-                    .and_then(|v| v.as_str())
-                    .expect("port string")
-                    .to_string();
-                let port_name: PortName = port.clone().into();
-                let _ = out_ports.insert(
-                    port_name.clone(),
-                    HyperEdgeConfig {
-                        destinations: [test_node(format!("{}_dst", port)).name.clone()]
-                            .into_iter()
-                            .collect(),
-                        dispatch_strategy: DispatchStrategy::Broadcast,
-                    },
-                );
-            }
-        }
+        let outputs = destinations_cfg
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|dest| dest.get("port").and_then(|v| v.as_str()))
+            .map(|port| PortName::from(port.to_string()))
+            .collect::<Vec<_>>();
 
         let mut config = json!({
             "mode": mode,
@@ -2666,12 +2479,11 @@ mod tests {
         }
 
         let node_cfg = NodeUserConfig {
-            kind: NodeKind::Processor,
-            plugin_urn: FANOUT_PROCESSOR_URN.into(),
+            r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
-            out_ports,
-            default_out_port: None,
             telemetry_attributes: HashMap::new(),
+            outputs: outputs.clone(),
+            default_output: None,
             config,
         };
 
@@ -2682,7 +2494,7 @@ mod tests {
 
         let mut outputs = HashMap::new();
         let mut senders = HashMap::new();
-        for port in node_cfg.out_ports.keys() {
+        for port in &node_cfg.outputs {
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(4);
             let _ = senders.insert(port.clone(), Sender::Local(LocalSender::mpsc(tx)));
             let _ = outputs.insert(port.to_string(), LocalReceiver::mpsc(rx));
@@ -2691,7 +2503,7 @@ mod tests {
         let mut effect = EffectHandler::new(
             test_node("fanout"),
             senders,
-            node_cfg.default_out_port.clone(),
+            node_cfg.default_output.clone(),
             metrics_system.reporter(),
         );
         let (pipeline_tx, pipeline_rx) = pipeline_ctrl_msg_channel(10);
@@ -2834,7 +2646,7 @@ mod tests {
 
             // Drain outputs periodically to prevent channel backpressure
             if (i + 1) % 3 == 0 {
-                let _ = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("out port"));
+                let _ = drain(h.outputs.get_mut(TEST_OUT_PORT_NAME).expect("output port"));
             }
         }
         assert_eq!(

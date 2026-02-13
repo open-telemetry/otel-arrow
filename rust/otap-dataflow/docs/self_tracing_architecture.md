@@ -278,13 +278,14 @@ nodes:
 
 # Internal telemetry pipeline nodes
 internal:
-  kind: receiver
-  plugin_urn: "urn:otel:internal_telemetry:receiver"
-  out_ports:
-    out_port:
-      destinations:
-        - otlp_exporter
+  telemetry:
+    type: internal_telemetry:receiver
+    config: {}
   otlp_exporter:
-    kind: exporer
-    ...
+    type: otlp:exporter
+    config: {}
+
+internal_connections:
+  - from: telemetry
+    to: otlp_exporter
 ```

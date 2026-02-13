@@ -3,7 +3,6 @@
 
 //! Async Pipeline Engine
 
-use crate::error::{ProcessorErrorKind, ReceiverErrorKind};
 use crate::{
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
@@ -27,10 +26,8 @@ use async_trait::async_trait;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
-    PipelineGroupId, PipelineId, PortName,
-    node::{DispatchStrategy, NodeUserConfig},
-    pipeline::PipelineConfig,
-    pipeline::service::telemetry::AttributeValue,
+    PipelineGroupId, PipelineId, PortName, node::NodeUserConfig, pipeline::DispatchPolicy,
+    pipeline::PipelineConfig, pipeline::service::telemetry::AttributeValue,
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -39,7 +36,10 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 pub mod error;
 pub mod exporter;
@@ -63,6 +63,7 @@ pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
 pub mod testing;
+pub mod wiring_contract;
 
 /// Trait for factory types that expose a name.
 ///
@@ -84,6 +85,8 @@ pub struct ReceiverFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -92,6 +95,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
         ReceiverFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -113,6 +117,8 @@ pub struct ProcessorFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -121,6 +127,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -142,6 +149,8 @@ pub struct ExporterFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -150,6 +159,7 @@ impl<PData> Clone for ExporterFactory<PData> {
         ExporterFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -412,25 +422,33 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::EmptyPipeline);
         }
 
+        self.validate_connection_wiring_contracts(&config)?;
+
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let base_ctx = pipeline_ctx.with_node_context(
-                name.clone(),
-                node_config.plugin_urn.clone(),
-                node_config.kind,
-            );
+            // @@@
+            // let base_ctx = pipeline_ctx.with_node_context(
+            //     name.clone(),
+            //     node_config.plugin_urn.clone(),
+            //     node_config.kind,
+            // );
             // Custom node attributes to be included in log records.
-            let custom_attrs = node_config.telemetry_attributes.clone();
+            let telemetry_attrs = node_config.telemetry_attributes.clone();
+            // @@@
 
-            match node_config.kind {
+            let node_kind = node_config.kind();
+            let base_ctx =
+                pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
+
+            match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
                     let mut base_ctx = base_ctx;
-                    if node_config.plugin_urn.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
+                    if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
                         if let Some(ref settings) = internal_telemetry {
                             base_ctx.set_internal_telemetry(settings.clone());
                         }
@@ -448,7 +466,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id,
                         channel_metrics_enabled,
-                        custom_attrs,
+                        telemetry_attrs,
                         || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     receivers.push(wrapper);
@@ -466,7 +484,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id,
                         channel_metrics_enabled,
-                        custom_attrs,
+                        telemetry_attrs,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -490,7 +508,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id,
                         channel_metrics_enabled,
-                        custom_attrs,
+                        telemetry_attrs,
                         || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     exporters.push(wrapper);
@@ -504,7 +522,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
-        let edges = collect_hyper_edges_runtime(&receivers, &processors);
+        let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
         let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
@@ -536,6 +554,97 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok(pipeline)
     }
 
+    fn validate_connection_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
+        let mut contracts_by_node: HashMap<NodeName, wiring_contract::WiringContract> =
+            HashMap::new();
+
+        for (node_name, node_config) in config.node_iter() {
+            let contract = match node_config.kind() {
+                otap_df_config::node::NodeKind::Receiver => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Receiver,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_receiver_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownReceiver {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::Processor => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Processor,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_processor_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownProcessor {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::Exporter => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Exporter,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_exporter_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownExporter {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::ProcessorChain => {
+                    return Err(Error::UnsupportedNodeKind {
+                        kind: "ProcessorChain".into(),
+                    });
+                }
+            };
+
+            _ = contracts_by_node.insert(node_name.as_ref().to_string().into(), contract);
+        }
+
+        let mut destinations_by_source_output: HashMap<(NodeName, PortName), HashSet<NodeName>> =
+            HashMap::new();
+        for connection in config.connection_iter() {
+            let mut destinations: Vec<NodeName> = connection
+                .to_nodes()
+                .into_iter()
+                .map(|node_id| node_id.as_ref().to_string().into())
+                .collect();
+            if destinations.is_empty() {
+                continue;
+            }
+            destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            destinations.dedup_by(|left, right| left.as_ref() == right.as_ref());
+
+            for source in connection.from_sources() {
+                let source_name: NodeName = source.node_id().as_ref().to_string().into();
+                let source_port = source.resolved_output_port();
+                let entry = destinations_by_source_output
+                    .entry((source_name, source_port))
+                    .or_default();
+                entry.extend(destinations.iter().cloned());
+            }
+        }
+
+        for ((source, output), destination_set) in destinations_by_source_output {
+            let Some(contract) = contracts_by_node.get(&source) else {
+                return Err(Error::UnknownNode { node: source });
+            };
+            let mut destinations: Vec<NodeName> = destination_set.into_iter().collect();
+            destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            contract.validate_output_destinations(&source, &output, &destinations)?;
+        }
+
+        Ok(())
+    }
+
     fn build_node_wrapper<W, F>(
         &self,
         build_state: &mut BuildState<PData>,
@@ -543,7 +652,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_type: NodeType,
         node_id: NodeId,
         channel_metrics_enabled: bool,
-        custom_attrs: HashMap<String, AttributeValue>,
+        telemetry_attrs: HashMap<String, AttributeValue>,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -551,8 +660,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         F: FnOnce() -> Result<W, Error>,
     {
         let node_entity_key = base_ctx.register_node_entity();
-        let node_telemetry_handle =
-            NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key, custom_attrs);
+        let node_telemetry_handle = NodeTelemetryHandle::new(
+            base_ctx.metrics_registry(),
+            node_entity_key,
+            telemetry_attrs,
+        );
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
         build_state.register_node(
@@ -577,12 +689,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     /// Determines the best channel type from the following parameters:
     /// - The number of sources connected to the channel.
     /// - The number of destinations connected to the channel.
-    /// - The dispatch strategy for the channel (not yet supported).
+    ///
+    /// Current behavior:
+    /// - multi-destination edges use competing consumers over a shared channel
+    ///   (`one_of` semantics).
+    /// - broadcast semantics are not yet implemented.
     ///
     /// This function returns a tuple containing one sender per source and one receiver per
     /// destination.
-    ///
-    /// ToDo (LQ): Support dispatch strategies.
     fn select_channel_type(
         src_nodes: &[&dyn Node<PData>],
         dest_nodes: &[&dyn Node<PData>],
@@ -1044,8 +1158,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Receiver,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
@@ -1053,8 +1167,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownReceiver {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownReceiver {
+                plugin_urn: normalized,
             })?;
         let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
@@ -1067,14 +1181,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &runtime_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
-        if receiver.user_config().out_ports.is_empty() {
-            return Err(Error::ReceiverError {
-                receiver: node_id,
-                kind: ReceiverErrorKind::Configuration,
-                error: "The `out_ports` field is empty. This is either an invalid configuration or a receiver factory that does not provide the correct configuration.".to_owned(),
-                source_detail: "".to_string(),
-            });
-        }
 
         otel_debug!(
             "receiver.create.complete",
@@ -1108,8 +1214,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Processor,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
@@ -1117,8 +1223,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_processor_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownProcessor {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownProcessor {
+                plugin_urn: normalized,
             })?;
         let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
@@ -1131,14 +1237,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             &processor_config,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
-        if processor.user_config().out_ports.is_empty() {
-            return Err(Error::ProcessorError {
-                processor: node_id,
-                kind: ProcessorErrorKind::Configuration,
-                error: "The `out_ports` field is empty. This is either an invalid configuration or a processor factory that does not provide the correct configuration.".to_owned(),
-                source_detail: "".to_string(),
-            });
-        }
 
         otel_debug!(
             "processor.create.complete",
@@ -1172,8 +1270,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
 
         // Validate plugin URN structure during registration
-        let normalized = otap_df_config::urn::validate_plugin_urn(
-            node_config.plugin_urn.as_ref(),
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(
+            node_config.r#type.as_ref(),
             otap_df_config::node::NodeKind::Exporter,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
@@ -1181,8 +1279,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_exporter_factory_map()
             .get(normalized.as_str())
-            .ok_or_else(|| Error::UnknownExporter {
-                plugin_urn: normalized.into(),
+            .ok_or(Error::UnknownExporter {
+                plugin_urn: normalized,
             })?;
         let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;
@@ -1424,12 +1522,12 @@ where
 }
 
 /// Represents a hyper-edge in the runtime graph, corresponding to one or more source ports,
-/// its dispatch strategy, and the set of destination node ids connected to those ports.
+/// its dispatch policy, and the set of destination node ids connected to those ports.
 struct HyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
 
     #[allow(dead_code)]
-    dispatch_strategy: DispatchStrategy,
+    dispatch_policy: DispatchPolicy,
 
     // names are from the configuration, not yet resolved
     destinations: Vec<NodeName>,
@@ -1439,14 +1537,14 @@ struct HyperEdgeRuntime {
 struct ResolvedHyperEdgeRuntime {
     sources: Vec<NodeIdPortName>,
     destinations: Vec<NodeId>,
-    dispatch_strategy: DispatchStrategy,
+    dispatch_policy: DispatchPolicy,
     source_ids_display: String,
     destination_ids_display: String,
 }
 
 #[derive(Hash, PartialEq, Eq)]
 struct HyperEdgeKey {
-    dispatch_strategy: std::mem::Discriminant<DispatchStrategy>,
+    dispatch_policy: std::mem::Discriminant<DispatchPolicy>,
     destinations: Vec<NodeName>,
 }
 impl HyperEdgeRuntime {
@@ -1473,7 +1571,7 @@ impl HyperEdgeRuntime {
         Ok(ResolvedHyperEdgeRuntime {
             sources: self.sources,
             destinations,
-            dispatch_strategy: self.dispatch_strategy,
+            dispatch_policy: self.dispatch_policy,
             source_ids_display,
             destination_ids_display,
         })
@@ -1496,7 +1594,7 @@ impl ResolvedHyperEdgeRuntime {
             "src:[{}]|dst:[{}]|dispatch:{}",
             sources.join(","),
             destinations.join(","),
-            dispatch_strategy_label(&self.dispatch_strategy)
+            dispatch_policy_label(&self.dispatch_policy)
         );
         let hash = stable_hash64(&signature);
         format!("hyperedge:{:016x}", hash).into()
@@ -1519,7 +1617,7 @@ impl ResolvedHyperEdgeRuntime {
         let ResolvedHyperEdgeRuntime {
             sources,
             destinations,
-            dispatch_strategy: _,
+            dispatch_policy: _,
             source_ids_display,
             destination_ids_display,
         } = self;
@@ -1589,87 +1687,106 @@ impl ResolvedHyperEdgeRuntime {
     }
 }
 
-/// Returns a vector of all hyper-edges in the runtime graph.
-///
-/// Each item represents a hyper-edge with source node ids + ports, dispatch strategy, and
-/// destination node ids.
-fn collect_hyper_edges_runtime<PData>(
-    receivers: &[ReceiverWrapper<PData>],
-    processors: &[ProcessorWrapper<PData>],
-) -> Vec<HyperEdgeRuntime> {
+/// Builds hyper-edges directly from the top-level `connections` section.
+fn collect_hyper_edges_runtime_from_connections<PData>(
+    config: &PipelineConfig,
+    build_state: &BuildState<PData>,
+) -> Result<Vec<HyperEdgeRuntime>, Error> {
     let mut edges: Vec<HyperEdgeRuntime> = Vec::new();
     let mut edge_index: HashMap<HyperEdgeKey, Vec<usize>> = HashMap::new();
-    let mut nodes: Vec<&dyn Node<PData>> = Vec::new();
-    nodes.extend(receivers.iter().map(|node| node as &dyn Node<PData>));
-    nodes.extend(processors.iter().map(|node| node as &dyn Node<PData>));
 
-    for node in nodes {
-        let config = node.user_config();
-        for (port, hyper_edge_cfg) in &config.out_ports {
-            let mut destinations = hyper_edge_cfg
-                .destinations
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            if destinations.is_empty() {
-                continue;
+    for connection in config.connection_iter() {
+        let mut destinations: Vec<NodeName> = connection
+            .to_nodes()
+            .into_iter()
+            .map(|node_id| node_id.as_ref().to_string().into())
+            .collect();
+        if destinations.is_empty() {
+            continue;
+        }
+        destinations.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        destinations.dedup_by(|a, b| a.as_ref() == b.as_ref());
+
+        let mut sources = Vec::new();
+        for source in connection.from_sources() {
+            let source_name: NodeName = source.node_id().as_ref().to_string().into();
+            let registration = build_state.registration(&source_name)?;
+            if !matches!(
+                registration.node_type,
+                NodeType::Receiver | NodeType::Processor
+            ) {
+                return Err(Error::UnknownNode { node: source_name });
             }
-            destinations.sort_unstable_by(|a, b| a.as_ref().cmp(b.as_ref()));
-            let dispatch_strategy = hyper_edge_cfg.dispatch_strategy.clone();
-            let key = HyperEdgeKey {
-                dispatch_strategy: std::mem::discriminant(&dispatch_strategy),
-                destinations: destinations.clone(),
-            };
-            let node_id = node.node_id();
-            let mut match_index = None;
-            if let Some(indexes) = edge_index.get(&key) {
-                for &index in indexes {
-                    let edge = &edges[index];
-                    let has_conflict = edge.sources.iter().any(|source| {
-                        source.node_id.index == node_id.index
-                            && source.port.as_ref() != port.as_ref()
-                    });
-                    if !has_conflict {
-                        match_index = Some(index);
-                        break;
+            sources.push(NodeIdPortName {
+                node_id: registration.node_id.clone(),
+                port: source.resolved_output_port(),
+            });
+        }
+        if sources.is_empty() {
+            continue;
+        }
+        sources.sort_by(|left, right| {
+            let left_key = (left.node_id.name.as_ref(), left.port.as_ref());
+            let right_key = (right.node_id.name.as_ref(), right.port.as_ref());
+            left_key.cmp(&right_key)
+        });
+        sources.dedup_by(|left, right| {
+            left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
+        });
+
+        let dispatch_policy = connection.effective_dispatch_policy();
+        let key = HyperEdgeKey {
+            dispatch_policy: std::mem::discriminant(&dispatch_policy),
+            destinations: destinations.clone(),
+        };
+
+        let mut match_index = None;
+        if let Some(indexes) = edge_index.get(&key) {
+            'candidate: for &index in indexes {
+                let edge = &edges[index];
+                for source in &sources {
+                    if edge.sources.iter().any(|existing| {
+                        existing.node_id.index == source.node_id.index
+                            && existing.port.as_ref() != source.port.as_ref()
+                    }) {
+                        continue 'candidate;
                     }
                 }
-            }
-
-            if let Some(index) = match_index {
-                edges[index].sources.push(NodeIdPortName {
-                    node_id,
-                    port: port.clone(),
-                });
-            } else {
-                edges.push(HyperEdgeRuntime {
-                    sources: vec![NodeIdPortName {
-                        node_id,
-                        port: port.clone(),
-                    }],
-                    dispatch_strategy,
-                    destinations,
-                });
-                edge_index.entry(key).or_default().push(edges.len() - 1);
+                match_index = Some(index);
+                break;
             }
         }
+
+        if let Some(index) = match_index {
+            edges[index].sources.extend(sources);
+        } else {
+            edges.push(HyperEdgeRuntime {
+                sources,
+                dispatch_policy,
+                destinations,
+            });
+            edge_index.entry(key).or_default().push(edges.len() - 1);
+        }
     }
+
     for edge in &mut edges {
         edge.sources.sort_by(|left, right| {
             let left_key = (left.node_id.name.as_ref(), left.port.as_ref());
             let right_key = (right.node_id.name.as_ref(), right.port.as_ref());
             left_key.cmp(&right_key)
         });
+        edge.sources.dedup_by(|left, right| {
+            left.node_id.index == right.node_id.index && left.port.as_ref() == right.port.as_ref()
+        });
     }
-    edges
+
+    Ok(edges)
 }
 
-const fn dispatch_strategy_label(strategy: &DispatchStrategy) -> &'static str {
-    match strategy {
-        DispatchStrategy::Broadcast => "broadcast",
-        DispatchStrategy::RoundRobin => "round_robin",
-        DispatchStrategy::Random => "random",
-        DispatchStrategy::LeastLoaded => "least_loaded",
+const fn dispatch_policy_label(policy: &DispatchPolicy) -> &'static str {
+    match policy {
+        DispatchPolicy::OneOf => "one_of",
+        DispatchPolicy::Broadcast => "broadcast",
     }
 }
 
