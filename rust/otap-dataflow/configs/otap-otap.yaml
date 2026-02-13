@@ -5,13 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: otap:receiver
     config:
       listening_addr: "127.0.0.1:4317"
       response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
@@ -31,8 +25,7 @@ nodes:
       #   handshake_timeout: "10s"           # default is 10s
       #   reload_interval: "5m"              # default is 5m
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:1235"
       # timeout: "15s" # Optional: timeout for RPC requests
@@ -51,3 +44,7 @@ nodes:
       #   # Client identity for mTLS (optional)
       #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
       #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
+
+connections:
+  - from: receiver
+    to: exporter

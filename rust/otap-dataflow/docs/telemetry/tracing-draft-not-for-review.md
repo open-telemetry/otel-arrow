@@ -152,7 +152,7 @@ The following attribute conventions are proposed for metrics:
 ```text
 Trace: batch-1234
   +- [Span] receiver/otlp/rcv-1
-     Events: control/ack, out_port=main, channel_queue_depth=2
+     Events: control/ack, output_port=main, channel_queue_depth=2
      |
      +- [Span] processor/batch/proc-2
         Events: batch_flush, backpressure, control/timer_tick

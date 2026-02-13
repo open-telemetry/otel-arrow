@@ -1,12 +1,6 @@
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - kql
-        dispatch_strategy: round_robin
+    type: traffic_generator:receiver
     config:
       traffic_config:
         max_signal_count: 100
@@ -18,13 +12,7 @@ nodes:
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
   kql:
-    kind: processor
-    plugin_urn: "urn:microsoft:recordset_kql:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
+    type: urn:microsoft:recordset_kql:processor
     config:
       query: |
         source
@@ -35,22 +23,22 @@ nodes:
         )
 
   debug:
-    kind: processor
-    plugin_urn: "urn:otel:debug:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
+    type: debug:processor
     config:
       verbosity: detailed
       mode: signal
 
   noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
 
+connections:
+  - from: receiver
+    to: kql
+  - from: kql
+    to: debug
+  - from: debug
+    to: noop
 settings:
   telemetry:
     logs:

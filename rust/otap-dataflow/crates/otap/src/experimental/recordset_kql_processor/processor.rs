@@ -33,6 +33,7 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:recordset_kql:proce
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 /// KQL processor that applies KQL queries to telemetry data

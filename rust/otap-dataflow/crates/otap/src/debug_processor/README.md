@@ -78,24 +78,20 @@ it will append to the file rather than overwriting
 
 ```yaml
   debug:
-    kind: processor
-    plugin_urn: "urn:otel:debug:processor"
-    out_ports:
-      passthrough_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
-      logging_port:
-        destinations:
-          - some_node
-        dispatch_strategy: round_robin
+    type: "debug:processor"
+    outputs: ["passthrough_port", "logging_port"]
     config:
       verbosity: basic
       output:
         - logging_port
+connections:
+  - from: debug["passthrough_port"]
+    to: noop
+  - from: debug["logging_port"]
+    to: some_node
 ```
 
-In this config we create a processor with multiple out_ports.
+In this config we create a processor with multiple outputs.
 In the config setting we tell the debug-processor to use `logging_port`
 which will send data to another node that has been defined outside of
 this configuration named `some_node`

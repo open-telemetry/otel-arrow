@@ -13,13 +13,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       protocols:
         grpc:
@@ -35,8 +29,7 @@ nodes:
             include_system_ca_certs_pool: false
 
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: otlp:exporter
     config:
       # Send to another OTLP receiver with mTLS enabled
       # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
@@ -51,3 +44,7 @@ nodes:
         # Client identity for mTLS (these make it mTLS instead of just TLS)
         cert_file: "./test-certs/client.crt"
         key_file: "./test-certs/client.key"
+
+connections:
+  - from: receiver
+    to: exporter

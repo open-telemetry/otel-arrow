@@ -11,13 +11,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       protocols:
         # OTLP/gRPC receiver only (default port: 4317)
@@ -45,8 +39,7 @@ nodes:
           #   reload_interval: "5m"
 
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: otlp:exporter
     config:
       # Downstream OTLP/gRPC collector endpoint.
       # Uses a different port than this receiver to avoid accidental loops.
@@ -67,3 +60,7 @@ nodes:
       #   # Client identity for mTLS (optional)
       #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
       #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
+
+connections:
+  - from: receiver
+    to: exporter

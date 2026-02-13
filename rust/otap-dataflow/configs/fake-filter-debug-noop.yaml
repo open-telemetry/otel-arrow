@@ -5,13 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - filter
-        dispatch_strategy: round_robin
+    type: traffic_generator:receiver
     config:
       traffic_config:
         max_batch_size: 1000
@@ -21,13 +15,7 @@ nodes:
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   filter:
-    kind: processor
-    plugin_urn: "urn:otel:filter:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
+    type: filter:processor
     config:
       logs:
         include:
@@ -38,17 +26,18 @@ nodes:
             - key: ios.app.state
               value: active
   debug:
-    kind: processor
-    plugin_urn: "urn:otel:debug:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - noop
-        dispatch_strategy: round_robin
+    type: debug:processor
     config:
       verbosity: detailed
       mode: signal
   noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: filter
+  - from: filter
+    to: debug
+  - from: debug
+    to: noop

@@ -96,6 +96,7 @@ pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFacto
                  proc_cfg: &ProcessorConfig| {
             create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 impl CondenseAttributesProcessor {

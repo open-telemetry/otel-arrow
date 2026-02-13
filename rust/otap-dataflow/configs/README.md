@@ -21,11 +21,11 @@ A basic pipeline with telemetry export enabled:
 - Generates fake data -> debug processor -> noop exporter
 - Includes `service.telemetry` configuration with console metrics export
 
-### `fake-debug-out-port.yaml`
+### `fake-debug-output-ports.yaml`
 
 Demonstrates multiple output ports:
 
-- Generates fake data -> debug processor with multiple out ports -> noop exporter
+- Generates fake data -> debug processor with multiple output ports -> noop exporter
 
 ### `fake-filter-debug-noop.yaml`
 

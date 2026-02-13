@@ -178,6 +178,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactor
                  proc_cfg: &ProcessorConfig| {
             create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 impl ResourceValidatorProcessor {

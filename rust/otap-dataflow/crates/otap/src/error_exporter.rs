@@ -39,6 +39,7 @@ struct ErrorExporterConfig {
 static ERROR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: ERROR_EXPORTER_URN,
     create: ErrorExporter::create_exporter,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl ErrorExporter {

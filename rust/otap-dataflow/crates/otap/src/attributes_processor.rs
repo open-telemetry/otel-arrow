@@ -452,6 +452,7 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
                  proc_cfg: &ProcessorConfig| {
             create_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 // Pre-computed arrays for all domain combinations
