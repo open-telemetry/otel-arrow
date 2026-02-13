@@ -111,7 +111,7 @@ The foreign key relationships between payload types are defined in Section 6.
 
 ## 3. Protocol Architecture
 
-OTAP consists of three distinct layers that work together to enable efficient telemetry data transmission:
+OTAP consists of three distinct layers:
 
 1. **gRPC Layer**: Bi-directional streaming RPC services for each signal type
 2. **OTAP Message Layer**: BatchArrowRecords and ArrowPayload protobuf messages
@@ -121,7 +121,8 @@ OTAP consists of three distinct layers that work together to enable efficient te
 
 The gRPC layer provides the transport mechanism and service definitions. It establishes the bi-directional streaming connections between clients and servers over HTTP/2. There is a single client message type, BatchArrowRecords, and a single server response message type BatchStatus.
 
-Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified service to maintain compatibility with the OpenTelemetry Collector's signal-specific receiver and exporter architecture.
+Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified
+service. The OTAP Message Layer places further restrictions on the contents of BatchArrowRecords per service.
 
 #### 3.1.1 Service Definitions
 
