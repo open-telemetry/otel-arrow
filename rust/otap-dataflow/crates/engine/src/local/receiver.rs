@@ -123,7 +123,7 @@ impl<PData> ControlChannel<PData> {
 /// A `!Send` implementation of the EffectHandler.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    core: EffectHandlerCore<PData>,
+    pub(crate) core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
@@ -166,6 +166,18 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn receiver_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_needs_source_tag(&mut self, value: bool) {
+        self.core.set_needs_source_tag(value);
+    }
+
+    /// Returns whether outgoing messages need source node tagging.
+    /// This is true when the destination node has multiple input sources.
+    #[must_use]
+    pub const fn needs_source_tag(&self) -> bool {
+        self.core.needs_source_tag()
     }
 
     /// Returns the list of connected output ports for this receiver.

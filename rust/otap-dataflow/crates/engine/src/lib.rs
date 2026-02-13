@@ -1481,12 +1481,22 @@ where
         core_id: usize,
     ) -> Result<(), Error> {
         debug_assert_eq!(self.sources.len(), self.senders.len());
+
+        // When there are multiple sources sharing a channel to the same
+        // destination(s), mark each source so it tags outgoing messages with
+        // its node id.  This lets the destination distinguish which source
+        // sent each message.
+        let multi_source = self.sources.len() > 1;
+
         for (source, sender) in self.sources.into_iter().zip(self.senders.into_iter()) {
             let src_node = pipeline
                 .get_mut_node_with_pdata_sender(source.node_id.index)
                 .ok_or_else(|| Error::UnknownNode {
                     node: source.node_id.name.clone(),
                 })?;
+            if multi_source {
+                src_node.set_needs_source_tag();
+            }
             otel_debug!(
                 "pdata.sender.set",
                 pipeline_group_id = pipeline_group_id.as_ref(),

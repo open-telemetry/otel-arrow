@@ -132,6 +132,18 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_needs_source_tag(&mut self, value: bool) {
+        self.core.set_needs_source_tag(value);
+    }
+
+    /// Returns whether outgoing messages need source node tagging.
+    /// This is true when the destination node has multiple input sources.
+    #[must_use]
+    pub const fn needs_source_tag(&self) -> bool {
+        self.core.needs_source_tag()
+    }
+
     /// Returns the list of connected output ports for this processor.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {

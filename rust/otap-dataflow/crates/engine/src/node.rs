@@ -69,6 +69,10 @@ pub trait NodeWithPDataSender<PData>: Node<PData> {
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error>;
+
+    /// Marks this node as needing to tag outgoing messages with the source node id.
+    /// Called by the pipeline wiring when the destination node has multiple input sources.
+    fn set_needs_source_tag(&mut self);
 }
 
 /// Trait for nodes that can receive pdata.

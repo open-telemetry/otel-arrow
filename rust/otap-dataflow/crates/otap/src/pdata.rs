@@ -144,6 +144,13 @@ impl Context {
     pub fn source_node(&self) -> Option<usize> {
         self.stack.last().map(|f| f.node_id)
     }
+
+    /// Returns a reference to the context stack frames (test-only).
+    #[cfg(test)]
+    #[must_use]
+    pub fn frames(&self) -> &[Frame] {
+        &self.stack
+    }
 }
 
 /// Per-node interests, context, and identity.
@@ -393,7 +400,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -401,7 +412,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -413,7 +428,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -425,7 +444,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -438,7 +461,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -446,7 +473,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -458,7 +489,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -470,7 +505,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -483,7 +522,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -491,7 +534,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -503,7 +550,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -515,7 +566,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.processor_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -528,7 +583,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -536,7 +595,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -548,7 +611,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -560,7 +627,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(self.receiver_id().index);
+        let data = if self.needs_source_tag() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -597,7 +668,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_node".into(),
@@ -607,6 +678,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -625,7 +697,7 @@ mod test {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_node".into(),
@@ -634,6 +706,7 @@ mod test {
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -654,7 +727,7 @@ mod test {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_node".into(),
@@ -663,6 +736,7 @@ mod test {
             None,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -685,7 +759,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_node".into(),
@@ -695,6 +769,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -714,7 +789,7 @@ mod test {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_node".into(),
@@ -723,6 +798,7 @@ mod test {
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -742,7 +818,7 @@ mod test {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_node".into(),
@@ -751,6 +827,7 @@ mod test {
             None,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -772,7 +849,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_node".into(),
@@ -782,6 +859,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -800,7 +878,7 @@ mod test {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_local".into(),
@@ -809,6 +887,7 @@ mod test {
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -829,7 +908,7 @@ mod test {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_local".into(),
@@ -838,6 +917,7 @@ mod test {
             None,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -857,7 +937,7 @@ mod test {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_local".into(),
@@ -866,6 +946,7 @@ mod test {
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -885,7 +966,7 @@ mod test {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "proc_local".into(),
@@ -894,6 +975,7 @@ mod test {
             None,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -915,7 +997,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_local".into(),
@@ -925,6 +1007,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -944,7 +1027,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_local".into(),
@@ -954,6 +1037,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -975,7 +1059,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_local".into(),
@@ -985,6 +1069,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -1005,7 +1090,7 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
                 index: 0,
                 name: "recv_local".into(),
@@ -1015,6 +1100,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_needs_source_tag(true);
 
         let pdata = create_test_pdata();
         handler
@@ -1023,6 +1109,65 @@ mod test {
 
         let sent = rx.try_recv().expect("message received");
         assert_eq!(sent.get_source_node(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn needs_source_tag_controls_source_frame() {
+        let (tx_off, mut rx_off) = mpsc::channel::<OtapPdata>(4);
+        let (tx_on, mut rx_on) = mpsc::channel::<OtapPdata>(4);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler_off = SharedProcessorEffectHandler::new(
+            NodeId {
+                index: 7,
+                name: "proc_off".into(),
+            },
+            HashMap::from([("out".into(), SharedSender::mpsc(tx_off))]),
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler_on = SharedProcessorEffectHandler::new(
+            NodeId {
+                index: 7,
+                name: "proc_on".into(),
+            },
+            HashMap::from([("out".into(), SharedSender::mpsc(tx_on))]),
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        // Default is false
+        assert!(!handler_off.needs_source_tag());
+        assert!(!handler_on.needs_source_tag());
+
+        // Enable on one handler
+        handler_on.set_needs_source_tag(true);
+        assert!(handler_on.needs_source_tag());
+
+        // Send through both
+        handler_off
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("send ok");
+        handler_on
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("send ok");
+
+        // When disabled: no source frame pushed
+        let sent_off = rx_off.recv().await.expect("received");
+        assert_eq!(sent_off.get_source_node(), None);
+        assert_eq!(sent_off.context.frames().len(), 0);
+
+        // When enabled: source frame pushed with empty interests
+        let sent_on = rx_on.recv().await.expect("received");
+        assert_eq!(sent_on.get_source_node(), Some(7));
+        let frames = sent_on.context.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].node_id, 7);
+        assert_eq!(frames[0].interests, Interests::empty());
     }
 
     #[test]

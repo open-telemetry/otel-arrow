@@ -25,6 +25,10 @@ pub(crate) struct EffectHandlerCore<PData> {
     #[allow(dead_code)]
     // Will be used in the future. ToDo report metrics from channel and messages.
     pub(crate) metrics_reporter: MetricsReporter,
+    /// When true, outgoing messages should be tagged with the source node id.
+    /// This is set by the pipeline wiring when the destination node has multiple
+    /// input sources and needs to distinguish which source sent each message.
+    pub(crate) needs_source_tag: bool,
 }
 
 impl<PData> EffectHandlerCore<PData> {
@@ -34,6 +38,7 @@ impl<PData> EffectHandlerCore<PData> {
             node_id,
             pipeline_ctrl_msg_sender: None,
             metrics_reporter,
+            needs_source_tag: false,
         }
     }
 
@@ -43,6 +48,17 @@ impl<PData> EffectHandlerCore<PData> {
         pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     ) {
         self.pipeline_ctrl_msg_sender = Some(pipeline_ctrl_msg_sender);
+    }
+
+    /// Sets whether outgoing messages need source node tagging.
+    pub fn set_needs_source_tag(&mut self, value: bool) {
+        self.needs_source_tag = value;
+    }
+
+    /// Returns whether outgoing messages need source node tagging.
+    #[must_use]
+    pub const fn needs_source_tag(&self) -> bool {
+        self.needs_source_tag
     }
 
     /// Returns the id of the node associated with this effect handler.
