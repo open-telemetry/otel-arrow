@@ -1159,6 +1159,9 @@ pub static FANOUT_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFact
              proc_cfg: &ProcessorConfig| {
         create_fanout_processor(pipeline_ctx, node, node_config, proc_cfg)
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract {
+        output_fanout: otap_df_engine::wiring_contract::OutputFanoutRule::AtMostPerOutput(1),
+    },
 };
 
 #[cfg(test)]

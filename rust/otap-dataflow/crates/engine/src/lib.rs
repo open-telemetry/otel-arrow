@@ -37,7 +37,10 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 pub mod error;
 pub mod exporter;
@@ -61,6 +64,7 @@ pub mod runtime_pipeline;
 pub mod shared;
 pub mod terminal_state;
 pub mod testing;
+pub mod wiring_contract;
 
 /// Trait for factory types that expose a name.
 ///
@@ -82,6 +86,8 @@ pub struct ReceiverFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         receiver_config: &ReceiverConfig,
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -90,6 +96,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
         ReceiverFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -111,6 +118,8 @@ pub struct ProcessorFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         processor_config: &ProcessorConfig,
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -119,6 +128,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
         ProcessorFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -140,6 +150,8 @@ pub struct ExporterFactory<PData> {
         node_config: Arc<NodeUserConfig>,
         exporter_config: &ExporterConfig,
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
+    /// Optional wiring constraints enforced during pipeline build.
+    pub wiring_contract: wiring_contract::WiringContract,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -148,6 +160,7 @@ impl<PData> Clone for ExporterFactory<PData> {
         ExporterFactory {
             name: self.name,
             create: self.create,
+            wiring_contract: self.wiring_contract,
         }
     }
 }
@@ -410,13 +423,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::EmptyPipeline);
         }
 
+        self.validate_connection_wiring_contracts(&config)?;
+
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            let node_kind = otap_df_config::node_urn::infer_node_kind(node_config.r#type.as_ref())
-                .map_err(|e| Error::ConfigError(Box::new(e)))?;
+            let node_kind = node_config.kind();
             let base_ctx =
                 pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
 
@@ -526,6 +540,97 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
 
         Ok(pipeline)
+    }
+
+    fn validate_connection_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
+        let mut contracts_by_node: HashMap<NodeName, wiring_contract::WiringContract> =
+            HashMap::new();
+
+        for (node_name, node_config) in config.node_iter() {
+            let contract = match node_config.kind() {
+                otap_df_config::node::NodeKind::Receiver => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Receiver,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_receiver_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownReceiver {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::Processor => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Processor,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_processor_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownProcessor {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::Exporter => {
+                    let normalized = otap_df_config::node_urn::validate_plugin_urn(
+                        node_config.r#type.as_ref(),
+                        otap_df_config::node::NodeKind::Exporter,
+                    )
+                    .map_err(|e| Error::ConfigError(Box::new(e)))?;
+                    self.get_exporter_factory_map()
+                        .get(normalized.as_str())
+                        .ok_or(Error::UnknownExporter {
+                            plugin_urn: normalized,
+                        })?
+                        .wiring_contract
+                }
+                otap_df_config::node::NodeKind::ProcessorChain => {
+                    return Err(Error::UnsupportedNodeKind {
+                        kind: "ProcessorChain".into(),
+                    });
+                }
+            };
+
+            _ = contracts_by_node.insert(node_name.as_ref().to_string().into(), contract);
+        }
+
+        let mut destinations_by_source_output: HashMap<(NodeName, PortName), HashSet<NodeName>> =
+            HashMap::new();
+        for connection in config.connection_iter() {
+            let mut destinations: Vec<NodeName> = connection
+                .to_nodes()
+                .into_iter()
+                .map(|node_id| node_id.as_ref().to_string().into())
+                .collect();
+            if destinations.is_empty() {
+                continue;
+            }
+            destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            destinations.dedup_by(|left, right| left.as_ref() == right.as_ref());
+
+            for source in connection.from_sources() {
+                let source_name: NodeName = source.node_id().as_ref().to_string().into();
+                let source_port = source.resolved_output_port();
+                let entry = destinations_by_source_output
+                    .entry((source_name, source_port))
+                    .or_default();
+                entry.extend(destinations.iter().cloned());
+            }
+        }
+
+        for ((source, output), destination_set) in destinations_by_source_output {
+            let Some(contract) = contracts_by_node.get(&source) else {
+                return Err(Error::UnknownNode { node: source });
+            };
+            let mut destinations: Vec<NodeName> = destination_set.into_iter().collect();
+            destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+            contract.validate_output_destinations(&source, &output, &destinations)?;
+        }
+
+        Ok(())
     }
 
     fn build_node_wrapper<W, F>(

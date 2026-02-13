@@ -924,9 +924,6 @@ impl PipelineConfig {
         pipeline_id: &PipelineId,
         errors: &mut Vec<Error>,
     ) {
-        let mut targets_by_source_port: HashMap<(NodeId, PortName), HashSet<NodeId>> =
-            HashMap::new();
-
         for connection in connections {
             let target_nodes = connection.to_nodes();
             if let Some(DispatchPolicy::Broadcast) = &connection.policies.dispatch
@@ -982,31 +979,7 @@ impl PipelineConfig {
                             declared_outputs: node_cfg.outputs.clone().into_boxed_slice(),
                         });
                     }
-                    let entry = targets_by_source_port
-                        .entry((source_node.clone(), resolved_port.clone()))
-                        .or_default();
-                    entry.extend(target_nodes.iter().cloned());
                 }
-            }
-        }
-
-        // The fanout processor expects each destination port to map to a single downstream node.
-        // Multiple targets on the same source port would introduce load-balancing semantics.
-        for ((source_node, source_port), targets) in targets_by_source_port {
-            if targets.len() <= 1 {
-                continue;
-            }
-            if let Some(node_cfg) = nodes.get(source_node.as_ref())
-                && node_cfg.r#type.id() == "fanout"
-            {
-                let mut target_nodes = targets.into_iter().collect::<Vec<_>>();
-                target_nodes.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
-                errors.push(Error::FanoutOutputMultipleDestinations {
-                    context: Box::new(Context::new(pipeline_group_id.clone(), pipeline_id.clone())),
-                    source_node: source_node.clone(),
-                    output: source_port,
-                    target_nodes: target_nodes.into_boxed_slice(),
-                });
             }
         }
 

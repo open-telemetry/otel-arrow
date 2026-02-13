@@ -159,22 +159,6 @@ pub enum Error {
         declared_outputs: Box<[PortName]>,
     },
 
-    /// A fanout node output is connected to more than one destination.
-    #[error(
-        "fanout node `{source_node}` output `{output}` must target exactly one destination, found {target_nodes:?}\nContext: {context}"
-    )]
-    #[diagnostic(code(data_plane::fanout_multiple_destinations), url(docsrs))]
-    FanoutOutputMultipleDestinations {
-        /// The context in which the error occurred.
-        context: Box<Context>,
-        /// The source fanout node id.
-        source_node: NodeId,
-        /// The source output name.
-        output: PortName,
-        /// The resolved target nodes.
-        target_nodes: Box<[NodeId]>,
-    },
-
     /// An invalid user configuration occurred.
     #[error("An invalid user configuration occurred: {error}")]
     InvalidUserConfig {

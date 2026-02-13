@@ -356,6 +356,21 @@ pub enum Error {
         kind: Cow<'static, str>,
     },
 
+    /// Node wiring violates the node type contract.
+    #[error(
+        "Invalid wiring for node `{node}` output `{output}`: allowed at most {max_destinations} destination(s), found {actual_destinations:?}"
+    )]
+    InvalidNodeWiring {
+        /// The source node.
+        node: NodeName,
+        /// The source output port.
+        output: PortName,
+        /// Maximum allowed destination count for this node output.
+        max_destinations: usize,
+        /// Actual resolved destinations connected to this output.
+        actual_destinations: Vec<NodeName>,
+    },
+
     /// A task error that occurred during the execution of a join task.
     #[error("Join task error: {error}, cancelled: {is_canceled}, panic: {is_panic}")]
     JoinTaskError {
@@ -455,6 +470,7 @@ impl Error {
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
+            Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
         }
         .to_owned()
     }

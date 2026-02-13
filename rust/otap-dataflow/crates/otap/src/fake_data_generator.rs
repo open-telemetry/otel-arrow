@@ -74,6 +74,7 @@ pub static OTAP_FAKE_DATA_GENERATOR: ReceiverFactory<OtapPdata> = ReceiverFactor
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl FakeGeneratorReceiver {
