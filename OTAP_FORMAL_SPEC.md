@@ -28,26 +28,7 @@ The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
-### 1.3 References
-
-- **OTLP Specification**: OpenTelemetry Protocol specification
-- **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
-- **Signal**: One of the telemetry signal types (Logs, Metrics, or Traces)
-- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table
-in the OTAP data model.
-- **gRPC**: https://grpc.io/
-- **OTEP 0156**: Columnar Encoding proposal
-
-### 1.4 Terminology
-
-- **Client/Producer**: The sender of telemetry data
-- **Server/Consumer**: The receiver of telemetry data
-- **Signal**: One of logs, metrics, or traces
-- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
-- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message 
-- **Items**: The item type of a signal e.g. Log, Data Point(s), or Span
-- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
-- **Schema Reset**: The act of changing the Arrow schema for a payload type
+See [Appendix F: Glossary](#appendix-f-glossary) for terminology and [Appendix G: References](#appendix-g-references) for reference material.
 
 ---
 
@@ -1271,6 +1252,24 @@ For a detailed treatment of challenges, solution techniques (client-side and ser
 
 ---
 
+## Appendix F: Glossary
+
+- **Client/Producer**: The sender of telemetry data
+- **Server/Consumer**: The receiver of telemetry data
+- **Signal**: One of logs, metrics, or traces
+- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
+- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message
+- **Items**: The item type of a signal e.g. Log, Data Point(s), or Span
+- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
+- **Schema Reset**: The act of changing the Arrow schema for a payload type
+- **OTLP Specification**: OpenTelemetry Protocol specification
+- **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
+- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table in the OTAP data model
+- **gRPC**: https://grpc.io/
+- **OTEP 0156**: Columnar Encoding proposal
+
+---
+
 ## Document History
 
 | Version | Date | Changes |
@@ -1279,7 +1278,7 @@ For a detailed treatment of challenges, solution techniques (client-side and ser
 
 ---
 
-## References
+## Appendix G: References
 
 1. Apache Arrow IPC Format: https://arrow.apache.org/docs/format/Columnar.html
 2. OTLP Specification: https://opentelemetry.io/docs/specs/otlp/
