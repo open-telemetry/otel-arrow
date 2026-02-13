@@ -218,88 +218,65 @@ message BatchArrowRecords {
 - `arrow_payloads` SHOULD omit tables with 0 rows
 - `headers` MUST be HPACK compressed if present // NEEDS TRIAGE
 
-
-
 #### 3.2.2 ArrowPayload Message
 
-An ArrowPayload encapsulates the serialized Arrow IPC data for a single table within a BAR. Each payload is tagged with a schema identifier and a type indicator so that consumers can correctly interpret and route the data.
-
-The schema identifier is critical for OTAP's stateful protocol design. When a consumer sees a new schema_id for a given table type, it knows to reset its Arrow IPC reader and expect a new schema definition. This mechanism enables dynamic schema evolution—such as upgrading dictionary key sizes when cardinality grows—without breaking the connection.
+An ArrowPayload encapsulates the serialized Arrow IPC data for a single table within a BAR. 
+Each payload is tagged with the Arrow Payload Type it represents and a schema identifier
+which is  scoped to the Stream and payload type indicating the Arrow Schema used for the 
+contents. See Section 7 for more details on the schema_id and the various mechanics surrounding
+schema management.
 
 ```protobuf
 message ArrowPayload {
-  // [REQUIRED] A unique identifier for the Arrow schema used in this payload.
-  // The schema ID is derived from the schema structure (field names, types, and
-  // their ordering). When the client needs to change the schema—for example, to
-  // use a larger dictionary key type—it generates a new schema_id and includes
-  // a Schema message in the record bytes.
-  // MUST be a unique string identifier for the Arrow schema.
-  // Schema ID changes indicate a schema reset.
-  // Format is implementation-defined but SHOULD be deterministic based on schema structure.
-  // Recommended format: Compact representation of field names and types (see section 7.2).
+  // [REQUIRED] A unique identifier for the Arrow schema used for this payload type.
+  // a change in this id for some payload type indicate a Schema Reset which requires
+  // a reset of the underlying stream.
   string schema_id = 1;
 
   // [REQUIRED] An enum value identifying which table this payload represents
-  // (e.g., LOGS, SPAN_ATTRS, NUMBER_DATA_POINTS). This allows the consumer to
-  // route the data to the appropriate processing logic and validate that the
-  // schema matches expectations for that table type.
-  // MUST be a valid ArrowPayloadType enum value.
-  // MUST NOT be UNKNOWN (value 0).
+  // (e.g., LOGS, SPAN_ATTRS, NUMBER_DATA_POINTS).
   ArrowPayloadType type = 2;
 
   // [REQUIRED] The raw bytes containing one or more Apache Arrow Encapsulated
   // IPC Messages. These messages follow the Arrow IPC Streaming Format and
   // include Schema messages (for new schemas), DictionaryBatch messages (for
   // dictionary state), and RecordBatch messages (for the actual data rows).
-  // MUST contain one or more serialized Apache Arrow Encapsulated IPC Messages.
-  // Message format defined by Arrow IPC Streaming specification.
-  // See section 3.3.1 for message ordering requirements.
   bytes record = 3;
 }
 ```
 
+**Requirements**
+
+- Once sent, a `schema_id` MUST always indicate the same schema for a given payload type within a
+given Stream.
+- A `schema_id` MAY be derived from the schema structure (field names, types, and their ordering).
+- `type` MUST NOT be sent as `UNKNOWN` (value 0) // NEEDS_TRIAGE
+- `record` MUST contain at least one valid Encapsulated Arrow IPC message // NEEDS_TRIAGE: We could just ignore it if it doesn't
+
 ### 3.3 Arrow IPC Layer
 
-The Arrow IPC (Interprocess Communication) layer is the innermost layer where the telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
+The Arrow IPC (Interprocess Communication) layer is the innermost layer containing the actual telemetry data 
+in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using 
+a standardized format that can be read by any Arrow-compatible library. This layer enables:
 
-- **Schema negotiation**: Dynamic schema definition without pre-compiled protobuf definitions
 - **Dictionary/Delta Dictionary encoding**: Efficient representation of repeated string values
 - **Zero-copy deserialization**: Data can be read directly from wire format without copying
 - **Columnar layout**: Data organized by column rather than by row, enabling better compression and SIMD processing
 
-**Stream Organization**: Each ArrowPayload within a BAR contains a buffer of bytes (the `record` field) that represents a slice of an Arrow IPC stream. These buffers may contain multiple Encapsulated Arrow IPC Messages—for example, a Schema message followed by DictionaryBatch messages and RecordBatch messages—all serialized consecutively in the Arrow IPC Streaming Format.
+Clients and servers communicating over a Stream are managing multiple independent Arrow IPC streams,
+one for each Payload Type that the client has sent. On the server side, each `record` is routed to a separate 
+IPC stream consumer based on its `type` and `schema_id`. This means that a single BAR may feed multiple 
+independent Arrow IPC stream readers simultaneously.
 
-On the server side, each ArrowPayload is routed to a separate stream consumer based on its `type` and `schema_id`. This means that a single BAR may feed multiple independent Arrow IPC stream readers simultaneously:
+Note that Arrow IPC Streams are inherently stateful and must track the current schema and dictionary state for 
+each stream.
 
-- The LOGS payload goes to the logs stream consumer
-- The LOG_ATTRS payload goes to the log attributes stream consumer
-- The RESOURCE_ATTRS payload goes to the resource attributes stream consumer
-- And so on for each table type
+#### 3.3.1 IPC Messages
 
-Each consumer maintains its own stateful Arrow IPC reader, tracking the current schema and dictionary state for its specific stream. This parallel consumption model allows efficient processing of the normalized table structure, where different tables can be decoded and processed independently while maintaining referential integrity through the foreign key relationships (via `id` and `parent_id` fields).
+Arrow IPC, including the Encapsulated Message types and ordering, is well defined in the Arrow IPC 
+specification, but here is a brief description of the lifecycle.
 
-#### 3.3.1 IPC Message Ordering
-
-The Apache Arrow IPC Streaming Format defines a stateful protocol where schemas and dictionaries must be established before data can be transmitted. Each ArrowPayload's `record` field contains a sequence of Encapsulated Arrow IPC Messages that must follow specific ordering rules to ensure the consumer can correctly interpret the data.
-
-Understanding this ordering is critical: the first time a schema_id appears, the consumer needs to learn what the schema looks like and initialize any dictionaries. On subsequent uses of the same schema_id, the consumer only needs the data records themselves (and possibly dictionary updates). The ordering rules reflect these different scenarios.
-
-##### 3.3.1.1 Initial Schema Transmission
-
-When a new schema_id is introduced, the first ArrowPayload with that schema_id MUST contain messages in this order:
-
-1. **Schema Message** (REQUIRED): Defines the Arrow schema
-2. **DictionaryBatch Message(s)** (OPTIONAL): Initial dictionaries for dictionary-encoded columns
-3. **RecordBatch Message(s)** (REQUIRED): Actual data records
-
-##### 3.3.1.2 Subsequent Transmissions
-
-After the initial schema transmission, subsequent ArrowPayloads with the same schema_id MAY contain:
-
-1. **DictionaryBatch Message(s)** (OPTIONAL): Delta dictionaries for new values
-2. **RecordBatch Message(s)** (REQUIRED): Actual data records
-
-**Note**: Schema messages MUST NOT be repeated unless the schema_id changes.
+Implementation specifics are discussed in later sections // NEEDS TRIAGE.
 
 ---
 
@@ -310,10 +287,10 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 **Table Column Descriptions:**
 - **Name**: Field name in the Arrow schema
 - **Type**: Base Arrow type for this field
-- **Alt Representations**: Alternative encodings allowed for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types). Note: `Dict(u32)` is not allowed for any field.
+- **Alt Representations**: Alternative encodings allowed for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types).
 - **Nullable**: Whether the field can contain null values
 - **Required**: Whether this field must be present in every record
-- **Id Encoding**: Link to the encoding method used for id columns (see [Section 6.5](#65-transport-optimized-encodings))
+- **Id Encoding**: The encoding method used for id columns (see [Section 6.5](#65-transport-optimized-encodings))
 - **Metadata**: Arrow field-level metadata keys that MAY be present (see [Section 6.5.4](#654-field-metadata))
 - **Description**: Human-readable description of the field's purpose
 
