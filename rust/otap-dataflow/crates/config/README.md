@@ -8,9 +8,10 @@ If you are authoring pipeline YAML for runtime use, start with:
 
 Design rationale and prior-art discussion are also captured in:
 
-- https://github.com/open-telemetry/otel-arrow/issues/1970
+- Issue [#1970](https://github.com/open-telemetry/otel-arrow/issues/1970)
 
-This README focuses on crate-level model details and implementer-oriented guidance.
+This README focuses on crate-level model details and implementer-oriented
+guidance.
 
 ## What This Crate Defines
 
@@ -22,8 +23,11 @@ Main public model types:
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 
-The model is strict (`serde(deny_unknown_fields)` in key types) and validated on load.
-This means fields discussed as future extensions (for example node/connection attributes or advanced edge policies) are currently rejected unless and until the schema is extended.
+The model is strict (`serde(deny_unknown_fields)` in key types) and validated on
+load.
+This means fields discussed as future extensions (for example node/connection
+attributes or advanced edge policies) are currently rejected unless and until
+the schema is extended.
 
 ## Parsing and Validation Entry Points
 
@@ -58,13 +62,15 @@ See also:
 - `default_output: Option<PortName>` (optional default output port)
 - `config: serde_json::Value` (node-specific payload)
 
-`config` is intentionally untyped in this crate so node implementations can own their own schema and compatibility policy.
+`config` is intentionally untyped in this crate so node implementations can own
+their own schema and compatibility policy.
 
 Terminology:
 
 - In configuration, `outputs` / `default_output` are short names.
 - Conceptually, these are always output ports.
-- Receivers and processors have a default output port and can optionally define additional named output ports.
+- Receivers and processors have a default output port and can optionally define
+  additional named output ports.
 - Exporters are sinks and do not emit output ports.
 
 ## Guidance for Node Implementers
@@ -101,7 +107,8 @@ Recommendations:
 
 ## Connections-Oriented Graph Model
 
-Pipeline wiring is defined at `PipelineConfig.connections` (not inside node declarations).
+Pipeline wiring is defined at `PipelineConfig.connections` (not inside node
+declarations).
 
 Connection defaults:
 
@@ -111,4 +118,5 @@ Connection defaults:
 - with multiple destinations, `one_of` means each message is consumed by exactly
   one destination (competing consumers)
 
-`outputs`/`default_output` are optional in many single-output pipelines and mainly useful for explicit multi-output-port declaration and validation.
+`outputs`/`default_output` are optional in many single-output pipelines and
+mainly useful for explicit multi-output-port declaration and validation.

@@ -1,10 +1,13 @@
 # OTAP Dataflow Configuration Model (v1)
 
-This document describes the configuration model used by the OTAP Dataflow Engine.
+This document describes the configuration model used by the OTAP Dataflow
+Engine.
 
-If you want background on why this model is structured this way, see the `Design Rationale` section below.
+If you want background on why this model is structured this way, see the
+`Design Rationale` section below.
 
-If you implement receivers/processors/exporters and need crate-level model/API details plus custom node config guidance, see:
+If you implement receivers/processors/exporters and need crate-level model/API
+details plus custom node config guidance, see:
 
 - [crates/config/README.md](../crates/config/README.md)
 
@@ -72,7 +75,7 @@ nodes:
 
   batcher:
     type: batch:processor
-    config: {}
+    config: { }
 
   otlp/export:
     type: otlp:exporter
@@ -99,8 +102,8 @@ nodes:
 
   router:
     type: type_router:processor
-    outputs: ["logs", "metrics", "traces"]
-    config: {}
+    outputs: [ "logs", "metrics", "traces" ]
+    config: { }
 
   logs_exporter:
     type: otlp:exporter
@@ -109,11 +112,11 @@ nodes:
 
   metrics_exporter:
     type: noop:exporter
-    config: {}
+    config: { }
 
   traces_exporter:
     type: noop:exporter
-    config: {}
+    config: { }
 
 connections:
   - from: otlp/ingest
@@ -130,16 +133,21 @@ Port selection rules:
 
 - If a source uses `router["logs"]`, that named output port is used.
 - If `from` omits selector, output port `"default"` is used.
-- If `outputs` is declared on a node, referenced source ports must belong to that list.
+- If `outputs` is declared on a node, referenced source ports must belong to
+  that list.
 
 Dispatch policy rules:
 
 - If `policies.dispatch` is omitted, behavior defaults to `one_of`.
 - `dispatch: one_of` sends each item to exactly one destination.
-- With multiple destinations, `one_of` uses competing consumers on the same channel.
-- Destination selection is runtime-driven and best-effort balanced, not strict deterministic round-robin.
-- `dispatch: broadcast` is parsed but not yet supported when `to` has multiple destinations.
-- For single-destination connections, `policies.dispatch` is accepted but has no runtime effect.
+- With multiple destinations, `one_of` uses competing consumers on the same
+  channel.
+- Destination selection is runtime-driven and best-effort balanced, not strict
+  deterministic round-robin.
+- `dispatch: broadcast` is parsed but not yet supported when `to` has multiple
+  destinations.
+- For single-destination connections, `policies.dispatch` is accepted but has no
+  runtime effect.
 
 ## Validation Behavior
 
@@ -155,15 +163,18 @@ Config loading validates:
 ### Conceptual Mapping
 
 - Collector `receivers/processors/exporters` -> `nodes`
-- Collector pipeline lists (`receivers -> processors -> exporters`) -> explicit `connections`
+- Collector pipeline lists (`receivers -> processors -> exporters`) -> explicit
+  `connections`
 - Collector component instance id -> node id key under `nodes`
-- Collector branch routing patterns -> node `outputs` + `from: node["output_port_name"]`
+- Collector branch routing patterns -> node `outputs` +
+  `from: node["output_port_name"]`
 
 ### Key Differences vs Go Collector Config
 
 - Wiring is explicit in a DAG, not implicit from ordered arrays.
 - A single pipeline can express richer fan-in/fan-out relationships directly.
-- Node type is a URN with kind suffix (`otlp:receiver`, `batch:processor`, etc.).
+- Node type is a URN with kind suffix (`otlp:receiver`, `batch:processor`,
+  etc.).
 - Complex topologies (branching, routing, fallback patterns) are modeled through
   graph shape and node semantics.
 
@@ -188,9 +199,9 @@ Issue reference:
 The following ideas are discussed and intentionally left for later steps:
 
 - Additional reserved metadata maps:
-  - node-level `attributes`
-  - connection-level `attributes`
-  - policy-level `attributes`
+    - node-level `attributes`
+    - connection-level `attributes`
+    - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
 - Topic-based inter-pipeline wiring.
