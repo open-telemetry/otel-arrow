@@ -3,7 +3,9 @@
 
 //! This module defines structs to describe the traffic being created and captured for validation
 
+use crate::error::ValidationError;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
 const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";
@@ -23,6 +25,89 @@ pub enum MessageType {
     Otlp,
     /// otap type
     Otap,
+}
+
+/// TLS configuration for the traffic generator's connection to the SUV receiver.
+///
+/// When provided, the traffic-generator exporter connects over TLS (or mTLS)
+/// instead of plain-text gRPC.
+///
+/// Construct via [`TlsConfig::tls_only`] or [`TlsConfig::mtls`].
+///
+/// **Note:** Requires the `experimental-tls` feature to be enabled on `otap-df-otap`,
+/// otherwise the rendered pipeline config will fail to deserialize.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TlsConfig {
+    pub(crate) ca_cert_path: PathBuf,
+    pub(crate) client_cert_path: Option<PathBuf>,
+    pub(crate) client_key_path: Option<PathBuf>,
+    pub(crate) server_name: String,
+}
+
+impl TlsConfig {
+    /// Create a TLS-only config (no client cert).
+    #[must_use]
+    pub fn tls_only(ca_cert_path: impl Into<PathBuf>) -> Self {
+        Self {
+            ca_cert_path: ca_cert_path.into(),
+            client_cert_path: None,
+            client_key_path: None,
+            server_name: "localhost".to_string(),
+        }
+    }
+
+    /// Create an mTLS config with client certificate and key.
+    #[must_use]
+    pub fn mtls(
+        ca_cert_path: impl Into<PathBuf>,
+        client_cert_path: impl Into<PathBuf>,
+        client_key_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            ca_cert_path: ca_cert_path.into(),
+            client_cert_path: Some(client_cert_path.into()),
+            client_key_path: Some(client_key_path.into()),
+            server_name: "localhost".to_string(),
+        }
+    }
+
+    /// Override the server name used for TLS SNI and certificate verification.
+    ///
+    /// Defaults to `"localhost"`. Set this when the server certificate uses a
+    /// different SAN/CN than `localhost`.
+    #[must_use]
+    pub fn with_server_name(mut self, name: impl Into<String>) -> Self {
+        self.server_name = name.into();
+        self
+    }
+
+    pub(crate) fn ca_cert_str(&self) -> Result<&str, ValidationError> {
+        self.ca_cert_path
+            .to_str()
+            .ok_or_else(|| ValidationError::Config("ca_cert_path is not valid UTF-8".into()))
+    }
+
+    pub(crate) fn client_cert_str(&self) -> Result<&str, ValidationError> {
+        match self.client_cert_path.as_deref() {
+            None => Ok(""),
+            Some(path) => path.to_str().ok_or_else(|| {
+                ValidationError::Config("client_cert_path is not valid UTF-8".into())
+            }),
+        }
+    }
+
+    pub(crate) fn client_key_str(&self) -> Result<&str, ValidationError> {
+        match self.client_key_path.as_deref() {
+            None => Ok(""),
+            Some(path) => path.to_str().ok_or_else(|| {
+                ValidationError::Config("client_key_path is not valid UTF-8".into())
+            }),
+        }
+    }
+
+    pub(crate) fn is_mtls(&self) -> bool {
+        self.client_cert_path.is_some() && self.client_key_path.is_some()
+    }
 }
 
 /// Configuration describing how the traffic generator should emit signals.
@@ -46,6 +131,9 @@ pub struct Generator {
     pub trace_weight: u32,
     /// Weight for log generation (0-100).
     pub log_weight: u32,
+    /// TLS configuration for connecting to the SUV receiver.
+    #[serde(skip)]
+    pub tls: Option<TlsConfig>,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
@@ -113,6 +201,13 @@ impl Generator {
         self.suv_exporter_type = MessageType::Otap;
         self
     }
+
+    /// Enable TLS (or mTLS) for the connection to the SUV receiver.
+    #[must_use]
+    pub fn with_tls(mut self, config: TlsConfig) -> Self {
+        self.tls = Some(config);
+        self
+    }
 }
 
 impl Default for Generator {
@@ -127,6 +222,7 @@ impl Default for Generator {
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
+            tls: None,
         }
     }
 }

@@ -66,8 +66,8 @@ mod tests {
 #[cfg(feature = "experimental-tls")]
 mod tls_tests {
     use crate::pipeline::Pipeline;
-    use crate::scenario::{Scenario, TlsScenarioConfig};
-    use crate::traffic::{Capture, Generator};
+    use crate::scenario::Scenario;
+    use crate::traffic::{Capture, Generator, TlsConfig};
     use otap_test_tls_certs::{ExtendedKeyUsage, write_ca_and_leaf_to_dir};
     use std::time::Duration;
 
@@ -107,9 +107,13 @@ mod tls_tests {
                 .wire_otlp_grpc_receiver("receiver")
                 .wire_otlp_grpc_exporter("exporter"),
             )
-            .input(Generator::logs().fixed_count(500).otlp_grpc())
+            .input(
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc()
+                    .with_tls(TlsConfig::tls_only(&ca_cert_path)),
+            )
             .observe(Capture::default().otlp_grpc())
-            .with_tls(TlsScenarioConfig::tls_only(&ca_cert_path))
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("TLS validation scenario failed");
@@ -159,13 +163,17 @@ mod tls_tests {
                 .wire_otlp_grpc_receiver("receiver")
                 .wire_otlp_grpc_exporter("exporter"),
             )
-            .input(Generator::logs().fixed_count(500).otlp_grpc())
+            .input(
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc()
+                    .with_tls(TlsConfig::mtls(
+                        &ca_cert_path,
+                        &client_cert_path,
+                        &client_key_path,
+                    )),
+            )
             .observe(Capture::default().otlp_grpc())
-            .with_tls(TlsScenarioConfig::mtls(
-                &ca_cert_path,
-                &client_cert_path,
-                &client_key_path,
-            ))
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("mTLS validation scenario failed");

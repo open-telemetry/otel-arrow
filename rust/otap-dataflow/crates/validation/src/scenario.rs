@@ -6,94 +6,15 @@
 use crate::error::ValidationError;
 use crate::pipeline::Pipeline;
 use crate::simulate::run_pipelines_with_timeout;
-use crate::traffic::{Capture, Generator};
+use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::{Environment, context};
 use portpicker::pick_unused_port;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// TLS configuration for validation scenarios.
-///
-/// When provided, the traffic-generator exporter connects to the SUV receiver
-/// over TLS (or mTLS) instead of plain-text gRPC.
-///
-/// Construct via [`TlsScenarioConfig::tls_only`] or [`TlsScenarioConfig::mtls`].
-///
-/// **Note:** Requires the `experimental-tls` feature to be enabled on `otap-df-otap`,
-/// otherwise the rendered pipeline config will fail to deserialize.
-pub struct TlsScenarioConfig {
-    ca_cert_path: PathBuf,
-    client_cert_path: Option<PathBuf>,
-    client_key_path: Option<PathBuf>,
-    server_name: String,
-}
-
-impl TlsScenarioConfig {
-    /// Create a TLS-only config (no client cert).
-    #[must_use]
-    pub fn tls_only(ca_cert_path: impl Into<PathBuf>) -> Self {
-        Self {
-            ca_cert_path: ca_cert_path.into(),
-            client_cert_path: None,
-            client_key_path: None,
-            server_name: "localhost".to_string(),
-        }
-    }
-
-    /// Create an mTLS config with client certificate and key.
-    #[must_use]
-    pub fn mtls(
-        ca_cert_path: impl Into<PathBuf>,
-        client_cert_path: impl Into<PathBuf>,
-        client_key_path: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            ca_cert_path: ca_cert_path.into(),
-            client_cert_path: Some(client_cert_path.into()),
-            client_key_path: Some(client_key_path.into()),
-            server_name: "localhost".to_string(),
-        }
-    }
-
-    /// Override the server name used for TLS SNI and certificate verification.
-    ///
-    /// Defaults to `"localhost"`. Set this when the server certificate uses a
-    /// different SAN/CN than `localhost`.
-    #[must_use]
-    pub fn with_server_name(mut self, name: impl Into<String>) -> Self {
-        self.server_name = name.into();
-        self
-    }
-
-    fn ca_cert_str(&self) -> Result<&str, ValidationError> {
-        self.ca_cert_path
-            .to_str()
-            .ok_or_else(|| ValidationError::Config("ca_cert_path is not valid UTF-8".into()))
-    }
-
-    fn client_cert_str(&self) -> Result<&str, ValidationError> {
-        match self.client_cert_path.as_deref() {
-            None => Ok(""),
-            Some(path) => path.to_str().ok_or_else(|| {
-                ValidationError::Config("client_cert_path is not valid UTF-8".into())
-            }),
-        }
-    }
-
-    fn client_key_str(&self) -> Result<&str, ValidationError> {
-        match self.client_key_path.as_deref() {
-            None => Ok(""),
-            Some(path) => path.to_str().ok_or_else(|| {
-                ValidationError::Config("client_key_path is not valid UTF-8".into())
-            }),
-        }
-    }
-
-    fn is_mtls(&self) -> bool {
-        self.client_cert_path.is_some() && self.client_key_path.is_some()
-    }
-}
+/// Backwards-compatible alias for [`TlsConfig`].
+pub type TlsScenarioConfig = TlsConfig;
 
 const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
@@ -108,7 +29,6 @@ pub struct Scenario {
     pipeline: Option<Pipeline>,
     input: Option<Generator>,
     observation: Option<Capture>,
-    tls: Option<TlsScenarioConfig>,
     template_path: PathBuf,
     admin_addr: String,
     ready_max_attempts: usize,
@@ -132,7 +52,6 @@ impl Scenario {
             pipeline: None,
             input: None,
             observation: None,
-            tls: None,
             template_path: PathBuf::from(VALIDATION_TEMPLATE_PATH),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
@@ -168,13 +87,6 @@ impl Scenario {
     #[must_use]
     pub fn expect_within(mut self, duration: Duration) -> Self {
         self.runtime = duration;
-        self
-    }
-
-    /// Enable TLS (or mTLS) between the traffic generator and the SUV receiver.
-    #[must_use]
-    pub fn with_tls(mut self, config: TlsScenarioConfig) -> Self {
-        self.tls = Some(config);
         self
     }
 
@@ -240,30 +152,19 @@ impl Scenario {
         let tmpl = env
             .get_template("template")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
-        let tls_enabled = self.tls.is_some();
-        let tls_ca_cert = self
-            .tls
-            .as_ref()
-            .map(TlsScenarioConfig::ca_cert_str)
+        let tls = traffic_generation_config.tls.as_ref();
+        let tls_enabled = tls.is_some();
+        let tls_ca_cert = tls.map(TlsConfig::ca_cert_str).transpose()?.unwrap_or("");
+        let tls_client_cert = tls
+            .map(TlsConfig::client_cert_str)
             .transpose()?
             .unwrap_or("");
-        let tls_client_cert = self
-            .tls
-            .as_ref()
-            .map(TlsScenarioConfig::client_cert_str)
+        let tls_client_key = tls
+            .map(TlsConfig::client_key_str)
             .transpose()?
             .unwrap_or("");
-        let tls_client_key = self
-            .tls
-            .as_ref()
-            .map(TlsScenarioConfig::client_key_str)
-            .transpose()?
-            .unwrap_or("");
-        let mtls_enabled = self.tls.as_ref().is_some_and(TlsScenarioConfig::is_mtls);
-        let tls_server_name = self
-            .tls
-            .as_ref()
-            .map_or("localhost", |t| t.server_name.as_str());
+        let mtls_enabled = tls.is_some_and(TlsConfig::is_mtls);
+        let tls_server_name = tls.map_or("localhost", |t| t.server_name.as_str());
 
         let ctx = context! {
             suv_receiver_type => &traffic_capture_config.suv_receiver_type,
@@ -327,7 +228,11 @@ impl Scenario {
         let output_addr = format!("127.0.0.1:{output_port}");
         let control_addr = format!("127.0.0.1:{control_port}");
         let admin_addr = format!("127.0.0.1:{admin_port}");
-        let suv_scheme = if self.tls.is_some() { "https" } else { "http" };
+        let suv_scheme = if generator.tls.is_some() {
+            "https"
+        } else {
+            "http"
+        };
         pipeline.update_pipeline(&input_addr, &format!("http://{output_addr}"))?;
 
         let traffic_generation_config = Generator {
