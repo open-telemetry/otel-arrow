@@ -111,9 +111,14 @@ impl Context {
             .unwrap_or(false)
     }
 
-    /// Return the current calldata.
+    /// Return the current source calldata. This is used with the
+    /// DelayedData message, in which a node delivers a message to
+    /// itself.
+    ///
+    /// This is also useful in testing, it indicates the data that was
+    /// sent by the source node.
     #[must_use]
-    pub fn current_calldata(&self) -> Option<CallData> {
+    pub fn source_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
 
@@ -273,13 +278,22 @@ impl OtapPdata {
         self.context.has_subscribers()
     }
 
-    /// Return the current calldata.
+    /// Return the source's calldata. Note that after a subscribe_to()
+    /// has been called, the current node becomes the source.
+    ///
+    /// Return the current source calldata. This is used with the
+    /// DelayedData message, in which a node delivers a message to
+    /// itself.
+    ///
+    /// This is also useful in testing, it indicates the data that was
+    /// sent by the source node.
     #[must_use]
-    pub fn current_calldata(&self) -> Option<CallData> {
-        self.context.current_calldata()
+    pub fn source_calldata(&self) -> Option<CallData> {
+        self.context.source_calldata()
     }
 
-    /// update the source node
+    /// Update the source node. See also subscribe_to() which supports
+    /// updating the source calldata.
     pub fn add_source_node(mut self, node_id: usize) -> Self {
         self.context.set_source_node(node_id);
         self
