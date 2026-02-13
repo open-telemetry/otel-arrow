@@ -132,7 +132,7 @@ impl<PData> EffectHandler<PData> {
         self.core.node_id()
     }
 
-    /// Returns the list of connected out ports for this processor.
+    /// Returns the list of connected output ports for this processor.
     #[must_use]
     pub fn connected_ports(&self) -> Vec<PortName> {
         self.msg_senders.keys().cloned().collect()
@@ -154,7 +154,7 @@ impl<PData> EffectHandler<PData> {
                 .send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutPort {
+            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.processor_id(),
             })),
         }
@@ -174,13 +174,13 @@ impl<PData> EffectHandler<PData> {
     pub fn try_send_message(&self, data: PData) -> Result<(), TypedError<PData>> {
         match &self.default_sender {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::NoDefaultOutPort {
+            None => Err(TypedError::Error(Error::NoDefaultOutputPort {
                 node: self.processor_id(),
             })),
         }
     }
 
-    /// Sends a message to a specific named out port.
+    /// Sends a message to a specific named output port.
     ///
     /// # Errors
     ///
@@ -197,14 +197,14 @@ impl<PData> EffectHandler<PData> {
                 .send(data)
                 .await
                 .map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutPort {
+            None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.processor_id(),
                 port: port_name,
             })),
         }
     }
 
-    /// Attempts to send a message to a specific named out port without awaiting.
+    /// Attempts to send a message to a specific named output port without awaiting.
     ///
     /// Unlike `send_message_to`, this method returns immediately if the downstream
     /// channel is full, allowing the caller to handle backpressure without awaiting.
@@ -222,7 +222,7 @@ impl<PData> EffectHandler<PData> {
         let port_name: PortName = port.into();
         match self.msg_senders.get(&port_name) {
             Some(sender) => sender.try_send(data).map_err(TypedError::ChannelSendError),
-            None => Err(TypedError::Error(Error::UnknownOutPort {
+            None => Err(TypedError::Error(Error::UnknownOutputPort {
                 node: self.processor_id(),
                 port: port_name,
             })),

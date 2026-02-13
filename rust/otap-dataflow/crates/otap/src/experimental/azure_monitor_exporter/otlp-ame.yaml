@@ -16,13 +16,7 @@ settings:
 
 nodes:
   otlp-receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - azure-monitor-exporter
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       protocols:
         grpc:
@@ -30,8 +24,7 @@ nodes:
           listening_addr: "0.0.0.0:4317"
 
   azure-monitor-exporter:
-    kind: exporter
-    plugin_urn: "urn:microsoft_azure:monitor:exporter"
+    type: "urn:microsoft_azure:monitor:exporter"
     config:
       # API configuration - Update with your actual values
       api:
@@ -72,3 +65,6 @@ nodes:
 
         # OAuth scope for Azure Monitor
         scope: "https://monitor.azure.com/.default"
+connections:
+  - from: otlp-receiver
+    to: azure-monitor-exporter

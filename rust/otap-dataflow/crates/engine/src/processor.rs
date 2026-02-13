@@ -49,7 +49,7 @@ pub enum ProcessorWrapper<PData> {
         control_sender: LocalSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
         control_receiver: LocalReceiver<NodeControlMsg<PData>>,
-        /// Senders for PData messages per out port.
+        /// Senders for PData messages per output port.
         /// Uses the generic `Sender` so local processors can still target shared channels when
         /// mixed local/shared wiring requires it.
         pdata_senders: HashMap<PortName, Sender<PData>>,
@@ -72,7 +72,7 @@ pub enum ProcessorWrapper<PData> {
         control_sender: SharedSender<NodeControlMsg<PData>>,
         /// A receiver for control messages.
         control_receiver: SharedReceiver<NodeControlMsg<PData>>,
-        /// Senders for PData messages per out port.
+        /// Senders for PData messages per output port.
         /// Uses `SharedSender` to keep the shared processor `Send` for multi-threaded execution.
         pdata_senders: HashMap<PortName, SharedSender<PData>>,
         /// A receiver for pdata messages.
@@ -322,7 +322,7 @@ impl<PData> ProcessorWrapper<PData> {
                         source_detail: String::new(),
                     })?,
                 );
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
@@ -353,7 +353,7 @@ impl<PData> ProcessorWrapper<PData> {
                         source_detail: String::new(),
                     })?),
                 );
-                let default_port = user_config.default_out_port.clone();
+                let default_port = user_config.default_output.clone();
                 let effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,

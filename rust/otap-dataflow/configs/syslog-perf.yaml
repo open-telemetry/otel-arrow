@@ -5,22 +5,19 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:syslog_cef:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: syslog_cef:receiver
     config:
       listening_addr: "0.0.0.0:5140"
       protocol: udp
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:perf:exporter"
+    type: perf:exporter
     config:
       frequency: 1000
       cpu_usage: false
       mem_usage: false
       disk_usage: false
       io_usage: false
+
+connections:
+  - from: receiver
+    to: exporter
