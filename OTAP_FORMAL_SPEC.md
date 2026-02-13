@@ -9,7 +9,7 @@
 2. [Data Model](#2-data-model)
 3. [Protocol Architecture](#3-protocol-architecture)
 4. [Transport Layer](#4-transport-layer)
-5. [Arrow Schema Specifications](#5-arrow-schema-specifications)
+5. [Payload Specifications](#5-payload-specifications)
 6. [Transport Optimized Encodings](#6-transport-optimized-encodings)
 7. [Schema Management](#7-schema-management)
 8. [Error Handling](#8-error-handling)
@@ -350,155 +350,408 @@ Servers MUST send BatchStatus messages to acknowledge received BARs:
 
 ---
 
-## 5. Arrow Schema Specifications
+## 5. Payload Specifications
 
-### 5.1 Common Attribute Schema
+This section defines the complete Arrow schema for all OTAP payload types, organized by signal category.
 
-All attribute tables (RESOURCE_ATTRS, SCOPE_ATTRS, LOG_ATTRS, SPAN_ATTRS, etc.) share a common schema structure:
+### 5.1 Common Payloads
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| parent_id | UInt16 or UInt32 | No | Foreign key to parent table (see 5.1.1) |
-| key | Utf8 or Dictionary | No | Attribute key name |
-| type | UInt8 | No | Attribute value type (0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map) |
-| str | Utf8 or Dictionary | Yes | String value (populated when type=1) |
-| int | Int64 | Yes | Integer value (populated when type=3) |
-| double | Float64 | Yes | Double value (populated when type=4) |
-| bool | Boolean | Yes | Boolean value (populated when type=2) |
-| bytes | Binary | Yes | Bytes value (populated when type=5) |
-| ser | Binary | Yes | Serialized complex value (populated when type=6 or 7, CBOR encoded) |
+#### 5.1.1 RESOURCE_ATTRS
 
-#### 5.1.1 Parent ID Types by Payload
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to parent table's `resource_id` |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
 
-- **parent_id is UInt16** for:
-  - RESOURCE_ATTRS (parent is LOGS/METRICS/SPANS table)
-  - SCOPE_ATTRS (parent is LOGS/METRICS/SPANS table)
-  - LOG_ATTRS (parent is LOGS table)
-  - SPAN_ATTRS (parent is SPANS table)
-  - METRIC_ATTRS (parent is METRICS table)
+#### 5.1.2 SCOPE_ATTRS
 
-- **parent_id is UInt32** for:
-  - SPAN_EVENT_ATTRS (parent is SPAN_EVENTS table)
-  - SPAN_LINK_ATTRS (parent is SPAN_LINKS table)
-  - All data point attribute tables (parent is data point table)
-  - All exemplar attribute tables (parent is exemplar table)
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to parent table's `scope_id` |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 5.2 Logs Schema
+### 5.2 Logs Payloads
 
-#### 5.2.1 LOGS Table
+#### 5.2.1 LOGS
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt16 | Yes | Log record identifier |
-| resource_id | UInt16 | Yes | Foreign key to resource |
-| resource_schema_url | Utf8 | Yes | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | Yes | Dropped resource attributes |
-| scope_id | UInt16 | Yes | Foreign key to scope |
-| scope_name | Utf8 | Yes | Instrumentation scope name |
-| scope_version | Utf8 | Yes | Instrumentation scope version |
-| scope_dropped_attributes_count | UInt32 | Yes | Dropped scope attributes |
-| schema_url | Utf8 | Yes | Log schema URL |
-| time_unix_nano | Timestamp(Nanosecond) | No | Log timestamp |
-| observed_time_unix_nano | Timestamp(Nanosecond) | No | Observation timestamp |
-| trace_id | FixedSizeBinary(16) | Yes | Trace ID if correlated |
-| span_id | FixedSizeBinary(8) | Yes | Span ID if correlated |
-| severity_number | Int32 | Yes | Severity level number |
-| severity_text | Utf8 | Yes | Severity level text |
-| body_type | UInt8 | No | Body value type |
-| body_str | Utf8 | No | String body |
-| body_int | Int64 | Yes | Integer body |
-| body_double | Float64 | Yes | Double body |
-| body_bool | Boolean | Yes | Boolean body |
-| body_bytes | Binary | Yes | Bytes body |
-| body_ser | Binary | Yes | Serialized complex body |
-| dropped_attributes_count | UInt32 | Yes | Dropped log attributes |
-| flags | UInt32 | Yes | Trace flags |
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt16 | UInt16 | Yes | Yes | Log record identifier (primary key) |
+| resource_id | UInt16 | UInt16 | Yes | No | Foreign key to resource |
+| resource_schema_url | Utf8 | Utf8 | Yes | No | Resource schema URL |
+| resource_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped resource attributes |
+| scope_id | UInt16 | UInt16 | Yes | No | Foreign key to scope |
+| scope_name | Utf8 | Utf8 | Yes | No | Instrumentation scope name |
+| scope_version | Utf8 | Utf8 | Yes | No | Instrumentation scope version |
+| scope_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped scope attributes |
+| schema_url | Utf8 | Utf8 | Yes | No | Log schema URL |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | No | Yes | Log timestamp in Unix nanoseconds |
+| observed_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | No | Yes | Observation timestamp in Unix nanoseconds |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | Yes | No | Trace ID for correlation |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Span ID for correlation |
+| severity_number | Int32 | Int32 | Yes | No | Numeric severity level |
+| severity_text | Utf8 | Utf8 | Yes | No | Textual severity level |
+| body_type | UInt8 | UInt8 | No | Yes | Body value type (same encoding as attribute type) |
+| body_str | Utf8 | Utf8 | No | Yes | String body (may be empty) |
+| body_int | Int64 | Int64 | Yes | No | Integer body (when body_type=3) |
+| body_double | Float64 | Float64 | Yes | No | Double body (when body_type=4) |
+| body_bool | Boolean | Boolean | Yes | No | Boolean body (when body_type=2) |
+| body_bytes | Binary | Binary | Yes | No | Bytes body (when body_type=5) |
+| body_ser | Binary | Binary | Yes | No | CBOR-encoded complex body (when body_type=6 or 7) |
+| dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped log attributes |
+| flags | UInt32 | UInt32 | Yes | No | Trace flags |
 
-### 5.3 Metrics Schema
+#### 5.2.2 LOG_ATTRS
 
-#### 5.3.1 METRICS Table (Univariate)
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to LOGS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt16 | No | Metric identifier |
-| resource_id | UInt16 | Yes | Foreign key to resource |
-| resource_schema_url | Utf8 | Yes | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | Yes | Dropped resource attributes |
-| scope_id | UInt16 | Yes | Foreign key to scope |
-| scope_name | Utf8 | Yes | Scope name |
-| scope_version | Utf8 | Yes | Scope version |
-| scope_dropped_attributes_count | UInt32 | Yes | Dropped scope attributes |
-| schema_url | Utf8 | Yes | Metric schema URL |
-| metric_type | UInt8 | No | Metric type enum |
-| name | Utf8 | No | Metric name |
-| description | Utf8 | Yes | Metric description |
-| unit | Utf8 | Yes | Metric unit |
-| aggregation_temporality | Int32 | Yes | Aggregation temporality |
-| is_monotonic | Boolean | Yes | Whether metric is monotonic |
+### 5.3 Metrics Payloads
 
-#### 5.3.2 NUMBER_DATA_POINTS Table
+#### 5.3.1 UNIVARIATE_METRICS / MULTIVARIATE_METRICS
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt32 | No | Data point identifier |
-| parent_id | UInt16 | No | Foreign key to METRICS |
-| start_time_unix_nano | Timestamp(Nanosecond) | No | Start time |
-| time_unix_nano | Timestamp(Nanosecond) | No | Timestamp |
-| int_value | Int64 | No | Integer value |
-| double_value | Float64 | No | Double value |
-| flags | UInt32 | Yes | Data point flags |
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt16 | UInt16 | No | Yes | Metric identifier (primary key) |
+| resource_id | UInt16 | UInt16 | Yes | No | Foreign key to resource |
+| resource_schema_url | Utf8 | Utf8 | Yes | No | Resource schema URL |
+| resource_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped resource attributes |
+| scope_id | UInt16 | UInt16 | Yes | No | Foreign key to scope |
+| scope_name | Utf8 | Utf8 | Yes | No | Instrumentation scope name |
+| scope_version | Utf8 | Utf8 | Yes | No | Instrumentation scope version |
+| scope_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped scope attributes |
+| schema_url | Utf8 | Utf8 | Yes | No | Metric schema URL |
+| metric_type | UInt8 | UInt8 | No | Yes | Metric type enum (Gauge, Sum, Histogram, etc.) |
+| name | Utf8 | Utf8 | No | Yes | Metric name |
+| description | Utf8 | Utf8 | Yes | No | Metric description |
+| unit | Utf8 | Utf8 | Yes | No | Metric unit |
+| aggregation_temporality | Int32 | Int32 | Yes | No | Aggregation temporality enum |
+| is_monotonic | Boolean | Boolean | Yes | No | Whether the metric is monotonic |
 
-**Note**: Similar schemas exist for SUMMARY_DATA_POINTS, HISTOGRAM_DATA_POINTS, and EXP_HISTOGRAM_DATA_POINTS. See data_model.md for complete field lists.
+#### 5.3.2 NUMBER_DATA_POINTS
 
-### 5.4 Traces Schema
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | No | Yes | Data point identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | No | Yes | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | No | Yes | Timestamp in Unix nanoseconds |
+| int_value | Int64 | Int64 | No | Yes | Integer value |
+| double_value | Float64 | Float64 | No | Yes | Double value |
+| flags | UInt32 | UInt32 | Yes | No | Data point flags |
 
-#### 5.4.1 SPANS Table
+#### 5.3.3 SUMMARY_DATA_POINTS
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt16 | Yes | Span identifier |
-| resource_id | UInt16 | Yes | Foreign key to resource |
-| resource_schema_url | Utf8 | Yes | Resource schema URL |
-| resource_dropped_attributes_count | UInt32 | Yes | Dropped resource attributes |
-| scope_id | UInt16 | Yes | Foreign key to scope |
-| scope_name | Utf8 | Yes | Scope name |
-| scope_version | Utf8 | Yes | Scope version |
-| scope_dropped_attributes_count | UInt32 | Yes | Dropped scope attributes |
-| schema_url | Utf8 | Yes | Span schema URL |
-| start_time_unix_nano | Timestamp(Nanosecond) | No | Span start time |
-| duration_time_unix_nano | Duration(Nanosecond) | No | Span duration |
-| trace_id | FixedSizeBinary(16) | No | Trace ID |
-| span_id | FixedSizeBinary(8) | No | Span ID |
-| trace_state | Utf8 | Yes | W3C trace state |
-| parent_span_id | FixedSizeBinary(8) | Yes | Parent span ID |
-| name | Utf8 | No | Span name |
-| kind | Int32 | Yes | Span kind enum |
-| dropped_attributes_count | UInt32 | Yes | Dropped span attributes |
-| dropped_events_count | UInt32 | Yes | Dropped events |
-| dropped_links_count | UInt32 | Yes | Dropped links |
-| status_code | Int32 | Yes | Span status code |
-| status_status_message | Utf8 | Yes | Status message |
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Data point identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| count | UInt64 | UInt64 | Yes | No | Count of observations |
+| sum | Float64 | Float64 | Yes | No | Sum of observations |
+| quantile | Float64 | Float64, List(Float64) | Yes | No | Quantile values |
+| value | Float64 | Float64, List(Float64) | Yes | No | Quantile observation values |
+| flags | UInt32 | UInt32 | Yes | No | Data point flags |
 
-#### 5.4.2 SPAN_EVENTS Table
+#### 5.3.4 HISTOGRAM_DATA_POINTS
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt32 | Yes | Event identifier |
-| parent_id | UInt16 | No | Foreign key to SPANS |
-| time_unix_nano | Timestamp(Nanosecond) | Yes | Event timestamp |
-| name | Utf8 | No | Event name |
-| dropped_attributes_count | UInt32 | Yes | Dropped event attributes |
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Data point identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| count | UInt64 | UInt64 | Yes | No | Count of observations |
+| sum | Float64 | Float64 | Yes | No | Sum of observations |
+| bucket_counts | UInt64 | List(UInt64) | Yes | No | Count per bucket |
+| explicit_bounds | Float64 | List(Float64) | Yes | No | Histogram bucket boundaries |
+| flags | UInt32 | UInt32 | Yes | No | Data point flags |
+| min | Float64 | Float64 | Yes | No | Minimum value |
+| max | Float64 | Float64 | Yes | No | Maximum value |
 
-#### 5.4.3 SPAN_LINKS Table
+#### 5.3.5 EXP_HISTOGRAM_DATA_POINTS
 
-| Field Name | Arrow Type | Nullable | Description |
-|------------|------------|----------|-------------|
-| id | UInt32 | Yes | Link identifier |
-| parent_id | UInt16 | No | Foreign key to SPANS |
-| trace_id | FixedSizeBinary(16) | Yes | Linked trace ID |
-| span_id | FixedSizeBinary(8) | Yes | Linked span ID |
-| trace_state | Utf8 | Yes | Linked trace state |
-| dropped_attributes_count | UInt32 | Yes | Dropped link attributes |
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Data point identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| count | UInt64 | UInt64 | Yes | No | Count of observations |
+| sum | Float64 | Float64 | Yes | No | Sum of observations |
+| scale | Int32 | Int32 | Yes | No | Exponential histogram scale |
+| zero_count | UInt64 | UInt64 | Yes | No | Count of zero values |
+| positive_offset | Int32 | Int32 | Yes | No | Positive bucket offset |
+| positive_bucket_counts | UInt64 | List(UInt64) | Yes | No | Positive bucket counts |
+| negative_offset | Int32 | Int32 | Yes | No | Negative bucket offset |
+| negative_bucket_counts | UInt64 | List(UInt64) | Yes | No | Negative bucket counts |
+| flags | UInt32 | UInt32 | Yes | No | Data point flags |
+| min | Float64 | Float64 | Yes | No | Minimum value |
+| max | Float64 | Float64 | Yes | No | Maximum value |
+
+#### 5.3.6 NUMBER_DP_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to NUMBER_DATA_POINTS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.7 SUMMARY_DP_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to SUMMARY_DATA_POINTS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.8 HISTOGRAM_DP_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to HISTOGRAM_DATA_POINTS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.9 EXP_HISTOGRAM_DP_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to EXP_HISTOGRAM_DATA_POINTS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.10 NUMBER_DP_EXEMPLARS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Exemplar identifier (primary key) |
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to NUMBER_DATA_POINTS.id |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| int_value | Int64 | Int64 | Yes | No | Integer exemplar value |
+| double_value | Float64 | Float64 | Yes | No | Double exemplar value |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Associated span ID |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | Yes | No | Associated trace ID |
+
+#### 5.3.11 HISTOGRAM_DP_EXEMPLARS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Exemplar identifier (primary key) |
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to HISTOGRAM_DATA_POINTS.id |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| int_value | Int64 | Int64 | Yes | No | Integer exemplar value |
+| double_value | Float64 | Float64 | Yes | No | Double exemplar value |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Associated span ID |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | Yes | No | Associated trace ID |
+
+#### 5.3.12 EXP_HISTOGRAM_DP_EXEMPLARS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Exemplar identifier (primary key) |
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to EXP_HISTOGRAM_DATA_POINTS.id |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Timestamp in Unix nanoseconds |
+| int_value | Int64 | Int64 | Yes | No | Integer exemplar value |
+| double_value | Float64 | Float64 | Yes | No | Double exemplar value |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Associated span ID |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | Yes | No | Associated trace ID |
+
+#### 5.3.13 NUMBER_DP_EXEMPLAR_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to NUMBER_DP_EXEMPLARS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.14 HISTOGRAM_DP_EXEMPLAR_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to HISTOGRAM_DP_EXEMPLARS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.15 EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to EXP_HISTOGRAM_DP_EXEMPLARS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.3.16 METRIC_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to METRICS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+### 5.4 Traces Payloads
+
+#### 5.4.1 SPANS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt16 | UInt16 | Yes | Yes | Span identifier (primary key) |
+| resource_id | UInt16 | UInt16 | Yes | No | Foreign key to resource |
+| resource_schema_url | Utf8 | Utf8 | Yes | No | Resource schema URL |
+| resource_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped resource attributes |
+| scope_id | UInt16 | UInt16 | Yes | No | Foreign key to scope |
+| scope_name | Utf8 | Utf8 | Yes | No | Instrumentation scope name |
+| scope_version | Utf8 | Utf8 | Yes | No | Instrumentation scope version |
+| scope_dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped scope attributes |
+| schema_url | Utf8 | Utf8 | Yes | No | Span schema URL |
+| start_time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | No | Yes | Span start time in Unix nanoseconds |
+| duration_time_unix_nano | Duration(Nanosecond) | Duration(Nanosecond) | No | Yes | Span duration in nanoseconds |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | No | Yes | Trace ID |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | No | Yes | Span ID |
+| trace_state | Utf8 | Utf8 | Yes | No | W3C trace state |
+| parent_span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Parent span ID |
+| name | Utf8 | Utf8 | No | Yes | Span name |
+| kind | Int32 | Int32 | Yes | No | Span kind enum |
+| dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped span attributes |
+| dropped_events_count | UInt32 | UInt32 | Yes | No | Number of dropped events |
+| dropped_links_count | UInt32 | UInt32 | Yes | No | Number of dropped links |
+| status_code | Int32 | Int32 | Yes | No | Span status code |
+| status_status_message | Utf8 | Utf8 | Yes | No | Status message |
+
+#### 5.4.2 SPAN_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to SPANS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.4.3 SPAN_EVENTS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Event identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to SPANS.id |
+| time_unix_nano | Timestamp(Nanosecond) | Timestamp(Nanosecond) | Yes | No | Event timestamp in Unix nanoseconds |
+| name | Utf8 | Utf8 | No | Yes | Event name |
+| dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped event attributes |
+
+#### 5.4.4 SPAN_EVENT_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to SPAN_EVENTS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
+
+#### 5.4.5 SPAN_LINKS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| id | UInt32 | UInt32 | Yes | Yes | Link identifier (primary key) |
+| parent_id | UInt16 | UInt16 | No | Yes | Foreign key to SPANS.id |
+| trace_id | FixedSizeBinary(16) | FixedSizeBinary(16) | Yes | No | Linked trace ID |
+| span_id | FixedSizeBinary(8) | FixedSizeBinary(8) | Yes | No | Linked span ID |
+| trace_state | Utf8 | Utf8 | Yes | No | Linked trace state |
+| dropped_attributes_count | UInt32 | UInt32 | Yes | No | Number of dropped link attributes |
+
+#### 5.4.6 SPAN_LINK_ATTRS
+
+| Name | Value Type | Valid Types | Nullable | Required | Description |
+|------|------------|-------------|----------|----------|-------------|
+| parent_id | UInt32 | UInt32 | No | Yes | Foreign key to SPAN_LINKS.id |
+| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | Attribute key name |
+| type | UInt8 | UInt8 | No | Yes | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
+| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | String value (when type=1) |
+| int | Int64 | Int64 | Yes | No | Integer value (when type=3) |
+| double | Float64 | Float64 | Yes | No | Double value (when type=4) |
+| bool | Boolean | Boolean | Yes | No | Boolean value (when type=2) |
+| bytes | Binary | Binary | Yes | No | Bytes value (when type=5) |
+| ser | Binary | Binary | Yes | No | CBOR-encoded Array or Map (when type=6 or 7) |
 
 ### 5.5 Dictionary Encoding
 
