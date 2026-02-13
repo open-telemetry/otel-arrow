@@ -80,7 +80,7 @@ impl OutputMode {
     }
 
     /// Check if this is TUI mode.
-    pub fn is_tui(&self) -> bool {
+    pub const fn is_tui(&self) -> bool {
         matches!(self, OutputMode::Tui(_))
     }
 }

@@ -565,7 +565,7 @@ enum Cardinality {
 }
 
 impl Cardinality {
-    fn from_exact(count: usize) -> Cardinality {
+    const fn from_exact(count: usize) -> Cardinality {
         match count {
             count if count <= MAX_U8_CARDINALITY => Cardinality::WithinU8,
             count if count <= MAX_U16_CARDINALITY => Cardinality::WithinU16,
@@ -795,7 +795,7 @@ mod schema_tests {
     use super::*;
     use crate::record_batch;
     use arrow::array::{Array, DictionaryArray, PrimitiveArray, UInt8Array, UInt16Array};
-    use rand::Rng;
+    use rand::RngExt;
     use std::sync::Arc;
 
     #[test]

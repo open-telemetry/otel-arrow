@@ -585,7 +585,7 @@ pub struct ParentIdRemapping {
 }
 
 impl ParentIdRemapping {
-    fn new(column_path: &'static str, remapped_ids: RemappedParentIds) -> Self {
+    const fn new(column_path: &'static str, remapped_ids: RemappedParentIds) -> Self {
         Self {
             column_path,
             remapped_ids,

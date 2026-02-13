@@ -25,7 +25,7 @@ pub struct AttributeTransformPipelineStage {
 }
 
 impl AttributeTransformPipelineStage {
-    pub fn new(attrs_id: AttributesIdentifier, transform: AttributesTransform) -> Self {
+    pub const fn new(attrs_id: AttributesIdentifier, transform: AttributesTransform) -> Self {
         Self {
             attrs_id,
             transform,

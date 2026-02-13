@@ -52,13 +52,26 @@ pub(crate) struct CursorSidecar {
     pub wal_position: u64,
 }
 
+/// The filename used for cursor sidecar files.
+pub(crate) const CURSOR_SIDECAR_FILENAME: &str = "quiver.wal.cursor";
+
 impl CursorSidecar {
-    pub fn new(wal_position: u64) -> Self {
+    pub const fn new(wal_position: u64) -> Self {
         Self { wal_position }
     }
 
+    /// Returns the path to the cursor sidecar file for a given WAL path.
+    ///
+    /// The cursor sidecar is stored in the same directory as the WAL file.
+    pub fn path_for(wal_path: &Path) -> PathBuf {
+        wal_path
+            .parent()
+            .map(|p| p.join(CURSOR_SIDECAR_FILENAME))
+            .unwrap_or_else(|| PathBuf::from(CURSOR_SIDECAR_FILENAME))
+    }
+
     /// Returns the encoded size for the current version.
-    pub fn encoded_len(&self) -> usize {
+    pub const fn encoded_len(&self) -> usize {
         SIDECAR_V1_LEN
     }
 
@@ -337,7 +350,7 @@ mod tests {
     #[tokio::test]
     async fn write_and_read_sidecar() {
         let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("quiver.wal.cursor");
+        let path = dir.path().join(CURSOR_SIDECAR_FILENAME);
         let value = sample_sidecar();
         CursorSidecar::write_to(&path, &value).await.expect("write");
         let loaded = CursorSidecar::read_from(&path).await.expect("read");

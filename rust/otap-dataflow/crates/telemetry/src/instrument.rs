@@ -108,7 +108,7 @@ impl AddAssign<f64> for Counter<f64> {
 impl Counter<u64> {
     /// Increments the counter by `1`.
     #[inline]
-    pub fn inc(&mut self) {
+    pub const fn inc(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
             self.0 = self.0.wrapping_add(1);
@@ -121,7 +121,7 @@ impl Counter<u64> {
 
     /// Adds `v` to the counter.
     #[inline]
-    pub fn add(&mut self, v: u64) {
+    pub const fn add(&mut self, v: u64) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
             self.0 = self.0.wrapping_add(v);
@@ -259,7 +259,7 @@ impl SubAssign<f64> for UpDownCounter<f64> {
 impl UpDownCounter<u64> {
     /// Increments the counter by `1`.
     #[inline]
-    pub fn inc(&mut self) {
+    pub const fn inc(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
             self.0 = self.0.wrapping_add(1);
@@ -272,7 +272,7 @@ impl UpDownCounter<u64> {
 
     /// Decrements the counter by `1`.
     #[inline]
-    pub fn dec(&mut self) {
+    pub const fn dec(&mut self) {
         #[cfg(feature = "unchecked-arithmetic")]
         {
             self.0 = self.0.wrapping_sub(1);
@@ -302,7 +302,7 @@ impl<T: Copy + Default> ObserveCounter<T> {
 
     /// Records a new observed value, replacing the previous one.
     #[inline]
-    pub fn observe(&mut self, v: T) {
+    pub const fn observe(&mut self, v: T) {
         self.0 = v;
     }
 
@@ -359,7 +359,7 @@ impl<T: Copy + Default> ObserveUpDownCounter<T> {
 
     /// Records a new observed value, replacing the previous one.
     #[inline]
-    pub fn observe(&mut self, v: T) {
+    pub const fn observe(&mut self, v: T) {
         self.0 = v;
     }
 
@@ -419,7 +419,7 @@ where
 
     /// Sets the current gauge value.
     #[inline]
-    pub fn set(&mut self, v: T) {
+    pub const fn set(&mut self, v: T) {
         self.0 = v;
     }
 

@@ -122,6 +122,7 @@ use arrow_ipc::writer::StreamWriter;
 use crc32fast::Hasher;
 
 use crate::budget::DiskBudget;
+use crate::logging::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::record_bundle::{PayloadRef, RecordBundle, SlotId};
 
 use super::cursor_sidecar::CursorSidecar;
@@ -234,7 +235,7 @@ pub(crate) struct WalWriterOptions {
 }
 
 impl WalWriterOptions {
-    pub fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_policy: FlushPolicy) -> Self {
+    pub const fn new(path: PathBuf, segment_cfg_hash: [u8; 16], flush_policy: FlushPolicy) -> Self {
         Self {
             path,
             segment_cfg_hash,
@@ -247,12 +248,12 @@ impl WalWriterOptions {
         }
     }
 
-    pub fn with_flush_policy(mut self, policy: FlushPolicy) -> Self {
+    pub const fn with_flush_policy(mut self, policy: FlushPolicy) -> Self {
         self.flush_policy = policy;
         self
     }
 
-    pub fn with_max_wal_size(mut self, max_bytes: u64) -> Self {
+    pub const fn with_max_wal_size(mut self, max_bytes: u64) -> Self {
         self.max_wal_size = max_bytes;
         self
     }
@@ -292,7 +293,7 @@ impl WalWriterOptions {
     /// Returns `InvalidConfig` from `WalWriter::open()` if:
     /// - `denominator` is zero
     /// - `numerator >= denominator` (no decay would occur)
-    pub fn with_buffer_decay_rate(mut self, numerator: usize, denominator: usize) -> Self {
+    pub const fn with_buffer_decay_rate(mut self, numerator: usize, denominator: usize) -> Self {
         self.buffer_decay_rate = (numerator, denominator);
         self
     }
@@ -301,11 +302,19 @@ impl WalWriterOptions {
     fn validate(&self) -> WalResult<()> {
         let (numerator, denominator) = self.buffer_decay_rate;
         if denominator == 0 {
+            otel_error!("quiver.wal.init", reason = "invalid_config",);
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate denominator must be positive",
             ));
         }
         if numerator >= denominator {
+            otel_error!(
+                "quiver.wal.init",
+                numerator,
+                denominator,
+                reason = "invalid_config",
+                message = "numerator must be less than denominator for decay",
+            );
             return Err(WalError::InvalidConfig(
                 "buffer_decay_rate numerator must be less than denominator for decay",
             ));
@@ -447,10 +456,28 @@ impl WalWriter {
             file.flush().await?;
             (0, header.encoded_len()) // New file starts at WAL position 0
         } else if metadata.len() < WAL_HEADER_MIN_LEN as u64 {
+            otel_error!(
+                "quiver.wal.init",
+                path = %options.path.display(),
+                file_size = metadata.len(),
+                min_header_size = WAL_HEADER_MIN_LEN,
+                error_type = "corruption",
+                reason = "invalid_header",
+                message = "file may be corrupt",
+            );
             return Err(WalError::InvalidHeader("file smaller than minimum header"));
         } else {
             let header = WalHeader::read_from(&mut file).await?;
             if header.segment_cfg_hash != options.segment_cfg_hash {
+                otel_error!(
+                    "quiver.wal.init",
+                    path = %options.path.display(),
+                    expected = ?options.segment_cfg_hash,
+                    found = ?header.segment_cfg_hash,
+                    error_type = "config",
+                    reason = "config_mismatch",
+                    message = "WAL was created with a different configuration",
+                );
                 return Err(WalError::SegmentConfigMismatch {
                     expected: options.segment_cfg_hash,
                     found: header.segment_cfg_hash,
@@ -461,7 +488,7 @@ impl WalWriter {
 
         options.validate()?;
 
-        let sidecar_path = cursor_sidecar_path(&options.path);
+        let sidecar_path = CursorSidecar::path_for(&options.path);
         let cursor_state = load_cursor_state(&sidecar_path).await?;
         let buffer_decay_rate = options.buffer_decay_rate;
 
@@ -496,6 +523,15 @@ impl WalWriter {
         if let Some(ref budget) = coordinator.options.budget {
             budget.record_existing(coordinator.aggregate_bytes);
         }
+
+        otel_info!(
+            "quiver.wal.init",
+            is_new_file,
+            rotated_file_count = coordinator.rotated_files.len(),
+            cursor_position = coordinator.cursor_state.wal_position,
+            next_sequence,
+            aggregate_bytes = coordinator.aggregate_bytes,
+        );
 
         Ok(Self {
             active_file,
@@ -612,18 +648,18 @@ impl WalWriter {
     }
 
     /// Returns the number of WAL file rotations performed during this writer's lifetime.
-    pub(crate) fn rotation_count(&self) -> u64 {
+    pub(crate) const fn rotation_count(&self) -> u64 {
         self.coordinator.rotation_count
     }
 
     /// Returns the number of rotated files purged during this writer's lifetime.
-    pub(crate) fn purge_count(&self) -> u64 {
+    pub(crate) const fn purge_count(&self) -> u64 {
         self.coordinator.purge_count
     }
 
     /// Returns the cumulative bytes written to WAL since this writer opened.
     /// This value never decreases, even as WAL files are rotated and purged.
-    pub(crate) fn cumulative_bytes_written(&self) -> u64 {
+    pub(crate) const fn cumulative_bytes_written(&self) -> u64 {
         self.coordinator.cumulative_bytes_written
     }
 
@@ -691,7 +727,7 @@ impl ActiveWalFile {
         }
     }
 
-    fn len(&self) -> u64 {
+    const fn len(&self) -> u64 {
         self.current_len
     }
 
@@ -715,7 +751,7 @@ impl ActiveWalFile {
         self.file_ref()
     }
 
-    fn set_len(&mut self, len: u64) {
+    const fn set_len(&mut self, len: u64) {
         self.current_len = len;
     }
 
@@ -847,7 +883,7 @@ impl ActiveWalFile {
         // Take ownership of the file temporarily. If already taken (shouldn't
         // happen in Drop), skip the sync.
         let Some(tokio_file) = self.file.take() else {
-            tracing::warn!("WAL drop flush skipped: file handle unavailable");
+            otel_warn!("quiver.wal.drop.flush", reason = "no_handle",);
             return;
         };
 
@@ -858,7 +894,7 @@ impl ActiveWalFile {
             Err(tokio_file) => {
                 // Restore the file and give up - pending async ops
                 self.file = Some(tokio_file);
-                tracing::warn!("WAL drop flush skipped: file has pending async operations");
+                otel_warn!("quiver.wal.drop.flush", reason = "pending_async_ops",);
                 return;
             }
         };
@@ -867,7 +903,7 @@ impl ActiveWalFile {
         #[cfg(test)]
         test_support::record_sync_data();
         if let Err(e) = std_file.sync_data() {
-            tracing::warn!(error = %e, "WAL drop flush failed during sync_data");
+            otel_warn!("quiver.wal.drop.flush", error = %e, error_type = "io", reason = "sync_data_failed");
         }
 
         // Convert back to tokio::fs::File
@@ -906,8 +942,18 @@ impl ActiveWalFile {
     }
 }
 
+/// Result of scanning a WAL file for entries.
+struct ScanResult {
+    /// The last valid sequence number found, if any.
+    last_sequence: Option<u64>,
+    /// File offset immediately after the last valid entry (where new writes begin).
+    last_valid_offset: u64,
+    /// File offsets at the end of each entry (for cursor validation).
+    entry_boundaries: Vec<u64>,
+}
+
 impl WalCoordinator {
-    fn new(
+    const fn new(
         options: WalWriterOptions,
         sidecar_path: PathBuf,
         cursor_state: CursorSidecar,
@@ -942,7 +988,7 @@ impl WalCoordinator {
             .map_or(self.wal_position_start, |f| f.wal_position_end)
     }
 
-    fn options(&self) -> &WalWriterOptions {
+    const fn options(&self) -> &WalWriterOptions {
         &self.options
     }
 
@@ -994,10 +1040,12 @@ impl WalCoordinator {
         // Memory impact: 100,000 entries × 8 bytes = 800KB (modest but worth monitoring)
         const ENTRY_BOUNDARIES_WARNING_THRESHOLD: usize = 100_000;
         if self.entry_boundaries.len() == ENTRY_BOUNDARIES_WARNING_THRESHOLD {
-            tracing::warn!(
+            otel_warn!(
+                "quiver.wal.backpressure",
                 entry_count = self.entry_boundaries.len(),
                 rotation_target_bytes = self.options.rotation_target_bytes,
-                "entry_boundaries vector is large; consumer cursor may be stale or not advancing"
+                reason = "stale_cursor",
+                message = "consumer cursor may be stale or not advancing",
             );
         }
     }
@@ -1014,6 +1062,14 @@ impl WalCoordinator {
             > self.options.rotation_target_bytes;
 
         if will_rotate && self.rotated_files.len() >= self.options.max_rotated_files {
+            otel_warn!(
+                "quiver.wal.backpressure",
+                reason = "rotated_files_cap",
+                phase = "preflight_append",
+                rotated_file_count = self.rotated_files.len(),
+                max_rotated_files = self.options.max_rotated_files,
+                aggregate_bytes = self.aggregate_bytes,
+            );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
             ));
@@ -1027,6 +1083,13 @@ impl WalCoordinator {
         }
 
         if projected > self.options.max_wal_size {
+            otel_warn!(
+                "quiver.wal.backpressure",
+                reason = "max_wal_size",
+                projected_bytes = projected,
+                max_wal_size = self.options.max_wal_size,
+                aggregate_bytes = self.aggregate_bytes,
+            );
             return Err(WalError::WalAtCapacity(
                 "wal size cap exceeded; advance cursor to reclaim space",
             ));
@@ -1101,36 +1164,56 @@ impl WalCoordinator {
         self.active_header_size.saturating_add(data_within_active)
     }
 
-    /// Scans a WAL file and returns the last valid sequence number and the
-    /// byte offset immediately after the last valid entry (i.e., where new
-    /// writes should begin). Returns file offsets (not WAL positions).
+    /// Scans a WAL file and returns information about its entries.
+    ///
+    /// Returns file offsets (not WAL positions). The entry boundaries can be
+    /// used to initialize the `entry_boundaries` vector for cursor validation
+    /// during WAL replay.
     ///
     /// Note: Uses sync I/O via `WalReader` - this is acceptable because it's
     /// only called during startup/recovery.
-    fn scan_file_last_sequence(&self, path: &Path) -> WalResult<(Option<u64>, u64)> {
+    fn scan_file_for_entries(&self, path: &Path) -> WalResult<ScanResult> {
         if !path.exists() {
-            return Ok((None, 0));
+            return Ok(ScanResult {
+                last_sequence: None,
+                last_valid_offset: 0,
+                entry_boundaries: Vec::new(),
+            });
         }
         let mut reader = WalReader::open(path)?;
         let header_size = reader.header_size();
+        let wal_position_start = reader.wal_position_start();
         let iter = reader.iter_from(0)?;
         let mut last_seq = None;
         let mut last_valid_offset = header_size;
+        let mut boundaries = Vec::new();
         for entry in iter {
             match entry {
                 Ok(bundle) => {
                     last_seq = Some(bundle.sequence);
-                    // Convert WAL position back to file offset for internal use
-                    last_valid_offset = bundle.next_offset + header_size;
+                    // bundle.next_offset is now a global WAL position
+                    // Convert back to file offset for internal use:
+                    // file_offset = (global_position - wal_position_start) + header_size
+                    let position_in_file = bundle.next_offset.saturating_sub(wal_position_start);
+                    last_valid_offset = position_in_file + header_size;
+                    boundaries.push(last_valid_offset);
                 }
-                Err(WalError::UnexpectedEof(_)) | Err(WalError::InvalidEntry(_)) => {
-                    // Partial or corrupted entry - stop here
+                Err(WalError::UnexpectedEof(_))
+                | Err(WalError::InvalidEntry(_))
+                | Err(WalError::CrcMismatch { .. }) => {
+                    // Partial or corrupted entry - stop scanning here.
+                    // This handles crash recovery (UnexpectedEof) and corruption
+                    // (InvalidEntry, CrcMismatch) by using entries before the damage.
                     break;
                 }
                 Err(err) => return Err(err),
             }
         }
-        Ok((last_seq, last_valid_offset))
+        Ok(ScanResult {
+            last_sequence: last_seq,
+            last_valid_offset,
+            entry_boundaries: boundaries,
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -1138,6 +1221,7 @@ impl WalCoordinator {
     // ─────────────────────────────────────────────────────────────────────────────
 
     /// Determines the next sequence number and last valid offset in the active file.
+    /// Also populates `entry_boundaries` with all entry end offsets for cursor validation.
     ///
     /// Since sequence numbers are monotonically increasing, the highest sequence
     /// is always in the active file (or the most recent rotated file if the active
@@ -1145,24 +1229,27 @@ impl WalCoordinator {
     ///
     /// Note: Uses sync I/O via `WalReader` internally - this is acceptable because
     /// this method is only called during startup/recovery, not on the hot path.
-    async fn detect_next_sequence(&self) -> WalResult<(u64, u64)> {
-        let (active_seq, active_valid_offset) = self.scan_file_last_sequence(&self.options.path)?;
+    async fn detect_next_sequence(&mut self) -> WalResult<(u64, u64)> {
+        let scan = self.scan_file_for_entries(&self.options.path)?;
+
+        // Populate entry_boundaries so cursor validation works during WAL replay
+        self.entry_boundaries = scan.entry_boundaries;
 
         // If active file has entries, use its sequence
-        if let Some(seq) = active_seq {
-            return Ok((seq.wrapping_add(1), active_valid_offset));
+        if let Some(seq) = scan.last_sequence {
+            return Ok((seq.wrapping_add(1), scan.last_valid_offset));
         }
 
         // Active file is empty - check the most recent rotated file (highest rotation_id)
         if let Some(most_recent) = self.rotated_files.iter().max_by_key(|f| f.rotation_id) {
-            let (seq, _) = self.scan_file_last_sequence(&most_recent.path)?;
-            if let Some(s) = seq {
-                return Ok((s.wrapping_add(1), active_valid_offset));
+            let rotated_scan = self.scan_file_for_entries(&most_recent.path)?;
+            if let Some(s) = rotated_scan.last_sequence {
+                return Ok((s.wrapping_add(1), scan.last_valid_offset));
             }
         }
 
         // No entries anywhere - start at sequence 0
-        Ok((0, active_valid_offset))
+        Ok((0, scan.last_valid_offset))
     }
 
     async fn reload_rotated_files(&mut self, active_len: u64) -> WalResult<()> {
@@ -1217,6 +1304,14 @@ impl WalCoordinator {
 
     async fn rotate_active_file(&mut self, active_file: &mut ActiveWalFile) -> WalResult<()> {
         if self.rotated_files.len() >= self.options.max_rotated_files {
+            otel_warn!(
+                "quiver.wal.backpressure",
+                reason = "rotated_files_cap",
+                phase = "rotate_active_file",
+                rotated_file_count = self.rotated_files.len(),
+                max_rotated_files = self.options.max_rotated_files,
+                aggregate_bytes = self.aggregate_bytes,
+            );
             return Err(WalError::WalAtCapacity(
                 "rotated wal file cap reached; advance cursor before rotating",
             ));
@@ -1286,6 +1381,14 @@ impl WalCoordinator {
         // Clear entry boundaries index - new file has no entries yet
         self.entry_boundaries.clear();
         self.rotation_count = self.rotation_count.saturating_add(1);
+
+        otel_info!(
+            "quiver.wal.rotate",
+            rotation_id,
+            rotated_file_bytes = old_len,
+            rotated_file_count = self.rotated_files.len(),
+            aggregate_bytes = self.aggregate_bytes,
+        );
 
         CursorSidecar::write_to(&self.sidecar_path, &self.cursor_state).await?;
         Ok(())
@@ -1395,6 +1498,13 @@ impl WalCoordinator {
                     budget.release(purged_bytes);
                 }
 
+                otel_debug!(
+                    "quiver.wal.drop",
+                    purged_bytes,
+                    remaining_rotated_files = self.rotated_files.len().saturating_sub(1),
+                    aggregate_bytes = self.aggregate_bytes,
+                );
+
                 self.purge_count = self.purge_count.saturating_add(1);
                 let _ = self.rotated_files.pop_front();
             } else {
@@ -1472,13 +1582,6 @@ pub(super) async fn sync_parent_dir(path: &Path) -> WalResult<()> {
     Ok(())
 }
 
-fn cursor_sidecar_path(wal_path: &Path) -> PathBuf {
-    wal_path
-        .parent()
-        .map(|parent| parent.join("quiver.wal.cursor"))
-        .unwrap_or_else(|| PathBuf::from("quiver.wal.cursor"))
-}
-
 async fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
     match CursorSidecar::read_from(path).await {
         Ok(state) => Ok(state),
@@ -1492,7 +1595,7 @@ async fn load_cursor_state(path: &Path) -> WalResult<CursorSidecar> {
     }
 }
 
-fn default_cursor_state() -> CursorSidecar {
+const fn default_cursor_state() -> CursorSidecar {
     CursorSidecar::new(0)
 }
 
@@ -1585,7 +1688,7 @@ struct RotatedWalFile {
 }
 
 impl RotatedWalFile {
-    fn total_bytes(&self) -> u64 {
+    const fn total_bytes(&self) -> u64 {
         self.file_bytes
     }
 }

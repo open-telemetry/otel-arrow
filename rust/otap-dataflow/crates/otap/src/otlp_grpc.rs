@@ -36,7 +36,7 @@ pub struct LogsServiceImpl {
 impl LogsServiceImpl {
     /// Create a LogsServiceImpl with a sendable Effect Handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
+    pub const fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
@@ -49,7 +49,7 @@ pub struct MetricsServiceImpl {
 impl MetricsServiceImpl {
     /// Create a MetricsServiceImpl with a sendable Effect Handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
+    pub const fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
@@ -62,7 +62,7 @@ pub struct TraceServiceImpl {
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
+    pub const fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
@@ -75,7 +75,7 @@ pub struct ProfilesServiceImpl {
 impl ProfilesServiceImpl {
     /// create a ProfileServiceImpl with a sendable Effect Handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
+    pub const fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }

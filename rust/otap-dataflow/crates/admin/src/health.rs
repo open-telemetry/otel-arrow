@@ -127,7 +127,7 @@ where
         .collect()
 }
 
-fn acceptance_failure(condition: &Condition) -> bool {
+const fn acceptance_failure(condition: &Condition) -> bool {
     match condition.status {
         ConditionStatus::True => false,
         ConditionStatus::Unknown => {

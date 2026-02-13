@@ -96,13 +96,13 @@ impl ReconstructedBundle {
 
     /// Returns the bundle index from the manifest.
     #[must_use]
-    pub fn bundle_index(&self) -> u32 {
+    pub const fn bundle_index(&self) -> u32 {
         self.bundle_index
     }
 
     /// Returns the payload batches by slot ID.
     #[must_use]
-    pub fn payloads(&self) -> &HashMap<SlotId, RecordBatch> {
+    pub const fn payloads(&self) -> &HashMap<SlotId, RecordBatch> {
         &self.payloads
     }
 
@@ -269,7 +269,7 @@ impl StreamDecoder {
     }
 
     /// Returns the number of batches in this stream.
-    fn num_batches(&self) -> usize {
+    const fn num_batches(&self) -> usize {
         self.batches.len()
     }
 
@@ -503,19 +503,19 @@ impl SegmentReader {
 
     /// Returns the number of streams in this segment.
     #[must_use]
-    pub fn stream_count(&self) -> usize {
+    pub const fn stream_count(&self) -> usize {
         self.streams.len()
     }
 
     /// Returns the number of bundles in this segment.
     #[must_use]
-    pub fn bundle_count(&self) -> usize {
+    pub const fn bundle_count(&self) -> usize {
         self.manifest.len()
     }
 
     /// Returns the format version of this segment file.
     #[must_use]
-    pub fn version(&self) -> u16 {
+    pub const fn version(&self) -> u16 {
         self.footer.version
     }
 

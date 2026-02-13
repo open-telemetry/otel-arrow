@@ -20,7 +20,7 @@ use crate::record_bundle::{
     BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
 };
 
-use super::cursor_sidecar::CursorSidecar;
+use super::cursor_sidecar::{CURSOR_SIDECAR_FILENAME, CursorSidecar};
 use super::header::WalHeader;
 use super::reader::test_support::{self, ReadFailure};
 use super::writer::FlushPolicy;
@@ -582,7 +582,7 @@ async fn wal_writer_records_cursor_without_truncating() {
         "recording a safe cursor no longer mutates the active wal immediately"
     );
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
@@ -652,7 +652,7 @@ async fn wal_writer_enforces_safe_offset_boundaries() {
         .expect("record succeeds with aligned cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(
         sidecar.wal_position,
@@ -680,7 +680,10 @@ async fn wal_writer_persists_consumer_cursor_sidecar() {
     writer.persist_cursor(&cursor).await.expect("record cursor");
     drop(writer);
 
-    let sidecar_path = wal_path.parent().expect("dir").join("quiver.wal.cursor");
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join(CURSOR_SIDECAR_FILENAME);
     let state = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar");
     assert_eq!(state.wal_position, offset.next_offset);
 }
@@ -715,7 +718,7 @@ async fn wal_writer_rotates_when_target_exceeded() {
     let active_len = std::fs::metadata(&wal_path).expect("active metadata").len();
     assert_eq!(active_len, test_header_size());
 
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
     // Sidecar should exist after rotation (even if no cursor has been recorded yet)
     assert!(sidecar_path.exists(), "sidecar should exist after rotation");
     let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar should be readable");
@@ -885,7 +888,10 @@ async fn wal_writer_ignores_invalid_cursor_sidecar() {
         .expect("writer");
     }
 
-    let sidecar_path = wal_path.parent().expect("dir").join("quiver.wal.cursor");
+    let sidecar_path = wal_path
+        .parent()
+        .expect("dir")
+        .join(CURSOR_SIDECAR_FILENAME);
     // Write a truncated sidecar file (shorter than minimum length)
     std::fs::write(&sidecar_path, vec![0u8; 8]).expect("write corrupt");
 
@@ -2016,7 +2022,7 @@ async fn assert_crash_recovery(
         .path
         .parent()
         .expect("wal dir")
-        .join("quiver.wal.cursor");
+        .join(CURSOR_SIDECAR_FILENAME);
     if sidecar_path.exists() {
         let sidecar = CursorSidecar::read_from_sync(&sidecar_path).expect("sidecar readable");
         let total_logical = total_logical_bytes(&options.path);
@@ -2335,7 +2341,7 @@ async fn wal_writer_handles_bundle_with_unpopulated_descriptor_slots() {
 async fn wal_recovery_clamps_stale_sidecar_offset() {
     // Test that recovery handles a sidecar with wal_position beyond actual WAL data
     let (_dir, wal_path) = temp_wal("stale_sidecar.wal");
-    let sidecar_path = wal_path.parent().unwrap().join("quiver.wal.cursor");
+    let sidecar_path = wal_path.parent().unwrap().join(CURSOR_SIDECAR_FILENAME);
 
     let descriptor = logs_descriptor();
 
@@ -3162,4 +3168,434 @@ async fn wal_error_is_at_capacity_returns_false_for_other_errors() {
         !invalid_entry.is_at_capacity(),
         "InvalidEntry should return false for is_at_capacity()"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MultiFileWalReader Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+use super::MultiFileWalReader;
+
+#[tokio::test]
+async fn multi_file_reader_reads_single_active_file() {
+    let (_dir, wal_path) = temp_wal("multi_single.wal");
+    let descriptor = logs_descriptor();
+
+    // Write 3 entries to a single WAL file (no rotation)
+    let mut writer = open_test_writer(wal_path.clone(), [0xA1; 16]).await;
+    let offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8, 9]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Read with MultiFileWalReader
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(0)
+        .expect("iter")
+        .collect::<Result<_, _>>()
+        .expect("all entries");
+
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].sequence, offset1.sequence);
+    assert_eq!(entries[1].sequence, offset2.sequence);
+    assert_eq!(entries[2].sequence, offset3.sequence);
+}
+
+#[tokio::test]
+async fn multi_file_reader_reads_across_rotated_files() {
+    let (_dir, wal_path) = temp_wal("multi_rotated.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA2; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    // Write 4 entries - each triggers a rotation
+    let offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    let offset4 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x04, &[9]))
+        .await
+        .expect("append 4");
+    drop(writer);
+
+    // Verify rotated files exist
+    assert!(rotated_path_for(&wal_path, 1).exists());
+    assert!(rotated_path_for(&wal_path, 2).exists());
+    assert!(rotated_path_for(&wal_path, 3).exists());
+
+    // Read all entries with MultiFileWalReader
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(0)
+        .expect("iter")
+        .collect::<Result<_, _>>()
+        .expect("all entries");
+
+    assert_eq!(entries.len(), 4, "should read all 4 entries across files");
+    assert_eq!(entries[0].sequence, offset1.sequence);
+    assert_eq!(entries[1].sequence, offset2.sequence);
+    assert_eq!(entries[2].sequence, offset3.sequence);
+    assert_eq!(entries[3].sequence, offset4.sequence);
+
+    // Verify WAL positions are contiguous: each entry's next_offset equals the next entry's position
+    assert_eq!(entries[0].next_offset, entries[1].offset.position);
+    assert_eq!(entries[1].next_offset, entries[2].offset.position);
+    assert_eq!(entries[2].next_offset, entries[3].offset.position);
+}
+
+#[tokio::test]
+async fn multi_file_reader_starts_from_middle_of_stream() {
+    let (_dir, wal_path) = temp_wal("multi_middle.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA3; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let _offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Start reading from after the first entry
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(offset1.next_offset)
+        .expect("iter from middle")
+        .collect::<Result<_, _>>()
+        .expect("entries");
+
+    assert_eq!(entries.len(), 2, "should skip first entry");
+    assert_eq!(entries[0].sequence, offset2.sequence);
+}
+
+#[tokio::test]
+async fn multi_file_reader_starts_from_position_in_second_file() {
+    let (_dir, wal_path) = temp_wal("multi_second_file.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA4; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let _offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Start reading from after the second entry (which is in second rotated file)
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(offset2.next_offset)
+        .expect("iter from second file")
+        .collect::<Result<_, _>>()
+        .expect("entries");
+
+    assert_eq!(entries.len(), 1, "should only read third entry");
+    assert_eq!(entries[0].sequence, offset3.sequence);
+}
+
+#[tokio::test]
+async fn multi_file_reader_returns_empty_when_position_beyond_end() {
+    let (_dir, wal_path) = temp_wal("multi_beyond.wal");
+    let descriptor = logs_descriptor();
+
+    let mut writer = open_test_writer(wal_path.clone(), [0xA5; 16]).await;
+    let offset = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append");
+    drop(writer);
+
+    // Request position way beyond the WAL
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(offset.next_offset + 1_000_000)
+        .expect("iter from beyond")
+        .collect::<Result<_, _>>()
+        .expect("entries");
+
+    assert!(entries.is_empty(), "should have no entries");
+}
+
+#[tokio::test]
+async fn multi_file_reader_handles_only_rotated_files() {
+    let (_dir, wal_path) = temp_wal("multi_rotated_only.wal");
+    let descriptor = logs_descriptor();
+
+    // Write entries, rotate, then delete the active file
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA6; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    drop(writer);
+
+    // Active file should be empty (just header), delete it to simulate edge case
+    std::fs::remove_file(&wal_path).expect("remove active file");
+
+    // Should still be able to read from rotated files
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(0)
+        .expect("iter")
+        .collect::<Result<_, _>>()
+        .expect("entries");
+
+    assert_eq!(entries.len(), 2, "should read from rotated files");
+    assert_eq!(entries[0].sequence, offset1.sequence);
+    assert_eq!(entries[1].sequence, offset2.sequence);
+}
+
+#[tokio::test]
+async fn multi_file_reader_preserves_wal_positions_across_files() {
+    let (_dir, wal_path) = temp_wal("multi_positions.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA7; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Read with MultiFileWalReader and verify WAL positions match writer offsets
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(0)
+        .expect("iter")
+        .collect::<Result<_, _>>()
+        .expect("all entries");
+
+    assert_eq!(entries[0].offset.position, offset1.position);
+    assert_eq!(entries[0].next_offset, offset1.next_offset);
+
+    assert_eq!(entries[1].offset.position, offset2.position);
+    assert_eq!(entries[1].next_offset, offset2.next_offset);
+
+    assert_eq!(entries[2].offset.position, offset3.position);
+    assert_eq!(entries[2].next_offset, offset3.next_offset);
+}
+
+#[tokio::test]
+async fn multi_file_reader_wal_end_position_matches_last_entry() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos.wal");
+    let descriptor = logs_descriptor();
+
+    // Write entries to a single WAL file
+    let mut writer = open_test_writer(wal_path.clone(), [0xA8; 16]).await;
+    let _offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let _offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8, 9]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Verify wal_end_position matches the last entry's next_offset
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    assert_eq!(
+        end_position, offset3.next_offset,
+        "wal_end_position should equal the last entry's next_offset"
+    );
+}
+
+#[tokio::test]
+async fn multi_file_reader_wal_end_position_across_rotated_files() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos_rotated.wal");
+    let descriptor = logs_descriptor();
+
+    // Configure writer to rotate after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xA9; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    let _offset1 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x01, &[1, 2, 3]))
+        .await
+        .expect("append 1");
+    let _offset2 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x02, &[4, 5]))
+        .await
+        .expect("append 2");
+    let offset3 = writer
+        .append_bundle(&single_slot_bundle(&descriptor, 0x03, &[6, 7, 8]))
+        .await
+        .expect("append 3");
+    drop(writer);
+
+    // Verify wal_end_position matches last entry even with rotated files
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    assert_eq!(
+        end_position, offset3.next_offset,
+        "wal_end_position should equal the last entry's next_offset across rotated files"
+    );
+}
+
+#[tokio::test]
+async fn multi_file_reader_wal_end_position_empty_wal() {
+    let (_dir, wal_path) = temp_wal("multi_end_pos_empty.wal");
+
+    // Create an empty WAL file (header only, no entries)
+    let _writer = open_test_writer(wal_path.clone(), [0xAA; 16]).await;
+    // Writer is dropped immediately without any writes
+
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let end_position = reader.wal_end_position();
+
+    // Empty WAL should have end position at 0 (no data written after header)
+    assert_eq!(
+        end_position, 0,
+        "wal_end_position should be 0 for empty WAL"
+    );
+}
+
+#[tokio::test]
+async fn multi_file_reader_fails_when_no_wal_files_exist() {
+    let dir = tempdir().expect("tempdir");
+    let wal_path = dir.path().join("nonexistent.wal");
+
+    let result = MultiFileWalReader::open(&wal_path);
+    assert!(result.is_err(), "should fail when no WAL files exist");
+}
+
+#[tokio::test]
+async fn multi_file_reader_discovers_files_in_correct_order() {
+    // Test that files with out-of-order names (wal.5, wal.2, wal.8, wal.1) are
+    // read in the correct order based on wal_position_start, not filename.
+    let (_dir, wal_path) = temp_wal("order_test.wal");
+    let descriptor = logs_descriptor();
+
+    // Use rotation target of 1 byte to force rotation after each entry
+    let mut writer = open_test_writer_with(wal_path.clone(), [0xB1; 16], |opts| {
+        opts.with_rotation_target(1).with_max_rotated_files(10)
+    })
+    .await;
+
+    // Write 4 entries - each triggers a rotation, creating wal.1, wal.2, wal.3, wal.4
+    let mut expected_sequences = Vec::new();
+    for i in 0..4u8 {
+        let offset = writer
+            .append_bundle(&single_slot_bundle(&descriptor, i, &[i as i64]))
+            .await
+            .expect("append");
+        expected_sequences.push(offset.sequence);
+    }
+    drop(writer);
+
+    // Rename rotated files to simulate out-of-order discovery (wal.1 -> wal.5, etc.)
+    // The reader should still return entries in wal_position_start order, not filename order.
+    let renames = [(1, 10), (2, 5), (3, 20), (4, 2)];
+    for (old_id, new_id) in renames {
+        let old_path = rotated_path_for(&wal_path, old_id);
+        let new_path = rotated_path_for(&wal_path, new_id);
+        std::fs::rename(&old_path, &new_path).expect("rename rotated file");
+    }
+
+    // Read all entries - they should come back in original sequence order
+    // despite the files having scrambled names
+    let reader = MultiFileWalReader::open(&wal_path).expect("multi reader");
+    let entries: Vec<_> = reader
+        .iter_from(0)
+        .expect("iter")
+        .collect::<Result<_, _>>()
+        .expect("all entries");
+
+    assert_eq!(entries.len(), 4, "should read all 4 entries");
+
+    // Verify entries are in correct order (by sequence number)
+    let actual_sequences: Vec<_> = entries.iter().map(|e| e.sequence).collect();
+    assert_eq!(
+        actual_sequences, expected_sequences,
+        "entries should be in original write order despite scrambled filenames"
+    );
+
+    // Also verify WAL positions are monotonically increasing
+    for i in 1..entries.len() {
+        assert!(
+            entries[i].offset.position > entries[i - 1].offset.position,
+            "entry {} position {} should be > entry {} position {}",
+            i,
+            entries[i].offset.position,
+            i - 1,
+            entries[i - 1].offset.position
+        );
+    }
 }

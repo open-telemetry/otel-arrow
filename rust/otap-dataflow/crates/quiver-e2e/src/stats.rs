@@ -149,7 +149,7 @@ impl SteadyStateStats {
     }
 
     /// Updates disk stats.
-    pub fn update_disk(&mut self, current_bytes: u64) {
+    pub const fn update_disk(&mut self, current_bytes: u64) {
         self.current_disk_bytes = current_bytes;
         if current_bytes > self.peak_disk_bytes {
             self.peak_disk_bytes = current_bytes;
@@ -157,7 +157,7 @@ impl SteadyStateStats {
     }
 
     /// Sets initial metrics.
-    pub fn set_initial(&mut self, memory_mb: f64, disk_bytes: u64) {
+    pub const fn set_initial(&mut self, memory_mb: f64, disk_bytes: u64) {
         self.initial_memory_mb = memory_mb;
         self.current_memory_mb = memory_mb;
         self.initial_disk_bytes = disk_bytes;
@@ -232,12 +232,12 @@ impl SteadyStateStats {
     }
 
     /// Returns live ingest rate (bundles/sec over last sample interval).
-    pub fn live_bundles_ingest_rate(&self) -> f64 {
+    pub const fn live_bundles_ingest_rate(&self) -> f64 {
         self.live_bundles_ingest_rate
     }
 
     /// Returns live consume rate (bundles/sec over last sample interval).
-    pub fn live_bundles_consume_rate(&self) -> f64 {
+    pub const fn live_bundles_consume_rate(&self) -> f64 {
         self.live_bundles_consume_rate
     }
 

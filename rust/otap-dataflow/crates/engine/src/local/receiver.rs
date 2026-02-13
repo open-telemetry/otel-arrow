@@ -106,7 +106,7 @@ pub struct ControlChannel<PData> {
 impl<PData> ControlChannel<PData> {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
+    pub const fn new(rx: crate::message::Receiver<NodeControlMsg<PData>>) -> Self {
         Self { rx }
     }
 

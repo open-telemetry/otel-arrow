@@ -51,6 +51,7 @@ use crc32fast::Hasher as Crc32Hasher;
 
 use super::error::{Result, SubscriberError};
 use super::types::SubscriberId;
+use crate::logging::otel_warn;
 use crate::segment::SegmentSeq;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ struct ProgressHeader {
 
 impl ProgressHeader {
     /// Creates a new header with the given values.
-    fn new(oldest_incomplete_seg: SegmentSeq, entry_count: u32) -> Self {
+    const fn new(oldest_incomplete_seg: SegmentSeq, entry_count: u32) -> Self {
         Self {
             version: PROGRESS_VERSION,
             header_size: HEADER_V1_SIZE as u16,
@@ -250,7 +251,7 @@ impl SegmentProgressEntry {
 
     /// Creates an entry from an existing bitmap.
     #[must_use]
-    pub fn from_bitmap(seg_seq: SegmentSeq, bundle_count: u32, bitmap: Vec<u64>) -> Self {
+    pub const fn from_bitmap(seg_seq: SegmentSeq, bundle_count: u32, bitmap: Vec<u64>) -> Self {
         Self {
             seg_seq,
             bundle_count,
@@ -408,7 +409,7 @@ pub struct SubscriberProgress {
 impl SubscriberProgress {
     /// Creates a new empty progress state.
     #[must_use]
-    pub fn new(subscriber_id: SubscriberId) -> Self {
+    pub const fn new(subscriber_id: SubscriberId) -> Self {
         Self {
             subscriber_id,
             oldest_incomplete_seg: SegmentSeq::new(0),
@@ -418,7 +419,7 @@ impl SubscriberProgress {
 
     /// Creates progress with the given state.
     #[must_use]
-    pub fn with_entries(
+    pub const fn with_entries(
         subscriber_id: SubscriberId,
         oldest_incomplete_seg: SegmentSeq,
         entries: Vec<SegmentProgressEntry>,
@@ -654,10 +655,12 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
             match SubscriberId::new(id_str) {
                 Ok(id) => subscriber_ids.push(id),
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.subscriber.progress.scan",
                         file = %name,
                         error = %e,
-                        "ignoring progress file with invalid subscriber ID"
+                        error_type = "decode",
+                        message = "ignoring progress file with invalid subscriber ID"
                     );
                 }
             }

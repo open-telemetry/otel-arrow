@@ -183,7 +183,7 @@ impl PipelineContext {
 
     /// Returns the core ID associated with this pipeline context.
     #[must_use]
-    pub fn core_id(&self) -> usize {
+    pub const fn core_id(&self) -> usize {
         self.core_id
     }
 
@@ -192,7 +192,7 @@ impl PipelineContext {
     /// This is useful for nodes that need to share resources (like disk budgets)
     /// across all cores running the same pipeline.
     #[must_use]
-    pub fn num_cores(&self) -> usize {
+    pub const fn num_cores(&self) -> usize {
         self.num_cores
     }
 
@@ -209,7 +209,7 @@ impl PipelineContext {
     /// Only the Internal Telemetry Receiver factory uses this to obtain the logs
     /// channel and resource bytes it needs for operation.
     #[must_use]
-    pub fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
+    pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
     }
 
@@ -217,7 +217,7 @@ impl PipelineContext {
     ///
     /// Used by the ITR factory to consume the settings during construction.
     #[must_use]
-    pub fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
+    pub const fn take_internal_telemetry(&mut self) -> Option<InternalTelemetrySettings> {
         self.internal_telemetry.take()
     }
 

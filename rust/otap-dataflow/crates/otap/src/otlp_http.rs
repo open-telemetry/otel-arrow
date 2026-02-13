@@ -187,7 +187,7 @@ const fn default_accept_compressed_requests() -> bool {
     true
 }
 
-fn default_http_timeout() -> Option<Duration> {
+const fn default_http_timeout() -> Option<Duration> {
     // Conservative default chosen to mitigate slow-client DoS while keeping parity
     // with common collector defaults.
     Some(Duration::from_secs(30))
@@ -844,7 +844,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
-                                        otap_df_telemetry::otel_debug!("HttpConnectionError", error = err.to_string());
+                                        otap_df_telemetry::otel_debug!("http.connection_error", error = err.to_string());
                                     }
                                 },
                                 _ = shutdown.cancelled() => {

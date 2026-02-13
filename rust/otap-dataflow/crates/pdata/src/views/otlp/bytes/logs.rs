@@ -41,7 +41,7 @@ pub struct RawLogsData<'a> {
 impl<'a> RawLogsData<'a> {
     /// Create a new instance of `RawLogsData`
     #[must_use]
-    pub fn new(buf: &'a [u8]) -> Self {
+    pub const fn new(buf: &'a [u8]) -> Self {
         Self { buf }
     }
 }

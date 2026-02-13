@@ -91,7 +91,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
 impl ParquetExporter {
     /// construct a new instance of the `ParquetExporter`
     #[must_use]
-    pub fn new(config: config::Config) -> Self {
+    pub const fn new(config: config::Config) -> Self {
         // NOTE: This constructor does not register metrics because it lacks a PipelineContext.
         // Prefer using from_config in the factory path so metrics are properly wired.
         Self {

@@ -60,7 +60,7 @@ impl OtlpProtoBytes {
 
     /// Create a new empty request object of a certain signal type.
     #[must_use]
-    pub fn empty(signal: SignalType) -> Self {
+    pub const fn empty(signal: SignalType) -> Self {
         let b = Bytes::new();
         match signal {
             SignalType::Logs => Self::ExportLogsRequest(b),

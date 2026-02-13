@@ -108,7 +108,7 @@ impl SegmentError {
 
     /// Creates an I/O error without a path.
     #[must_use]
-    pub fn io_no_path(source: io::Error) -> Self {
+    pub const fn io_no_path(source: io::Error) -> Self {
         Self::Io { path: None, source }
     }
 }

@@ -48,6 +48,7 @@ use parking_lot::Mutex;
 
 use crate::config::RetentionPolicy;
 use crate::error::{QuiverError, Result};
+use crate::logging::otel_warn;
 
 /// Error returned when budget configuration is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,7 +320,7 @@ impl DiskBudget {
 
     /// Returns the configured retention policy.
     #[must_use]
-    pub fn policy(&self) -> RetentionPolicy {
+    pub const fn policy(&self) -> RetentionPolicy {
         self.policy
     }
 
@@ -389,6 +390,14 @@ impl DiskBudget {
                             }
                         }
                         // No cleanup possible or no callback, return backpressure error
+                        otel_warn!(
+                            "quiver.budget.backpressure",
+                            requested = bytes,
+                            available = self.cap.saturating_sub(current),
+                            cap = self.cap,
+                            used = current,
+                            policy = "backpressure",
+                        );
                         return Err(QuiverError::StorageAtCapacity {
                             requested: bytes,
                             available: self.cap.saturating_sub(current),
@@ -405,6 +414,15 @@ impl DiskBudget {
                                 continue;
                             }
                             // Reclaim couldn't free any space, fall back to backpressure
+                            otel_warn!(
+                                "quiver.budget.backpressure",
+                                requested = bytes,
+                                available = self.cap.saturating_sub(current),
+                                cap = self.cap,
+                                used = current,
+                                policy = "drop_oldest",
+                                message = "reclaim failed, falling back to backpressure",
+                            );
                             return Err(QuiverError::StorageAtCapacity {
                                 requested: bytes,
                                 available: self.cap.saturating_sub(current),
