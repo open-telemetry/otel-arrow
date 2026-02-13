@@ -3,6 +3,7 @@
 
 //! Errors for the config crate.
 
+use crate::node::NodeKind;
 use crate::pipeline::DispatchPolicy;
 use crate::{NodeId, PipelineGroupId, PipelineId, PortName};
 use miette::Diagnostic;
@@ -141,6 +142,38 @@ pub enum Error {
         source_nodes: Box<[NodeId]>,
         /// Destination node ids for the connection.
         target_nodes: Box<[NodeId]>,
+    },
+
+    /// A connection has an empty endpoint set.
+    #[error(
+        "Invalid connection endpoint set: `from` and `to` must both be non-empty (from_empty={from_empty}, to_empty={to_empty})\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::empty_connection_endpoint_set), url(docsrs))]
+    EmptyConnectionEndpointSet {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// Whether the connection source set is empty.
+        from_empty: bool,
+        /// Whether the connection destination set is empty.
+        to_empty: bool,
+    },
+
+    /// A connection endpoint references a node kind not allowed at that endpoint.
+    #[error(
+        "Invalid connection `{endpoint}` endpoint node kind for `{node_id}`: expected one of {expected_kinds:?}, got {actual_kind:?}\nContext: {context}"
+    )]
+    #[diagnostic(code(data_plane::invalid_connection_node_kind), url(docsrs))]
+    InvalidConnectionNodeKind {
+        /// The context in which the error occurred.
+        context: Box<Context>,
+        /// The node id referenced by the endpoint.
+        node_id: NodeId,
+        /// The endpoint role (`from` or `to`).
+        endpoint: String,
+        /// The actual node kind for this node id.
+        actual_kind: NodeKind,
+        /// The allowed node kinds for this endpoint.
+        expected_kinds: Box<[NodeKind]>,
     },
 
     /// A connection selects an output that is not declared by the source node.

@@ -925,14 +925,29 @@ impl PipelineConfig {
         errors: &mut Vec<Error>,
     ) {
         for connection in connections {
+            let source_selectors = connection.from_sources();
+            let source_nodes = source_selectors
+                .iter()
+                .map(|source| source.node_id().clone())
+                .collect::<Vec<_>>();
             let target_nodes = connection.to_nodes();
+            let from_empty = source_selectors.is_empty();
+            let to_empty = target_nodes.is_empty();
+            if from_empty || to_empty {
+                errors.push(Error::EmptyConnectionEndpointSet {
+                    context: Box::new(Context::new(pipeline_group_id.clone(), pipeline_id.clone())),
+                    from_empty,
+                    to_empty,
+                });
+                continue;
+            }
             if let Some(DispatchPolicy::Broadcast) = &connection.policies.dispatch
                 && target_nodes.len() > 1
             {
                 errors.push(Error::UnsupportedConnectionDispatchPolicy {
                     context: Box::new(Context::new(pipeline_group_id.clone(), pipeline_id.clone())),
                     dispatch_policy: DispatchPolicy::Broadcast,
-                    source_nodes: connection.from_nodes().into_boxed_slice(),
+                    source_nodes: source_nodes.into_boxed_slice(),
                     target_nodes: target_nodes.into_boxed_slice(),
                 });
                 continue;
@@ -944,7 +959,7 @@ impl PipelineConfig {
                 .cloned()
                 .collect();
 
-            for source in connection.from_sources() {
+            for source in source_selectors {
                 let source_node = source.node_id().clone();
                 let missing_source = !nodes.contains_key(source_node.as_ref());
                 if missing_source || !missing_targets.is_empty() {
@@ -962,6 +977,21 @@ impl PipelineConfig {
                 }
 
                 if let Some(node_cfg) = nodes.get(source_node.as_ref()) {
+                    let source_kind = node_cfg.kind();
+                    if !matches!(source_kind, NodeKind::Receiver | NodeKind::Processor) {
+                        errors.push(Error::InvalidConnectionNodeKind {
+                            context: Box::new(Context::new(
+                                pipeline_group_id.clone(),
+                                pipeline_id.clone(),
+                            )),
+                            node_id: source_node.clone(),
+                            endpoint: "from".to_string(),
+                            actual_kind: source_kind,
+                            expected_kinds: vec![NodeKind::Receiver, NodeKind::Processor]
+                                .into_boxed_slice(),
+                        });
+                        continue;
+                    }
                     let resolved_port = source.resolved_output_port();
                     if !node_cfg.outputs.is_empty()
                         && !node_cfg
@@ -1447,6 +1477,7 @@ impl Default for PipelineConfigBuilder {
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
+    use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
     use crate::pipeline::service::telemetry::metrics::MetricsConfig;
     use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
@@ -1580,6 +1611,37 @@ mod tests {
                         && details.missing_targets.as_slice() == ["Y"]
                         && details.target_nodes.as_slice() == ["Y"] => {}
                     other => panic!("expected InvalidHyperEdge missing_targets, got {other:?}"),
+                }
+            }
+            other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_builder_rejects_empty_target_set() {
+        let result = PipelineConfigBuilder::new()
+            .add_receiver("A", "urn:test:example:receiver", None)
+            .connect(
+                "A",
+                "out",
+                std::iter::empty::<&str>(),
+                DispatchPolicy::OneOf,
+            )
+            .build(PipelineType::Otap, "pgroup", "pipeline");
+
+        match result {
+            Err(Error::InvalidConfiguration { errors }) => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::EmptyConnectionEndpointSet {
+                        from_empty,
+                        to_empty,
+                        ..
+                    } => {
+                        assert!(!from_empty);
+                        assert!(*to_empty);
+                    }
+                    other => panic!("expected EmptyConnectionEndpointSet, got {other:?}"),
                 }
             }
             other => panic!("expected Err(InvalidPipelineSpec), got {other:?}"),
@@ -2466,6 +2528,49 @@ mod tests {
     }
 
     #[test]
+    fn test_pipeline_from_yaml_rejects_invalid_from_node_kind() {
+        let yaml = r#"
+            nodes:
+              exporter:
+                type: "noop:exporter"
+                config: {}
+              processor:
+                type: "attribute:processor"
+                config: {}
+            connections:
+              - from: exporter
+                to: processor
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        match err {
+            Error::InvalidConfiguration { errors } => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::InvalidConnectionNodeKind {
+                        node_id,
+                        endpoint,
+                        actual_kind,
+                        expected_kinds,
+                        ..
+                    } => {
+                        assert_eq!(node_id.as_ref(), "exporter");
+                        assert_eq!(endpoint, "from");
+                        assert!(matches!(actual_kind, NodeKind::Exporter));
+                        assert_eq!(
+                            expected_kinds.as_ref(),
+                            [NodeKind::Receiver, NodeKind::Processor]
+                        );
+                    }
+                    other => panic!("expected InvalidConnectionNodeKind, got {other:?}"),
+                }
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_pipeline_from_yaml_with_policies_dispatch_one_of() {
         let yaml = r#"
             nodes:
@@ -2563,6 +2668,78 @@ mod tests {
                         assert_eq!(target_nodes.as_ref(), ["exporter_a", "exporter_b"]);
                     }
                     other => panic!("expected UnsupportedConnectionDispatchPolicy, got {other:?}"),
+                }
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_empty_from_set() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "otlp:receiver"
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: []
+                to: exporter
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        match err {
+            Error::InvalidConfiguration { errors } => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::EmptyConnectionEndpointSet {
+                        from_empty,
+                        to_empty,
+                        ..
+                    } => {
+                        assert!(*from_empty);
+                        assert!(!to_empty);
+                    }
+                    other => panic!("expected EmptyConnectionEndpointSet, got {other:?}"),
+                }
+            }
+            other => panic!("expected InvalidConfiguration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pipeline_from_yaml_rejects_empty_to_set() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "otlp:receiver"
+                config: {}
+              exporter:
+                type: "noop:exporter"
+                config: {}
+            connections:
+              - from: receiver
+                to: []
+        "#;
+
+        let err =
+            super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
+        match err {
+            Error::InvalidConfiguration { errors } => {
+                assert_eq!(errors.len(), 1);
+                match &errors[0] {
+                    Error::EmptyConnectionEndpointSet {
+                        from_empty,
+                        to_empty,
+                        ..
+                    } => {
+                        assert!(!from_empty);
+                        assert!(*to_empty);
+                    }
+                    other => panic!("expected EmptyConnectionEndpointSet, got {other:?}"),
                 }
             }
             other => panic!("expected InvalidConfiguration, got {other:?}"),
