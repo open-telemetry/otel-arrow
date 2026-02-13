@@ -119,7 +119,7 @@ pub struct ContentRouterConfig {
     pub case_sensitive: bool,
 }
 
-fn default_case_sensitive() -> bool {
+const fn default_case_sensitive() -> bool {
     true
 }
 
