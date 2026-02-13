@@ -60,49 +60,44 @@ to a later section where we define the full schema and arrow value type for each
 
 #### 2.1.1 Logs Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
-|---|---|---|---|---|---|
-| LOGS | 30 | Core log record data (Root) | Yes | LOG_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
-| LOG_ATTRS | 31 | Log-level attributes | No | — | LOGS |
-| RESOURCE_ATTRS | 1 | Resource attributes | No | — | LOGS |
-| SCOPE_ATTRS | 2 | Instrumentation scope attributes | No | — | LOGS |
+| Payload Type | Enum Value | Description | Id | Parent Payload Type |
+|---|---|---|---|---|
+| LOGS | 30 | Core log record data (Root) | Yes | — |
+| LOG_ATTRS | 31 | Log-level attributes | No | LOGS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | LOGS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | LOGS |
 
 #### 2.1.2 Metrics Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
-|---|---|---|---|---|---|
-| UNIVARIATE_METRICS | 10 | Core metric metadata (Root) | Yes | NUMBER_DATA_POINTS, SUMMARY_DATA_POINTS, HISTOGRAM_DATA_POINTS, EXP_HISTOGRAM_DATA_POINTS, METRIC_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
-| MULTIVARIATE_METRICS | 25 | Core metric metadata (Root) | Yes | NUMBER_DATA_POINTS, SUMMARY_DATA_POINTS, HISTOGRAM_DATA_POINTS, EXP_HISTOGRAM_DATA_POINTS, METRIC_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
-| NUMBER_DATA_POINTS | 11 | Gauge and sum data points | Yes | NUMBER_DP_ATTRS, NUMBER_DP_EXEMPLARS | METRICS |
-| SUMMARY_DATA_POINTS | 12 | Summary data points | Yes | SUMMARY_DP_ATTRS | METRICS |
-| HISTOGRAM_DATA_POINTS | 13 | Histogram data points | Yes | HISTOGRAM_DP_ATTRS, HISTOGRAM_DP_EXEMPLARS | METRICS |
-| EXP_HISTOGRAM_DATA_POINTS | 14 | Exponential histogram data points | Yes | EXP_HISTOGRAM_DP_ATTRS, EXP_HISTOGRAM_DP_EXEMPLARS | METRICS |
-| NUMBER_DP_ATTRS | 15 | Attributes for number data points | No | — | NUMBER_DATA_POINTS |
-| SUMMARY_DP_ATTRS | 16 | Attributes for summary data points | No | — | SUMMARY_DATA_POINTS |
-| HISTOGRAM_DP_ATTRS | 17 | Attributes for histogram data points | No | — | HISTOGRAM_DATA_POINTS |
-| EXP_HISTOGRAM_DP_ATTRS | 18 | Attributes for exp histogram data points | No | — | EXP_HISTOGRAM_DATA_POINTS |
-| NUMBER_DP_EXEMPLARS | 19 | Exemplars for number data points | Yes | NUMBER_DP_EXEMPLAR_ATTRS | NUMBER_DATA_POINTS |
-| HISTOGRAM_DP_EXEMPLARS | 20 | Exemplars for histogram data points | Yes | HISTOGRAM_DP_EXEMPLAR_ATTRS | HISTOGRAM_DATA_POINTS |
-| EXP_HISTOGRAM_DP_EXEMPLARS | 21 | Exemplars for exp histogram data points | Yes | EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | EXP_HISTOGRAM_DATA_POINTS |
-| NUMBER_DP_EXEMPLAR_ATTRS | 22 | Exemplar attributes for number DPs | No | — | NUMBER_DP_EXEMPLARS |
-| HISTOGRAM_DP_EXEMPLAR_ATTRS | 23 | Exemplar attributes for histogram DPs | No | — | HISTOGRAM_DP_EXEMPLARS |
-| EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | 24 | Exemplar attributes for exp histogram DPs | No | — | EXP_HISTOGRAM_DP_EXEMPLARS |
-| METRIC_ATTRS | 26 | Metric-level attributes | No | — | METRICS |
-| RESOURCE_ATTRS | 1 | Resource attributes | No | — | METRICS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | — | METRICS |
+| Payload Type | Enum Value | Description | Id | Parent Payload Type |
+|---|---|---|---|---|
+| UNIVARIATE_METRICS | 10 | Core metric metadata (Root) | Yes | — |
+| MULTIVARIATE_METRICS | 25 | Core metric metadata (Root) | Yes | — |
+| NUMBER_DATA_POINTS | 11 | Gauge and sum data points | Yes | METRICS |
+| SUMMARY_DATA_POINTS | 12 | Summary data points | Yes | METRICS |
+| HISTOGRAM_DATA_POINTS | 13 | Histogram data points | Yes | METRICS |
+| EXP_HISTOGRAM_DATA_POINTS | 14 | Exponential histogram data points | Yes | METRICS |
+| *_DP_ATTRS | 15-18 | Attributes for data points | No | *_DATA_POINTS |
+| NUMBER_DP_EXEMPLARS | 19 | Exemplars for number data points | Yes | NUMBER_DATA_POINTS |
+| HISTOGRAM_DP_EXEMPLARS | 20 | Exemplars for histogram data points | Yes | HISTOGRAM_DATA_POINTS |
+| EXP_HISTOGRAM_DP_EXEMPLARS | 21 | Exemplars for exp histogram data points | Yes | EXP_HISTOGRAM_DATA_POINTS |
+| *_DP_EXEMPLAR_ATTRS | 22-24 | Exemplar attributes | No | *_DP_EXEMPLARS |
+| METRIC_ATTRS | 26 | Metric-level attributes | No | METRICS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | METRICS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | METRICS |
 
 #### 2.1.3 Traces Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
-|---|---|---|---|---|---|
-| SPANS | 40 | Core span data (Root) | Yes | SPAN_ATTRS, SPAN_EVENTS, SPAN_LINKS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
-| SPAN_ATTRS | 41 | Span attributes | No | — | SPANS |
-| SPAN_EVENTS | 42 | Span events | Yes | SPAN_EVENT_ATTRS | SPANS |
-| SPAN_EVENT_ATTRS | 44 | Event attributes | No | — | SPAN_EVENTS |
-| SPAN_LINKS | 43 | Span links | Yes | SPAN_LINK_ATTRS | SPANS |
-| SPAN_LINK_ATTRS | 45 | Link attributes | No | — | SPAN_LINKS |
-| RESOURCE_ATTRS | 1 | Resource attributes | No | — | SPANS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | — | SPANS |
+| Payload Type | Enum Value | Description | Id | Parent Payload Type |
+|---|---|---|---|---|
+| SPANS | 40 | Core span data (Root) | Yes | — |
+| SPAN_ATTRS | 41 | Span attributes | No | SPANS |
+| SPAN_EVENTS | 42 | Span events | Yes | SPANS |
+| SPAN_EVENT_ATTRS | 44 | Event attributes | No | SPAN_EVENTS |
+| SPAN_LINKS | 43 | Span links | Yes | SPANS |
+| SPAN_LINK_ATTRS | 45 | Link attributes | No | SPAN_LINKS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | SPANS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | SPANS |
 
 The foreign key relationships between payload types are defined in Section 6.
 
@@ -316,25 +311,11 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 
 ### 5.1 Common Payloads
 
-#### RESOURCE_ATTRS
+#### RESOURCE_ATTRS / SCOPE_ATTRS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id` |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### SCOPE_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to parent table's `scope.id` |
+| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id` or `scope.id` |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
@@ -473,134 +454,46 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 | min | Float64 | — | Yes | No | — | — | Minimum value |
 | max | Float64 | — | Yes | No | — | — | Maximum value |
 
-#### NUMBER_DP_ATTRS
+#### *_DP_ATTRS
+
+Applies to: NUMBER_DP_ATTRS, SUMMARY_DP_ATTRS, HISTOGRAM_DP_ATTRS, EXP_HISTOGRAM_DP_ATTRS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [NUMBER_DATA_POINTS](#number_data_points).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-#### SUMMARY_DP_ATTRS
+#### *_DP_EXEMPLARS
 
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SUMMARY_DATA_POINTS](#summary_data_points).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### HISTOGRAM_DP_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [HISTOGRAM_DATA_POINTS](#histogram_data_points).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### EXP_HISTOGRAM_DP_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [EXP_HISTOGRAM_DATA_POINTS](#exp_histogram_data_points).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### NUMBER_DP_EXEMPLARS
+Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPLARS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to [NUMBER_DATA_POINTS](#number_data_points).id |
+| parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | int_value | Int64 | — | Yes | No | — | — | Integer exemplar value |
 | double_value | Float64 | — | Yes | No | — | — | Double exemplar value |
 | span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Associated span `id` |
 | trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Associated trace `id` |
 
-#### HISTOGRAM_DP_EXEMPLARS
+#### *_DP_EXEMPLAR_ATTRS
+
+Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to [HISTOGRAM_DATA_POINTS](#histogram_data_points).id |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| int_value | Int64 | — | Yes | No | — | — | Integer exemplar value |
-| double_value | Float64 | — | Yes | No | — | — | Double exemplar value |
-| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Associated span `id` |
-| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Associated trace `id` |
-
-#### EXP_HISTOGRAM_DP_EXEMPLARS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) (remapped) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to [EXP_HISTOGRAM_DATA_POINTS](#exp_histogram_data_points).id |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| int_value | Int64 | — | Yes | No | — | — | Integer exemplar value |
-| double_value | Float64 | — | Yes | No | — | — | Double exemplar value |
-| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Associated span `id` |
-| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Associated trace `id` |
-
-#### NUMBER_DP_EXEMPLAR_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [NUMBER_DP_EXEMPLARS](#number_dp_exemplars).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### HISTOGRAM_DP_EXEMPLAR_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [HISTOGRAM_DP_EXEMPLARS](#histogram_dp_exemplars).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [EXP_HISTOGRAM_DP_EXEMPLARS](#exp_histogram_dp_exemplars).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
@@ -612,9 +505,9 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
@@ -655,9 +548,9 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPANS](#spans).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
@@ -679,9 +572,9 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_EVENTS](#span_events).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
@@ -704,9 +597,9 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_LINKS](#span_links).id |
-| key | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | No | Yes | — | Attribute key name |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Utf8, Dictionary(UInt8\|UInt16\|UInt32, Utf8) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
