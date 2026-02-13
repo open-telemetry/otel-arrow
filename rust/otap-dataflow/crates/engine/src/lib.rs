@@ -23,6 +23,7 @@ use crate::{
     shared::message::{SharedReceiver, SharedSender},
 };
 use async_trait::async_trait;
+use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
@@ -427,22 +428,53 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
 
-        // Build a shared node-name-to-index map so that any node factory can
-        // resolve peer node names to their pipeline indices.  Indices are
-        // assigned sequentially in iteration order, matching `next_node_id`.
-        let node_names: context::NodeNameIndex = Arc::new(
-            config
-                .node_iter()
-                .enumerate()
-                .map(|(idx, (name, _))| (name.clone(), idx))
+        // First pass: allocate all node IDs from the build_state.
+        let mut receiver_count = 0usize;
+        let mut processor_count = 0usize;
+        let mut exporter_count = 0usize;
+        let mut node_ids: HashMap<NodeName, NodeId> = HashMap::new();
+
+        for (name, node_config) in config.node_iter() {
+            let (node_type, pipe_node) = match node_config.kind() {
+                otap_df_config::node::NodeKind::Receiver => {
+                    let pn = PipeNode::new(receiver_count);
+                    receiver_count += 1;
+                    (NodeType::Receiver, pn)
+                }
+                otap_df_config::node::NodeKind::Processor => {
+                    let pn = PipeNode::new(processor_count);
+                    processor_count += 1;
+                    (NodeType::Processor, pn)
+                }
+                otap_df_config::node::NodeKind::Exporter => {
+                    let pn = PipeNode::new(exporter_count);
+                    exporter_count += 1;
+                    (NodeType::Exporter, pn)
+                }
+                otap_df_config::node::NodeKind::ProcessorChain => {
+                    return Err(Error::UnsupportedNodeKind {
+                        kind: "ProcessorChain".into(),
+                    });
+                }
+            };
+            let node_id = build_state.next_node_id(name.clone(), node_type, pipe_node)?;
+            let _ = node_ids.insert(name.clone(), node_id);
+        }
+
+        let node_names: NodeNameIndex = Arc::new(
+            node_ids
+                .iter()
+                .map(|(name, id)| (name.clone(), id.clone()))
                 .collect(),
         );
         pipeline_ctx.set_node_names(node_names);
 
-        // Create runtime nodes based on the pipeline configuration.
+        // Second pass: create runtime nodes.  Node IDs were pre-assigned above,
+        // so we look them up from `node_ids` instead of calling `next_node_id`.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
+            let node_id = node_ids.get(name).expect("allocated in first pass").clone();
             let base_ctx =
                 pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
 
@@ -457,67 +489,40 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         }
                     }
 
-                    let node_id = build_state.next_node_id(
-                        name.clone(),
-                        NodeType::Receiver,
-                        PipeNode::new(receivers.len()),
-                    )?;
-                    let node_id_for_create = node_id.clone();
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
                         NodeType::Receiver,
-                        node_id,
+                        node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
+                        || self.create_receiver(&base_ctx, node_id.clone(), node_config.clone()),
                     )?;
                     receivers.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Processor => {
-                    let node_id = build_state.next_node_id(
-                        name.clone(),
-                        NodeType::Processor,
-                        PipeNode::new(processors.len()),
-                    )?;
-                    let node_id_for_create = node_id.clone();
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
                         NodeType::Processor,
-                        node_id,
+                        node_id.clone(),
                         channel_metrics_enabled,
-                        || {
-                            self.create_processor(
-                                &base_ctx,
-                                node_id_for_create,
-                                node_config.clone(),
-                            )
-                        },
+                        || self.create_processor(&base_ctx, node_id.clone(), node_config.clone()),
                     )?;
                     processors.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::Exporter => {
-                    let node_id = build_state.next_node_id(
-                        name.clone(),
-                        NodeType::Exporter,
-                        PipeNode::new(exporters.len()),
-                    )?;
-                    let node_id_for_create = node_id.clone();
                     let wrapper = self.build_node_wrapper(
                         &mut build_state,
                         &base_ctx,
                         NodeType::Exporter,
-                        node_id,
+                        node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
+                        || self.create_exporter(&base_ctx, node_id.clone(), node_config.clone()),
                     )?;
                     exporters.push(wrapper);
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
-                    // ToDo(LQ): Implement processor chain optimization to eliminate intermediary channels.
-                    return Err(Error::UnsupportedNodeKind {
-                        kind: "ProcessorChain".into(),
-                    });
+                    unreachable!("rejected in first pass");
                 }
             }
         }
@@ -1169,10 +1174,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let runtime_config = ReceiverConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id_for_create = node_id.clone();
         let receiver = create(
             (*pipeline_ctx).clone(),
-            node_id_for_create,
+            node_id.clone(),
             node_config,
             &runtime_config,
         )
@@ -1225,10 +1229,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let processor_config = ProcessorConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id_for_create = node_id.clone();
         let processor = create(
             (*pipeline_ctx).clone(),
-            node_id_for_create,
+            node_id.clone(),
             node_config.clone(),
             &processor_config,
         )
@@ -1281,10 +1284,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let exporter_config = ExporterConfig::new(name.clone());
         let create = factory.create;
 
-        let node_id_for_create = node_id.clone();
         let exporter = create(
             (*pipeline_ctx).clone(),
-            node_id_for_create,
+            node_id.clone(),
             node_config,
             &exporter_config,
         )

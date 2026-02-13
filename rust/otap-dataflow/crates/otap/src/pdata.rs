@@ -51,10 +51,8 @@ impl Context {
             // Inherit the preceding frame's RETURN_DATA bit
             interests |= last.interests & Interests::RETURN_DATA;
 
-            if node_id == last.node_id {
-                last.interests = interests;
-                return;
-            }
+            // We should never subscribe twice
+            debug_assert_ne!(node_id, last.node_id);
         }
         self.stack.push(Frame {
             interests,
@@ -1373,34 +1371,6 @@ mod test {
         assert_eq!(ctx.source_node(), Some(99));
         assert_eq!(ctx.stack.len(), 2);
         assert!(!ctx.has_subscribers());
-    }
-
-    #[test]
-    fn test_subscribe_to_reuses_frame_for_same_node() {
-        let mut ctx = Context::default();
-
-        // A source-node-only frame can be upgraded by subscribe_to.
-        ctx.set_source_node(10);
-        assert!(!ctx.has_subscribers());
-        ctx.subscribe_to(Interests::ACKS, CallData::default(), 10);
-        assert_eq!(ctx.stack.len(), 1);
-        assert!(ctx.has_subscribers());
-
-        // Re-subscribing with the same node_id replaces interests in-place.
-        ctx.subscribe_to(Interests::NACKS, CallData::default(), 10);
-        assert_eq!(ctx.stack.len(), 1);
-        assert!(ctx.stack[0].interests.contains(Interests::NACKS));
-        assert!(!ctx.stack[0].interests.contains(Interests::ACKS));
-
-        // A different node_id pushes a new frame and inherits RETURN_DATA.
-        ctx.subscribe_to(
-            Interests::ACKS | Interests::RETURN_DATA,
-            CallData::default(),
-            10,
-        );
-        ctx.subscribe_to(Interests::NACKS, CallData::default(), 20);
-        assert_eq!(ctx.stack.len(), 2);
-        assert!(ctx.stack[1].interests.contains(Interests::RETURN_DATA));
     }
 
     #[test]

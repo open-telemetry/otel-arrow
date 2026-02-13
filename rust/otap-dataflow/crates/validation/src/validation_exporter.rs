@@ -119,13 +119,13 @@ impl ValidationExporter {
                     error: e.to_string(),
                 }
             })?;
-        let suv_index = pipeline_ctx
-            .node_index_by_name(&config.suv_input)
+        let suv_node = pipeline_ctx
+            .node_by_name(&config.suv_input)
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: format!("unknown node name for suv_input: {}", config.suv_input),
             })?;
-        let control_index = pipeline_ctx
-            .node_index_by_name(&config.control_input)
+        let control_node = pipeline_ctx
+            .node_by_name(&config.control_input)
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: format!(
                     "unknown node name for control_input: {}",
@@ -133,8 +133,8 @@ impl ValidationExporter {
                 ),
             })?;
         Ok(Self {
-            suv_index,
-            control_index,
+            suv_index: suv_node.index,
+            control_index: control_node.index,
             expect_failure: config.expect_failure,
             metrics,
             control_msgs: Vec::new(),
