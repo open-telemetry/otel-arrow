@@ -344,7 +344,7 @@ jobs:
   # Aggregated status check for all Rust CI jobs
   # This job can be set as a required status check in GitHub branch protection
   # to simplify maintenance - add/remove jobs from the needs list as needed
-  required-status-check:
+  rust-required-status-check:
     runs-on: ubuntu-latest
     if: always()
     needs:
