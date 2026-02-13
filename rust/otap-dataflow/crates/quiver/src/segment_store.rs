@@ -346,7 +346,7 @@ impl SegmentStore {
                     // actually removed.
                     if Self::is_sharing_violation(&e) {
                         otel_debug!(
-                        "quiver.segment.drop",
+                            "quiver.segment.drop",
                             segment = seq.raw(),
                             phase = "deferred",
                         );
