@@ -156,7 +156,9 @@ where
 {
     let mut count: u64 = 0;
     for batch in store.select(payload_type) {
-        let id_col = extract_id_column(batch, id_info.name)?;
+        let Ok(id_col) = extract_id_column(batch, id_info.name) else {
+            continue;
+        };
         count += id_col.len() as u64;
     }
 
@@ -165,6 +167,10 @@ where
     // at the top. We could maybe try to do offset math with u64, but we will
     // have to constantly cast back and forth and it won't be as clear if we've
     // made a mistake somewhere. Only consequence is max batch size is 1 less.
+    //
+    // TODO: Consider if we want to be checking the u32 ids for potential overflow.
+    // It would be a lot of memory, probably >20GB just to have the IDs in memory
+    // but if we run on a big server then maybe that's valid.
     if count > id_info.size.max() {
         return Err(Error::TooManyItems {
             payload_type,
@@ -484,7 +490,7 @@ fn extract_id_column(rb: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
 /// Sorts a vector of values and returns the resulting sort indices
 fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
     let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
-    indices.sort_by_key(|&i| &values[i as usize]);
+    indices.sort_unstable_by_key(|&i| &values[i as usize]);
     indices
 }
 
@@ -722,11 +728,13 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     pos
 }
 
+#[derive(Debug)]
 struct PayloadRelationInfo {
     primary_id: Option<PrimaryIdInfo>,
     relations: &'static [Relation],
 }
 
+#[derive(Debug, Clone, Copy)]
 enum IdColumnType {
     U16,
     U32,
@@ -741,11 +749,13 @@ impl IdColumnType {
     }
 }
 
+#[derive(Debug)]
 struct PrimaryIdInfo {
     name: &'static str,
     size: IdColumnType,
 }
 
+#[derive(Debug)]
 struct Relation {
     key_col: &'static str,
     child_types: &'static [ArrowPayloadType],
@@ -810,11 +820,11 @@ fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelationInfo {
                 child_types: &[ArrowPayloadType::SpanEventAttrs],
             }],
         },
-        ArrowPayloadType::SpanLinkAttrs => PayloadRelationInfo {
+        ArrowPayloadType::SpanLinks => PayloadRelationInfo {
             primary_id: None,
             relations: &[Relation {
                 key_col: ID,
-                child_types: &[ArrowPayloadType::SpanEventAttrs],
+                child_types: &[ArrowPayloadType::SpanLinkAttrs],
             }],
         },
 
@@ -1990,6 +2000,117 @@ mod tests {
         );
     }
 
+    // ---- Primary ID bounds tests ----
+
+    #[test]
+    fn test_logs_u16_primary_id_bounds() {
+        test_u16_primary_id_bounds::<Logs, { Logs::COUNT }>(reindex_logs);
+    }
+
+    #[test]
+    fn test_traces_u16_primary_id_bounds() {
+        test_u16_primary_id_bounds::<Traces, { Traces::COUNT }>(reindex_traces);
+    }
+
+    #[test]
+    fn test_metrics_u16_primary_id_bounds() {
+        test_u16_primary_id_bounds::<Metrics, { Metrics::COUNT }>(reindex_metrics);
+    }
+
+    /// Tests the overflow bounds for every U16 primary id column in a batch store.
+    /// Currently we're not testing u32 because it's a lot of memory to do that.
+    ///
+    /// For each U16 payload type, verifies that u16::MAX total rows succeeds
+    /// and u16::MAX + 1 fails with TooManyItems.
+    fn test_u16_primary_id_bounds<S: OtapBatchStore, const N: usize>(
+        reindex_fn: fn(&mut [[Option<RecordBatch>; N]]) -> Result<()>,
+    ) {
+        for &payload_type in S::allowed_payload_types() {
+            let info = payload_relations(payload_type);
+            let Some(id_info) = info.primary_id else {
+                continue;
+            };
+            if matches!(id_info.size, IdColumnType::U32) {
+                continue;
+            }
+
+            // Exactly u16::MAX rows split across two batches should succeed
+            let half = (u16::MAX / 2) as usize;
+            let other_half = u16::MAX as usize - half;
+            let idx = payload_to_idx(payload_type);
+
+            let mut ok_batches: Vec<[Option<RecordBatch>; N]> =
+                vec![std::array::from_fn(|_| None), std::array::from_fn(|_| None)];
+            ok_batches[0][idx] = Some(make_u16_id_batch::<S>(payload_type, half));
+            ok_batches[1][idx] = Some(make_u16_id_batch::<S>(payload_type, other_half));
+            reindex_fn(&mut ok_batches).unwrap_or_else(|e| {
+                panic!(
+                    "{:?}: u16::MAX rows should succeed but got: {}",
+                    payload_type, e
+                )
+            });
+
+            // u16::MAX + 1 rows should fail
+            let mut fail_batches: Vec<[Option<RecordBatch>; N]> =
+                vec![std::array::from_fn(|_| None), std::array::from_fn(|_| None)];
+            fail_batches[0][idx] = Some(make_u16_id_batch::<S>(payload_type, half));
+            fail_batches[1][idx] = Some(make_u16_id_batch::<S>(payload_type, other_half + 1));
+            assert!(
+                matches!(
+                    reindex_fn(&mut fail_batches),
+                    Err(Error::TooManyItems { .. })
+                ),
+                "{:?}: u16::MAX + 1 rows should fail with TooManyItems",
+                payload_type,
+            );
+        }
+    }
+
+    /// Creates a minimal batch for a U16 primary id payload type containing an
+    /// "id" column with `count` rows. Non-root types also get a "parent_id"
+    /// column whose type is determined by looking up the parent's primary id
+    /// size via `find_parent_id_size`.
+    fn make_u16_id_batch<S: OtapBatchStore>(
+        payload_type: ArrowPayloadType,
+        count: usize,
+    ) -> RecordBatch {
+        let ids: Vec<u16> = (0..count as u16).collect();
+        let parent_id_size = find_parent_id_size::<S>(payload_type);
+        let batch = match parent_id_size {
+            None => record_batch!(("id", UInt16, ids)).unwrap(),
+            Some(IdColumnType::U16) => {
+                let pids = vec![0u16; count];
+                record_batch!(("id", UInt16, ids), ("parent_id", UInt16, pids)).unwrap()
+            }
+            Some(IdColumnType::U32) => {
+                let pids = vec![0u32; count];
+                record_batch!(("id", UInt16, ids), ("parent_id", UInt32, pids)).unwrap()
+            }
+        };
+        complete_batch(payload_type, batch, &[payload_type])
+    }
+
+    /// Searches all allowed payload types in a batch store to find if
+    /// `child_type` appears as a child in any relation. If found, returns the
+    /// parent's primary id column size (which determines the parent_id column
+    /// type). Returns `None` for root types that have no parent.
+    fn find_parent_id_size<S: OtapBatchStore>(
+        child_type: ArrowPayloadType,
+    ) -> Option<IdColumnType> {
+        for &pt in S::allowed_payload_types() {
+            let info = payload_relations(pt);
+            let Some(primary_id) = info.primary_id else {
+                continue;
+            };
+            for relation in info.relations {
+                if relation.child_types.contains(&child_type) {
+                    return Some(primary_id.size);
+                }
+            }
+        }
+        None
+    }
+
     // ---- Test helpers ----
 
     fn test_reindex_logs(batches: &mut [[Option<RecordBatch>; Logs::COUNT]]) {
@@ -2042,15 +2163,14 @@ mod tests {
         // Pretty print batches
         // Useful for debugging, keep this in and uncomment when running a single
         // test along with `-- --no-capture`
-        // FIXME: Comment out
-        for (idx, b) in batches.iter().enumerate() {
-            use arrow::util::pretty;
-            eprintln!("-----Batch #{}------", idx);
-            for rb in b.iter().flatten().cloned() {
-                eprintln!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
-            }
-            eprintln!("-----End Batch #{}------", idx);
-        }
+        // for (idx, b) in batches.iter().enumerate() {
+        //     use arrow::util::pretty;
+        //     eprintln!("-----Batch #{}------", idx);
+        //     for rb in b.iter().flatten().cloned() {
+        //         eprintln!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
+        //     }
+        //     eprintln!("-----End Batch #{}------", idx);
+        // }
 
         assert_equivalent(&before_otlp, &after_otlp);
     }
