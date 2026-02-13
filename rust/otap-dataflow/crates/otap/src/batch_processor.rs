@@ -530,7 +530,7 @@ async fn log_batching_failed(
 impl BatchProcessor {
     /// Parse JSON config and build the processor instance with the provided metrics set.
     /// This function does not wrap the processor into a ProcessorWrapper so callers can
-    /// preserve the original NodeUserConfig (including out_ports/default_out_port).
+    /// preserve the original NodeUserConfig (including outputs/default_output).
     pub fn build_from_json(
         cfg: &Value,
         metrics: MetricSet<BatchProcessorMetrics>,
@@ -562,7 +562,7 @@ impl BatchProcessor {
     }
 
     /// Backward-compatible helper used by unit tests to construct a processor wrapper
-    /// directly from JSON. Note: This creates a fresh NodeUserConfig without out_ports,
+    /// directly from JSON. Note: This creates a fresh NodeUserConfig without outputs,
     /// which is fine for unit tests that do not rely on engine wiring.
     pub fn from_config(
         node: NodeId,
@@ -1320,6 +1320,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
                  proc_cfg: &ProcessorConfig| {
             create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 #[cfg(test)]
@@ -1328,7 +1329,6 @@ mod tests {
     use crate::pdata::OtapPdata;
     use crate::testing::TestCallData;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::node::{DispatchStrategy, HyperEdgeConfig, NodeKind};
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::context::ControllerContext;
@@ -1352,7 +1352,6 @@ mod tests {
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_message_to_bytes, otlp_to_otap};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use serde_json::json;
-    use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -1463,9 +1462,8 @@ mod tests {
         // Build a pipeline context to register metrics
         let (pipeline_ctx, _registry) = create_test_pipeline_context();
 
-        // Prepare a NodeUserConfig with an out_port and a default_out_port
+        // Prepare a NodeUserConfig with an output and a default_output
         let mut nuc = NodeUserConfig::with_user_config(
-            NodeKind::Processor,
             OTAP_BATCH_PROCESSOR_URN.into(),
             serde_json::json!({
                 "otap": {
@@ -1474,14 +1472,8 @@ mod tests {
                 },
             }),
         );
-        let mut dests: HashSet<otap_df_config::NodeId> = HashSet::new();
-        let _ = dests.insert("exporter".into());
-        let edge = HyperEdgeConfig {
-            destinations: dests,
-            dispatch_strategy: DispatchStrategy::RoundRobin,
-        };
-        let _ = nuc.add_out_port("out_port".into(), edge);
-        nuc.set_default_out_port("out_port");
+        nuc.add_output("main_output");
+        nuc.set_default_output("main_output");
         let nuc = Arc::new(nuc);
 
         // Create processor via factory and ensure the provided NodeUserConfig is preserved
@@ -1491,10 +1483,8 @@ mod tests {
             .expect("factory should succeed");
 
         let uc = wrapper.user_config();
-        assert!(uc.out_ports.contains_key("out_port"));
-        assert_eq!(uc.default_out_port.as_deref(), Some("out_port"));
-        let edge = &uc.out_ports["out_port"];
-        assert!(edge.destinations.contains("exporter"));
+        assert!(uc.outputs.iter().any(|port| port.as_ref() == "main_output"));
+        assert_eq!(uc.default_output.as_deref(), Some("main_output"));
     }
 
     #[test]

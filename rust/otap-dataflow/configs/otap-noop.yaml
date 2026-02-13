@@ -5,19 +5,16 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - perf_noop
-        dispatch_strategy: round_robin
+    type: otap:receiver
     config:
       listening_addr: "127.0.0.1:4327"
       response_stream_channel_size: 256
       compression_method: zstd
 
   perf_noop:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
+
+connections:
+  - from: receiver
+    to: perf_noop

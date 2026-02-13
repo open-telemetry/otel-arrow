@@ -207,6 +207,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
             receiver_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 impl OTLPReceiver {
@@ -383,6 +384,7 @@ impl OTLPReceiver {
     ) -> Result<Option<TerminalState>, Error> {
         match msg {
             NodeControlMsg::Shutdown { deadline, .. } => {
+                otap_df_telemetry::otel_info!("otlp.receiver.shutdown");
                 let snapshot = self.metrics.lock().snapshot();
                 if let Some(handle) = telemetry_cancel_handle.take() {
                     _ = handle.cancel().await;

@@ -15,25 +15,13 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
+    type: otap:receiver
     config:
       listening_addr: "127.0.0.1:4317"
       response_stream_channel_size: 256
 
   durable_buffer:
-    kind: processor
-    plugin_urn: "urn:otel:durable_buffer:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: durable_buffer:processor
     config:
       # Directory for WAL and segment files (created if not exists)
       path: /var/lib/otap/otap-durable-buffer-otap-example/buffer
@@ -47,7 +35,12 @@ nodes:
       size_cap_policy: backpressure
 
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:1235"
+
+connections:
+  - from: receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: exporter

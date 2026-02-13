@@ -33,8 +33,7 @@ configuration:
 ```yaml
 nodes:
   azure-monitor-exporter:
-    kind: exporter
-    plugin_urn: "urn:microsoft_azure:monitor:exporter"
+    type: "urn:microsoft_azure:monitor:exporter"
     config:
       # API configuration (REQUIRED)
       api:

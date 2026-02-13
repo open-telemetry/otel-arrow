@@ -17,24 +17,12 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       listening_addr: "127.0.0.1:4317"
 
   durable_buffer:
-    kind: processor
-    plugin_urn: "urn:otel:durable_buffer:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: durable_buffer:processor
     config:
       # Directory for WAL and segment files (created if not exists)
       path: /var/lib/otap/otlp-durable-buffer-otlp-example/buffer
@@ -52,7 +40,12 @@ nodes:
       otlp_handling: pass_through
 
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: otlp:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
+
+connections:
+  - from: receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: exporter

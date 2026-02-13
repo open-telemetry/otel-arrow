@@ -72,11 +72,11 @@ use otap_df_pdata::views::otlp::bytes::traces::RawTraceData;
 use otap_df_pdata::views::resource::ResourceView;
 use otap_df_pdata::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_warn;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
-use tracing::warn;
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
@@ -178,6 +178,7 @@ pub static RESOURCE_VALIDATOR_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactor
                  proc_cfg: &ProcessorConfig| {
             create_resource_validator_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 impl ResourceValidatorProcessor {
@@ -430,7 +431,11 @@ impl ResourceValidatorProcessor {
                 self.metrics.items_accepted.add(num_items);
             }
             Err((failure, msg)) => {
-                warn!(reason = %failure, "{}", msg);
+                otel_warn!(
+                    "resource_validator_processor.validation.fail",
+                    failure_reason = %failure,
+                    message = msg.as_str()
+                );
                 self.metrics.items_rejected.add(num_items);
                 match failure {
                     ValidationFailure::MissingAttribute => {

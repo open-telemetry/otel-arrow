@@ -9,7 +9,9 @@
 //! and metric sets are unregistered to avoid registry leaks.
 
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
+use otap_df_config::pipeline::{
+    DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
+};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -24,7 +26,7 @@ use otap_df_otap::otlp_receiver::OTLP_RECEIVER_URN;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
 use serde_json::{json, to_value};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use weaver_common::vdir::VirtualDirectoryPath;
 
@@ -183,7 +185,7 @@ fn build_test_pipeline_config(
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:noop:exporter", None)
-        .round_robin("receiver", "out", ["exporter"])
+        .one_of("receiver", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -206,8 +208,8 @@ fn build_fan_in_pipeline_config(
             Some(receiver_config_value),
         )
         .add_exporter("exporter", "urn:otel:noop:exporter", None)
-        .round_robin("receiver_a", "out", ["exporter"])
-        .round_robin("receiver_b", "out", ["exporter"])
+        .one_of("receiver_a", ["exporter"])
+        .one_of("receiver_b", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -225,14 +227,14 @@ fn build_mixed_receiver_pipeline_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
             Some(local_receiver_config_value),
         )
-        .round_robin("local_receiver", "out", ["exporter"])
+        .one_of("local_receiver", ["exporter"])
         .add_receiver(
             "shared_receiver",
             OTLP_RECEIVER_URN,
             Some(shared_receiver_config_value),
         )
         .add_exporter("exporter", NOOP_EXPORTER_URN, None)
-        .round_robin("shared_receiver", "out", ["exporter"])
+        .one_of("shared_receiver", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
 }
@@ -261,16 +263,93 @@ fn otlp_receiver_config_value() -> serde_json::Value {
 
 fn expected_entity_count(config: &PipelineConfig) -> usize {
     let node_count = config.node_iter().count();
-    let mut edge_count = 0;
-    let mut destination_nodes = HashSet::new();
+    let (sender_count, receiver_count) = expected_channel_counts(config);
 
-    for (_, node) in config.node_iter() {
-        for edge in node.out_ports.values() {
-            edge_count += edge.destinations.len();
-            destination_nodes.extend(edge.destinations.iter().cloned());
+    // Pipeline + nodes + control channels + pdata senders + pdata receivers.
+    1 + node_count + node_count + sender_count + receiver_count
+}
+
+fn expected_channel_counts(config: &PipelineConfig) -> (usize, usize) {
+    #[derive(Hash, PartialEq, Eq, Clone)]
+    struct EdgeKey {
+        dispatch: std::mem::Discriminant<DispatchPolicy>,
+        destinations: Vec<String>,
+    }
+
+    #[derive(Clone)]
+    struct Edge {
+        sources: Vec<(String, String)>,
+        destinations: Vec<String>,
+    }
+
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut edge_index: HashMap<EdgeKey, Vec<usize>> = HashMap::new();
+
+    for connection in config.connection_iter() {
+        let mut destinations = connection
+            .to_nodes()
+            .into_iter()
+            .map(|node_id| node_id.to_string())
+            .collect::<Vec<_>>();
+        if destinations.is_empty() {
+            continue;
+        }
+        destinations.sort();
+        destinations.dedup();
+
+        let mut sources = connection
+            .from_sources()
+            .into_iter()
+            .map(|source| {
+                (
+                    source.node_id().to_string(),
+                    source.resolved_output_port().to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if sources.is_empty() {
+            continue;
+        }
+        sources.sort();
+        sources.dedup();
+
+        let key = EdgeKey {
+            dispatch: std::mem::discriminant(&connection.effective_dispatch_policy()),
+            destinations: destinations.clone(),
+        };
+
+        let mut match_index = None;
+        if let Some(indexes) = edge_index.get(&key) {
+            'candidate: for &index in indexes {
+                let edge = &edges[index];
+                for source in &sources {
+                    if edge
+                        .sources
+                        .iter()
+                        .any(|existing| existing.0 == source.0 && existing.1 != source.1)
+                    {
+                        continue 'candidate;
+                    }
+                }
+                match_index = Some(index);
+                break;
+            }
+        }
+
+        if let Some(index) = match_index {
+            edges[index].sources.extend(sources);
+            edges[index].sources.sort();
+            edges[index].sources.dedup();
+        } else {
+            edges.push(Edge {
+                sources,
+                destinations: destinations.clone(),
+            });
+            edge_index.entry(key).or_default().push(edges.len() - 1);
         }
     }
 
-    // Pipeline + nodes + control channels + pdata senders + pdata receivers.
-    1 + node_count + node_count + edge_count + destination_nodes.len()
+    let sender_count = edges.iter().map(|edge| edge.sources.len()).sum();
+    let receiver_count = edges.iter().map(|edge| edge.destinations.len()).sum();
+    (sender_count, receiver_count)
 }

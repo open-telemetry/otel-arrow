@@ -334,7 +334,7 @@ impl PipelineContext {
         NodeAttributeSet {
             pipeline_attrs: self.pipeline_attribute_set(),
             node_id: self.node_id.clone(),
-            node_urn: self.node_urn.clone(),
+            node_urn: self.node_urn.clone().into(),
             node_type: self.node_kind.into(),
         }
     }

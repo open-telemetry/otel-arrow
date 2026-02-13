@@ -89,6 +89,7 @@ pub static CONSOLE_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
             exporter_config,
         ))
     },
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 #[async_trait(?Send)]
@@ -131,7 +132,7 @@ impl ConsoleExporter {
                     self.formatter.print_logs_data(&logs_view).await;
                 }
                 Err(e) => {
-                    otel_error!("Failed to create OTLP logs view", error = ?e);
+                    otel_error!("console.logs_view.otlp_create_failed", error = ?e, message = "Failed to create OTLP logs view");
                 }
             },
             OtapPayload::OtapArrowRecords(records) => match OtapLogsView::try_from(records) {
@@ -139,7 +140,7 @@ impl ConsoleExporter {
                     self.formatter.print_logs_data(&logs_view).await;
                 }
                 Err(e) => {
-                    otel_error!("Failed to create OTAP logs view", error = ?e);
+                    otel_error!("console.logs_view.otap_create_failed", error = ?e, message = "Failed to create OTAP logs view");
                 }
             },
         }
@@ -147,12 +148,18 @@ impl ConsoleExporter {
 
     async fn export_traces(&self, _payload: &OtapPayload) {
         // TODO: Implement traces formatting.
-        otel_error!("Traces formatting not yet implemented");
+        otel_error!(
+            "console.traces.not_implemented",
+            message = "Traces formatting not yet implemented"
+        );
     }
 
     async fn export_metrics(&self, _payload: &OtapPayload) {
         // TODO: Implement metrics formatting.
-        otel_error!("Metrics formatting not yet implemented");
+        otel_error!(
+            "console.metrics.not_implemented",
+            message = "Metrics formatting not yet implemented"
+        );
     }
 }
 
@@ -209,7 +216,7 @@ impl HierarchicalFormatter {
         use tokio::io::AsyncWriteExt;
 
         if let Err(err) = tokio::io::stdout().write_all(&output).await {
-            otel_error!("could not write to console", error = ?err);
+            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
         }
     }
 

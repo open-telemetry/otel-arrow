@@ -19,14 +19,14 @@ check_banned_pattern() {
     #   - target/         build artifacts
     #   - .git/           git internals
     #   - crates/telemetry/  implements the otel_* wrappers (legitimate tracing usage)
-    #   - crates/quiver/     will move out of this repo (temporary exemption)
-    #   - crates/quiver-e2e/ quiver end-to-end tests (temporary exemption)
+    #   - crates/quiver/src/logging.rs     implements the otel_* wrappers internal to quiver (legitimate tracing usage)
+    #   - crates/quiver-e2e/  end-to-end tests may legitimately use tracing directly
     #   - benchmarks/        benchmarks may legitimately use tracing directly
     files=$(find . -name "*.rs" -type f \
         | grep -v target/ \
         | grep -v .git/ \
         | grep -v crates/telemetry/ \
-        | grep -v crates/quiver/ \
+        | grep -v crates/quiver/src/logging.rs \
         | grep -v crates/quiver-e2e/ \
         | grep -v benchmarks/ \
         || true)
@@ -88,6 +88,19 @@ if ! check_banned_pattern "log::debug!" "log::debug! usage (use otel_debug! inst
 fi
 
 if ! check_banned_pattern "log::trace!" "log::trace! usage (use otel_debug! instead)"; then
+    checks_passed=1
+fi
+
+# Check for unqualified imports of tracing/log macros.
+# These bypass the fully-qualified check above since the macro is then called
+# as bare `info!(...)` instead of `tracing::info!(...)`.
+# Catches both single imports (use tracing::info;) and grouped imports
+# (use tracing::{info, warn};).
+if ! check_banned_pattern "use tracing::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "tracing macro import (use otel_* macros from otap_df_telemetry instead)"; then
+    checks_passed=1
+fi
+
+if ! check_banned_pattern "use log::\({.*\)\?\(info\|warn\|error\|debug\|trace\)" "log macro import (use otel_* macros from otap_df_telemetry instead)"; then
     checks_passed=1
 fi
 
