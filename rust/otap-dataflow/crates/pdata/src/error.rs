@@ -195,6 +195,20 @@ pub enum Error {
     #[error("Mixed signals")]
     MixedSignals,
 
+    #[error(
+        "Too many items. signal: {:?}, size: {}, max: {}, message: {}",
+        payload_type,
+        count,
+        max,
+        message
+    )]
+    TooManyItems {
+        payload_type: ArrowPayloadType,
+        count: usize,
+        max: u64,
+        message: String,
+    },
+
     #[error("Encoding error: {}", error)]
     Encoding {
         #[from]
