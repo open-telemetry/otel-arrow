@@ -10,7 +10,7 @@
 3. [Protocol Architecture](#3-protocol-architecture)
 4. [Transport Layer](#4-transport-layer)
 5. [Payload Specifications](#5-payload-specifications)
-6. [Transport Optimized Encodings](#6-transport-optimized-encodings)
+6. [Id Columns](#6-id-columns)
 7. [Schema Management](#7-schema-management)
 8. [Error Handling](#8-error-handling)
 9. [Field Specifications](#9-field-specifications)
@@ -105,25 +105,7 @@ to a later section where we define the full schema and arrow value type for each
 | RESOURCE_ATTRS | 1 | Resource attributes | No | — | SPANS |
 | SCOPE_ATTRS | 2 | Scope attributes | No | — | SPANS |
 
-### 2.2 Foreign Key Relationships
-
-TODO: Consider moving all of this in the weeds stuff to a later section.
-
-All parent-child relationships in the OTAP data model follow a uniform convention:
-
-- **Parent tables** define an `id` column as their primary key
-- **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
-
-### 2.3 Scope and Resource entities
-
-For all three signals, there are no distinct SCOPE or RESOURCE payload types defined in order to simplify the
-database structure. Instead, there are `resource` and `scope` fields that are defined as struct columns in Root 
-Tables (METRICS, SPANS, or LOGS).
-
-These structs have their own `id` field which are commonly referred to as `resource.id` or `scope.id`. Since 
-Items can share a resource or scope, the RESOURCE_ATTRS and SCOPE_ATTRS tables have a many to many relationship 
-with their parents. This is important because it means there is no single table which defines unique Resource 
-or Scope entities, rather their definition is implicit in the `resource` and `scope` fields in Root Tables.
+The foreign key relationships between payload types are defined in Section 6.
 
 ---
 
@@ -787,34 +769,107 @@ Producers MAY send delta dictionaries to add new entries without resetting the s
 
 ---
 
-## 6. Transport Optimized Encodings
+## 6. Id Columns
 
-### 6.1 Overview
+This section defines the identifier columns used to establish relationships between payload types in the OTAP data model.
 
-Beyond Arrow's built-in compression features, OTAP defines specialized column encodings that transform data before serialization to maximize compression efficiency during network transport. These transformations exploit patterns in telemetry data, such as sequential IDs and clustered foreign keys.
+### 6.1 Primary Keys and Foreign Keys
 
-The key insight is that telemetry data often exhibits strong sequential patterns. For example:
+All parent-child relationships in the OTAP data model follow a uniform convention:
+
+- **Parent tables** define an `id` column as their primary key
+- **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
+
+This naming convention makes the data model self-documenting: every `parent_id` column references the `id` column of its parent table as specified in the payload type relationships (see Section 2.1).
+
+**Example**: In the Logs signal:
+- The LOGS table has an `id` column (UInt16)
+- The LOG_ATTRS table has a `parent_id` column (UInt16) that references LOGS.`id`
+- Each LOG_ATTRS row belongs to exactly one LOGS row via this foreign key
+
+### 6.2 Id Column Types
+
+Id columns use unsigned integer types sized according to expected cardinality:
+
+| Table Category | Id Type | Parent Id Type | Max Entries |
+|---|---|---|---|
+| Root tables (LOGS, SPANS, METRICS) | UInt16 | — | 65,536 per BAR |
+| Data points, events, links | UInt32 | UInt16 | 4.3B per BAR |
+| Exemplars | UInt32 | UInt32 | 4.3B per BAR |
+| Attributes (root-level) | — | UInt16 | Many per parent |
+| Attributes (nested) | — | UInt32 | Many per parent |
+
+**Rationale**: Root tables rarely exceed 65K items per BAR, but child tables (especially data points and their nested children) can have much higher cardinality, hence the UInt32 type.
+
+### 6.3 Resource and Scope Identifiers
+
+Resource and scope entities are **not** represented as separate payload types. Instead, they are embedded as struct fields within root tables (LOGS, SPANS, METRICS).
+
+Each root table contains:
+- `resource_id` (UInt16): Identifier for the resource
+- `scope_id` (UInt16): Identifier for the instrumentation scope
+
+These fields are commonly referenced as `resource.id` and `scope.id` in the context of struct field access.
+
+**Key characteristics**:
+
+1. **No dedicated tables**: There are no RESOURCE or SCOPE payload types. Resources and scopes are defined implicitly by their presence in root table rows.
+
+2. **Many-to-many relationships**: Multiple Items (Logs, Data Points, or Spans) MAY share the same `resource_id` or `scope_id`. This is a many-to-many relationship.
+
+3. **Attribute tables**: RESOURCE_ATTRS and SCOPE_ATTRS tables reference these identifiers via their `parent_id` columns:
+   - RESOURCE_ATTRS.`parent_id` → root table's `resource_id`
+   - SCOPE_ATTRS.`parent_id` → root table's `scope_id`
+
+4. **No owning table**: Unlike other identifiers, `resource_id` and `scope_id` have no single table that "owns" them. Their definition is implicit across all Items that reference them.
+
+**Example**: Consider a BAR containing 1000 logs from 3 services (resources):
+- LOGS table: 1000 rows with `resource_id` values of 0, 1, or 2
+- RESOURCE_ATTRS table: Rows with `parent_id` of 0, 1, or 2 defining attributes for each resource
+- No separate RESOURCE table exists; the resource is defined by the combination of `resource_id` and its associated RESOURCE_ATTRS rows
+
+**Design rationale**: Resources and scopes have minimal intrinsic properties (just schema_url, name, version, dropped_attributes_count) which are duplicated in root tables. Creating separate payload types would add complexity for little benefit, so OTAP embeds these fields directly in root tables.
+
+### 6.4 Relationship DAG
+
+The `id` and `parent_id` columns form a Rooted Directed Acyclic Graph (DAG) for each signal:
+
+- **Root**: The root payload type (LOGS, SPANS, or METRICS) with `id` but no `parent_id`
+- **Edges**: Each `parent_id` column creates an edge to the parent table's `id`
+- **Leaf nodes**: Attribute tables with `parent_id` but no `id`
+- **Intermediate nodes**: Tables with both `id` (primary key) and `parent_id` (foreign key)
+
+This structure ensures:
+- No circular references
+- Clear parent-child hierarchies
+- Efficient foreign key resolution
+
+See Section 2.1 for the complete DAG structure of each signal type.
+
+### 6.5 Transport Optimized Encodings
+
+Beyond Arrow's built-in compression features, OTAP defines specialized column encodings that transform ID and parent_id columns before serialization to maximize compression efficiency during network transport. These transformations exploit patterns in telemetry data, such as sequential IDs and clustered foreign keys.
+
+The key insight is that ID columns often exhibit strong sequential patterns:
 - Primary IDs are often sequential (0, 1, 2, 3...)
-- Foreign keys are often clustered (many attributes reference the same parent log record)
-- When sorted by parent ID, related records appear together
+- Foreign keys (`parent_id`) are often clustered (many attributes reference the same parent item)
+- When sorted by `parent_id`, related records appear together
 
 By encoding these patterns explicitly (e.g., storing deltas between values rather than absolute values), we create long runs of small integers and repeated values that compress extremely well with standard algorithms like LZ4 or Zstandard.
 
-These encodings are applied by producers before serialization and reversed by consumers after deserialization. They are independent of Arrow's columnar format and work alongside dictionary encoding to achieve maximum compression.
+**Important**: These encodings apply **only to ID columns** (`id`, `parent_id`, `resource_id`, `scope_id`). Other columns use plain encoding or dictionary encoding as appropriate.
 
-### 6.2 Encoding Types
-
-#### 6.2.1 PLAIN Encoding
+#### 6.5.1 PLAIN Encoding
 
 **Encoding identifier**: `"plain"`
 
 No transformation applied. Values are stored as-is in the Arrow array.
 
-**Applicability**: All columns
+**Applicability**: All ID columns
 
 **When to use**: Default encoding when no optimization is beneficial or when concatenating BARs.
 
-#### 6.2.2 DELTA Encoding
+#### 6.5.2 DELTA Encoding
 
 **Encoding identifier**: `"delta"`
 
@@ -835,7 +890,7 @@ encoded[i] = original[i] - original[i-1]  (for i > 0)
 - Column type MUST support the delta operation
 - For UInt types, deltas are stored as the same UInt type (no negatives)
 
-#### 6.2.3 QUASI-DELTA Encoding
+#### 6.5.3 QUASI-DELTA Encoding
 
 **Encoding identifier**: `"quasidelta"`
 
@@ -860,7 +915,7 @@ Similar, but matching based on specified column values (e.g., span event `name` 
 - Span event/link `parent_id` columns
 - Exemplar `parent_id` columns
 
-### 6.3 Field Metadata
+#### 6.5.4 Field Metadata
 
 Producers SHOULD include field metadata to indicate encoding:
 
@@ -877,7 +932,7 @@ Producers SHOULD include field metadata to indicate encoding:
 
 **Note**: The Rust implementation includes this metadata; the Go implementation may not.
 
-### 6.4 Schema Metadata
+#### 6.5.5 Schema Metadata
 
 Producers MAY include schema-level metadata:
 
@@ -889,7 +944,7 @@ Producers MAY include schema-level metadata:
 
 This indicates the columns by which the record batch has been sorted, which is useful context for understanding applied encodings.
 
-### 6.5 Encoding Application by Payload Type
+#### 6.5.6 Encoding Application by Payload Type
 
 The following table specifies recommended encodings per payload type:
 
@@ -931,18 +986,18 @@ The following table specifies recommended encodings per payload type:
 
 **Note**: "DELTA (remapped)" means the producer creates new sequential IDs and remaps parent references. This is necessary because the original IDs may not be sorted.
 
-### 6.6 Decoding Requirements
+#### 6.5.7 Decoding Requirements
 
 Consumers MUST:
 1. Detect encoding type from field metadata or use heuristics if absent
 2. Reverse the encoding to reconstruct original values before processing
 3. Handle both encoded and plain data transparently
 
-### 6.7 Default Encoding
+#### 6.5.8 Default Encoding
 
 **Recommended defaults**:
-- If transport optimization is not enabled: Use **PLAIN** encoding for all columns
-- If transport optimization is enabled: Use encodings per section 6.5
+- If transport optimization is not enabled: Use **PLAIN** encoding for all ID columns
+- If transport optimization is enabled: Use encodings per section 6.5.6
 
 ---
 
@@ -1293,7 +1348,7 @@ A compliant OTAP producer MUST:
 
 A compliant producer SHOULD:
 
-1. Apply transport optimized encodings per section 6.5
+1. Apply transport optimized encodings per section 6.5.6
 2. Use dictionary encoding for high-cardinality string fields
 3. Sort record batches within BARs for optimal compression
 4. Implement exponential backoff for retryable errors
