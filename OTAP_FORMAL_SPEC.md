@@ -6,8 +6,8 @@
 ## Table of Contents
 
 1. [Introduction](#1-introduction)
-2. [Protocol Architecture](#2-protocol-architecture)
-3. [Data Model](#3-data-model)
+2. [Data Model](#2-data-model)
+3. [Protocol Architecture](#3-protocol-architecture)
 4. [Transport Layer](#4-transport-layer)
 5. [Arrow Schema Specifications](#5-arrow-schema-specifications)
 6. [Transport Optimized Encodings](#6-transport-optimized-encodings)
@@ -41,14 +41,15 @@ in the OTAP data model.
 - **Signal**: One of logs, metrics, or traces
 - **Payload**: An ArrowPayload containing serialized Arrow IPC messages
 - **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message 
+- **Items**: The item type of a signal e.g. Log, Data Point(s), or Span
 - **Root Payload/Root Payload Type**: The root table in the Signal's DAG
 - **Schema Reset**: The act of changing the Arrow schema for a payload type
 
 ---
 
-## 3. Data Model
+## 2. Data Model
 
-### 3.1 Normalized Representation
+### 2.1 Normalized Representation
 
 OTAP represents Signals as a set of normalized tables connected by foreign key relationships; 
 effectively a database. Each Signal type has a different number and set of tables reflecting the data 
@@ -69,59 +70,81 @@ SCOPE_ATTRS tables.
 The Metrics and Traces signals have a similar structure, but with more tables and are defined 
 below along with the relationships between each table.
 
-#### 3.1.1 Logs Signal Tables
+TODO: It is probably enough information for this section to enumerate the payload types for
+each signal and a description of them. I think we can move the relationships and Id semantics
+to a later section where we define the full schema and arrow value type for each column.
 
-1. **LOGS** (Root): Core log record data
-2. **LOG_ATTRS**: Log-level attributes
-3. **RESOURCE_ATTRS**: Resource attributes
-4. **SCOPE_ATTRS**: Instrumentation scope attributes
+#### 2.1.1 Logs Signal Tables
 
-#### 3.1.2 Metrics Signal Tables
+| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
+|---|---|---|---|---|---|
+| LOGS | 30 | Core log record data (Root) | Yes | LOG_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
+| LOG_ATTRS | 31 | Log-level attributes | No | — | LOGS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | — | LOGS |
+| SCOPE_ATTRS | 2 | Instrumentation scope attributes | No | — | LOGS |
 
-1. **UNIVARIATE_METRICS** or **MULTIVARIATE_METRICS** (Root): Core metric metadata
-2. **NUMBER_DATA_POINTS**: Gauge and sum data points
-3. **SUMMARY_DATA_POINTS**: Summary data points
-4. **HISTOGRAM_DATA_POINTS**: Histogram data points
-5. **EXP_HISTOGRAM_DATA_POINTS**: Exponential histogram data points
-6. **NUMBER_DP_ATTRS**: Attributes for number data points
-7. **SUMMARY_DP_ATTRS**: Attributes for summary data points
-8. **HISTOGRAM_DP_ATTRS**: Attributes for histogram data points
-9. **EXP_HISTOGRAM_DP_ATTRS**: Attributes for exponential histogram data points
-10. **NUMBER_DP_EXEMPLARS**: Exemplars for number data points
-11. **HISTOGRAM_DP_EXEMPLARS**: Exemplars for histogram data points
-12. **EXP_HISTOGRAM_DP_EXEMPLARS**: Exemplars for exponential histogram data points
-13. **NUMBER_DP_EXEMPLAR_ATTRS**: Exemplar attributes for number data points
-14. **HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for histogram data points
-15. **EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for exponential histogram data points
-16. **RESOURCE_ATTRS**: Resource attributes
-17. **SCOPE_ATTRS**: Scope attributes
+#### 2.1.2 Metrics Signal Tables
 
-#### 3.1.3 Traces Signal Tables
+| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
+|---|---|---|---|---|---|
+| UNIVARIATE_METRICS | 10 | Core metric metadata (Root) | Yes | NUMBER_DATA_POINTS, SUMMARY_DATA_POINTS, HISTOGRAM_DATA_POINTS, EXP_HISTOGRAM_DATA_POINTS, METRIC_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
+| MULTIVARIATE_METRICS | 25 | Core metric metadata (Root) | Yes | NUMBER_DATA_POINTS, SUMMARY_DATA_POINTS, HISTOGRAM_DATA_POINTS, EXP_HISTOGRAM_DATA_POINTS, METRIC_ATTRS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
+| NUMBER_DATA_POINTS | 11 | Gauge and sum data points | Yes | NUMBER_DP_ATTRS, NUMBER_DP_EXEMPLARS | METRICS |
+| SUMMARY_DATA_POINTS | 12 | Summary data points | Yes | SUMMARY_DP_ATTRS | METRICS |
+| HISTOGRAM_DATA_POINTS | 13 | Histogram data points | Yes | HISTOGRAM_DP_ATTRS, HISTOGRAM_DP_EXEMPLARS | METRICS |
+| EXP_HISTOGRAM_DATA_POINTS | 14 | Exponential histogram data points | Yes | EXP_HISTOGRAM_DP_ATTRS, EXP_HISTOGRAM_DP_EXEMPLARS | METRICS |
+| NUMBER_DP_ATTRS | 15 | Attributes for number data points | No | — | NUMBER_DATA_POINTS |
+| SUMMARY_DP_ATTRS | 16 | Attributes for summary data points | No | — | SUMMARY_DATA_POINTS |
+| HISTOGRAM_DP_ATTRS | 17 | Attributes for histogram data points | No | — | HISTOGRAM_DATA_POINTS |
+| EXP_HISTOGRAM_DP_ATTRS | 18 | Attributes for exp histogram data points | No | — | EXP_HISTOGRAM_DATA_POINTS |
+| NUMBER_DP_EXEMPLARS | 19 | Exemplars for number data points | Yes | NUMBER_DP_EXEMPLAR_ATTRS | NUMBER_DATA_POINTS |
+| HISTOGRAM_DP_EXEMPLARS | 20 | Exemplars for histogram data points | Yes | HISTOGRAM_DP_EXEMPLAR_ATTRS | HISTOGRAM_DATA_POINTS |
+| EXP_HISTOGRAM_DP_EXEMPLARS | 21 | Exemplars for exp histogram data points | Yes | EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | EXP_HISTOGRAM_DATA_POINTS |
+| NUMBER_DP_EXEMPLAR_ATTRS | 22 | Exemplar attributes for number DPs | No | — | NUMBER_DP_EXEMPLARS |
+| HISTOGRAM_DP_EXEMPLAR_ATTRS | 23 | Exemplar attributes for histogram DPs | No | — | HISTOGRAM_DP_EXEMPLARS |
+| EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | 24 | Exemplar attributes for exp histogram DPs | No | — | EXP_HISTOGRAM_DP_EXEMPLARS |
+| METRIC_ATTRS | 26 | Metric-level attributes | No | — | METRICS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | — | METRICS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | — | METRICS |
 
-1. **SPANS** (Root): Core span data
-2. **SPAN_ATTRS**: Span attributes
-3. **SPAN_EVENTS**: Span events
-4. **SPAN_EVENT_ATTRS**: Event attributes
-5. **SPAN_LINKS**: Span links
-6. **SPAN_LINK_ATTRS**: Link attributes
-7. **RESOURCE_ATTRS**: Resource attributes
-8. **SCOPE_ATTRS**: Scope attributes
+#### 2.1.3 Traces Signal Tables
 
-### 3.2 Foreign Key Relationships
+| Payload Type | Enum Value | Description | Id | Child Payload Types | Parent Payload Type |
+|---|---|---|---|---|---|
+| SPANS | 40 | Core span data (Root) | Yes | SPAN_ATTRS, SPAN_EVENTS, SPAN_LINKS, RESOURCE_ATTRS, SCOPE_ATTRS | — |
+| SPAN_ATTRS | 41 | Span attributes | No | — | SPANS |
+| SPAN_EVENTS | 42 | Span events | Yes | SPAN_EVENT_ATTRS | SPANS |
+| SPAN_EVENT_ATTRS | 44 | Event attributes | No | — | SPAN_EVENTS |
+| SPAN_LINKS | 43 | Span links | Yes | SPAN_LINK_ATTRS | SPANS |
+| SPAN_LINK_ATTRS | 45 | Link attributes | No | — | SPAN_LINKS |
+| RESOURCE_ATTRS | 1 | Resource attributes | No | — | SPANS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | — | SPANS |
 
-- **Primary tables** contain `id` field (the primary key)
-- **Related tables** contain `parent_id` field (foreign key to primary table)
-- **Nested related tables** (e.g., exemplar attrs) have `parent_id` referencing the parent related table
+### 2.2 Foreign Key Relationships
+
+TODO: Consider moving all of this in the weeds stuff to a later section.
+
+All parent-child relationships in the OTAP data model follow a uniform convention:
+
+- **Parent tables** define an `id` column as their primary key
+- **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
+
+### 2.3 Scope and Resource entities
+
+For all three signals, there are no distinct SCOPE or RESOURCE payload types defined in order to simplify the
+database structure. Instead, there are `resource` and `scope` fields that are defined as struct columns in Root 
+Tables (METRICS, SPANS, or LOGS).
+
+These structs have their own `id` field which are commonly referred to as `resource.id` or `scope.id`. Since 
+Items can share a resource or scope, the RESOURCE_ATTRS and SCOPE_ATTRS tables have a many to many relationship 
+with their parents. This is important because it means there is no single table which defines unique Resource 
+or Scope entities, rather their definition is implicit in the `resource` and `scope` fields in Root Tables.
 
 ---
 
+## 3. Protocol Architecture
 
-
----
-
-## 2. Protocol Architecture
-
-### 2.1 Layered Design
+### 3.1 Layered Design
 
 OTAP consists of three distinct layers that work together to enable efficient telemetry data transmission:
 
@@ -129,7 +152,7 @@ OTAP consists of three distinct layers that work together to enable efficient te
 2. **OTAP Message Layer**: BatchArrowRecords and ArrowPayload protobuf messages
 3. **Arrow IPC Layer**: Apache Arrow Interprocess Communication streams
 
-#### 2.1.1 gRPC Layer
+#### 3.1.1 gRPC Layer
 
 The gRPC layer provides the transport mechanism and service definitions. It establishes the bi-directional streaming connections between clients and servers over HTTP/2. 
 
@@ -138,7 +161,7 @@ There is a single client message type, BatchArrowRecords, and a single server re
 Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified service to maintain compatibility with the OpenTelemetry Collector's signal-specific receiver and exporter architecture.
 
 
-#### 2.1.2 OTAP Message Layer
+#### 3.1.2 OTAP Message Layer
 
 The OTAP message layer defines the protobuf message structures that wrap Arrow data for transmission over gRPC. The key messages are:
 
@@ -148,7 +171,7 @@ The OTAP message layer defines the protobuf message structures that wrap Arrow d
 
 This layer is responsible for organizing multiple related tables into cohesive BARs, assigning unique identifiers to schemas and BARs, and providing a standardized way to acknowledge receipt and signal errors.
 
-#### 2.1.3 Arrow IPC Layer
+#### 3.1.3 Arrow IPC Layer
 
 The Arrow IPC (Interprocess Communication) layer is the innermost layer where actual telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
 
@@ -168,7 +191,7 @@ On the server side, each ArrowPayload is routed to a separate stream consumer ba
 
 Each consumer maintains its own stateful Arrow IPC reader, tracking the current schema and dictionary state for its specific stream. This parallel consumption model allows efficient processing of the normalized table structure, where different tables can be decoded and processed independently while maintaining referential integrity through the foreign key relationships (via `id` and `parent_id` fields).
 
-### 2.2 Service Definitions
+### 3.2 Service Definitions
 
 OTAP defines three signal-specific gRPC services as specified in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
 
@@ -193,7 +216,7 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 - Services MUST support bi-directional streaming
 - Servers MUST return BatchStatus acknowledgments for received BARs
 
-### 2.3 Connection Lifecycle
+### 3.3 Connection Lifecycle
 
 1. Client establishes gRPC connection to server
 2. Client initiates bi-directional stream for appropriate signal type
