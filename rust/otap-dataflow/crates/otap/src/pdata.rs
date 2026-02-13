@@ -51,7 +51,7 @@ impl Context {
             // Inherit the preceding frame's RETURN_DATA bit
             interests |= last.interests & Interests::RETURN_DATA;
 
-            // We should never subscribe twice
+            // We should never subscribe twice.
             debug_assert_ne!(node_id, last.node_id);
         }
         self.stack.push(Frame {
@@ -130,13 +130,17 @@ impl Context {
 
     /// Set the source node for this context.
     pub fn set_source_node(&mut self, node_id: usize) {
+        let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             if node_id == last.node_id {
+                // The node called subscribe_to() itself.
                 return;
             }
+            // Inherit the preceding frame's RETURN_DATA bit.
+            interests = last.interests & Interests::RETURN_DATA;
         }
         self.stack.push(Frame {
-            interests: Interests::empty(),
+            interests,
             node_id,
             calldata: CallData::default(),
         });
@@ -1406,5 +1410,65 @@ mod test {
         assert_eq!(node_id, 100);
         let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
         assert_eq!(recv, test_data);
+    }
+
+    #[test]
+    fn test_source_node_frame_propagates_return_data() {
+        // Scenario: a retry processor (node 1) subscribes with ACKS | RETURN_DATA,
+        // then a multi-source source-tag frame is pushed (node 2), then a
+        // downstream processor (node 3) subscribes with ACKS only.
+        //
+        // Without RETURN_DATA propagation in set_source_node, the source frame
+        // breaks the chain and node 3's frame won't inherit RETURN_DATA.
+        // When next_ack finds node 3, it sees no RETURN_DATA and drops the
+        // payload — even though node 1 needs it for retry.
+        let (test_data, pdata) = create_test();
+
+        let pdata = pdata
+            // Node 1: retry processor wants payload back
+            .test_subscribe_to(
+                Interests::ACKS | Interests::RETURN_DATA,
+                test_data.clone().into(),
+                1,
+            )
+            // Node 2: source-tag from a multi-source edge
+            .add_source_node(2);
+
+        // Verify RETURN_DATA survived through the source frame.
+        assert!(
+            pdata.context.may_return_payload(),
+            "source-tag frame must propagate RETURN_DATA from preceding subscriber"
+        );
+
+        // Node 3: downstream processor subscribes with ACKS (no explicit RETURN_DATA)
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 3);
+
+        // Node 3's frame should have inherited RETURN_DATA through the source frame.
+        assert!(
+            pdata.context.may_return_payload(),
+            "subscribe_to must inherit RETURN_DATA through the source-tag frame"
+        );
+
+        // Ack path: next_ack finds node 3 first
+        let ack = AckMsg::new(pdata);
+        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find node 3");
+        assert_eq!(node_id, 3);
+
+        // The payload must be preserved — node 1 needs it for retry.
+        assert_eq!(
+            ack_msg.accepted.num_items(),
+            1,
+            "payload must be preserved because an earlier subscriber requested RETURN_DATA"
+        );
+        assert!(!ack_msg.accepted.is_empty());
+
+        // Continue to node 1
+        let (node_id, ack_msg) = Context::next_ack(ack_msg).expect("should find node 1");
+        assert_eq!(node_id, 1);
+        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv, test_data);
+
+        // Payload still intact for the retry processor
+        assert_eq!(ack_msg.accepted.num_items(), 1);
     }
 }
