@@ -144,54 +144,19 @@ or Scope entities, rather their definition is implicit in the `resource` and `sc
 
 ## 3. Protocol Architecture
 
-### 3.1 Layered Design
-
 OTAP consists of three distinct layers that work together to enable efficient telemetry data transmission:
 
 1. **gRPC Layer**: Bi-directional streaming RPC services for each signal type
 2. **OTAP Message Layer**: BatchArrowRecords and ArrowPayload protobuf messages
 3. **Arrow IPC Layer**: Apache Arrow Interprocess Communication streams
 
-#### 3.1.1 gRPC Layer
+### 3.1 gRPC Layer
 
-The gRPC layer provides the transport mechanism and service definitions. It establishes the bi-directional streaming connections between clients and servers over HTTP/2. 
-
-There is a single client message type, BatchArrowRecords, and a single server response message type BatchStatus.
+The gRPC layer provides the transport mechanism and service definitions. It establishes the bi-directional streaming connections between clients and servers over HTTP/2. There is a single client message type, BatchArrowRecords, and a single server response message type BatchStatus.
 
 Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified service to maintain compatibility with the OpenTelemetry Collector's signal-specific receiver and exporter architecture.
 
-
-#### 3.1.2 OTAP Message Layer
-
-The OTAP message layer defines the protobuf message structures that wrap Arrow data for transmission over gRPC. The key messages are:
-
-- **BatchArrowRecords (BAR)**: The top-level container sent from client to server, containing multiple Arrow payloads for a complete set of related telemetry tables
-- **ArrowPayload**: A single payload containing serialized Arrow IPC messages for one table (e.g., logs, span attributes, etc.)
-- **BatchStatus**: Acknowledgment messages sent from server to client
-
-This layer is responsible for organizing multiple related tables into cohesive BARs, assigning unique identifiers to schemas and BARs, and providing a standardized way to acknowledge receipt and signal errors.
-
-#### 3.1.3 Arrow IPC Layer
-
-The Arrow IPC (Interprocess Communication) layer is the innermost layer where actual telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
-
-- **Schema negotiation**: Dynamic schema definition without pre-compiled protobuf definitions
-- **Dictionary encoding**: Efficient representation of repeated string values
-- **Zero-copy deserialization**: Data can be read directly from wire format without copying
-- **Columnar layout**: Data organized by column rather than by row, enabling better compression and SIMD processing
-
-**Stream Organization**: Each ArrowPayload within a BAR contains a buffer of bytes (the `record` field) that represents a slice of an Arrow IPC stream. These buffers may contain multiple Encapsulated Arrow IPC Messages—for example, a Schema message followed by DictionaryBatch messages and RecordBatch messages—all serialized consecutively in the Arrow IPC Streaming Format.
-
-On the server side, each ArrowPayload is routed to a separate stream consumer based on its `type` and `schema_id`. This means that a single BAR may feed multiple independent Arrow IPC stream readers simultaneously:
-
-- The LOGS payload goes to the logs stream consumer
-- The LOG_ATTRS payload goes to the log attributes stream consumer
-- The RESOURCE_ATTRS payload goes to the resource attributes stream consumer
-- And so on for each table type
-
-Each consumer maintains its own stateful Arrow IPC reader, tracking the current schema and dictionary state for its specific stream. This parallel consumption model allows efficient processing of the normalized table structure, where different tables can be decoded and processed independently while maintaining referential integrity through the foreign key relationships (via `id` and `parent_id` fields).
-
-### 3.2 Service Definitions
+#### 3.1.1 Service Definitions
 
 OTAP defines three signal-specific gRPC services as specified in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
 
@@ -216,7 +181,7 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 - Services MUST support bi-directional streaming
 - Servers MUST return BatchStatus acknowledgments for received BARs
 
-### 3.3 Connection Lifecycle
+#### 3.1.2 Connection Lifecycle
 
 1. Client establishes gRPC connection to server
 2. Client initiates bi-directional stream for appropriate signal type
@@ -228,6 +193,36 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 - Active Arrow IPC readers/writers per schema_id
 - Dictionary state for dictionary-encoded columns
 - Schema registry mapping schema_id to Arrow schemas
+
+### 3.2 OTAP Message Layer
+
+The OTAP message layer defines the protobuf message structures that wrap Arrow data for transmission over gRPC. The key messages are:
+
+- **BatchArrowRecords (BAR)**: The top-level container sent from client to server, containing multiple Arrow payloads for a complete set of related telemetry tables
+- **ArrowPayload**: A single payload containing serialized Arrow IPC messages for one table (e.g., logs, span attributes, etc.)
+- **BatchStatus**: Acknowledgment messages sent from server to client
+
+This layer is responsible for organizing multiple related tables into cohesive BARs, assigning unique identifiers to schemas and BARs, and providing a standardized way to acknowledge receipt and signal errors.
+
+### 3.3 Arrow IPC Layer
+
+The Arrow IPC (Interprocess Communication) layer is the innermost layer where actual telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
+
+- **Schema negotiation**: Dynamic schema definition without pre-compiled protobuf definitions
+- **Dictionary encoding**: Efficient representation of repeated string values
+- **Zero-copy deserialization**: Data can be read directly from wire format without copying
+- **Columnar layout**: Data organized by column rather than by row, enabling better compression and SIMD processing
+
+**Stream Organization**: Each ArrowPayload within a BAR contains a buffer of bytes (the `record` field) that represents a slice of an Arrow IPC stream. These buffers may contain multiple Encapsulated Arrow IPC Messages—for example, a Schema message followed by DictionaryBatch messages and RecordBatch messages—all serialized consecutively in the Arrow IPC Streaming Format.
+
+On the server side, each ArrowPayload is routed to a separate stream consumer based on its `type` and `schema_id`. This means that a single BAR may feed multiple independent Arrow IPC stream readers simultaneously:
+
+- The LOGS payload goes to the logs stream consumer
+- The LOG_ATTRS payload goes to the log attributes stream consumer
+- The RESOURCE_ATTRS payload goes to the resource attributes stream consumer
+- And so on for each table type
+
+Each consumer maintains its own stateful Arrow IPC reader, tracking the current schema and dictionary state for its specific stream. This parallel consumption model allows efficient processing of the normalized table structure, where different tables can be decoded and processed independently while maintaining referential integrity through the foreign key relationships (via `id` and `parent_id` fields).
 
 ---
 
@@ -1254,6 +1249,21 @@ Major differences from OTLP:
 4. **Dictionaries**: Stateful dictionary encoding vs no dictionary support
 5. **Normalization**: Related tables vs nested messages
 6. **Transport optimization**: Built-in encodings vs no optimization
+
+---
+
+## Appendix E: Load Balancing
+
+OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges that do not arise with stateless unary RPCs. Because gRPC multiplexes streams over a single HTTP/2 connection, L4 (TCP-level) load balancers distribute work at connection granularity, not per-stream. Combined with kernel `SO_REUSEPORT` hashing, too few client connections can pin traffic to a single backend core.
+
+Key considerations include:
+
+- **Connection fan-out**: Clients should open multiple gRPC channels (connections) to provide enough entropy for balanced distribution across backend listeners.
+- **Stream lifetime management**: Periodically recycling OTAP streams bounds dictionary growth and allows downstream rebalancers to redistribute load, at the cost of resending schemas and dictionaries.
+- **L7 load balancing**: An HTTP/2-aware proxy (e.g., Envoy, NGINX) can distribute individual gRPC streams across backends, which is the recommended approach for long-lived streaming RPCs.
+- **Server-side enforcement**: Servers should enforce memory and dictionary size limits regardless of client behavior.
+
+For a detailed treatment of challenges, solution techniques (client-side and server-side), and recommended baseline configurations, see [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
 
 ---
 
