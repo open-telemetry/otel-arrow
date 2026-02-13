@@ -25,6 +25,16 @@
 //!
 //! Each route value corresponds to a named output port that must be wired
 //! in the pipeline configuration.
+//!
+//! # Unmatched and Mixed-Batch Behaviour
+//!
+//! - **Unmatched:** When no route matches (missing key or no matching value),
+//!   the message is sent to `default_output` if configured, otherwise it is
+//!   permanently NACKed.
+//! - **Mixed batch:** If a single batch contains resources that would route to
+//!   different destinations, the entire batch is permanently NACKed. Batches
+//!   where all resources are consistently unmatched (missing key / no match)
+//!   are **not** considered mixed and are routed to the default output.
 
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
