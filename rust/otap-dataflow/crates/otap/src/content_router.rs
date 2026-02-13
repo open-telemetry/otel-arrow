@@ -604,6 +604,7 @@ pub fn create_content_router(
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: CONTENT_ROUTER_URN,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     create: |pipeline: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
