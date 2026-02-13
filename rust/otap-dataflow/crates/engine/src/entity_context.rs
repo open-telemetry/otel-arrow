@@ -6,9 +6,12 @@
 //! input/output channel entities.
 
 use otap_df_config::PortName;
+use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
+use otap_df_telemetry::self_tracing::encode_custom_attrs_to_bytes;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::rc::Rc;
@@ -95,6 +98,28 @@ pub fn node_entity_key() -> Option<EntityKey> {
         .flatten()
 }
 
+/// Returns the pre-encoded custom node attribute bytes for the current node.
+///
+/// At runtime, reads from the task-local `NODE_TASK_CONTEXT`.
+/// During build time, falls back to the thread-local `BUILD_NODE_TELEMETRY_HANDLE`.
+#[inline]
+#[must_use]
+pub fn node_custom_attrs() -> bytes::Bytes {
+    // Runtime: check task-local first.
+    if let Ok(attrs) = NODE_TASK_CONTEXT.try_with(|ctx| {
+        ctx.telemetry_handle
+            .as_ref()
+            .map(|h| h.custom_attrs())
+            .unwrap_or_default()
+    }) {
+        return attrs;
+    }
+    // Build-time fallback: check thread-local handle.
+    BUILD_NODE_TELEMETRY_HANDLE
+        .with(|cell| cell.borrow().as_ref().map(|h| h.custom_attrs()))
+        .unwrap_or_default()
+}
+
 /// Returns the input channel entity key for the current task, if set.
 #[inline]
 #[must_use]
@@ -162,6 +187,8 @@ pub(crate) fn with_node_telemetry_handle<T>(
     })
 }
 
+/// Handle for per-node telemetry state, including entity keys, metric sets,
+/// channel associations, and custom log record attributes.
 #[derive(Clone)]
 pub(crate) struct NodeTelemetryHandle {
     registry: TelemetryRegistryHandle,
@@ -180,6 +207,8 @@ impl Debug for NodeTelemetryHandle {
 // Per-node mutable lifecycle state used for metric/entity tracking and cleanup.
 struct NodeTelemetryState {
     entity_key: EntityKey,
+    /// Pre-encoded custom node attribute bytes for log record attributes.
+    custom_attrs: bytes::Bytes,
     metric_keys: Vec<MetricSetKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
@@ -189,11 +218,19 @@ struct NodeTelemetryState {
 
 impl NodeTelemetryHandle {
     /// Create a handle that owns registry access and per-node cleanup state.
-    pub(crate) fn new(registry: TelemetryRegistryHandle, entity_key: EntityKey) -> Self {
+    ///
+    /// The `custom_attrs` HashMap is serialized to binary (protobuf bytes) eagerly
+    /// so that log record encoding avoids repeated serialization.
+    pub(crate) fn new(
+        registry: TelemetryRegistryHandle,
+        entity_key: EntityKey,
+        custom_attrs: HashMap<String, AttributeValue>,
+    ) -> Self {
         Self {
             registry,
             state: Rc::new(RefCell::new(NodeTelemetryState {
                 entity_key,
+                custom_attrs: encode_custom_attrs_to_bytes(&custom_attrs),
                 metric_keys: Vec::new(),
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
@@ -206,6 +243,11 @@ impl NodeTelemetryHandle {
     /// Return the node entity key for associating metrics/entities.
     pub(crate) fn entity_key(&self) -> EntityKey {
         self.state.borrow().entity_key
+    }
+
+    /// Return the pre-encoded custom node attribute bytes for log records.
+    pub(crate) fn custom_attrs(&self) -> bytes::Bytes {
+        self.state.borrow().custom_attrs.clone()
     }
 
     /// Register a metric set tied to this node entity and track it for cleanup.
@@ -362,9 +404,13 @@ mod tests {
 
         let source_entity_key = source_ctx.register_node_entity();
         let dest_entity_key = dest_ctx.register_node_entity();
-        let source_handle =
-            NodeTelemetryHandle::new(source_ctx.metrics_registry(), source_entity_key);
-        let dest_handle = NodeTelemetryHandle::new(dest_ctx.metrics_registry(), dest_entity_key);
+        let source_handle = NodeTelemetryHandle::new(
+            source_ctx.metrics_registry(),
+            source_entity_key,
+            HashMap::new(),
+        );
+        let dest_handle =
+            NodeTelemetryHandle::new(dest_ctx.metrics_registry(), dest_entity_key, HashMap::new());
         let source_guard = NodeTelemetryGuard::new(source_handle.clone());
         let dest_guard = NodeTelemetryGuard::new(dest_handle.clone());
 
@@ -415,5 +461,34 @@ mod tests {
 
         assert_eq!(registry.metric_set_count(), 0);
         assert_eq!(registry.entity_count(), 0);
+    }
+
+    #[test]
+    fn test_node_custom_attrs() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
+        let node_ctx = pipeline_ctx.with_node_context(
+            "test-node".into(),
+            "urn:test:example:receiver".into(),
+            NodeKind::Receiver,
+        );
+        let entity_key = node_ctx.register_node_entity();
+
+        let mut attrs = HashMap::new();
+        let _ = attrs.insert(
+            "attr1".to_string(),
+            AttributeValue::String("value1".to_string()),
+        );
+        let handle = NodeTelemetryHandle::new(registry, entity_key, attrs.clone());
+
+        with_node_telemetry_handle(handle, || {
+            let custom_attrs_bytes = node_custom_attrs();
+            let expected_bytes = encode_custom_attrs_to_bytes(&attrs);
+
+            assert_eq!(custom_attrs_bytes, expected_bytes);
+            assert!(!custom_attrs_bytes.is_empty());
+        });
     }
 }

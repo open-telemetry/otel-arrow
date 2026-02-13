@@ -444,7 +444,7 @@ impl StyledBufWriter<'_> {
     /// leaving context keys unsymbolized e.g. 'entity/pipeline=EntityKey("1v3")'.
     pub fn format_entity_suffix_without_registry(&mut self, context: &LogContext) {
         self.write_styled(AnsiCode::Magenta, |w| {
-            for key in context.iter() {
+            for key in context.entity_keys.iter() {
                 let _ = write!(w, " entity={:?}", key);
             }
         });

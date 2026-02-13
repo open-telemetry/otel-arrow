@@ -30,6 +30,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::{DispatchStrategy, NodeUserConfig},
     pipeline::PipelineConfig,
+    pipeline::service::telemetry::AttributeValue,
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -421,6 +422,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 node_config.plugin_urn.clone(),
                 node_config.kind,
             );
+            // Custom node attributes to be included in log records.
+            let custom_attrs = node_config.telemetry_attributes.clone();
 
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
@@ -445,6 +448,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id,
                         channel_metrics_enabled,
+                        custom_attrs,
                         || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     receivers.push(wrapper);
@@ -462,6 +466,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id,
                         channel_metrics_enabled,
+                        custom_attrs,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -485,6 +490,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id,
                         channel_metrics_enabled,
+                        custom_attrs,
                         || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     exporters.push(wrapper);
@@ -537,6 +543,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_type: NodeType,
         node_id: NodeId,
         channel_metrics_enabled: bool,
+        custom_attrs: HashMap<String, AttributeValue>,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -545,7 +552,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
     {
         let node_entity_key = base_ctx.register_node_entity();
         let node_telemetry_handle =
-            NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+            NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key, custom_attrs);
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
         build_state.register_node(

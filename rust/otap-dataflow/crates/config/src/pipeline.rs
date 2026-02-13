@@ -815,6 +815,7 @@ impl PipelineConfigBuilder {
                     description: None,
                     out_ports: HashMap::new(),
                     default_out_port: None,
+                    telemetry_attributes: HashMap::new(),
                     config: config.unwrap_or(Value::Null),
                 },
             );

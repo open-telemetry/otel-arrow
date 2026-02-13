@@ -27,6 +27,9 @@ nodes:
         destinations:
           - noop
         dispatch_strategy: round_robin
+    telemetry_attributes:
+      pipeline_name: "MyCustomPipelineName"
+      node_sequence: 1
     config:
       traffic_config:
         max_signal_count: 100000
@@ -37,6 +40,9 @@ nodes:
   noop:
     kind: exporter
     plugin_urn: "urn:otel:noop:exporter"
+    telemetry_attributes:
+      pipeline_name: "MyCustomPipelineName"
+      node_sequence: 2
     config: {}
 
 # Internal telemetry pipeline - separate from main pipeline
