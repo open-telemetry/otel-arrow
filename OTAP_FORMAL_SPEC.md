@@ -35,42 +35,38 @@ See [Appendix F: Glossary](#appendix-f-glossary) for terminology and [Appendix G
 
 ### 2.1 Normalized Representation
 
-OTAP represents Signals as a set of normalized tables connected by foreign key relationships; 
+OTAP represents telemetry Signals as a set of normalized tables connected by foreign key relationships; 
 effectively a database. Each Signal type has a different number and set of tables reflecting the data 
 transported by that Signal. 
 
-Each table within a Signal has a designated Payload Type that identifies it. For example, the Logs
-signal type consists of four Payload Types: LOGS, LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS.
+Each table within a Signal has a designated Payload Type that identifies it. The foreign key
+relationships between these tables form a Rooted Directed Acyclic Graph (DAG) with the 
+Root Payload Type being the root of that graph. 
 
-The foreigh key relationships between these tables form a Rooted Directed Acyclic Graph (DAG) 
-with the Root Payload Type being the root of that graph. 
-
-The LOGS table is the Root Payload Type for Logs and fills a similar role as an OTLP Log. 
-Each Log has a unique `id` which identifies it,
-and links it to the LOG_ATTRS table which defines the logs attributes. Logs similarly contains
-`resource` and `scope` fields, each having an `id`  which links them to the RESOURCE_ATTRS and
-SCOPE_ATTRS tables.
+For example, the Logs signal type consists of four Payload Types: LOGS, LOG_ATTRS, RESOURCE_ATTRS, 
+and SCOPE_ATTRS. The LOGS table is the Root Payload Type for Logs and fills a similar role as an OTLP Log. 
+Each Log has a unique `id` which identifies it, and links it to the LOG_ATTRS table which defines the log's
+attributes. LOGS similarly contains `resource` and `scope` fields, each having an `id`  which links them 
+to the RESOURCE_ATTRS and SCOPE_ATTRS tables.
 
 The Metrics and Traces signals have a similar structure, but with more tables and are defined 
 below along with the relationships between each table.
-
-TODO: It is probably enough information for this section to enumerate the payload types for
-each signal and a description of them. I think we can move the relationships and Id semantics
-to a later section where we define the full schema and arrow value type for each column.
 
 #### 2.1.1 Logs Signal Tables
 
 | Payload Type | Enum Value | Description | Id | Parent Payload Type |
 |---|---|---|---|---|
-| LOGS | 30 | Core log record data (Root) | Yes | — |
-| LOG_ATTRS | 31 | Log-level attributes | No | LOGS |
 | RESOURCE_ATTRS | 1 | Resource attributes | No | LOGS |
 | SCOPE_ATTRS | 2 | Scope attributes | No | LOGS |
+| LOGS | 30 | Core log record data (Root) | Yes | — |
+| LOG_ATTRS | 31 | Log-level attributes | No | LOGS |
 
 #### 2.1.2 Metrics Signal Tables
 
 | Payload Type | Enum Value | Description | Id | Parent Payload Type |
 |---|---|---|---|---|
+| RESOURCE_ATTRS | 1 | Resource attributes | No | METRICS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | METRICS |
 | UNIVARIATE_METRICS | 10 | Core metric metadata (Root) | Yes | — |
 | MULTIVARIATE_METRICS | 25 | Core metric metadata (Root) | Yes | — |
 | NUMBER_DATA_POINTS | 11 | Gauge and sum data points | Yes | METRICS |
@@ -83,23 +79,19 @@ to a later section where we define the full schema and arrow value type for each
 | EXP_HISTOGRAM_DP_EXEMPLARS | 21 | Exemplars for exp histogram data points | Yes | EXP_HISTOGRAM_DATA_POINTS |
 | *_DP_EXEMPLAR_ATTRS | 22-24 | Exemplar attributes | No | *_DP_EXEMPLARS |
 | METRIC_ATTRS | 26 | Metric-level attributes | No | METRICS |
-| RESOURCE_ATTRS | 1 | Resource attributes | No | METRICS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | METRICS |
 
 #### 2.1.3 Traces Signal Tables
 
 | Payload Type | Enum Value | Description | Id | Parent Payload Type |
 |---|---|---|---|---|
+| RESOURCE_ATTRS | 1 | Resource attributes | No | SPANS |
+| SCOPE_ATTRS | 2 | Scope attributes | No | SPANS |
 | SPANS | 40 | Core span data (Root) | Yes | — |
 | SPAN_ATTRS | 41 | Span attributes | No | SPANS |
 | SPAN_EVENTS | 42 | Span events | Yes | SPANS |
 | SPAN_EVENT_ATTRS | 44 | Event attributes | No | SPAN_EVENTS |
 | SPAN_LINKS | 43 | Span links | Yes | SPANS |
 | SPAN_LINK_ATTRS | 45 | Link attributes | No | SPAN_LINKS |
-| RESOURCE_ATTRS | 1 | Resource attributes | No | SPANS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | SPANS |
-
-The foreign key relationships between payload types are defined in Section 6.
 
 ---
 
@@ -113,13 +105,17 @@ OTAP consists of three distinct layers:
 
 ### 3.1 gRPC Layer
 
-The gRPC layer provides the transport mechanism and service definitions. It establishes bi-directional streaming connections between clients and servers over HTTP/2. There is a single client message type, BatchArrowRecords, and a single server response message type, BatchStatus.
+The gRPC layer is the outermost layer providing the transport mechanism and service definitions. 
+It establishes bi-directional streaming connections between clients and servers over HTTP/2. 
 
-Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified service. The OTAP Message Layer places further restrictions on the contents of BatchArrowRecords per service.
 
 #### 3.1.1 Service Definitions
 
-OTAP defines three signal-specific gRPC services in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
+OTAP defines signal-specific gRPC services in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
+Each service accepts a stream of BatchArrowRecords (BAR) messages from the client and returns a stream of BatchStatus
+acknowledgments. The bi-directional streaming pattern allows the client to continue sending BARs while waiting for
+acknowledgments, enabling high throughput with backpressure control. The OTAP Message Layer places further restrictions
+on the contents of BatchArrowRecords per service.
 
 ```protobuf
 service ArrowTracesService {
@@ -135,9 +131,9 @@ service ArrowMetricsService {
 }
 ```
 
-Each service accepts a stream of BatchArrowRecords (BAR) messages from the client and returns a stream of BatchStatus acknowledgments. The bi-directional streaming pattern allows the client to continue sending BARs while waiting for acknowledgments, enabling high throughput with backpressure control.
-
 #### 3.1.2 Connection Lifecycle
+
+The typical connection lifecycle for the service is as follows:
 
 1. Client establishes gRPC connection to server
 2. Client initiates bi-directional stream for appropriate signal type
@@ -147,13 +143,14 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 
 #### 3.1.3 BatchStatus Acknowledgment
 
-The BatchStatus message provides feedback from server to client about the success or failure of processing a BAR. This acknowledgment mechanism enables reliable delivery—clients can track which BARs have been successfully processed and retry or handle failures for BARs that were rejected.
+The BatchStatus message provides feedback from server to client about the success or failure of 
+processing a BAR. This acknowledgment mechanism enables clients to track which BARs have been 
+successfully processed and handle failures for BARs that were rejected.
 
 ```protobuf
 message BatchStatus {
-  // [REQUIRED] The identifier of the BAR being acknowledged. This matches the
+  // [REQUIRED] The identifier of the BAR being acknowledged. This MUST match the
   // batch_id from the BatchArrowRecords message that was received.
-  // MUST match the batch_id from the received BatchArrowRecords.
   int64 batch_id = 1;
 
   // [REQUIRED] Indicates whether processing succeeded or failed, and if failed,
@@ -169,19 +166,29 @@ message BatchStatus {
 }
 ```
 
-BatchStatus messages flow from server to client over the same bi-directional gRPC stream, allowing the server to acknowledge BARs as they are processed. A status code of OK indicates the BAR was successfully received, decoded, and accepted. Non-OK status codes indicate various error conditions (see section 8 for details).
+BatchStatus messages flow from server to client over the same bi-directional gRPC stream, allowing 
+the server to acknowledge BARs as they are processed and potentially out of order. 
+
+A status code of OK indicates the BAR was successfully received, decoded, and accepted. Non-OK status
+codes indicate various error conditions which may or may not be retriable (see section 8 for details).
 
 Servers MUST send BatchStatus messages to acknowledge received BARs.
 
 ### 3.2 OTAP Message Layer
 
-The OTAP message layer defines the protobuf messages that carry telemetry data over gRPC streams. It places additional restrictions and requirements on the contents of a BAR, the ArrowPayload, and BatchStatus messages. It defines which Payload Types are valid for which Services/Signals; rules around Schema Evolution, Schema Resets, and Error Handling; and when it is allowable to omit payloads entirely.
+The OTAP message layer defines additional restrictions and requirements for the contents of a BAR,
+the ArrowPayload, and BatchStatus messages. It defines which Payload Types are valid for which Services/Signals; rules
+around Schema Evolution, Schema Resets, and Error Handling; and when it is allowable to omit payloads
+entirely.
 
 #### 3.2.1 BatchArrowRecords Message
 
-The BatchArrowRecords (BAR) message is the fundamental unit of data transmission in OTAP. It represents a complete set of related telemetry tables for a single signal type, containing all the tables needed to reconstruct that signal (e.g., logs plus their attributes, or spans plus their events, links, and attributes).
+The BatchArrowRecords (BAR) message is the fundamental unit of data transmission in OTAP. It represents 
+a complete set of related telemetry tables for a single signal type, containing all the tables needed 
+to reconstruct that signal.
 
-Each BAR is assigned a unique identifier that allows the server to acknowledge receipt and report errors on a per-BAR basis. This enables reliable transmission with flow control—clients can send multiple BARs in flight while tracking which have been acknowledged.
+Each BAR is assigned a unique identifier that allows the server to acknowledge receipt and report errors
+on a per-BAR basis.
 
 ```protobuf
 message BatchArrowRecords {
@@ -189,28 +196,29 @@ message BatchArrowRecords {
   // This ID is used by the server to send acknowledgments (BatchStatus messages)
   // and by the client to correlate those acknowledgments with sent BARs. The ID
   // space is scoped to a single gRPC stream connection.
-  // MUST be unique within the gRPC stream.
-  // SHOULD be monotonically increasing for easier debugging and ordering.
   int64 batch_id = 1;
 
   // [REQUIRED] A collection of ArrowPayload messages, each containing the
-  // serialized Arrow IPC data for one table. For example, a logs BAR might
-  // contain four payloads: one for the LOGS table, and three for LOG_ATTRS,
-  // RESOURCE_ATTRS, and SCOPE_ATTRS tables.
-  // MUST contain at least one payload.
-  // First payload MUST be the primary table (LOGS, SPANS, or UNIVARIATE_METRICS/MULTIVARIATE_METRICS).
-  // Empty tables MAY be omitted from the BAR.
-  // Payloads SHOULD be ordered: primary table first, followed by related tables.
+  // serialized Arrow IPC data for one table. 
   repeated ArrowPayload arrow_payloads = 2;
 
-  // [OPTIONAL] Additional metadata transmitted alongside the BAR. When present,
-  // headers are encoded using HPACK compression. This field is typically used for
-  // authentication tokens, tracing context, or other out-of-band metadata.
-  // If present, MUST be encoded using HPACK.
+  // [OPTIONAL] Additional metadata transmitted alongside the BAR. 
+  // This field is typically used for authentication tokens, tracing context, 
+  // or other out-of-band metadata. If present, MUST be encoded using HPACK.
   // Servers MAY ignore this field.
   bytes headers = 3;
 }
 ```
+
+**Requirements**
+
+- `batch_id`s MUST be unique within the gRPC stream
+- `batch_id`s MUST be strictly increasing // NEEDS_TRIAGE
+- `arrow_payloads` MUST include the primary table e.g. LOGS, SPANS, or UNIVARIATE_METRICS/MULTIVARIATE_METRICS // NEEDS_TRIAGE
+- `arrow_payloads` SHOULD omit tables with 0 rows
+- `headers` MUST be HPACK compressed if present // NEEDS TRIAGE
+
+
 
 #### 3.2.2 ArrowPayload Message
 
