@@ -1,4 +1,4 @@
-# Open Telemetry Arrow Protocol (OTAP) Formal Specification
+# OpenTelemetry Arrow Protocol (OTAP) Formal Specification
 
 **Version:** 0.1
 **Status:** Draft
