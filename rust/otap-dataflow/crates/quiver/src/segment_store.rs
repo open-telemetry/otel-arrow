@@ -355,6 +355,7 @@ impl SegmentStore {
                         "quiver.segment.drop",
                             segment = seq.raw(),
                             error = %e,
+                            error_type = "io",
                             phase = "deferred",
                             message = "Failed to delete segment, deferring for retry",
                         );
@@ -473,7 +474,7 @@ impl SegmentStore {
                         error = %e,
                         error_type = "io",
                         phase = "deferred",
-                        "Failed to delete deferred segment, will retry in next cycle",
+                        message = "Failed to delete deferred segment, will retry in next cycle",
                     );
                 }
             }
