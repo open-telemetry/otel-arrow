@@ -122,7 +122,7 @@ message ArrowPayload {
   bytes record = 3;
 }
 
-// A message sent by a Collector to the exporter that opened the data stream.
+// A message sent by the server to the client that opened the data stream
 message BatchStatus {
   int64 batch_id = 1;
   StatusCode status_code = 2;

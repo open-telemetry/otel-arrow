@@ -1,8 +1,7 @@
 # Open Telemetry Arrow Protocol (OTAP) Formal Specification
 
-**Version:** 1.0
+**Version:** 0.1
 **Status:** Draft
-**Last Updated:** 2026-02-10
 
 ## Table of Contents
 
@@ -23,12 +22,15 @@
 
 ### 1.1 Purpose
 
-The Open Telemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting OpenTelemetry telemetry signals (logs, metrics, and traces) using Apache Arrow's columnar format wrapped in gRPC streams. OTAP is a column oriented protocol that optimizes for compression efficiency, memory usage, and CPU performance and is meant to be able to be available as an alternative to Open Telemetry Protocol (OTLP).
+The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting OpenTelemetry telemetry signals (logs, metrics, and traces) using Apache Arrow's columnar format wrapped in gRPC streams. OTAP is a column oriented protocol that optimizes for compression efficiency, memory usage, and CPU performance while being semantically equivalent to OpenTelemetry Protocol (OTLP).
 
 ### 1.2 References
 
 - **OTLP Specification**: OpenTelemetry Protocol specification
 - **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
+- **Signal**: One of the telemetry signal types (Logs, Metrics, or Traces)
+- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table
+in the OTAP data model.
 - **gRPC**: https://grpc.io/
 - **OTEP 0156**: Columnar Encoding proposal
 
@@ -38,8 +40,82 @@ The Open Telemetry Arrow Protocol (OTAP) defines a wire protocol for transmittin
 - **Server/Consumer**: The receiver of telemetry data
 - **Signal**: One of logs, metrics, or traces
 - **Payload**: An ArrowPayload containing serialized Arrow IPC messages
-- **BAR**: Abbreviation for BatchArrowRecords, the top-level message containing multiple payloads
+- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message 
+- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
 - **Schema Reset**: The act of changing the Arrow schema for a payload type
+
+---
+
+## 3. Data Model
+
+### 3.1 Normalized Representation
+
+OTAP represents Signals as a set of normalized tables connected by foreign key relationships; 
+effectively a database. Each Signal type has a different number and set of tables reflecting the data 
+transported by that Signal. 
+
+Each table within a Signal has a designated Payload Type that identifies it. For example, the Logs
+signal type consists of four Payload Types: LOGS, LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS.
+
+The foreigh key relationships between these tables form a Rooted Directed Acyclic Graph (DAG) 
+with the Root Payload Type being the root of that graph. 
+
+The LOGS table is the Root Payload Type for Logs and fills a similar role as an OTLP Log. 
+Each Log has a unique `id` which identifies it,
+and links it to the LOG_ATTRS table which defines the logs attributes. Logs similarly contains
+`resource` and `scope` fields, each having an `id`  which links them to the RESOURCE_ATTRS and
+SCOPE_ATTRS tables.
+
+The Metrics and Traces signals have a similar structure, but with more tables and are defined 
+below along with the relationships between each table.
+
+#### 3.1.1 Logs Signal Tables
+
+1. **LOGS** (Root): Core log record data
+2. **LOG_ATTRS**: Log-level attributes
+3. **RESOURCE_ATTRS**: Resource attributes
+4. **SCOPE_ATTRS**: Instrumentation scope attributes
+
+#### 3.1.2 Metrics Signal Tables
+
+1. **UNIVARIATE_METRICS** or **MULTIVARIATE_METRICS** (Root): Core metric metadata
+2. **NUMBER_DATA_POINTS**: Gauge and sum data points
+3. **SUMMARY_DATA_POINTS**: Summary data points
+4. **HISTOGRAM_DATA_POINTS**: Histogram data points
+5. **EXP_HISTOGRAM_DATA_POINTS**: Exponential histogram data points
+6. **NUMBER_DP_ATTRS**: Attributes for number data points
+7. **SUMMARY_DP_ATTRS**: Attributes for summary data points
+8. **HISTOGRAM_DP_ATTRS**: Attributes for histogram data points
+9. **EXP_HISTOGRAM_DP_ATTRS**: Attributes for exponential histogram data points
+10. **NUMBER_DP_EXEMPLARS**: Exemplars for number data points
+11. **HISTOGRAM_DP_EXEMPLARS**: Exemplars for histogram data points
+12. **EXP_HISTOGRAM_DP_EXEMPLARS**: Exemplars for exponential histogram data points
+13. **NUMBER_DP_EXEMPLAR_ATTRS**: Exemplar attributes for number data points
+14. **HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for histogram data points
+15. **EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for exponential histogram data points
+16. **RESOURCE_ATTRS**: Resource attributes
+17. **SCOPE_ATTRS**: Scope attributes
+
+#### 3.1.3 Traces Signal Tables
+
+1. **SPANS** (Root): Core span data
+2. **SPAN_ATTRS**: Span attributes
+3. **SPAN_EVENTS**: Span events
+4. **SPAN_EVENT_ATTRS**: Event attributes
+5. **SPAN_LINKS**: Span links
+6. **SPAN_LINK_ATTRS**: Link attributes
+7. **RESOURCE_ATTRS**: Resource attributes
+8. **SCOPE_ATTRS**: Scope attributes
+
+### 3.2 Foreign Key Relationships
+
+- **Primary tables** contain `id` field (the primary key)
+- **Related tables** contain `parent_id` field (foreign key to primary table)
+- **Nested related tables** (e.g., exemplar attrs) have `parent_id` referencing the parent related table
+
+---
+
+
 
 ---
 
@@ -55,7 +131,12 @@ OTAP consists of three distinct layers that work together to enable efficient te
 
 #### 2.1.1 gRPC Layer
 
-The gRPC layer provides the transport mechanism and service definitions. It establishes reliable, bi-directional streaming connections between clients and servers over HTTP/2. This layer handles network-level concerns such as connection management, flow control, and basic error signaling. OTAP defines three separate gRPC services (one per signal type) rather than a unified service to maintain compatibility with OpenTelemetry Collector's signal-specific receiver and exporter architecture.
+The gRPC layer provides the transport mechanism and service definitions. It establishes the bi-directional streaming connections between clients and servers over HTTP/2. 
+
+There is a single client message type, BatchArrowRecords, and a single server response message type BatchStatus.
+
+Despite a single message type, OTAP defines three separate gRPC services (one per signal type) rather than a unified service to maintain compatibility with the OpenTelemetry Collector's signal-specific receiver and exporter architecture.
+
 
 #### 2.1.2 OTAP Message Layer
 
@@ -124,65 +205,6 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 - Active Arrow IPC readers/writers per schema_id
 - Dictionary state for dictionary-encoded columns
 - Schema registry mapping schema_id to Arrow schemas
-
----
-
-## 3. Data Model
-
-### 3.1 Normalized Representation
-
-Unlike OTLP which uses nested protobuf messages, OTAP represents each signal type as a set of related tables connected by foreign key relationships. This normalized approach offers several advantages:
-
-- **Better compression**: Columnar storage groups similar values together, making patterns more apparent to compression algorithms
-- **Reduced redundancy**: Resource and scope information is stored once and referenced by ID rather than repeated for every log/span/metric
-- **Efficient filtering**: Queries can target specific tables without deserializing entire nested structures
-- **Arrow ecosystem compatibility**: The table-based model aligns with Arrow's design and tools like Apache Parquet
-
-The trade-off is that reconstructing a complete signal requires joining related tables, but this cost is typically outweighed by the compression and processing benefits.
-
-#### 3.1.1 Logs Signal Tables
-
-1. **LOGS** (Primary): Core log record data
-2. **LOG_ATTRS**: Log-level attributes
-3. **RESOURCE_ATTRS**: Resource attributes
-4. **SCOPE_ATTRS**: Instrumentation scope attributes
-
-#### 3.1.2 Metrics Signal Tables
-
-1. **UNIVARIATE_METRICS** or **MULTIVARIATE_METRICS** (Primary): Core metric metadata
-2. **NUMBER_DATA_POINTS**: Gauge and sum data points
-3. **SUMMARY_DATA_POINTS**: Summary data points
-4. **HISTOGRAM_DATA_POINTS**: Histogram data points
-5. **EXP_HISTOGRAM_DATA_POINTS**: Exponential histogram data points
-6. **NUMBER_DP_ATTRS**: Attributes for number data points
-7. **SUMMARY_DP_ATTRS**: Attributes for summary data points
-8. **HISTOGRAM_DP_ATTRS**: Attributes for histogram data points
-9. **EXP_HISTOGRAM_DP_ATTRS**: Attributes for exponential histogram data points
-10. **NUMBER_DP_EXEMPLARS**: Exemplars for number data points
-11. **HISTOGRAM_DP_EXEMPLARS**: Exemplars for histogram data points
-12. **EXP_HISTOGRAM_DP_EXEMPLARS**: Exemplars for exponential histogram data points
-13. **NUMBER_DP_EXEMPLAR_ATTRS**: Exemplar attributes for number data points
-14. **HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for histogram data points
-15. **EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS**: Exemplar attributes for exponential histogram data points
-16. **RESOURCE_ATTRS**: Resource attributes
-17. **SCOPE_ATTRS**: Scope attributes
-
-#### 3.1.3 Traces Signal Tables
-
-1. **SPANS** (Primary): Core span data
-2. **SPAN_ATTRS**: Span attributes
-3. **SPAN_EVENTS**: Span events
-4. **SPAN_EVENT_ATTRS**: Event attributes
-5. **SPAN_LINKS**: Span links
-6. **SPAN_LINK_ATTRS**: Link attributes
-7. **RESOURCE_ATTRS**: Resource attributes
-8. **SCOPE_ATTRS**: Scope attributes
-
-### 3.2 Foreign Key Relationships
-
-- **Primary tables** contain `id` field (the primary key)
-- **Related tables** contain `parent_id` field (foreign key to primary table)
-- **Nested related tables** (e.g., exemplar attrs) have `parent_id` referencing the parent related table
 
 ---
 
