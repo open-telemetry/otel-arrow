@@ -7,7 +7,7 @@ pub mod service;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
-use crate::node::NodeUserConfig;
+use crate::node::{NodeKind, NodeUserConfig};
 use crate::pipeline::service::ServiceConfig;
 use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
@@ -715,11 +715,82 @@ impl PipelineConfig {
         self.nodes.into_iter()
     }
 
-    /// Remove unconnected nodes from the pipeline and return descriptions of what was removed.
+    /// Remove unconnected nodes from the main pipeline graph and return removed node descriptors.
     ///
-    /// This delegates to [`PipelineNodes::remove_unconnected_nodes`] on the main pipeline nodes.
+    /// Connectivity is defined by top-level `connections`:
+    /// - receiver: must have at least one outgoing connection
+    /// - processor / processor_chain: must have at least one incoming and one outgoing connection
+    /// - exporter: must have at least one incoming connection
+    ///
+    /// Removal is iterative. Removing one node can orphan additional nodes, which are removed in
+    /// subsequent passes. Connections are pruned as nodes are removed.
     pub fn remove_unconnected_nodes(&mut self) -> Vec<(NodeId, NodeKind)> {
-        self.nodes.remove_unconnected_nodes()
+        let mut removed = Vec::new();
+
+        loop {
+            let connected = self.connected_sets();
+            let mut to_remove = Vec::new();
+
+            for (node_id, node_cfg) in self.nodes.iter() {
+                let has_incoming = connected.incoming.contains(node_id);
+                let has_outgoing = connected.outgoing.contains(node_id);
+                let should_remove = match node_cfg.kind() {
+                    NodeKind::Receiver => !has_outgoing,
+                    NodeKind::Processor | NodeKind::ProcessorChain => {
+                        !has_incoming || !has_outgoing
+                    }
+                    NodeKind::Exporter => !has_incoming,
+                };
+
+                if should_remove {
+                    to_remove.push((node_id.clone(), node_cfg.kind()));
+                }
+            }
+
+            if to_remove.is_empty() {
+                break;
+            }
+
+            let removed_ids: HashSet<NodeId> = to_remove
+                .iter()
+                .map(|(node_id, _)| node_id.clone())
+                .collect();
+
+            for (node_id, node_kind) in &to_remove {
+                let _ = self.nodes.0.remove(node_id);
+                removed.push((node_id.clone(), *node_kind));
+            }
+
+            self.connections = self
+                .connections
+                .drain(..)
+                .filter_map(|connection| prune_connection(connection, &removed_ids))
+                .collect();
+        }
+
+        removed
+    }
+
+    fn connected_sets(&self) -> ConnectedSets {
+        let mut incoming = HashSet::new();
+        let mut outgoing = HashSet::new();
+
+        for connection in &self.connections {
+            for source in connection.from_sources() {
+                let source_id = source.node_id().clone();
+                if self.nodes.contains_key(source_id.as_ref()) {
+                    _ = outgoing.insert(source_id);
+                }
+            }
+
+            for target in connection.to_nodes() {
+                if self.nodes.contains_key(target.as_ref()) {
+                    _ = incoming.insert(target);
+                }
+            }
+        }
+
+        ConnectedSets { incoming, outgoing }
     }
 
     /// Returns the service-level telemetry configuration.
@@ -1019,6 +1090,68 @@ impl PipelineConfig {
 
         cycles
     }
+}
+
+struct ConnectedSets {
+    incoming: HashSet<NodeId>,
+    outgoing: HashSet<NodeId>,
+}
+
+fn prune_connection(
+    connection: PipelineConnection,
+    removed_ids: &HashSet<NodeId>,
+) -> Option<PipelineConnection> {
+    let mut kept_sources = connection
+        .from_sources()
+        .into_iter()
+        .filter(|source| !removed_ids.contains(source.node_id()))
+        .collect::<Vec<_>>();
+    let mut kept_targets = connection
+        .to_nodes()
+        .into_iter()
+        .filter(|target| !removed_ids.contains(target))
+        .collect::<Vec<_>>();
+
+    if kept_sources.is_empty() || kept_targets.is_empty() {
+        return None;
+    }
+
+    kept_sources.sort_by(|left, right| {
+        let left_key = (
+            left.node_id().as_ref(),
+            left.output_port().map(|port| port.as_ref()),
+        );
+        let right_key = (
+            right.node_id().as_ref(),
+            right.output_port().map(|port| port.as_ref()),
+        );
+        left_key.cmp(&right_key)
+    });
+    kept_sources.dedup_by(|left, right| {
+        left.node_id().as_ref() == right.node_id().as_ref()
+            && left.output_port().map(|port| port.as_ref())
+                == right.output_port().map(|port| port.as_ref())
+    });
+
+    kept_targets.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
+    kept_targets.dedup_by(|left, right| left.as_ref() == right.as_ref());
+
+    let from = if kept_sources.len() == 1 {
+        ConnectionSourceSet::One(kept_sources.remove(0))
+    } else {
+        ConnectionSourceSet::Many(kept_sources)
+    };
+    let to = if kept_targets.len() == 1 {
+        ConnectionNodeSet::One(kept_targets.remove(0))
+    } else {
+        ConnectionNodeSet::Many(kept_targets)
+    };
+
+    Some(PipelineConnection {
+        from,
+        to,
+        policies: connection.policies,
+    })
 }
 
 /// A builder for constructing a [`PipelineConfig`]. This type is used
@@ -2464,26 +2597,22 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_unconnected_receiver_with_empty_out_ports() {
-        // A receiver with no out_ports should be removed.
+    fn test_remove_unconnected_receiver_with_no_outgoing_connection() {
+        // A receiver with no outgoing connection should be removed.
         let yaml = r#"
             nodes:
               connected_recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
-                out_ports:
-                  out:
-                    destinations: [exporter]
-                    dispatch_strategy: round_robin
+                type: "urn:test:a:receiver"
                 config: {}
               disconnected_recv:
-                kind: receiver
-                plugin_urn: "urn:test:b:receiver"
+                type: "urn:test:b:receiver"
                 config: {}
               exporter:
-                kind: exporter
-                plugin_urn: "urn:test:c:exporter"
+                type: "urn:test:c:exporter"
                 config: {}
+            connections:
+              - from: connected_recv
+                to: exporter
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2504,33 +2633,24 @@ mod tests {
         let yaml = r#"
             nodes:
               recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
-                out_ports:
-                  out:
-                    destinations: [connected_proc]
-                    dispatch_strategy: round_robin
+                type: "urn:test:a:receiver"
                 config: {}
               connected_proc:
-                kind: processor
-                plugin_urn: "urn:test:b:processor"
-                out_ports:
-                  out:
-                    destinations: [exporter]
-                    dispatch_strategy: round_robin
+                type: "urn:test:b:processor"
                 config: {}
               orphan_proc:
-                kind: processor
-                plugin_urn: "urn:test:c:processor"
-                out_ports:
-                  out:
-                    destinations: [exporter]
-                    dispatch_strategy: round_robin
+                type: "urn:test:c:processor"
                 config: {}
               exporter:
-                kind: exporter
-                plugin_urn: "urn:test:d:exporter"
+                type: "urn:test:d:exporter"
                 config: {}
+            connections:
+              - from: recv
+                to: connected_proc
+              - from: connected_proc
+                to: exporter
+              - from: orphan_proc
+                to: exporter
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2551,21 +2671,17 @@ mod tests {
         let yaml = r#"
             nodes:
               recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
-                out_ports:
-                  out:
-                    destinations: [connected_exp]
-                    dispatch_strategy: round_robin
+                type: "urn:test:a:receiver"
                 config: {}
               connected_exp:
-                kind: exporter
-                plugin_urn: "urn:test:b:exporter"
+                type: "urn:test:b:exporter"
                 config: {}
               orphan_exp:
-                kind: exporter
-                plugin_urn: "urn:test:c:exporter"
+                type: "urn:test:c:exporter"
                 config: {}
+            connections:
+              - from: recv
+                to: connected_exp
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2581,45 +2697,34 @@ mod tests {
 
     #[test]
     fn test_remove_unconnected_cascading_removal() {
-        // 3-level cascade: orphan_proc1 has no incoming edges so it is removed
-        // on pass 1. orphan_proc2's only incoming was from orphan_proc1, so it
-        // becomes orphaned on pass 2. orphan_exp's only incoming was from
-        // orphan_proc2, so it becomes orphaned on pass 3.
+        // 3-level cascade: orphan_proc1 has no incoming edges so it is removed on pass 1.
+        // orphan_proc2's only incoming was from orphan_proc1, so it becomes orphaned on pass 2.
+        // orphan_exp's only incoming was from orphan_proc2, so it becomes orphaned on pass 3.
         // Meanwhile, recv -> connected_exp stays intact.
         let yaml = r#"
             nodes:
               recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
-                out_ports:
-                  out:
-                    destinations: [connected_exp]
-                    dispatch_strategy: round_robin
+                type: "urn:test:a:receiver"
                 config: {}
               orphan_proc1:
-                kind: processor
-                plugin_urn: "urn:test:b:processor"
-                out_ports:
-                  out:
-                    destinations: [orphan_proc2]
-                    dispatch_strategy: round_robin
+                type: "urn:test:b:processor"
                 config: {}
               orphan_proc2:
-                kind: processor
-                plugin_urn: "urn:test:c:processor"
-                out_ports:
-                  out:
-                    destinations: [orphan_exp]
-                    dispatch_strategy: round_robin
+                type: "urn:test:c:processor"
                 config: {}
               connected_exp:
-                kind: exporter
-                plugin_urn: "urn:test:d:exporter"
+                type: "urn:test:d:exporter"
                 config: {}
               orphan_exp:
-                kind: exporter
-                plugin_urn: "urn:test:e:exporter"
+                type: "urn:test:e:exporter"
                 config: {}
+            connections:
+              - from: recv
+                to: connected_exp
+              - from: orphan_proc1
+                to: orphan_proc2
+              - from: orphan_proc2
+                to: orphan_exp
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2652,25 +2757,19 @@ mod tests {
         let yaml = r#"
             nodes:
               recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
-                out_ports:
-                  out:
-                    destinations: [proc]
-                    dispatch_strategy: round_robin
+                type: "urn:test:a:receiver"
                 config: {}
               proc:
-                kind: processor
-                plugin_urn: "urn:test:b:processor"
-                out_ports:
-                  out:
-                    destinations: [exp]
-                    dispatch_strategy: round_robin
+                type: "urn:test:b:processor"
                 config: {}
               exp:
-                kind: exporter
-                plugin_urn: "urn:test:c:exporter"
+                type: "urn:test:c:exporter"
                 config: {}
+            connections:
+              - from: recv
+                to: proc
+              - from: proc
+                to: exp
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2684,27 +2783,23 @@ mod tests {
 
     #[test]
     fn test_remove_unconnected_all_nodes_removed() {
-        // Every node is disconnected: receiver has no out_ports, processor and
-        // exporter have no incoming edges. All should be removed, leaving an
-        // empty pipeline.
+        // Receiver has no outgoing connection, processor has no incoming
+        // connection, and exporter is only reachable from that orphan processor.
+        // All nodes should eventually be removed.
         let yaml = r#"
             nodes:
               recv:
-                kind: receiver
-                plugin_urn: "urn:test:a:receiver"
+                type: "urn:test:a:receiver"
                 config: {}
               proc:
-                kind: processor
-                plugin_urn: "urn:test:b:processor"
-                out_ports:
-                  out:
-                    destinations: [exp]
-                    dispatch_strategy: round_robin
+                type: "urn:test:b:processor"
                 config: {}
               exp:
-                kind: exporter
-                plugin_urn: "urn:test:c:exporter"
+                type: "urn:test:c:exporter"
                 config: {}
+            connections:
+              - from: proc
+                to: exp
         "#;
         let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
 
@@ -2728,5 +2823,30 @@ mod tests {
             "all nodes should be removed, got: {:?}",
             config.nodes().keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_remove_unconnected_prunes_connections_for_removed_nodes() {
+        let yaml = r#"
+            nodes:
+              recv:
+                type: "urn:test:a:receiver"
+                config: {}
+              orphan_proc:
+                type: "urn:test:b:processor"
+                config: {}
+              exp:
+                type: "urn:test:c:exporter"
+                config: {}
+            connections:
+              - from: orphan_proc
+                to: exp
+        "#;
+        let mut config = super::PipelineConfig::from_yaml("g".into(), "p".into(), yaml).unwrap();
+
+        let removed = config.remove_unconnected_nodes();
+        let removed_ids: Vec<_> = removed.iter().map(|(id, _)| id.as_ref()).collect();
+        assert_eq!(removed_ids.len(), 3);
+        assert!(config.connection_iter().next().is_none());
     }
 }
