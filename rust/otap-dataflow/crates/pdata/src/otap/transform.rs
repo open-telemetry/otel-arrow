@@ -8,7 +8,8 @@ use std::ops::{AddAssign, Range};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, MutableArrayData, PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array, make_array
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, MutableArrayData,
+    PrimitiveArray, PrimitiveBuilder, RecordBatch, StringArray, UInt32Array, make_array,
 };
 use arrow::buffer::{Buffer, MutableBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::compute::kernels::cmp::eq;
