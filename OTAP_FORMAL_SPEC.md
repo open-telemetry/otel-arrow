@@ -287,7 +287,7 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 **Table Column Descriptions:**
 - **Name**: Field name in the Arrow schema
 - **Type**: Base Arrow type for this field
-- **Alt Representations**: Alternative encodings allowed for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types).
+- **Alt Representations**: Alternative encodings allowed for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types). See also: [Dictionary Encoding](https://arrow.apache.org/docs/format/Columnar.html#dictionary-encoded-layout)
 - **Nullable**: Whether the field can contain null values
 - **Required**: Whether this field must be present in every record
 - **Id Encoding**: The encoding method used for id columns (see [Section 6.5](#65-transport-optimized-encodings))
@@ -595,43 +595,18 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 5.5 Dictionary Encoding
-
-Dictionary encoding is a compression technique where repeated values are stored once in a separate dictionary, and the actual column contains only small integer keys that index into that dictionary. This is particularly effective for string columns with limited cardinality, such as attribute keys, metric names, or resource types.
-
-For example, if 10,000 log records all have the attribute key "http.method", rather than storing the string "http.method" 10,000 times, we store it once in a dictionary and use small integer keys (0-10) in the actual column. This can reduce data size by 10x or more for high-repetition columns.
-
-OTAP supports dictionary encoding through Arrow's built-in dictionary types. Dictionaries are stateful—once established, they persist across multiple BARs, allowing subsequent BARs to reference previously defined dictionary entries without retransmitting them. When new values appear, clients send delta dictionaries that add entries without replacing existing ones.
-
 #### 5.5.1 Allowed Dictionary Key Types
 
 Dictionary keys MUST use one of these unsigned integer types:
 - **UInt8**: For dictionaries with ≤256 unique values
 - **UInt16**: For dictionaries with ≤65,536 unique values
-- **UInt32**: For dictionaries with ≤4,294,967,296 unique values
-
-**Recommendation**: Producers SHOULD select the smallest key type that can accommodate expected cardinality, with appropriate overflow handling (see 7.3).
-
-#### 5.5.2 Allowed Dictionary Value Types
-
-Dictionary values MUST be one of:
-- **Utf8**: For string values
-- **Binary**: For byte array values
-
-#### 5.5.3 Delta Dictionaries
-
-Producers MAY send delta dictionaries to add new entries without resetting the schema. Delta dictionary rules:
-
-1. Delta dictionaries MUST only add new key-value pairs
-2. Delta dictionaries MUST NOT modify existing entries
-3. Consumers MUST merge delta dictionaries with existing dictionary state
-4. Key values in delta dictionaries MUST NOT conflict with existing keys
 
 ---
 
 ## 6. Id Columns
 
-This section defines the identifier columns used to establish relationships between payload types in the OTAP data model.
+This section defines more details related to identifier columns used to establish relationships 
+between payload types in the OTAP data model.
 
 ### 6.1 Primary Keys and Foreign Keys
 
@@ -640,53 +615,48 @@ All parent-child relationships in the OTAP data model follow a uniform conventio
 - **Parent tables** define an `id` column as their primary key
 - **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
 
-This naming convention makes the data model self-documenting: every `parent_id` column references the `id` column of its parent table as specified in the payload type relationships (see Section 2.1).
-
 **Example**: In the Logs signal:
 - The LOGS table has an `id` column (UInt16)
 - The LOG_ATTRS table has a `parent_id` column (UInt16) that references LOGS.`id`
 - Each LOG_ATTRS row belongs to exactly one LOGS row via this foreign key
 
+Note: For documented table relationships see Section 2.1.
+Note: Resource and Scope entities deviate slightly from these conventions, see section 6.3 
+
 ### 6.2 Id Column Types
 
-Id columns use unsigned integer types sized according to expected cardinality:
+Id columns use unsigned integer types sized according to expected cardinality. `id` columns are typically
+either u32 or u16 and must be plainly encoded as they define the primary keys of the parent table. As such
+they are always unique within a Record Batch and do not benefit from dictionary encoding.
 
-| Table Category | Id Type | Parent Id Type | Max Entries |
-|---|---|---|---|
-| Root tables (LOGS, SPANS, METRICS) | UInt16 | — | 65,536 per BAR |
-| Data points, events, links | UInt32 | UInt16 | 4.3B per BAR |
-| Exemplars | UInt32 | — | 4.3B per BAR |
-| Attributes (root-level) | — | UInt16 | Many per parent |
-| Attributes (nested) | — | UInt32 | Many per parent |
-
-**Rationale**: Root tables rarely exceed 65K items per BAR, but child tables (especially data points and their nested children) can have much higher cardinality, hence the UInt32 type.
+On the other hand, child `parent_id` columns referencing u32 `id` columns of their parents may use
+dictionary encoding with either `u8` or `u16` keys to save space.
 
 ### 6.3 Resource and Scope Identifiers
 
 Resource and scope entities are **not** represented as separate payload types. Instead, they are embedded as struct fields within root tables (LOGS, SPANS, METRICS).
 
 Each root table contains:
-- `resource_id` (UInt16): Identifier for the resource
-- `scope_id` (UInt16): Identifier for the instrumentation scope
+- `resource.id` (UInt16): Identifier for the resource
+- `scope.id` (UInt16): Identifier for the instrumentation scope
 
 These fields are commonly referenced as `resource.id` and `scope.id` in the context of struct field access.
 
-**Key characteristics**:
+Note that there are no RESOURCE or SCOPE payload types. Resources and scopes are defined implicitly by their 
+presence in root table rows and can be shared among items of the same type. This gives them some special
+characteristics:
 
-1. **No dedicated tables**: There are no RESOURCE or SCOPE payload types. Resources and scopes are defined implicitly by their presence in root table rows.
-
-2. **Many-to-many relationships**: Multiple Items (Logs, Data Points, or Spans) MAY share the same `resource_id` or `scope_id`. This is a many-to-many relationship.
-
-3. **Attribute tables**: RESOURCE_ATTRS and SCOPE_ATTRS tables reference these identifiers via their `parent_id` columns:
-   - RESOURCE_ATTRS.`parent_id` → root table's `resource_id`
-   - SCOPE_ATTRS.`parent_id` → root table's `scope_id`
-
-4. **No owning table**: Unlike other identifiers, `resource_id` and `scope_id` have no single table that "owns" them. Their definition is implicit across all Items that reference them.
+1. There is a many-to-many relationship relationship between RESOURCE_ATTRS/SCOPE_ATTRS tables and their
+parent payload types
+2. The corresponding column in the LOGS/METRICS/SPANS tables for RESOURCE_ATTRS.parent_id and SCOPE_ATTRS.parent_id
+are `resource.id` and `scope.id` respectively rather than just `id`. // NEEDS_TRIAGE: Should we change the names of these? Yes we need to define one more schema, but it's a little confusing.
+3. Unlike other identifiers, `resource.id` and `scope.id` have no single table that "owns" them and defines the valid
+set of Ids.
 
 **Example**: Consider a BAR containing 1000 logs from 3 services (resources):
-- LOGS table: 1000 rows with `resource_id` values of 0, 1, or 2
+- LOGS table: 1000 rows with `resource.id` values of 0, 1, or 2
 - RESOURCE_ATTRS table: Rows with `parent_id` of 0, 1, or 2 defining attributes for each resource
-- No separate RESOURCE table exists; the resource is defined by the combination of `resource_id` and its associated RESOURCE_ATTRS rows
+- No separate RESOURCE table exists; the resource is defined by the combination of `resource.id` and its associated RESOURCE_ATTRS rows
 
 **Design rationale**: Resources and scopes have minimal intrinsic properties (just schema_url, name, version, dropped_attributes_count) which are duplicated in root tables. Creating separate payload types would add complexity for little benefit, so OTAP embeds these fields directly in root tables.
 
@@ -717,7 +687,7 @@ The key insight is that id columns often exhibit strong sequential patterns:
 
 By encoding these patterns explicitly (e.g., storing deltas between values rather than absolute values), we create long runs of small integers and repeated values that compress extremely well with standard algorithms like LZ4 or Zstandard.
 
-**Important**: These encodings apply **only to id columns** (`id`, `parent_id`, `resource_id`, `scope_id`). Other columns use plain encoding or dictionary encoding as appropriate.
+**Important**: These encodings apply **only to id columns** (`id`, `parent_id`, `resource.id`, `scope.id`). Other columns use plain encoding or dictionary encoding as appropriate.
 
 #### 6.5.1 PLAIN Encoding
 
@@ -1125,7 +1095,7 @@ These fields MUST always have a value (though Arrow arrays may have nulls for co
 These fields MAY be null/absent:
 
 - Most metadata fields: `description`, `unit`, `schema_url`
-- Foreign keys: `resource_id`, `scope_id` (when not present)
+- Foreign keys: `resource.id`, `scope.id` (when not present)
 - Trace correlation: `trace_id`, `span_id` in logs
 - All attribute value fields except the one matching `type`
 - Counter fields: `dropped_attributes_count`, `flags`
