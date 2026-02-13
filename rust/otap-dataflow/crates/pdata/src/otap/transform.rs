@@ -35,6 +35,7 @@ use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
 pub mod concatenate;
+pub mod reindex;
 pub mod transport_optimize;
 
 pub fn remove_delta_encoding<T>(

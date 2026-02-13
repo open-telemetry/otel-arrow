@@ -51,6 +51,7 @@ use crc32fast::Hasher as Crc32Hasher;
 
 use super::error::{Result, SubscriberError};
 use super::types::SubscriberId;
+use crate::logging::otel_warn;
 use crate::segment::SegmentSeq;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -654,10 +655,12 @@ pub fn scan_progress_files(dir: &Path) -> Result<Vec<SubscriberId>> {
             match SubscriberId::new(id_str) {
                 Ok(id) => subscriber_ids.push(id),
                 Err(e) => {
-                    tracing::warn!(
+                    otel_warn!(
+                        "quiver.subscriber.progress.scan",
                         file = %name,
                         error = %e,
-                        "ignoring progress file with invalid subscriber ID"
+                        error_type = "decode",
+                        message = "ignoring progress file with invalid subscriber ID"
                     );
                 }
             }
