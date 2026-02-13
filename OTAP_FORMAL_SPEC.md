@@ -24,7 +24,11 @@
 
 The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting OpenTelemetry telemetry signals (logs, metrics, and traces) using Apache Arrow's columnar format wrapped in gRPC streams. OTAP is a column oriented protocol that optimizes for compression efficiency, memory usage, and CPU performance while being semantically equivalent to OpenTelemetry Protocol (OTLP).
 
-### 1.2 References
+### 1.2 Requirements Language
+
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
+
+### 1.3 References
 
 - **OTLP Specification**: OpenTelemetry Protocol specification
 - **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
@@ -34,7 +38,7 @@ in the OTAP data model.
 - **gRPC**: https://grpc.io/
 - **OTEP 0156**: Columnar Encoding proposal
 
-### 1.3 Terminology
+### 1.4 Terminology
 
 - **Client/Producer**: The sender of telemetry data
 - **Server/Consumer**: The receiver of telemetry data
@@ -248,9 +252,9 @@ message BatchArrowRecords {
 
 - **batch_id**: A unique identifier for this BAR within the current gRPC stream. This ID is used by the server to send acknowledgments (BatchStatus messages) and by the client to correlate those acknowledgments with sent BARs. The ID space is scoped to a single gRPC stream connection.
 
-- **arrow_payloads**: A collection of ArrowPayload messages, each containing the serialized Arrow IPC data for one table. For example, a logs BAR might contain four payloads: one for the LOGS table, and three for LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS tables. The primary signal table (LOGS, SPANS, or METRICS) should be listed first to simplify consumer processing.
+- **arrow_payloads**: A collection of ArrowPayload messages, each containing the serialized Arrow IPC data for one table. For example, a logs BAR might contain four payloads: one for the LOGS table, and three for LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS tables. The primary signal table (LOGS, SPANS, or METRICS) SHOULD be listed first to simplify consumer processing.
 
-- **headers**: An optional field for transmitting additional metadata alongside the BAR. When present, headers are encoded using HPACK compression. This field is typically used for authentication tokens, tracing context, or other out-of-band metadata. Servers may ignore this field if they do not require such metadata.
+- **headers**: An optional field for transmitting additional metadata alongside the BAR. When present, headers are encoded using HPACK compression. This field is typically used for authentication tokens, tracing context, or other out-of-band metadata. Servers MAY ignore this field if they do not require such metadata.
 
 **Requirements:**
 
@@ -545,7 +549,7 @@ Producers MAY send delta dictionaries to add new entries without resetting the s
 1. Delta dictionaries MUST only add new key-value pairs
 2. Delta dictionaries MUST NOT modify existing entries
 3. Consumers MUST merge delta dictionaries with existing dictionary state
-4. Key values in delta dictionaries MUST not conflict with existing keys
+4. Key values in delta dictionaries MUST NOT conflict with existing keys
 
 ---
 
@@ -851,19 +855,19 @@ These match gRPC status codes for consistency.
 **Invalid schema**:
 - **Cause**: Schema message is malformed or uses unsupported types
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must fix schema definition
+- **Action**: Client MUST fix schema definition
 
 **Schema mismatch**:
 - **Cause**: RecordBatch doesn't match declared schema
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must ensure consistency between schema and data
+- **Action**: Client MUST ensure consistency between schema and data
 
 #### 8.3.2 Data Errors
 
 **Dictionary key overflow**:
 - **Cause**: Dictionary key exceeds maximum for key type
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must perform schema reset with larger key type
+- **Action**: Client MUST perform schema reset with larger key type
 
 **Unknown field**:
 - **Cause**: RecordBatch contains field not in schema
@@ -872,7 +876,7 @@ These match gRPC status codes for consistency.
 **Unrecognized payload type**:
 - **Cause**: ArrowPayloadType is unknown or unsupported
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must use valid payload type
+- **Action**: Client MUST use valid payload type
 
 **Unrecognized attribute type**:
 - **Cause**: Attribute `type` field has unknown value
@@ -883,29 +887,29 @@ These match gRPC status codes for consistency.
 **Memory limit exceeded**:
 - **Cause**: Server memory allocator limit reached
 - **Status**: RESOURCE_EXHAUSTED
-- **Action**: Client should retry with backoff or reduce BAR size
+- **Action**: Client SHOULD retry with backoff or reduce BAR size
 
 **Empty BAR**:
 - **Cause**: BatchArrowRecords contains no payloads
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must send non-empty BARs
+- **Action**: Client MUST send non-empty BARs
 
 #### 8.3.4 Stream Errors
 
 **Schema reset without schema message**:
 - **Cause**: New schema_id used without sending Schema message first
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must send Schema message when schema_id changes
+- **Action**: Client MUST send Schema message when schema_id changes
 
 **RecordBatch before schema**:
 - **Cause**: RecordBatch sent before Schema message for new schema_id
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must send Schema message first
+- **Action**: Client MUST send Schema message first
 
 **Dictionary used before definition**:
 - **Cause**: RecordBatch references dictionary not yet sent
 - **Status**: INVALID_ARGUMENT
-- **Action**: Client must send DictionaryBatch before referencing in RecordBatch
+- **Action**: Client MUST send DictionaryBatch before referencing in RecordBatch
 
 ### 8.4 Partial Failure Handling
 
@@ -913,7 +917,7 @@ If a BatchArrowRecords contains multiple payloads and one fails:
 
 **Option 1: Fail entire BAR**
 - Server returns non-OK status for entire BAR
-- Client must resend entire BAR or skip it
+- Client MUST resend entire BAR or skip it
 
 **Option 2: Partial success (if supported)**
 - Server returns OK status
@@ -1105,7 +1109,7 @@ A compliant consumer SHOULD:
 
 **Cross-implementation compatibility**:
 - Compliant producers and consumers from different implementations MUST interoperate
-- Schema IDs may differ between implementations (determinism not required across implementations)
+- Schema IDs MAY differ between implementations (determinism not required across implementations)
 - Transport optimizations are optional; implementations MUST support both optimized and plain data
 
 **Version compatibility**:
@@ -1258,10 +1262,10 @@ OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges tha
 
 Key considerations include:
 
-- **Connection fan-out**: Clients should open multiple gRPC channels (connections) to provide enough entropy for balanced distribution across backend listeners.
+- **Connection fan-out**: Clients SHOULD open multiple gRPC channels (connections) to provide enough entropy for balanced distribution across backend listeners.
 - **Stream lifetime management**: Periodically recycling OTAP streams bounds dictionary growth and allows downstream rebalancers to redistribute load, at the cost of resending schemas and dictionaries.
 - **L7 load balancing**: An HTTP/2-aware proxy (e.g., Envoy, NGINX) can distribute individual gRPC streams across backends, which is the recommended approach for long-lived streaming RPCs.
-- **Server-side enforcement**: Servers should enforce memory and dictionary size limits regardless of client behavior.
+- **Server-side enforcement**: Servers SHOULD enforce memory and dictionary size limits regardless of client behavior.
 
 For a detailed treatment of challenges, solution techniques (client-side and server-side), and recommended baseline configurations, see [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
 
@@ -1283,4 +1287,5 @@ For a detailed treatment of challenges, solution techniques (client-side and ser
 4. OTEP 0156: https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md
 5. Reference Implementation (Go): [Producer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/producer.go), [Consumer](https://github.com/open-telemetry/otel-arrow/blob/main/pkg/otel/arrow_record/consumer.go)
 6. Rust Implementation: otap-dataflow/crates/pdata
+7. RFC 2119: https://www.rfc-editor.org/rfc/rfc2119
 
