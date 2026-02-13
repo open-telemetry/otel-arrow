@@ -126,7 +126,7 @@ service. The OTAP Message Layer places further restrictions on the contents of B
 
 #### 3.1.1 Service Definitions
 
-OTAP defines three signal-specific gRPC services as specified in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
+OTAP defines three signal-specific gRPC services in the [protobuf definition](https://github.com/open-telemetry/otel-arrow/blob/main/proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto):
 
 ```protobuf
 service ArrowTracesService {
@@ -144,11 +144,6 @@ service ArrowMetricsService {
 
 Each service accepts a stream of BatchArrowRecords (BAR) messages from the client and returns a stream of BatchStatus acknowledgments. The bi-directional streaming pattern allows the client to continue sending BARs while waiting for acknowledgments, enabling high throughput with backpressure control.
 
-**Requirements:**
-- Each service MUST handle only its designated signal type
-- Services MUST support bi-directional streaming
-- Servers MUST return BatchStatus acknowledgments for received BARs
-
 #### 3.1.2 Connection Lifecycle
 
 1. Client establishes gRPC connection to server
@@ -157,27 +152,19 @@ Each service accepts a stream of BatchArrowRecords (BAR) messages from the clien
 4. Server processes each BAR and returns BatchStatus acknowledgments
 5. Connection persists until explicitly closed or error occurs
 
-**Statefulness**: The connection is stateful. Both client and server MUST maintain:
-- Active Arrow IPC readers/writers per schema_id
-- Dictionary state for dictionary-encoded columns
-- Schema registry mapping schema_id to Arrow schemas
-
 ### 3.2 OTAP Message Layer
 
-The OTAP message layer defines the protobuf message structures that wrap Arrow data for transmission over gRPC. The key messages are:
-
-- **BatchArrowRecords (BAR)**: The top-level container sent from client to server, containing multiple Arrow payloads for a complete set of related telemetry tables
-- **ArrowPayload**: A single payload containing serialized Arrow IPC messages for one table (e.g., logs, span attributes, etc.)
-- **BatchStatus**: Acknowledgment messages sent from server to client
-
-This layer is responsible for organizing multiple related tables into cohesive BARs, assigning unique identifiers to schemas and BARs, and providing a standardized way to acknowledge receipt and signal errors.
+The OTAP message layer places additional restrictions and requirements on the contents of a BAR, the
+ArrowPayload, and BatchStatus messages. It defines which Payload Types are valid for which Services/Signals;
+rules around Schema Evolution, Schema Resets, and Error Handling; and when it is allowable to omit payloads
+entirely. These mechanics are further explained in Section 4.
 
 ### 3.3 Arrow IPC Layer
 
-The Arrow IPC (Interprocess Communication) layer is the innermost layer where actual telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
+The Arrow IPC (Interprocess Communication) layer is the innermost layer where the telemetry data resides in Apache Arrow's columnar format. Arrow IPC defines how schemas and data are serialized into byte streams using a standardized format that can be read by any Arrow-compatible library. This layer enables:
 
 - **Schema negotiation**: Dynamic schema definition without pre-compiled protobuf definitions
-- **Dictionary encoding**: Efficient representation of repeated string values
+- **Dictionary/Delta Dictionary encoding**: Efficient representation of repeated string values
 - **Zero-copy deserialization**: Data can be read directly from wire format without copying
 - **Columnar layout**: Data organized by column rather than by row, enabling better compression and SIMD processing
 
