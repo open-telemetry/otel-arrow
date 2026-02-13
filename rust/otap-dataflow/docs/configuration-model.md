@@ -192,16 +192,16 @@ The design goals behind this model are:
 
 Issue reference:
 
-- https://github.com/open-telemetry/otel-arrow/issues/1970
+- Issue [#1970](https://github.com/open-telemetry/otel-arrow/issues/1970)
 
 ## Future Extensions (Not Implemented in v1)
 
 The following ideas are discussed and intentionally left for later steps:
 
 - Additional reserved metadata maps:
-    - node-level `attributes`
-    - connection-level `attributes`
-    - policy-level `attributes`
+  - node-level `attributes`
+  - connection-level `attributes`
+  - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
 - Topic-based inter-pipeline wiring.
