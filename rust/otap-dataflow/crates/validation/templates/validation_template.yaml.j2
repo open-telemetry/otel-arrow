@@ -1,7 +1,7 @@
 # Engine-wide settings
 {% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
 version: otel_dataflow/v1
-settings:
+engine:
   http_admin:
     bind_address: {{ admin_bind_address }}
 {% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
@@ -27,7 +27,7 @@ settings:
 {% set control_addr = control_addr | default("127.0.0.1:4316") -%}
 {% set control_endpoint = control_endpoint | default("http://127.0.0.1:4316") -%}
 
-pipeline_groups:
+groups:
   validation_test:
     pipelines:
       # ======================================================================

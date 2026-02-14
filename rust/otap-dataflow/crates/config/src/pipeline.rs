@@ -60,16 +60,6 @@ pub struct PipelineConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     connections: Vec<PipelineConnection>,
 
-    /// Internal telemetry pipeline nodes. These have the same structure
-    /// as `nodes` but are independent and isolated to a separate internal
-    /// telemetry runtime.
-    #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
-    internal: PipelineNodes,
-
-    /// Explicit graph connections for the internal telemetry pipeline.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    internal_connections: Vec<PipelineConnection>,
-
     /// Service-level telemetry configuration.
     #[serde(default)]
     service: ServiceConfig,
@@ -799,47 +789,27 @@ impl PipelineConfig {
         &self.service
     }
 
-    /// Returns true if the internal telemetry pipeline is configured.
+    /// Builds a dedicated engine observability pipeline configuration.
     #[must_use]
-    pub fn has_internal_pipeline(&self) -> bool {
-        !self.internal.is_empty()
-    }
-
-    /// Returns a reference to the internal pipeline nodes.
-    #[must_use]
-    pub const fn internal_nodes(&self) -> &PipelineNodes {
-        &self.internal
-    }
-
-    /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
-    pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
-        self.internal.iter()
-    }
-
-    /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
-    #[must_use]
-    pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
-        if self.internal.is_empty() {
-            return None;
-        }
-
-        Some(PipelineConfig {
-            r#type: self.r#type.clone(),
-            settings: Self::internal_pipeline_settings(),
+    pub fn for_observability_pipeline(
+        nodes: PipelineNodes,
+        connections: Vec<PipelineConnection>,
+    ) -> Self {
+        Self {
+            r#type: PipelineType::Otap,
+            settings: Self::observability_pipeline_settings(),
             quota: Quota::default(),
-            nodes: self.internal.clone(),
-            connections: self.internal_connections.clone(),
-            internal: PipelineNodes::default(),
-            internal_connections: Vec::new(),
+            nodes,
+            connections,
             service: ServiceConfig::default(),
-        })
+        }
     }
 
-    /// Returns hardcoded settings for the internal telemetry pipeline.
+    /// Returns hardcoded settings for the engine observability pipeline.
     ///
     /// TODO: these are hard-coded, add configurability.
     #[must_use]
-    pub fn internal_pipeline_settings() -> PipelineSettings {
+    pub fn observability_pipeline_settings() -> PipelineSettings {
         PipelineSettings {
             default_node_ctrl_msg_channel_size: 50,
             default_pipeline_ctrl_msg_channel_size: 50,
@@ -853,22 +823,14 @@ impl PipelineConfig {
         }
     }
 
-    /// Normalize plugin URNs for both main and internal pipeline node maps.
-    ///
-    /// This delegates to `PipelineNodes::canonicalize_plugin_urns` for each
-    /// node collection, ensuring a single canonical representation.
+    /// Normalize plugin URNs for pipeline nodes.
     fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         self.nodes
-            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
-        if !self.internal.is_empty() {
-            self.internal
-                .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
-        }
-        Ok(())
+            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)
     }
 
     /// Validate the pipeline specification.
@@ -891,23 +853,6 @@ impl PipelineConfig {
             pipeline_id,
             &mut errors,
         );
-
-        // Validate internal pipeline if present
-        if !self.internal.is_empty() {
-            // TODO: the location of the internal telemetry pipeline
-            // nodes is subject to change. Temporarily, we append
-            // ("_internal") to the pipeline_id. We need a way to
-            // refer to the set of node defining the internal
-            // pipeline.
-            let internal_id: PipelineId = format!("{}_internal", &pipeline_id).into();
-            self.validate_connections(
-                &self.internal,
-                &self.internal_connections,
-                pipeline_group_id,
-                &internal_id,
-                &mut errors,
-            );
-        }
 
         if !errors.is_empty() {
             Err(Error::InvalidConfiguration { errors })
@@ -1159,9 +1104,6 @@ fn prune_connection(
 
 /// A builder for constructing a [`PipelineConfig`]. This type is used
 /// for easy testing of the PipelineNodes logic.
-///
-/// Note: does not support testing the internal pipeline build,
-/// because it is identical.
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
@@ -1453,8 +1395,6 @@ impl PipelineConfigBuilder {
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 connections: built_connections,
-                internal: PipelineNodes(HashMap::new()),
-                internal_connections: Vec::new(),
                 settings: PipelineSettings::default(),
                 quota: Quota::default(),
                 r#type: pipeline_type,
@@ -1983,12 +1923,6 @@ mod tests {
         assert!(config.nodes.contains_key("processor1"));
         assert!(config.nodes.contains_key("exporter1"));
 
-        assert_eq!(config.internal.len(), 4);
-        assert!(config.internal.contains_key("receiver1"));
-        assert!(config.internal.contains_key("processor1"));
-        assert!(config.internal.contains_key("processor2"));
-        assert!(config.internal.contains_key("exporter1"));
-
         let telemetry_config = &config.service().telemetry;
         let reporting_interval = telemetry_config.reporting_interval;
         assert_eq!(reporting_interval.as_secs(), 5);
@@ -2253,72 +2187,36 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_internal_config_from_yaml() {
-        // Parse a config with internal nodes from YAML
-        let yaml = r#"
-            settings:
-              default_pipeline_ctrl_msg_channel_size: 100
-              default_node_ctrl_msg_channel_size: 100
-              default_pdata_channel_size: 100
+    fn test_for_observability_pipeline_defaults() {
+        let nodes: super::PipelineNodes = serde_yaml::from_str(
+            r#"
+itr:
+  type: "urn:otel:internal_telemetry:receiver"
+  config: {}
+sink:
+  type: "urn:otel:console:exporter"
+  config: {}
+"#,
+        )
+        .expect("nodes should parse");
+        let connections: Vec<super::PipelineConnection> = serde_yaml::from_str(
+            r#"
+- from: itr
+  to: sink
+"#,
+        )
+        .expect("connections should parse");
 
-            nodes:
-              receiver:
-                type: "urn:test:example:receiver"
-                config: {}
-              exporter:
-                type: "urn:test:example:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-
-            internal:
-              itr:
-                type: "urn:otel:internal_telemetry:receiver"
-                config: {}
-              console:
-                type: "urn:otel:console:exporter"
-                config: {}
-            internal_connections:
-              - from: itr
-                to: console
-        "#;
-
-        use super::PipelineConfig;
-        let config: PipelineConfig = serde_yaml::from_str(yaml).expect("should parse");
-
-        // Verify the main pipeline has internal nodes
-        assert_eq!(config.internal_node_iter().count(), 2);
-
-        // Extract internal config
-        let internal_config = config.extract_internal_config();
-        assert!(internal_config.is_some(), "should extract internal config");
-
-        let internal = internal_config.unwrap();
-
-        // Should have the internal pipeline settings
-        assert_eq!(internal.settings.default_node_ctrl_msg_channel_size, 50);
-        assert_eq!(internal.settings.default_pdata_channel_size, 50);
-
-        // Should have the internal nodes as its main nodes
-        assert_eq!(internal.nodes.len(), 2);
-
+        let config = super::PipelineConfig::for_observability_pipeline(nodes, connections);
+        assert_eq!(config.node_iter().count(), 2);
+        assert_eq!(config.connection_iter().count(), 1);
         assert_eq!(
-            internal.nodes["itr"].r#type.as_ref(),
-            "urn:otel:internal_telemetry:receiver"
+            config
+                .pipeline_settings()
+                .default_node_ctrl_msg_channel_size,
+            50
         );
-        assert_eq!(
-            internal.nodes["console"].r#type.as_ref(),
-            "urn:otel:console:exporter"
-        );
-
-        // The extracted config's internal should be empty
-        assert!(internal.internal.is_empty());
-        assert!(internal.internal_connections.is_empty());
-        assert_eq!(internal.connection_iter().count(), 1);
-
-        // Telemetry should be disabled
-        assert!(!internal.settings.telemetry.pipeline_metrics);
+        assert!(!config.pipeline_settings().telemetry.pipeline_metrics);
     }
 
     #[test]

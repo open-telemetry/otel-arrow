@@ -5,7 +5,7 @@ version: otel_dataflow/v1
 # local testing and debugging.
 
 # Engine-wide settings
-settings:
+engine:
   http_admin:
     bind_address: 127.0.0.1:8085
 
@@ -13,7 +13,7 @@ settings:
 # pipelines. We will introduce progressively more features around
 # pipeline groups in the future such as resource quotas, scheduling
 # policies, named channels, group life-cycle management, ...
-pipeline_groups:
+groups:
   # This group contains all the pipelines required for continuous benchmarking
   continuous_benchmark:
     pipelines:

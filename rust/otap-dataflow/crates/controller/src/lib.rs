@@ -44,7 +44,7 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::EngineConfig;
+use otap_df_config::engine::{EngineConfig, EngineObservabilityPipelineConfig};
 use otap_df_config::pipeline::CoreAllocation;
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
@@ -104,19 +104,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: EngineConfig) -> Result<(), Error> {
-        let EngineConfig {
-            settings: engine_settings,
-            pipeline_groups,
-            ..
-        } = engine_config;
-        let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
+        let EngineConfig { engine, groups, .. } = engine_config;
+        let observability_pipeline = engine.observability.pipeline;
+        let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = &engine_settings.telemetry;
+        let telemetry_config = &engine.telemetry;
         otel_info!(
             "controller.start",
-            num_pipeline_groups = pipeline_groups.len(),
-            num_pipelines = pipeline_groups
+            num_pipeline_groups = groups.len(),
+            num_pipelines = groups
                 .values()
                 .map(|group| group.pipelines.len())
                 .sum::<usize>()
@@ -128,15 +125,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Create the observed state store for the telemetry system.
         let obs_state_store =
-            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
+            ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
-        let engine_evt_reporter =
-            obs_state_store.reporter(engine_settings.observed_state.engine_events);
+        let engine_evt_reporter = obs_state_store.reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
             .logs
             .providers
             .uses_console_async_provider()
-            .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
+            .then(|| obs_state_store.reporter(engine.observed_state.logging_events));
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
@@ -155,7 +151,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
-        for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
+        for (pipeline_group_id, pipeline_group) in groups.iter() {
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
                 let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
                 obs_state_store.register_pipeline_health_policy(
@@ -165,10 +161,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        let pipeline_count: usize = pipeline_groups
-            .values()
-            .map(|group| group.pipelines.len())
-            .sum();
+        let pipeline_count: usize = groups.values().map(|group| group.pipelines.len()).sum();
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_core = *all_cores.first().expect("a cpu core");
@@ -182,7 +175,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             its_key.clone(),
             its_core,
-            &pipeline_groups,
+            observability_pipeline,
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -191,8 +184,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             internal_tracing_setup,
         )?;
 
-        // TODO: This should be validated somewhere, that internal node are defined when
-        // its is requested. Possibly we could fill in a default.
+        // TODO: This should be validated somewhere, that engine observability pipeline is
+        // defined when ITS is requested. Possibly we could fill in a default.
         let has_internal_pipeline = internal_pipeline_handle.is_some();
         match (
             has_internal_pipeline,
@@ -201,13 +194,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             (false, true) => {
                 otel_warn!(
                     "its.provider.missing_pipeline",
-                    message = "ITS provider requested yet internal pipeline nodes not defined"
+                    message =
+                        "ITS provider requested yet engine.observability.pipeline is not defined"
                 )
             }
             (true, false) => {
                 otel_warn!(
                     "its.pipeline.missing_provider",
-                    message = "Internal pipeline nodes defined yet ITS provider not requested"
+                    message = "engine.observability.pipeline is defined yet ITS provider is not requested"
                 )
             }
             _ => {}
@@ -255,7 +249,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             threads.push((thread_name, its_thread_id, its_key, handle));
         }
 
-        for (pipeline_group_id, pipeline_group) in pipeline_groups {
+        for (pipeline_group_id, pipeline_group) in groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let quota = pipeline.quota().clone();
                 let requested_cores = Self::select_cores_for_allocation(
@@ -423,19 +417,16 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Starts the controller with the given engine configurations.
     /// ToDo [LQ] We need to minimize duplication of code here
     pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
-        let EngineConfig {
-            settings: engine_settings,
-            pipeline_groups,
-            ..
-        } = engine_config;
-        let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
+        let EngineConfig { engine, groups, .. } = engine_config;
+        let observability_pipeline = engine.observability.pipeline;
+        let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
-        let telemetry_config = &engine_settings.telemetry;
+        let telemetry_config = &engine.telemetry;
         otel_info!(
             "controller.start",
-            num_pipeline_groups = pipeline_groups.len(),
-            num_pipelines = pipeline_groups
+            num_pipeline_groups = groups.len(),
+            num_pipelines = groups
                 .values()
                 .map(|group| group.pipelines.len())
                 .sum::<usize>()
@@ -447,15 +438,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Create the observed state store for the telemetry system.
         let obs_state_store =
-            ObservedStateStore::new(&engine_settings.observed_state, telemetry_registry.clone());
+            ObservedStateStore::new(&engine.observed_state, telemetry_registry.clone());
         let obs_state_handle = obs_state_store.handle();
-        let engine_evt_reporter =
-            obs_state_store.reporter(engine_settings.observed_state.engine_events);
+        let engine_evt_reporter = obs_state_store.reporter(engine.observed_state.engine_events);
         let console_async_reporter = telemetry_config
             .logs
             .providers
             .uses_console_async_provider()
-            .then(|| obs_state_store.reporter(engine_settings.observed_state.logging_events));
+            .then(|| obs_state_store.reporter(engine.observed_state.logging_events));
 
         // Create the telemetry system. The console_async_reporter is passed when any
         // providers use ConsoleAsync. The its_logs_receiver is passed when any
@@ -474,7 +464,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let metrics_reporter = telemetry_system.reporter();
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
-        for (pipeline_group_id, pipeline_group) in pipeline_groups.iter() {
+        for (pipeline_group_id, pipeline_group) in groups.iter() {
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
                 let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
                 obs_state_store.register_pipeline_health_policy(
@@ -484,10 +474,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             }
         }
 
-        let pipeline_count: usize = pipeline_groups
-            .values()
-            .map(|group| group.pipelines.len())
-            .sum();
+        let pipeline_count: usize = groups.values().map(|group| group.pipelines.len()).sum();
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_core = *all_cores.first().expect("a cpu core");
@@ -501,7 +488,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             its_key.clone(),
             its_core,
-            &pipeline_groups,
+            observability_pipeline,
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -510,18 +497,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             internal_tracing_setup,
         )?;
 
-        // TODO: This should be validated somewhere, that internal node are defined when
-        // its is requested. Possibly we could fill in a default.
+        // TODO: This should be validated somewhere, that engine observability pipeline is
+        // defined when ITS is requested. Possibly we could fill in a default.
         let has_internal_pipeline = internal_pipeline_handle.is_some();
         match (
             has_internal_pipeline,
             telemetry_config.logs.providers.uses_its_provider(),
         ) {
             (false, true) => {
-                otel_warn!("ITS provider requested yet internal pipeline nodes not defined")
+                otel_warn!(
+                    "ITS provider requested yet engine.observability.pipeline is not defined"
+                )
             }
             (true, false) => {
-                otel_warn!("internal pipeline nodes defined yet ITS provider not requested")
+                otel_warn!(
+                    "engine.observability.pipeline is defined yet ITS provider is not requested"
+                )
             }
             _ => {}
         };
@@ -568,7 +559,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             threads.push((thread_name, its_thread_id, its_key, handle));
         }
 
-        for (pipeline_group_id, pipeline_group) in pipeline_groups {
+        for (pipeline_group_id, pipeline_group) in groups {
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let quota = pipeline.quota().clone();
                 let requested_cores = Self::select_cores_for_allocation(
@@ -840,7 +831,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
     }
 
-    /// Spawns the internal telemetry pipeline if any pipeline has an internal config.
+    /// Spawns the internal telemetry pipeline if engine observability config provides one.
     ///
     /// Returns the thread handle if an internal pipeline was spawned
     /// and waits for it to start, or None.
@@ -848,10 +839,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     fn spawn_internal_pipeline_if_configured(
         its_key: DeployedPipelineKey,
         its_core: CoreId,
-        pipeline_groups: &std::collections::HashMap<
-            otap_df_config::PipelineGroupId,
-            otap_df_config::pipeline_group::PipelineGroupConfig,
-        >,
+        observability_pipeline: Option<EngineObservabilityPipelineConfig>,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -859,17 +847,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: &MetricsReporter,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
-        // TODO: This uses the first internal pipeline it finds.  This
-        // requires a permanent solution, the current approach of
-        // PipelineConfig containing an `internal` nodes section
-        // is incorrect.
-        let internal_config: Option<PipelineConfig> = pipeline_groups
-            .iter()
-            .flat_map(|(_, group)| group.pipelines.iter())
-            .find_map(|(_, pipeline)| pipeline.extract_internal_config());
-
-        let internal_config = match internal_config {
-            Some(config) => config,
+        let internal_config: PipelineConfig = match observability_pipeline {
+            Some(config) => config.into_pipeline_config(),
             _ => {
                 // Note: Inconsistent configurations are checked elsewhere.
                 // This method is "_if_configured()" for lifetime reasons,

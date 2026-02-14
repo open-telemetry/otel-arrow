@@ -1,6 +1,6 @@
 version: otel_dataflow/v1
-settings: {}
-pipeline_groups:
+engine: {}
+groups:
   default:
     pipelines:
       main:

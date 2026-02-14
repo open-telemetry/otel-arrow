@@ -5,8 +5,8 @@
 
 use crate::error::{Context, Error};
 use crate::observed_state::ObservedStateSettings;
-use crate::pipeline::PipelineConfig;
 use crate::pipeline::service::telemetry::TelemetryConfig;
+use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
@@ -25,17 +25,18 @@ pub struct EngineConfig {
     /// Version of the engine configuration schema.
     pub version: String,
 
-    /// Settings that apply to the entire engine instance.
-    pub settings: EngineSettings,
+    /// Engine-wide runtime declarations.
+    #[serde(default)]
+    pub engine: EngineSectionConfig,
 
-    /// All pipeline group managed by this engine, keyed by pipeline group ID.
-    pub pipeline_groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
+    /// All groups managed by this engine, keyed by group ID.
+    pub groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
-/// Global settings for the engine.
+/// Top-level engine configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
-pub struct EngineSettings {
+pub struct EngineSectionConfig {
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
 
@@ -46,6 +47,40 @@ pub struct EngineSettings {
     /// Observed state store settings shared across pipelines.
     #[serde(default)]
     pub observed_state: ObservedStateSettings,
+
+    /// Engine observability declarations.
+    #[serde(default)]
+    pub observability: EngineObservabilityConfig,
+}
+
+/// Engine observability declarations.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EngineObservabilityConfig {
+    /// Optional dedicated observability pipeline for the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<EngineObservabilityPipelineConfig>,
+}
+
+/// Configuration for the dedicated engine observability pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EngineObservabilityPipelineConfig {
+    /// Nodes of the observability pipeline.
+    #[serde(default)]
+    pub nodes: PipelineNodes,
+
+    /// Explicit graph connections for observability nodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<PipelineConnection>,
+}
+
+impl EngineObservabilityPipelineConfig {
+    /// Converts this config into a runtime [`PipelineConfig`].
+    #[must_use]
+    pub fn into_pipeline_config(self) -> PipelineConfig {
+        PipelineConfig::for_observability_pipeline(self.nodes, self.connections)
+    }
 }
 
 /// Configuration for the HTTP admin endpoints.
@@ -145,16 +180,16 @@ impl EngineConfig {
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         pipeline: PipelineConfig,
-        settings: EngineSettings,
+        engine: EngineSectionConfig,
     ) -> Result<Self, Error> {
         let mut pipeline_group = PipelineGroupConfig::new();
         pipeline_group.add_pipeline(pipeline_id, pipeline)?;
-        let mut pipeline_groups = HashMap::new();
-        let _ = pipeline_groups.insert(pipeline_group_id, pipeline_group);
+        let mut groups = HashMap::new();
+        let _ = groups.insert(pipeline_group_id, pipeline_group);
         let config = EngineConfig {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
-            settings,
-            pipeline_groups,
+            engine,
+            groups,
         };
         config.validate()?;
         Ok(config)
@@ -174,7 +209,20 @@ impl EngineConfig {
             });
         }
 
-        for (pipeline_group_id, pipeline_group) in &self.pipeline_groups {
+        if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
+            if observability_pipeline.nodes.is_empty() {
+                errors.push(Error::InvalidUserConfig {
+                    error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
+                });
+            } else {
+                let pipeline_cfg = observability_pipeline.into_pipeline_config();
+                if let Err(e) = pipeline_cfg.validate(&"engine".into(), &"observability".into()) {
+                    errors.push(e);
+                }
+            }
+        }
+
+        for (pipeline_group_id, pipeline_group) in &self.groups {
             if let Err(e) = pipeline_group.validate(pipeline_group_id) {
                 errors.push(e);
             }
@@ -198,8 +246,8 @@ mod tests {
         format!(
             r#"
 version: {version}
-settings: {{}}
-pipeline_groups:
+engine: {{}}
+groups:
   default:
     pipelines:
       main:
@@ -220,8 +268,8 @@ pipeline_groups:
     #[test]
     fn from_yaml_requires_version_field() {
         let yaml = r#"
-settings: {}
-pipeline_groups:
+engine: {}
+groups:
   default:
     pipelines:
       main:
@@ -261,6 +309,43 @@ pipeline_groups:
             err.to_string()
                 .contains("unsupported engine config version `otel_dataflow/v2`")
         );
+    }
+
+    #[test]
+    fn from_yaml_accepts_observability_pipeline() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:internal_telemetry:receiver"
+          config: {}
+        sink:
+          type: "urn:otel:console:exporter"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = EngineConfig::from_yaml(yaml).expect("should parse");
+        assert!(config.engine.observability.pipeline.is_some());
     }
 
     #[test]
