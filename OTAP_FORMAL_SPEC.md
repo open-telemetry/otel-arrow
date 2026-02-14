@@ -54,44 +54,49 @@ below along with the relationships between each table.
 
 #### 2.1.1 Logs Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Parent Payload Type |
-|---|---|---|---|---|
-| RESOURCE_ATTRS | 1 | Resource attributes | No | LOGS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | LOGS |
-| LOGS | 30 | Core log record data (Root) | Yes | — |
-| LOG_ATTRS | 31 | Log-level attributes | No | LOGS |
+| Payload Type | Description | Parent Payload Type |
+|---|---|---|
+| LOGS | Core log record data (Root) | — |
+| LOG_ATTRS | Log-level attributes | LOGS |
+| RESOURCE_ATTRS | Resource attributes | LOGS |
+| SCOPE_ATTRS | Scope attributes | LOGS |
 
 #### 2.1.2 Metrics Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Parent Payload Type |
-|---|---|---|---|---|
-| RESOURCE_ATTRS | 1 | Resource attributes | No | METRICS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | METRICS |
-| UNIVARIATE_METRICS | 10 | Core metric metadata (Root) | Yes | — |
-| MULTIVARIATE_METRICS | 25 | Core metric metadata (Root) | Yes | — |
-| NUMBER_DATA_POINTS | 11 | Gauge and sum data points | Yes | METRICS |
-| SUMMARY_DATA_POINTS | 12 | Summary data points | Yes | METRICS |
-| HISTOGRAM_DATA_POINTS | 13 | Histogram data points | Yes | METRICS |
-| EXP_HISTOGRAM_DATA_POINTS | 14 | Exponential histogram data points | Yes | METRICS |
-| *_DP_ATTRS | 15-18 | Attributes for data points | No | *_DATA_POINTS |
-| NUMBER_DP_EXEMPLARS | 19 | Exemplars for number data points | Yes | NUMBER_DATA_POINTS |
-| HISTOGRAM_DP_EXEMPLARS | 20 | Exemplars for histogram data points | Yes | HISTOGRAM_DATA_POINTS |
-| EXP_HISTOGRAM_DP_EXEMPLARS | 21 | Exemplars for exp histogram data points | Yes | EXP_HISTOGRAM_DATA_POINTS |
-| *_DP_EXEMPLAR_ATTRS | 22-24 | Exemplar attributes | No | *_DP_EXEMPLARS |
-| METRIC_ATTRS | 26 | Metric-level attributes | No | METRICS |
+| Payload Type | Description | Parent Payload Type |
+|---|---|---|
+| UNIVARIATE_METRICS | Core metric metadata (Root) | — |
+| MULTIVARIATE_METRICS | Core metric metadata (Root) | — |
+| NUMBER_DATA_POINTS | Gauge and sum data points | METRICS |
+| SUMMARY_DATA_POINTS | Summary data points | METRICS |
+| HISTOGRAM_DATA_POINTS | Histogram data points | METRICS |
+| EXP_HISTOGRAM_DATA_POINTS | Exponential histogram data points | METRICS |
+| NUMBER_DP_ATTRS | Attributes for number data points | NUMBER_DATA_POINTS |
+| SUMMARY_DP_ATTRS | Attributes for summary data points | SUMMARY_DATA_POINTS |
+| HISTOGRAM_DP_ATTRS | Attributes for histogram data points | HISTOGRAM_DATA_POINTS |
+| EXP_HISTOGRAM_DP_ATTRS | Attributes for exponential histogram data points | EXP_HISTOGRAM_DATA_POINTS |
+| NUMBER_DP_EXEMPLARS | Exemplars for number data points | NUMBER_DATA_POINTS |
+| HISTOGRAM_DP_EXEMPLARS | Exemplars for histogram data points | HISTOGRAM_DATA_POINTS |
+| EXP_HISTOGRAM_DP_EXEMPLARS | Exemplars for exponential histogram data points | EXP_HISTOGRAM_DATA_POINTS |
+| NUMBER_DP_EXEMPLAR_ATTRS | Exemplar attributes for number data points | NUMBER_DP_EXEMPLARS |
+| HISTOGRAM_DP_EXEMPLAR_ATTRS | Exemplar attributes for histogram data points | HISTOGRAM_DP_EXEMPLARS |
+| EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | Exemplar attributes for exponential histogram data points | EXP_HISTOGRAM_DP_EXEMPLARS |
+| METRIC_ATTRS | Metric-level attributes | METRICS |
+| RESOURCE_ATTRS | Resource attributes | METRICS |
+| SCOPE_ATTRS | Scope attributes | METRICS |
 
 #### 2.1.3 Traces Signal Tables
 
-| Payload Type | Enum Value | Description | Id | Parent Payload Type |
-|---|---|---|---|---|
-| RESOURCE_ATTRS | 1 | Resource attributes | No | SPANS |
-| SCOPE_ATTRS | 2 | Scope attributes | No | SPANS |
-| SPANS | 40 | Core span data (Root) | Yes | — |
-| SPAN_ATTRS | 41 | Span attributes | No | SPANS |
-| SPAN_EVENTS | 42 | Span events | Yes | SPANS |
-| SPAN_EVENT_ATTRS | 44 | Event attributes | No | SPAN_EVENTS |
-| SPAN_LINKS | 43 | Span links | Yes | SPANS |
-| SPAN_LINK_ATTRS | 45 | Link attributes | No | SPAN_LINKS |
+| Payload Type | Description | Parent Payload Type |
+|---|---|---|
+| SPANS | Core span data (Root) | — |
+| SPAN_ATTRS | Span attributes | SPANS |
+| SPAN_EVENTS | Span events | SPANS |
+| SPAN_EVENT_ATTRS | Event attributes | SPAN_EVENTS |
+| SPAN_LINKS | Span links | SPANS |
+| SPAN_LINK_ATTRS | Link attributes | SPAN_LINKS |
+| RESOURCE_ATTRS | Resource attributes | SPANS |
+| SCOPE_ATTRS | Scope attributes | SPANS |
 
 ---
 
@@ -1256,18 +1261,18 @@ see [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balanc
 
 ## Appendix F: Glossary
 
-- **Client/Producer**: The sender of telemetry data
-- **Server/Consumer**: The receiver of telemetry data
-- **Signal**: One of logs, metrics, or traces
-- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
-- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message
-- **Items**: The item type of a signal e.g. Log, Data Point(s), or Span
-- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
-- **Schema Reset**: The act of changing the Arrow schema for a payload type
-- **OTLP Specification**: OpenTelemetry Protocol specification
 - **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
-- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table in the OTAP data model
+- **BAR**: Abbreviation for BatchArrowRecords, the client gRPC message
+- **Client/Producer**: The sender of telemetry data
 - **gRPC**: https://grpc.io/
+- **Items**: The item type of a Signal e.g. Log, Data Point(s), or Span
+- **OTLP Specification**: OpenTelemetry Protocol specification
+- **Payload**: An ArrowPayload containing serialized Arrow IPC messages
+- **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table in the OTAP data model
+- **Root Payload/Root Payload Type**: The root table in the Signal's DAG
+- **Schema Reset**: The act of changing the Arrow schema for a Payload Type
+- **Server/Consumer**: The receiver of telemetry data
+- **Signal**: One of Logs, Metrics, or Traces
 
 ---
 
