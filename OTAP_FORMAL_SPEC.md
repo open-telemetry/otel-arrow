@@ -11,9 +11,8 @@
 4. [Payload Specifications](#4-payload-specifications)
 5. [Id Columns](#5-id-columns)
 6. [Schema Management](#6-schema-management)
-7. [Error Handling](#7-error-handling)
-8. [Field Specifications](#8-field-specifications)
-9. [Compliance Requirements](#9-compliance-requirements)
+7. [Error Handling](#7-error-handling8
+8. [Compliance Requirements](#9-compliance-requirements)
 
 ---
 
@@ -1026,21 +1025,9 @@ If a BatchArrowRecords contains multiple payloads and one fails:
 
 ---
 
-## 8. Field Specifications
+## 8. Compliance Requirements
 
-This section provides detailed semantics for fields in OTAP schemas, including which fields are required versus 
-optional, special handling rules for attribute and body fields, and field metadata conventions.
-
-Understanding field requirements is important for both producers (to ensure they send valid data) and consumers 
-(to know which fields they can rely on being present). OTAP inherits most field semantics from OTLP but adapts them 
-to the columnar model.
-
-### 8.1 Required vs Optional Fields
----
-
-## 9. Compliance Requirements
-
-### 9.1 Producer (Client) Requirements
+### 8.1 Producer (Client) Requirements
 
 A compliant OTAP producer MUST:
 
@@ -1076,7 +1063,7 @@ A compliant producer SHOULD:
 4. Implement exponential backoff for retryable errors
 5. Handle dictionary overflow via schema reset
 
-### 9.2 Consumer (Server) Requirements
+### 8.2 Consumer (Server) Requirements
 
 A compliant OTAP consumer MUST:
 
@@ -1116,7 +1103,7 @@ A compliant consumer SHOULD:
 3. Log warnings for unexpected but non-fatal conditions
 4. Support all specified dictionary key types (UInt8, UInt16, UInt32)
 
-### 9.3 Interoperability
+### 8.3 Interoperability
 
 // TODO: Forward/backward compatibility
 // TODO: Capability negotiation?
