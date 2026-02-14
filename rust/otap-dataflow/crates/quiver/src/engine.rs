@@ -1476,12 +1476,29 @@ fn probe_set_permissions_support(dir: &Path) -> bool {
         // Create a temporary probe file
         let _file = fs::File::create(&probe_path)?;
 
-        // Attempt to set permissions
+        // Attempt to set permissions and verify they took effect.
+        // Some filesystems (e.g., FAT32/vfat) silently accept chmod but
+        // don't actually change the permission bits. We must read back
+        // and compare to detect this.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let permissions = fs::Permissions::from_mode(0o440);
+            let target_mode = 0o440;
+            let permissions = fs::Permissions::from_mode(target_mode);
             fs::set_permissions(&probe_path, permissions)?;
+
+            // Read back and verify the mode actually changed
+            let actual_mode = fs::metadata(&probe_path)?.permissions().mode() & 0o777;
+            if actual_mode != target_mode {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!(
+                        "chmod succeeded but permissions were not applied \
+                         (requested {target_mode:#o}, got {actual_mode:#o}); \
+                         filesystem likely does not support permission changes"
+                    ),
+                ));
+            }
         }
 
         #[cfg(not(unix))]
@@ -1489,6 +1506,15 @@ fn probe_set_permissions_support(dir: &Path) -> bool {
             let mut permissions = fs::metadata(&probe_path)?.permissions();
             permissions.set_readonly(true);
             fs::set_permissions(&probe_path, permissions)?;
+
+            // Read back and verify readonly actually took effect
+            if !fs::metadata(&probe_path)?.permissions().readonly() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "set_readonly succeeded but file is still writable; \
+                     filesystem likely does not support permission changes",
+                ));
+            }
         }
 
         Ok(())
