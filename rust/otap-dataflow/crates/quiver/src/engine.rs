@@ -1446,18 +1446,29 @@ fn wal_path(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("wal").join("quiver.wal")
 }
 
-const PERMS_PROBE_FILENAME: &str = ".quiver_perms_probe";
+/// Prefix for the temporary probe file created by [`probe_set_permissions_support`].
+const PERMS_PROBE_PREFIX: &str = ".quiver_perms_probe.";
 
 /// Probes whether the filesystem at `dir` supports `chmod`/`set_permissions`.
 ///
-/// Creates a temporary probe file, attempts to change its permissions, and
-/// returns `true` if the operation succeeds. This detects filesystems (e.g.,
-/// Azure Files SMB/CIFS mounts, certain Kubernetes volumeMounts) that return
-/// `EPERM` on permission changes.
+/// Creates a temporary probe file with a unique name (using PID and timestamp),
+/// attempts to change its permissions, and returns `true` if the operation
+/// succeeds. This detects filesystems (e.g., Azure Files SMB/CIFS mounts,
+/// certain Kubernetes volumeMounts) that return `EPERM` on permission changes.
 ///
-/// The probe file is always cleaned up, regardless of outcome.
+/// The probe file is always cleaned up, regardless of outcome. The randomized
+/// name avoids conflicts if a previous probe file was not properly deleted.
 fn probe_set_permissions_support(dir: &Path) -> bool {
-    let probe_path = dir.join(PERMS_PROBE_FILENAME);
+    let probe_name = format!(
+        "{}{}.{}",
+        PERMS_PROBE_PREFIX,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos(),
+    );
+    let probe_path = dir.join(&probe_name);
 
     let result = (|| -> std::io::Result<()> {
         // Create a temporary probe file
@@ -5481,11 +5492,20 @@ mod tests {
         assert!(
             probe_set_permissions_support(dir.path()),
             "set_permissions should succeed on a normal tmpdir filesystem"
-        );      
-        // Probe file should be cleaned up
+        );
+        // Probe file should be cleaned up — no leftover files with the probe prefix
+        let leftover: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .map_or(false, |n| n.starts_with(PERMS_PROBE_PREFIX))
+            })
+            .collect();
         assert!(
-            !dir.path().join(PERMS_PROBE_FILENAME).exists(),
-            "probe file should be removed after probing"
+            leftover.is_empty(),
+            "probe file should be removed after probing, found: {leftover:?}"
         );
     }
 
