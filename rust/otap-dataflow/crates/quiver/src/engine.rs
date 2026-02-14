@@ -5499,7 +5499,7 @@ mod tests {
             .filter(|e| {
                 e.file_name()
                     .to_str()
-                    .map_or(false, |n| n.starts_with(PERMS_PROBE_PREFIX))
+                    .is_some_and(|n| n.starts_with(PERMS_PROBE_PREFIX))
             })
             .collect();
         assert!(
