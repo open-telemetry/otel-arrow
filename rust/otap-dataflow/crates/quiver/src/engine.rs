@@ -283,15 +283,17 @@ impl QuiverEngine {
         let set_permissions_supported = probe_set_permissions_support(&config.data_dir);
 
         // Use async WAL initialization
-        let wal_writer = initialize_wal_writer(&config, &budget, set_permissions_supported).await.map_err(|e| {
-            otel_error!(
-                "quiver.engine.init",
-                error = %e,
-                error_type = "io",
-                reason = "wal_init_failed",
-            );
-            e
-        })?;
+        let wal_writer = initialize_wal_writer(&config, &budget, set_permissions_supported)
+            .await
+            .map_err(|e| {
+                otel_error!(
+                    "quiver.engine.init",
+                    error = %e,
+                    error_type = "io",
+                    reason = "wal_init_failed",
+                );
+                e
+            })?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -3490,10 +3492,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Helper to create an engine and ingest data asynchronously.
-    async fn setup_engine_with_data(
-        dir: &Path,
-        bundle_count: usize,
-    ) -> Arc<QuiverEngine> {
+    async fn setup_engine_with_data(dir: &Path, bundle_count: usize) -> Arc<QuiverEngine> {
         let config = QuiverConfig::builder()
             .data_dir(dir)
             .build()

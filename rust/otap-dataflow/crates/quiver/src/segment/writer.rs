@@ -198,8 +198,7 @@ impl SegmentWriter {
             move || -> Result<(File, (u64, u32)), SegmentError> {
                 let mut writer = BufWriter::new(std_file);
 
-                let result =
-                    Self::write_streaming(&mut writer, accumulators, manifest, &path)?;
+                let result = Self::write_streaming(&mut writer, accumulators, manifest, &path)?;
 
                 // Extract the underlying file for fsync
                 let file = writer
@@ -776,10 +775,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = perms.mode() & 0o777;
-            assert_eq!(
-                mode, 0o440,
-                "file should have mode 0o440 on Unix"
-            );
+            assert_eq!(mode, 0o440, "file should have mode 0o440 on Unix");
         }
     }
 
