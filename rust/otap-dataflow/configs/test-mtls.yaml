@@ -1,50 +1,56 @@
-# Test configuration for mTLS (mutual authentication)
-# This demonstrates OTLP receiver with mTLS -> OTLP exporter with mTLS
-#
-# How to test:
-# 1. Generate certificates: ./scripts/generate-test-certs.sh
-# 2. Start the collector: cargo run --features experimental-tls -- --config configs/test-mtls.yaml
-# 3. Send test data to the receiver on https://127.0.0.1:4317 with client cert
-
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4317"
-          # Receiver mTLS configuration (server-side)
-          tls:
-            # Server identity (required for TLS)
-            cert_file: "./test-certs/server.crt"
-            key_file: "./test-certs/server.key"
-
-            # Client certificate verification for mTLS
-            client_ca_file: "./test-certs/ca.crt"
-            include_system_ca_certs_pool: false
-
-  exporter:
-    type: otlp:exporter
-    config:
-      # Send to another OTLP receiver with mTLS enabled
-      # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
-      grpc_endpoint: "https://127.0.0.1:4319"
-
-      # Exporter mTLS configuration (client-side)
-      tls:
-        # Trust settings for verifying the server certificate
-        ca_file: "./test-certs/ca.crt"
-        include_system_ca_certs_pool: false
-
-        # Client identity for mTLS (these make it mTLS instead of just TLS)
-        cert_file: "./test-certs/client.crt"
-        key_file: "./test-certs/client.key"
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        # Test configuration for mTLS (mutual authentication)
+        # This demonstrates OTLP receiver with mTLS -> OTLP exporter with mTLS
+        #
+        # How to test:
+        # 1. Generate certificates: ./scripts/generate-test-certs.sh
+        # 2. Start the collector: cargo run --features experimental-tls -- --config configs/test-mtls.yaml
+        # 3. Send test data to the receiver on https://127.0.0.1:4317 with client cert
+        
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+                  # Receiver mTLS configuration (server-side)
+                  tls:
+                    # Server identity (required for TLS)
+                    cert_file: "./test-certs/server.crt"
+                    key_file: "./test-certs/server.key"
+        
+                    # Client certificate verification for mTLS
+                    client_ca_file: "./test-certs/ca.crt"
+                    include_system_ca_certs_pool: false
+        
+          exporter:
+            type: otlp:exporter
+            config:
+              # Send to another OTLP receiver with mTLS enabled
+              # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
+              grpc_endpoint: "https://127.0.0.1:4319"
+        
+              # Exporter mTLS configuration (client-side)
+              tls:
+                # Trust settings for verifying the server certificate
+                ca_file: "./test-certs/ca.crt"
+                include_system_ca_certs_pool: false
+        
+                # Client identity for mTLS (these make it mTLS instead of just TLS)
+                cert_file: "./test-certs/client.crt"
+                key_file: "./test-certs/client.key"
+        
+        connections:
+          - from: receiver
+            to: exporter

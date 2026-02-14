@@ -1,6 +1,7 @@
-# Pipeline Configuration Examples
+# Engine Configuration Examples
 
-This directory contains example pipeline configurations for the OTAP dataflow engine.
+This directory contains example engine configurations for the OTAP dataflow engine.
+Each file uses `version: otel_dataflow/v1` at the root.
 
 Note: These configurations are based on the native OTAP dataflow engine
 configuration model, which is a superset of the Go Collector configuration
@@ -148,8 +149,5 @@ You can use these configurations with the following CLI command:
 
 ```bash
 # Use a specific configuration
-cargo run -- -p configs/otlp-otlp.yaml
-
-# Combine with custom core count
-cargo run -- -p configs/otlp-otlp.yaml --num-cores 4
+cargo run -- --config configs/otlp-otlp.yaml
 ```

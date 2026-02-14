@@ -1,29 +1,35 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        # For testing with a finite stream, use max_signal_count. Otherwise
-        # this component outputs a continuous signal.
-        # max_signal_count: 1000
-        max_batch_size: 1000
-        signals_per_second: 1000
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  exporter:
-    type: perf:exporter
-    config:
-      frequency: 1000
-      cpu_usage: false
-      mem_usage: false
-      disk_usage: false
-      io_usage: false
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                # For testing with a finite stream, use max_signal_count. Otherwise
+                # this component outputs a continuous signal.
+                # max_signal_count: 1000
+                max_batch_size: 1000
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          exporter:
+            type: perf:exporter
+            config:
+              frequency: 1000
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+        
+        connections:
+          - from: receiver
+            to: exporter

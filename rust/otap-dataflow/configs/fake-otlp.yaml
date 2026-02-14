@@ -1,25 +1,31 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      data_source: static
-      generation_strategy: pre_generated
-      traffic_config:
-        signals_per_second: 100000
-        max_signal_count: null
-        metric_weight: 0
-        trace_weight: 0
-        log_weight: 30
-  exporter:
-    type: otlp:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:4317"
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              data_source: static
+              generation_strategy: pre_generated
+              traffic_config:
+                signals_per_second: 100000
+                max_signal_count: null
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 30
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4317"
+        
+        connections:
+          - from: receiver
+            to: exporter

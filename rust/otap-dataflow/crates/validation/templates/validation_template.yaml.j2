@@ -1,5 +1,6 @@
 # Engine-wide settings
 {% set admin_bind_address = admin_bind_address | default("127.0.0.1:8085") -%}
+version: otel_dataflow/v1
 settings:
   http_admin:
     bind_address: {{ admin_bind_address }}

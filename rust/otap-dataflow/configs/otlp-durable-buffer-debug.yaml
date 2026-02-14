@@ -1,47 +1,53 @@
-# OTLP -> Durable Buffer -> Debug pipeline for testing
-#
-# This configuration lets you verify the durable buffer e2e flow
-# by writing received data to a debug log file.
-#
-# Build with: cargo build --release
-# Run with:   ./target/release/df_engine --pipeline configs/otlp-durable-buffer-debug.yaml
-# Send data:  telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure --logs 10
-# Verify:     cat /tmp/durable_buffer_debug.log
-
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      listening_addr: "127.0.0.1:4317"
-
-  durable_buffer:
-    type: durable_buffer:processor
-    config:
-      path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
-      poll_interval: 100ms
-      retention_size_cap: "1GB"
-      size_cap_policy: backpressure
-      # Convert to Arrow so debug processor can display the data
-      otlp_handling: convert_to_arrow
-
-  debug:
-    type: debug:processor
-    config:
-      verbosity: detailed
-      output: /tmp/durable_buffer_debug.log
-
-  noop:
-    type: noop:exporter
-
-connections:
-  - from: receiver
-    to: durable_buffer
-  - from: durable_buffer
-    to: debug
-  - from: debug
-    to: noop
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        # OTLP -> Durable Buffer -> Debug pipeline for testing
+        #
+        # This configuration lets you verify the durable buffer e2e flow
+        # by writing received data to a debug log file.
+        #
+        # Build with: cargo build --release
+        # Run with:   ./target/release/df_engine --config configs/otlp-durable-buffer-debug.yaml
+        # Send data:  telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure --logs 10
+        # Verify:     cat /tmp/durable_buffer_debug.log
+        
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              listening_addr: "127.0.0.1:4317"
+        
+          durable_buffer:
+            type: durable_buffer:processor
+            config:
+              path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
+              poll_interval: 100ms
+              retention_size_cap: "1GB"
+              size_cap_policy: backpressure
+              # Convert to Arrow so debug processor can display the data
+              otlp_handling: convert_to_arrow
+        
+          debug:
+            type: debug:processor
+            config:
+              verbosity: detailed
+              output: /tmp/durable_buffer_debug.log
+        
+          noop:
+            type: noop:exporter
+        
+        connections:
+          - from: receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: debug
+          - from: debug
+            to: noop

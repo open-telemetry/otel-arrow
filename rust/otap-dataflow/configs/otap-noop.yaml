@@ -1,20 +1,26 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: otap:receiver
-    config:
-      listening_addr: "127.0.0.1:4327"
-      response_stream_channel_size: 256
-      compression_method: zstd
-
-  perf_noop:
-    type: noop:exporter
-    config:
-
-connections:
-  - from: receiver
-    to: perf_noop
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: otap:receiver
+            config:
+              listening_addr: "127.0.0.1:4327"
+              response_stream_channel_size: 256
+              compression_method: zstd
+        
+          perf_noop:
+            type: noop:exporter
+            config:
+        
+        connections:
+          - from: receiver
+            to: perf_noop

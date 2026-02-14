@@ -1,27 +1,33 @@
-  settings:
-    default_pipeline_ctrl_msg_channel_size: 100
-    default_node_ctrl_msg_channel_size: 100
-    default_pdata_channel_size: 100
-
-  nodes:
-    receiver:
-      type: otlp:receiver
-      config:
-        protocols:
-          grpc:
-            listening_addr: "127.0.0.1:4317"
-            tls:
-              cert_file: "./test-certs/server.crt"
-              key_file: "./test-certs/server.key"
-
-    exporter:
-      type: otlp:exporter
-      config:
-        grpc_endpoint: "https://127.0.0.1:4319"
-        tls:
-          ca_file: "./test-certs/ca.crt"
-          include_system_ca_certs_pool: false
-
-  connections:
-    - from: receiver
-      to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+          settings:
+            default_pipeline_ctrl_msg_channel_size: 100
+            default_node_ctrl_msg_channel_size: 100
+            default_pdata_channel_size: 100
+        
+          nodes:
+            receiver:
+              type: otlp:receiver
+              config:
+                protocols:
+                  grpc:
+                    listening_addr: "127.0.0.1:4317"
+                    tls:
+                      cert_file: "./test-certs/server.crt"
+                      key_file: "./test-certs/server.key"
+        
+            exporter:
+              type: otlp:exporter
+              config:
+                grpc_endpoint: "https://127.0.0.1:4319"
+                tls:
+                  ca_file: "./test-certs/ca.crt"
+                  include_system_ca_certs_pool: false
+        
+          connections:
+            - from: receiver
+              to: exporter

@@ -107,6 +107,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let EngineConfig {
             settings: engine_settings,
             pipeline_groups,
+            ..
         } = engine_config;
         let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -425,6 +426,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let EngineConfig {
             settings: engine_settings,
             pipeline_groups,
+            ..
         } = engine_config;
         let admin_settings = engine_settings.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.

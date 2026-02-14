@@ -1,50 +1,56 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4317"
-          # timeout: "30s"  # Optional: timeout for RPC requests
-
-      # TLS / mTLS (receiver-side)
-      # tls:
-      #   # Server identity (required for TLS)
-      #   cert_file: "/path/to/server.crt"   # or `cert_pem: | ...`
-      #   key_file: "/path/to/server.key"    # or `key_pem: | ...`
-      #
-      #   # Client certificate verification for mTLS (optional)
-      #   client_ca_file: "/path/to/client-ca.crt"  # or `client_ca_pem: | ...`
-      #   include_system_ca_certs_pool: false       # default is false
-      #
-      #   # Advanced settings
-      #   handshake_timeout: "10s"           # default is 10s
-      #   reload_interval: "5m"              # default is 5m
-  exporter:
-    type: otap:exporter
-    config:
-      # Downstream OTAP/gRPC collector endpoint.
-      # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
-      grpc_endpoint: "http://127.0.0.1:4319"
-      # timeout: "15s"  # Optional: timeout for RPC requests
-
-      # TLS / mTLS (exporter-side)
-      # - TLS is enabled when `grpc_endpoint` uses https:// (scheme default).
-      # - Setting `tls` enables TLS/mTLS and provides additional configuration options.
-      # - If `tls` is omitted and `grpc_endpoint` uses http://, the connection is plaintext.
-      # grpc_endpoint: "https://collector.example.com:4319"
-      # tls:
-      #   ca_file: "/path/to/ca.crt"          # or `ca_pem: | ...`
-      #   include_system_ca_certs_pool: false # default is true
-      #   server_name_override: "collector.example.com"
-      #   cert_file: "/path/to/client.crt"   # optional: mTLS
-      #   key_file: "/path/to/client.key"
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+                  # timeout: "30s"  # Optional: timeout for RPC requests
+        
+              # TLS / mTLS (receiver-side)
+              # tls:
+              #   # Server identity (required for TLS)
+              #   cert_file: "/path/to/server.crt"   # or `cert_pem: | ...`
+              #   key_file: "/path/to/server.key"    # or `key_pem: | ...`
+              #
+              #   # Client certificate verification for mTLS (optional)
+              #   client_ca_file: "/path/to/client-ca.crt"  # or `client_ca_pem: | ...`
+              #   include_system_ca_certs_pool: false       # default is false
+              #
+              #   # Advanced settings
+              #   handshake_timeout: "10s"           # default is 10s
+              #   reload_interval: "5m"              # default is 5m
+          exporter:
+            type: otap:exporter
+            config:
+              # Downstream OTAP/gRPC collector endpoint.
+              # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
+              grpc_endpoint: "http://127.0.0.1:4319"
+              # timeout: "15s"  # Optional: timeout for RPC requests
+        
+              # TLS / mTLS (exporter-side)
+              # - TLS is enabled when `grpc_endpoint` uses https:// (scheme default).
+              # - Setting `tls` enables TLS/mTLS and provides additional configuration options.
+              # - If `tls` is omitted and `grpc_endpoint` uses http://, the connection is plaintext.
+              # grpc_endpoint: "https://collector.example.com:4319"
+              # tls:
+              #   ca_file: "/path/to/ca.crt"          # or `ca_pem: | ...`
+              #   include_system_ca_certs_pool: false # default is true
+              #   server_name_override: "collector.example.com"
+              #   cert_file: "/path/to/client.crt"   # optional: mTLS
+              #   key_file: "/path/to/client.key"
+        
+        connections:
+          - from: receiver
+            to: exporter

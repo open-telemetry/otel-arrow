@@ -1,42 +1,48 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        max_signal_count: 10000
-        max_batch_size: 100
-        signals_per_second: 100
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  debug1:
-    type: debug:processor
-    config:
-      verbosity: detailed
-      output: /tmp/debug1.log
-  transform:
-    type: transform:processor
-    config:
-      query: logs | where event_name == "gen_ai.system.message"
-  debug2:
-    type: debug:processor
-    config:
-      verbosity: detailed
-      output: /tmp/debug2.log
-  noop:
-    type: noop:exporter
-    config:
-
-connections:
-  - from: receiver
-    to: debug1
-  - from: debug1
-    to: transform
-  - from: transform
-    to: debug2
-  - from: debug2
-    to: noop
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                max_signal_count: 10000
+                max_batch_size: 100
+                signals_per_second: 100
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          debug1:
+            type: debug:processor
+            config:
+              verbosity: detailed
+              output: /tmp/debug1.log
+          transform:
+            type: transform:processor
+            config:
+              query: logs | where event_name == "gen_ai.system.message"
+          debug2:
+            type: debug:processor
+            config:
+              verbosity: detailed
+              output: /tmp/debug2.log
+          noop:
+            type: noop:exporter
+            config:
+        
+        connections:
+          - from: receiver
+            to: debug1
+          - from: debug1
+            to: transform
+          - from: transform
+            to: debug2
+          - from: debug2
+            to: noop

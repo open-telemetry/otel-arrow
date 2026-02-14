@@ -1,3 +1,4 @@
+version: otel_dataflow/v1
 # This configuration file reproduces the continuous benchmarking setup used
 # in our CI pipelines. However, the systems: traffic generator, system under
 # test, and backend are all included in a single configuration for easier

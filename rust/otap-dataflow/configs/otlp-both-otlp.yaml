@@ -1,97 +1,103 @@
-# OTLP receiver (both gRPC and HTTP) -> OTLP exporter pipeline
-#
-# This configuration demonstrates both protocols enabled with shared concurrency.
-# For gRPC-only, see otlp-otlp.yaml
-# For HTTP-only, see otlp-http-otlp.yaml
-
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      protocols:
-        # OTLP/gRPC receiver (default port: 4317)
-        grpc:
-          listening_addr: "127.0.0.1:4317"
-
-          # --- Request/Response behavior ---
-          # wait_for_result: false        # Wait for downstream ACK before responding
-          # timeout: "30s"                # Timeout for gRPC requests
-
-          # --- Concurrency limits ---
-          # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
-          # max_concurrent_streams: null  # HTTP/2 streams per connection (null = auto)
-          # transport_concurrency_limit: null  # Per-connection limit (null = auto)
-          # load_shed: true               # Fast reject when overloaded
-
-          # --- Compression ---
-          # request_compression: [zstd, gzip, deflate]  # or "none" to disable
-          # response_compression: []      # Empty = no response compression
-
-          # --- TCP settings ---
-          # tcp_nodelay: true             # Disable Nagle's algorithm
-          # tcp_keepalive: "45s"          # TCP keepalive timeout (null to disable)
-          # tcp_keepalive_interval: "15s" # Probe interval
-          # tcp_keepalive_retries: 5      # Probes before connection dead
-
-          # --- HTTP/2 tuning ---
-          # initial_stream_window_size: "8MiB"
-          # initial_connection_window_size: "24MiB"
-          # http2_adaptive_window: false  # Dynamic window sizing
-          # max_frame_size: "16KiB"
-          # max_decoding_message_size: "4MiB"
-          # http2_keepalive_interval: "30s"
-          # http2_keepalive_timeout: "10s"
-
-          # --- TLS configuration ---
-          # tls:
-          #   cert_file: "/path/to/server.crt"
-          #   key_file: "/path/to/server.key"
-          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
-          #   include_system_ca_certs_pool: false
-          #   handshake_timeout: "10s"
-          #   reload_interval: "5m"
-
-        # OTLP/HTTP receiver (default port: 4318)
-        http:
-          listening_addr: "127.0.0.1:4318"
-
-          # --- Request/Response behavior ---
-          # wait_for_result: false        # Wait for downstream ACK before responding
-          # timeout: "30s"                # Request processing timeout
-          # max_request_body_size: "4MiB" # Max body size (applies to compressed & decompressed)
-          # accept_compressed_requests: true  # Accept gzip/deflate/zstd bodies
-
-          # --- Concurrency limits ---
-          # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
-
-          # --- TCP settings ---
-          # tcp_nodelay: true
-          # tcp_keepalive: "45s"
-          # tcp_keepalive_interval: "15s"
-          # tcp_keepalive_retries: 5
-
-          # --- TLS configuration ---
-          # tls:
-          #   cert_file: "/path/to/server.crt"
-          #   key_file: "/path/to/server.key"
-          #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
-          #   include_system_ca_certs_pool: false
-          #   handshake_timeout: "10s"
-          #   reload_interval: "5m"
-
-  exporter:
-    type: otlp:exporter
-    config:
-      # Downstream OTLP/gRPC collector endpoint.
-      # Uses a different port than this receiver to avoid accidental loops.
-      grpc_endpoint: "http://127.0.0.1:4319"
-      # timeout: "15s"
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        # OTLP receiver (both gRPC and HTTP) -> OTLP exporter pipeline
+        #
+        # This configuration demonstrates both protocols enabled with shared concurrency.
+        # For gRPC-only, see otlp-otlp.yaml
+        # For HTTP-only, see otlp-http-otlp.yaml
+        
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              protocols:
+                # OTLP/gRPC receiver (default port: 4317)
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+        
+                  # --- Request/Response behavior ---
+                  # wait_for_result: false        # Wait for downstream ACK before responding
+                  # timeout: "30s"                # Timeout for gRPC requests
+        
+                  # --- Concurrency limits ---
+                  # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
+                  # max_concurrent_streams: null  # HTTP/2 streams per connection (null = auto)
+                  # transport_concurrency_limit: null  # Per-connection limit (null = auto)
+                  # load_shed: true               # Fast reject when overloaded
+        
+                  # --- Compression ---
+                  # request_compression: [zstd, gzip, deflate]  # or "none" to disable
+                  # response_compression: []      # Empty = no response compression
+        
+                  # --- TCP settings ---
+                  # tcp_nodelay: true             # Disable Nagle's algorithm
+                  # tcp_keepalive: "45s"          # TCP keepalive timeout (null to disable)
+                  # tcp_keepalive_interval: "15s" # Probe interval
+                  # tcp_keepalive_retries: 5      # Probes before connection dead
+        
+                  # --- HTTP/2 tuning ---
+                  # initial_stream_window_size: "8MiB"
+                  # initial_connection_window_size: "24MiB"
+                  # http2_adaptive_window: false  # Dynamic window sizing
+                  # max_frame_size: "16KiB"
+                  # max_decoding_message_size: "4MiB"
+                  # http2_keepalive_interval: "30s"
+                  # http2_keepalive_timeout: "10s"
+        
+                  # --- TLS configuration ---
+                  # tls:
+                  #   cert_file: "/path/to/server.crt"
+                  #   key_file: "/path/to/server.key"
+                  #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+                  #   include_system_ca_certs_pool: false
+                  #   handshake_timeout: "10s"
+                  #   reload_interval: "5m"
+        
+                # OTLP/HTTP receiver (default port: 4318)
+                http:
+                  listening_addr: "127.0.0.1:4318"
+        
+                  # --- Request/Response behavior ---
+                  # wait_for_result: false        # Wait for downstream ACK before responding
+                  # timeout: "30s"                # Request processing timeout
+                  # max_request_body_size: "4MiB" # Max body size (applies to compressed & decompressed)
+                  # accept_compressed_requests: true  # Accept gzip/deflate/zstd bodies
+        
+                  # --- Concurrency limits ---
+                  # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
+        
+                  # --- TCP settings ---
+                  # tcp_nodelay: true
+                  # tcp_keepalive: "45s"
+                  # tcp_keepalive_interval: "15s"
+                  # tcp_keepalive_retries: 5
+        
+                  # --- TLS configuration ---
+                  # tls:
+                  #   cert_file: "/path/to/server.crt"
+                  #   key_file: "/path/to/server.key"
+                  #   client_ca_file: "/path/to/client-ca.crt"  # For mTLS
+                  #   include_system_ca_certs_pool: false
+                  #   handshake_timeout: "10s"
+                  #   reload_interval: "5m"
+        
+          exporter:
+            type: otlp:exporter
+            config:
+              # Downstream OTLP/gRPC collector endpoint.
+              # Uses a different port than this receiver to avoid accidental loops.
+              grpc_endpoint: "http://127.0.0.1:4319"
+              # timeout: "15s"
+        
+        connections:
+          - from: receiver
+            to: exporter

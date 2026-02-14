@@ -1,23 +1,29 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: syslog_cef:receiver
-    config:
-      listening_addr: "0.0.0.0:5140"
-      protocol: udp
-  exporter:
-    type: perf:exporter
-    config:
-      frequency: 1000
-      cpu_usage: false
-      mem_usage: false
-      disk_usage: false
-      io_usage: false
-
-connections:
-  - from: receiver
-    to: exporter
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: syslog_cef:receiver
+            config:
+              listening_addr: "0.0.0.0:5140"
+              protocol: udp
+          exporter:
+            type: perf:exporter
+            config:
+              frequency: 1000
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
+        
+        connections:
+          - from: receiver
+            to: exporter

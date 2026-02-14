@@ -1,47 +1,53 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        max_signal_count: 1000
-        max_batch_size: 1000
-        signals_per_second: 1000
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  debug:
-    type: debug:processor
-    config:
-      verbosity: basic
-  noop:
-    type: noop:exporter
-    config:
-
-connections:
-  - from: receiver
-    to: debug
-  - from: debug
-    to: noop
-
-service:
-  telemetry:
-    metrics:
-      readers:
-        - pull:
-            exporter:
-              prometheus:
-                host: "0.0.0.0"
-                port: 9090
-                path: "/metrics"
-      views:
-        - selector:
-            instrument_name: "logs.produced"
-          stream:
-            name: "otlp.logs.produced.count"
-            description: "Count of logs produced"
-    resource:
-      service.name: "fake-debug-noop-service"
+version: otel_dataflow/v1
+settings: {}
+pipeline_groups:
+  default:
+    pipelines:
+      main:
+        settings:
+          default_pipeline_ctrl_msg_channel_size: 100
+          default_node_ctrl_msg_channel_size: 100
+          default_pdata_channel_size: 100
+        
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                max_signal_count: 1000
+                max_batch_size: 1000
+                signals_per_second: 1000
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          debug:
+            type: debug:processor
+            config:
+              verbosity: basic
+          noop:
+            type: noop:exporter
+            config:
+        
+        connections:
+          - from: receiver
+            to: debug
+          - from: debug
+            to: noop
+        
+        service:
+          telemetry:
+            metrics:
+              readers:
+                - pull:
+                    exporter:
+                      prometheus:
+                        host: "0.0.0.0"
+                        port: 9090
+                        path: "/metrics"
+              views:
+                - selector:
+                    instrument_name: "logs.produced"
+                  stream:
+                    name: "otlp.logs.produced.count"
+                    description: "Count of logs produced"
+            resource:
+              service.name: "fake-debug-noop-service"
