@@ -11,8 +11,8 @@
 4. [Payload Specifications](#4-payload-specifications)
 5. [Id Columns](#5-id-columns)
 6. [Schema Management](#6-schema-management)
-7. [Error Handling](#7-error-handling8
-8. [Compliance Requirements](#9-compliance-requirements)
+7. [Error Handling](#7-error-handling)
+8. [Compliance Requirements](#8-compliance-requirements)
 
 ---
 
