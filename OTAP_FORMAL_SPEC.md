@@ -454,7 +454,7 @@ Applies to: NUMBER_DP_ATTRS, SUMMARY_DP_ATTRS, HISTOGRAM_DP_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
@@ -484,7 +484,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
@@ -565,7 +565,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_EVENTS](#span_events).id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_EVENTS](#span_events).id |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
@@ -590,7 +590,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_LINKS](#span_links).id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_LINKS](#span_links).id |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
