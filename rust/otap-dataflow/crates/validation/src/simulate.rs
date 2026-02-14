@@ -3,7 +3,7 @@
 
 use crate::error::ValidationError;
 use crate::metrics_types::MetricsSnapshot;
-use otap_df_config::engine::EngineConfig;
+use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
@@ -47,13 +47,13 @@ pub(crate) async fn run_pipelines_with_timeout(
 }
 
 struct PipelineSimulator {
-    engine_config: EngineConfig,
+    engine_config: OtelDataflowSpec,
 }
 
 impl PipelineSimulator {
     fn new(yaml: &str) -> Result<Self, ValidationError> {
         let engine_config =
-            EngineConfig::from_yaml(yaml).map_err(|e| ValidationError::Config(e.to_string()))?;
+            OtelDataflowSpec::from_yaml(yaml).map_err(|e| ValidationError::Config(e.to_string()))?;
         Ok(Self { engine_config })
     }
 

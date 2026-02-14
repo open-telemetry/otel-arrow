@@ -44,7 +44,7 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::{EngineConfig, EngineObservabilityPipelineConfig};
+use otap_df_config::engine::{OtelDataflowSpec, EngineObservabilityPipelineConfig};
 use otap_df_config::pipeline::CoreAllocation;
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
@@ -103,8 +103,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     }
 
     /// Starts the controller with the given engine configurations.
-    pub fn run_forever(&self, engine_config: EngineConfig) -> Result<(), Error> {
-        let EngineConfig { engine, groups, .. } = engine_config;
+    pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
+        let OtelDataflowSpec { engine, groups, .. } = engine_config;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -416,8 +416,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Used in Validation test where shutdown signal is used to end pipeline groups and admin endpoint
     /// Starts the controller with the given engine configurations.
     /// ToDo [LQ] We need to minimize duplication of code here
-    pub fn run_till_shutdown(&self, engine_config: EngineConfig) -> Result<(), Error> {
-        let EngineConfig { engine, groups, .. } = engine_config;
+    pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
+        let OtelDataflowSpec { engine, groups, .. } = engine_config;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.

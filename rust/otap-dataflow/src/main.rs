@@ -4,7 +4,7 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use otap_df_config::engine::EngineConfig;
+use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", system_info());
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let engine_cfg = EngineConfig::from_file(config)?;
+    let engine_cfg = OtelDataflowSpec::from_file(config)?;
     let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {

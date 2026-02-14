@@ -21,7 +21,7 @@ pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
 /// Contains engine-level settings and all pipeline groups.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct EngineConfig {
+pub struct OtelDataflowSpec {
     /// Version of the engine configuration schema.
     pub version: String,
 
@@ -104,10 +104,10 @@ fn default_bind_address() -> String {
     "127.0.0.1:8080".into()
 }
 
-impl EngineConfig {
+impl OtelDataflowSpec {
     /// Creates a new `EngineConfig` with the given JSON string.
     pub fn from_json(json: &str) -> Result<Self, Error> {
-        let config: EngineConfig =
+        let config: OtelDataflowSpec =
             serde_json::from_str(json).map_err(|e| Error::DeserializationError {
                 context: Default::default(),
                 format: "JSON".to_string(),
@@ -119,7 +119,7 @@ impl EngineConfig {
 
     /// Creates a new `EngineConfig` with the given YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, Error> {
-        let config: EngineConfig =
+        let config: OtelDataflowSpec =
             serde_yaml::from_str(yaml).map_err(|e| Error::DeserializationError {
                 context: Context::default(),
                 format: "YAML".to_string(),
@@ -129,7 +129,7 @@ impl EngineConfig {
         Ok(config)
     }
 
-    /// Load an [`EngineConfig`] from a JSON file.
+    /// Load an [`OtelDataflowSpec`] from a JSON file.
     pub fn from_json_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
             context: Context::default(),
@@ -138,7 +138,7 @@ impl EngineConfig {
         Self::from_json(&contents)
     }
 
-    /// Load an [`EngineConfig`] from a YAML file.
+    /// Load an [`OtelDataflowSpec`] from a YAML file.
     pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
             context: Context::default(),
@@ -147,7 +147,7 @@ impl EngineConfig {
         Self::from_yaml(&contents)
     }
 
-    /// Load an [`EngineConfig`] from a file, automatically detecting the format based on file extension.
+    /// Load an [`OtelDataflowSpec`] from a file, automatically detecting the format based on file extension.
     ///
     /// Supports:
     /// - JSON files: `.json`
@@ -186,7 +186,7 @@ impl EngineConfig {
         pipeline_group.add_pipeline(pipeline_id, pipeline)?;
         let mut groups = HashMap::new();
         let _ = groups.insert(pipeline_group_id, pipeline_group);
-        let config = EngineConfig {
+        let config = OtelDataflowSpec {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
             engine,
             groups,
@@ -285,7 +285,7 @@ groups:
             to: exporter
 "#;
 
-        let err = EngineConfig::from_yaml(yaml).unwrap_err();
+        let err = OtelDataflowSpec::from_yaml(yaml).unwrap_err();
         match err {
             Error::DeserializationError { details, .. } => {
                 assert!(details.contains("missing field `version`"));
@@ -297,14 +297,14 @@ groups:
     #[test]
     fn from_yaml_accepts_supported_version() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
-        let config = EngineConfig::from_yaml(&yaml).expect("v1 config should be accepted");
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("v1 config should be accepted");
         assert_eq!(config.version, ENGINE_CONFIG_VERSION_V1);
     }
 
     #[test]
     fn from_yaml_rejects_unsupported_version() {
         let yaml = valid_engine_yaml("otel_dataflow/v2");
-        let err = EngineConfig::from_yaml(&yaml).unwrap_err();
+        let err = OtelDataflowSpec::from_yaml(&yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unsupported engine config version `otel_dataflow/v2`")
@@ -344,7 +344,7 @@ groups:
             to: exporter
 "#;
 
-        let config = EngineConfig::from_yaml(yaml).expect("should parse");
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert!(config.engine.observability.pipeline.is_some());
     }
 
@@ -369,7 +369,7 @@ groups:
                     continue;
                 }
 
-                let parsed = EngineConfig::from_file(&path);
+                let parsed = OtelDataflowSpec::from_file(&path);
                 assert!(
                     parsed.is_ok(),
                     "failed to parse engine config {}: {parsed:?}",
