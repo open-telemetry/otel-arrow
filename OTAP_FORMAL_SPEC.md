@@ -8,12 +8,12 @@
 1. [Introduction](#1-introduction)
 2. [Data Model](#2-data-model)
 3. [Protocol Architecture](#3-protocol-architecture)
-5. [Payload Specifications](#5-payload-specifications)
-6. [Id Columns](#6-id-columns)
-7. [Schema Management](#7-schema-management)
-8. [Error Handling](#8-error-handling)
-9. [Field Specifications](#9-field-specifications)
-10. [Compliance Requirements](#10-compliance-requirements)
+4. [Payload Specifications](#4-payload-specifications)
+5. [Id Columns](#5-id-columns)
+6. [Schema Management](#6-schema-management)
+7. [Error Handling](#7-error-handling)
+8. [Field Specifications](#8-field-specifications)
+9. [Compliance Requirements](#9-compliance-requirements)
 
 ---
 
@@ -160,7 +160,7 @@ message BatchStatus {
 
   // [REQUIRED] Indicates whether processing succeeded or failed, and if failed,
   // what category of error occurred (e.g., invalid data, resource exhaustion,
-  // authentication failure). MUST be a valid StatusCode (see section 8.2).
+  // authentication failure). MUST be a valid StatusCode (see section 7.2).
   StatusCode status_code = 2;
 
   // [OPTIONAL] Human-readable error details. For OK status, this is typically
@@ -228,7 +228,7 @@ message BatchArrowRecords {
 An ArrowPayload encapsulates the serialized Arrow IPC data for a single table within a BAR. 
 Each payload is tagged with the Arrow Payload Type it represents and a schema identifier
 which is  scoped to the Stream and payload type indicating the Arrow Schema used for the 
-contents. See Section 7 for more details on the schema_id and the various mechanics surrounding
+contents. See Section 6 for more details on the schema_id and the various mechanics surrounding
 schema management.
 
 ```protobuf
@@ -285,7 +285,7 @@ Implementation specifics are discussed in later sections // NEEDS TRIAGE.
 
 ---
 
-## 5. Payload Specifications
+## 4. Payload Specifications
 
 This section defines the complete Arrow schema for all OTAP payload types, organized by signal category.
 
@@ -295,15 +295,15 @@ This section defines the complete Arrow schema for all OTAP payload types, organ
 - **Alt Representations**: Alternative encodings allowed for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types). See also: [Dictionary Encoding](https://arrow.apache.org/docs/format/Columnar.html#dictionary-encoded-layout)
 - **Nullable**: Whether the field can contain null values
 - **Required**: Whether this field must be present in every record
-- **Id Encoding**: The encoding method used for id columns (see [Section 6.5](#65-transport-optimized-encodings))
-- **Metadata**: Arrow field-level metadata keys that MAY be present (see [Section 6.5.4](#654-field-metadata))
+- **Id Encoding**: The encoding method used for id columns (see [Section 5.5](#65-transport-optimized-encodings))
+- **Metadata**: Arrow field-level metadata keys that MAY be present (see [Section 5.5.4](#654-field-metadata))
 - **Description**: Human-readable description of the field's purpose
 
 NOTE: Column names that contain a `.` character indicate the presence of a struct typed field. For
 example `resource.id` indicates a struct array column called `resource` with a field called `id`.
 The type information in the table is for the `id` field.
 
-### 5.1 Common Payloads
+### 4.1 Common Payloads
 
 #### RESOURCE_ATTRS / SCOPE_ATTRS
 
@@ -319,7 +319,7 @@ The type information in the table is for the `id` field.
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 5.2 Logs Payloads
+### 4.2 Logs Payloads
 
 #### LOGS
 
@@ -364,7 +364,7 @@ The type information in the table is for the `id` field.
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 5.3 Metrics Payloads
+### 4.3 Metrics Payloads
 
 #### UNIVARIATE_METRICS / MULTIVARIATE_METRICS
 
@@ -508,7 +508,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 5.4 Traces Payloads
+### 4.4 Traces Payloads
 
 #### SPANS
 
@@ -600,13 +600,13 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-#### 5.5.1 Allowed Dictionary Key Types
+#### 4.5.1 Allowed Dictionary Key Types
 
 Dictionary keys MUST use one of these unsigned integer types:
 - **UInt8**: For dictionaries with ≤256 unique values
 - **UInt16**: For dictionaries with ≤65,536 unique values
 
-### 5.6 Special Field Rules
+### 4.6 Special Field Rules
 
 #### Attribute Value Fields
 
@@ -630,7 +630,7 @@ For logs, the `body_type` field determines which `body_*` field is populated, si
 
 For exemplar tables, either `int_value` or `double_value` MUST be non-null (or both may be present with appropriate semantics).
 
-### 5.7 Field Metadata
+### 4.7 Field Metadata
 
 Fields MAY include metadata key-value pairs:
 
@@ -649,12 +649,12 @@ Fields MAY include metadata key-value pairs:
 
 ---
 
-## 6. Id Columns
+## 5. Id Columns
 
 This section defines more details related to identifier columns used to establish relationships 
 between payload types in the OTAP data model.
 
-### 6.1 Primary Keys and Foreign Keys
+### 5.1 Primary Keys and Foreign Keys
 
 All parent-child relationships in the OTAP data model follow a uniform convention:
 
@@ -667,9 +667,9 @@ All parent-child relationships in the OTAP data model follow a uniform conventio
 - Each LOG_ATTRS row belongs to exactly one LOGS row via this foreign key
 
 Note: For documented table relationships see Section 2.1.
-Note: Resource and Scope entities deviate slightly from these conventions, see section 6.3 
+Note: Resource and Scope entities deviate slightly from these conventions, see section 5.3 
 
-### 6.2 Id Column Types
+### 5.2 Id Column Types
 
 Id columns use unsigned integer types sized according to expected cardinality. `id` columns are 
 either u32 or u16 and they define the primary keys of the parent table. As such they are always 
@@ -678,7 +678,7 @@ unique within a Record Batch and do not benefit from dictionary encoding, so the
 On the other hand, child `parent_id` columns referencing u32 `id` columns of their parents may use
 dictionary encoding with either `u8` or `u16` keys to save space.
 
-### 6.3 Resource and Scope Identifiers
+### 5.3 Resource and Scope Identifiers
 
 Resource and scope entities are **not** represented as separate payload types. Instead, they are embedded as struct fields within root tables (LOGS, SPANS, METRICS).
 
@@ -699,7 +699,7 @@ are `resource.id` and `scope.id` respectively rather than just `id`.
 3. Unlike other identifiers, `resource.id` and `scope.id` have no single table that "owns" them and defines the valid
 set of Ids.
 
-### 6.5 Transport Optimized Encodings
+### 5.5 Transport Optimized Encodings
 
 OTAP defines specialized column encodings that transform `id` and `parent_id` columns before serialization to 
 maximize compression efficiency during network transport.
@@ -716,9 +716,9 @@ Id columns, including `id`, `parent_id`, `resource.id`, and `scope.id`, are by d
 one of the delta encoding techniques listed below unless their field metadata has `"encoding": "plain"`
 explicitly set.
 
-Which fields use which encodings are listed in section 6.5.6
+Which fields use which encodings are listed in section 5.5.6
 
-#### 6.5.1 PLAIN Encoding
+#### 5.5.1 PLAIN Encoding
 
 **Encoding identifier**: `"plain"`
 
@@ -726,7 +726,7 @@ No transformation applied. Values are stored as-is in the Arrow array.
 
 **Applicability**: All id columns
 
-#### 6.5.2 DELTA Encoding
+#### 5.5.2 DELTA Encoding
 
 **Encoding identifier**: `"delta"`
 
@@ -735,7 +735,7 @@ sorted and contain sequential or near-sequential values.
 
 **Applicability**: Primary `id` columns
 
-#### 6.5.3 QUASI-DELTA Encoding
+#### 5.5.3 QUASI-DELTA Encoding
 
 **Encoding identifier**: `"quasidelta"`
 
@@ -752,7 +752,7 @@ Similar, but matching based on specified column values (e.g., span event `name` 
 - Span event/link `parent_id` columns
 - Exemplar `parent_id` columns
 
-#### 6.5.4 Field Metadata
+#### 5.5.4 Field Metadata
 
 Producers SHOULD include field metadata to indicate encoding: // NEEDS_TRIAGE
 
@@ -765,10 +765,10 @@ Producers SHOULD include field metadata to indicate encoding: // NEEDS_TRIAGE
 **Requirements**:
 - If metadata is present, `encoding` field SHOULD indicate the applied encoding
 - If metadata is absent, consumers SHOULD assume the column is encoded according to the tables
-in section 5.
+in section 4.
 - Consumers MUST handle both presence and absence of metadata
 
-#### 6.5.5 Schema Metadata
+#### 5.5.5 Schema Metadata
 
 Producers MAY include schema-level metadata: // NEEDS_TRIAGE: We have sort columns defined in the code, but no references?
 
@@ -780,7 +780,7 @@ Producers MAY include schema-level metadata: // NEEDS_TRIAGE: We have sort colum
 
 This indicates the columns by which the record batch has been sorted, which is useful context for understanding applied encodings.
 
-#### 6.5.6 Encoding Application by Payload Type
+#### 5.5.6 Encoding Application by Payload Type
 
 The following table specifies encodings per payload type:
 
@@ -824,7 +824,7 @@ The following table specifies encodings per payload type:
 
 ---
 
-## 7. Schema Management
+## 6. Schema Management
 
 One of OTAP's key features is dynamic schema management. Unlike protocols with fixed schemas that 
 must be known a priori by all parties, OTAP allows schemas to evolve during a streams lifetime.
@@ -839,7 +839,7 @@ the order of the fields; and to some degree the type of some fields (such as Dic
 according to the OTAP spec, but once these are negotiated at the start of an Arrow IPC stream, they
 cannot be changed later without stopping and recreating a stream.
 
-### 7.1 Schema Resets
+### 6.1 Schema Resets
 
 The ability to negotiate a new schema by starting a new IPC Stream over the same gRPC connection,
 is a feature of OTAP known as a Schema Reset. This is useful when a client wants to change anything
@@ -856,7 +856,7 @@ This means starting with a Schema message and any required dictionaries.
 The server MUST detect the change and reset any IPC reader state and assume that the `record` in that message
 contains the required messages to start a new Stream.
 
-### 7.1 Schema Identification
+### 6.1 Schema Identification
 
 Each Arrow schema for a given payload type is identified by a unique `schema_id` string. This identifier serves 
 as a contract between producer and consumer: "the data in this payload conforms to the schema identified by this ID."
@@ -864,7 +864,7 @@ as a contract between producer and consumer: "the data in this payload conforms 
 **Requirements**:
 - Schema IDs MUST be unique within a payload type for a given stream
 
-### 7.2 Schema ID Generation 
+### 6.2 Schema ID Generation 
 
 **Recommended algorithm**: // NEEDS_TRIAGE: Should this be some kind of appendix or implementation detail thing?
 
@@ -879,14 +879,14 @@ as a contract between producer and consumer: "the data in this payload conforms 
 
 **Note**: Metadata-only changes (e.g., updating `encoding` metadata) do NOT require schema reset.
 
-### 7.5 Schema Compatibility
+### 6.5 Schema Compatibility
 
 OTAP does NOT require forward or backward schema compatibility. Consumers need only handle the specific schema
-identified by schema_id. All schemas MUST conform to the specification in section 5.
+identified by schema_id. All schemas MUST conform to the specification in section 4.
 
 ---
 
-## 8. Error Handling
+## 7. Error Handling
 
 Robust error handling is critical for reliable telemetry collection. OTAP uses gRPC status codes to signal different 
 error conditions, allowing clients to distinguish between transient failures (that should be retried) and permanent 
@@ -900,9 +900,9 @@ Error handling in OTAP operates at two levels:
 Understanding which errors are retryable versus non-retryable is essential for implementing correct client behavior.
 Retrying non-retryable errors wastes resources, while failing to retry retryable errors can lead to data loss.
 
-### 8.1 Error Categories
+### 7.1 Error Categories
 
-#### 8.1.1 Retryable Errors
+#### 7.1.1 Retryable Errors
 
 Errors that MAY resolve with retry:
 
@@ -914,7 +914,7 @@ Errors that MAY resolve with retry:
 
 **Client behavior**: Clients SHOULD implement exponential backoff retry for these errors.
 
-#### 8.1.2 Non-Retryable Errors
+#### 7.1.2 Non-Retryable Errors
 
 Errors indicating client problems or invalid data:
 
@@ -925,7 +925,7 @@ Errors indicating client problems or invalid data:
 
 **Client behavior**: Clients SHOULD NOT retry these errors without corrective action.
 
-### 8.2 Status Codes
+### 7.2 Status Codes
 
 ```protobuf
 enum StatusCode {
@@ -944,9 +944,9 @@ enum StatusCode {
 
 These match gRPC status codes for consistency.
 
-### 8.3 Error Handling Rules 
+### 7.3 Error Handling Rules 
 
-#### 8.3.1 Schema Errors
+#### 7.3.1 Schema Errors
 
 // NEEDS_TRIAGE: We probably need to define behaviors for all of these
 
@@ -960,7 +960,7 @@ These match gRPC status codes for consistency.
 - **Status**: INVALID_ARGUMENT
 - **Action**: Client MUST ensure consistency between schema and data
 
-#### 8.3.2 Data Errors
+#### 7.3.2 Data Errors
 
 **Dictionary key overflow**:
 - **Cause**: Dictionary key exceeds maximum for key type
@@ -980,7 +980,7 @@ These match gRPC status codes for consistency.
 - **Cause**: Attribute `type` field has unknown value
 - **Action**: Server SHOULD skip unknown attribute types and continue processing
 
-#### 8.3.3 Resource Errors
+#### 7.3.3 Resource Errors
 
 **Memory limit exceeded**:
 - **Cause**: Server memory allocator limit reached
@@ -992,7 +992,7 @@ These match gRPC status codes for consistency.
 - **Status**: INVALID_ARGUMENT
 - **Action**: Client MUST send non-empty BARs
 
-#### 8.3.4 Stream Errors
+#### 7.3.4 Stream Errors
 
 **Schema reset without schema message**:
 - **Cause**: New schema_id used without sending Schema message first
@@ -1009,7 +1009,7 @@ These match gRPC status codes for consistency.
 - **Status**: INVALID_ARGUMENT
 - **Action**: Client MUST send DictionaryBatch before referencing in RecordBatch
 
-### 8.4 Partial Failure Handling
+### 7.4 Partial Failure Handling
 
 If a BatchArrowRecords contains multiple payloads and one fails:
 
@@ -1026,7 +1026,7 @@ If a BatchArrowRecords contains multiple payloads and one fails:
 
 ---
 
-## 9. Field Specifications
+## 8. Field Specifications
 
 This section provides detailed semantics for fields in OTAP schemas, including which fields are required versus 
 optional, special handling rules for attribute and body fields, and field metadata conventions.
@@ -1035,12 +1035,12 @@ Understanding field requirements is important for both producers (to ensure they
 (to know which fields they can rely on being present). OTAP inherits most field semantics from OTLP but adapts them 
 to the columnar model.
 
-### 9.1 Required vs Optional Fields
+### 8.1 Required vs Optional Fields
 ---
 
-## 10. Compliance Requirements
+## 9. Compliance Requirements
 
-### 10.1 Producer (Client) Requirements
+### 9.1 Producer (Client) Requirements
 
 A compliant OTAP producer MUST:
 
@@ -1070,13 +1070,13 @@ A compliant OTAP producer MUST:
 
 A compliant producer SHOULD:
 
-1. Apply transport optimized encodings per section 6.5.6
+1. Apply transport optimized encodings per section 5.5.6
 2. Use dictionary encoding for high-cardinality string fields
 3. Sort record batches within BARs for optimal compression
 4. Implement exponential backoff for retryable errors
 5. Handle dictionary overflow via schema reset
 
-### 10.2 Consumer (Server) Requirements
+### 9.2 Consumer (Server) Requirements
 
 A compliant OTAP consumer MUST:
 
@@ -1116,17 +1116,10 @@ A compliant consumer SHOULD:
 3. Log warnings for unexpected but non-fatal conditions
 4. Support all specified dictionary key types (UInt8, UInt16, UInt32)
 
-### 10.3 Interoperability
+### 9.3 Interoperability
 
-**Cross-implementation compatibility**:
-- Compliant producers and consumers from different implementations MUST interoperate
-- Schema IDs MAY differ between implementations (determinism not required across implementations)
-- Transport optimizations are optional; implementations MUST support both optimized and plain data
-
-**Version compatibility**:
-- This specification is version 1.0
-- Future versions may add new payload types or fields
-- Implementations SHOULD ignore unknown payload types and fields for forward compatibility
+// TODO: Forward/backward compatibility
+// TODO: Capability negotiation?
 
 ---
 
