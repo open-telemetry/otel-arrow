@@ -271,7 +271,7 @@ pipeline, the engine, and the pipeline components.
 
 A number of example configurations are listed in
 [`./configs`](./configs). These are deserialized into the
-`otap_df_config::engine::EngineConfig` structs, defined in this crate.
+`otap_df_config::engine::OtelDataflowSpec` structs, defined in this crate.
 
 ### Channel
 

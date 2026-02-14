@@ -105,7 +105,7 @@ fn default_bind_address() -> String {
 }
 
 impl OtelDataflowSpec {
-    /// Creates a new `EngineConfig` with the given JSON string.
+    /// Creates a new [`OtelDataflowSpec`] with the given JSON string.
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let config: OtelDataflowSpec =
             serde_json::from_str(json).map_err(|e| Error::DeserializationError {
@@ -117,7 +117,7 @@ impl OtelDataflowSpec {
         Ok(config)
     }
 
-    /// Creates a new `EngineConfig` with the given YAML string.
+    /// Creates a new [`OtelDataflowSpec`] with the given YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, Error> {
         let config: OtelDataflowSpec =
             serde_yaml::from_str(yaml).map_err(|e| Error::DeserializationError {
@@ -175,7 +175,7 @@ impl OtelDataflowSpec {
         }
     }
 
-    /// Creates a new `EngineConfig` from a single pipeline definition.
+    /// Creates a new [`OtelDataflowSpec`] from a single pipeline definition.
     pub fn from_pipeline(
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
