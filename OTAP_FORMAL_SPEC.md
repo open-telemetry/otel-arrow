@@ -601,6 +601,47 @@ Dictionary keys MUST use one of these unsigned integer types:
 - **UInt8**: For dictionaries with ≤256 unique values
 - **UInt16**: For dictionaries with ≤65,536 unique values
 
+### 5.6 Special Field Rules
+
+#### Attribute Value Fields
+
+For attribute tables, exactly ONE of the value fields (`str`, `int`, `double`, `bool`, `bytes`, `ser`) MUST be non-null, corresponding to the `type` field:
+
+| type value | Active field |
+|------------|--------------|
+| 1 | str |
+| 2 | bool |
+| 3 | int |
+| 4 | double |
+| 5 | bytes |
+| 6 | ser (Array encoded as CBOR) |
+| 7 | ser (Map encoded as CBOR) |
+
+#### Body Fields (Logs)
+
+For logs, the `body_type` field determines which `body_*` field is populated, similar to attribute fields.
+
+#### Exemplar Value Fields
+
+For exemplar tables, either `int_value` or `double_value` MUST be non-null (or both may be present with appropriate semantics).
+
+### 5.7 Field Metadata
+
+Fields MAY include metadata key-value pairs:
+
+**Standard metadata keys**:
+
+| Key | Values | Meaning |
+|-----|--------|---------|
+| `encoding` | `"plain"`, `"delta"`, `"quasidelta"` | Transport encoding applied |
+
+**Custom metadata**:
+- Implementations MAY define custom metadata keys
+- Unknown metadata keys SHOULD be ignored by consumers
+
+
+
+
 ---
 
 ## 6. Id Columns
@@ -625,9 +666,9 @@ Note: Resource and Scope entities deviate slightly from these conventions, see s
 
 ### 6.2 Id Column Types
 
-Id columns use unsigned integer types sized according to expected cardinality. `id` columns are typically
-either u32 or u16 and must be plainly encoded as they define the primary keys of the parent table. As such
-they are always unique within a Record Batch and do not benefit from dictionary encoding.
+Id columns use unsigned integer types sized according to expected cardinality. `id` columns are 
+either u32 or u16 and they define the primary keys of the parent table. As such they are always 
+unique within a Record Batch and do not benefit from dictionary encoding, so they must be plainly encoded.
 
 On the other hand, child `parent_id` columns referencing u32 `id` columns of their parents may use
 dictionary encoding with either `u8` or `u16` keys to save space.
@@ -649,45 +690,28 @@ characteristics:
 1. There is a many-to-many relationship relationship between RESOURCE_ATTRS/SCOPE_ATTRS tables and their
 parent payload types
 2. The corresponding column in the LOGS/METRICS/SPANS tables for RESOURCE_ATTRS.parent_id and SCOPE_ATTRS.parent_id
-are `resource.id` and `scope.id` respectively rather than just `id`. // NEEDS_TRIAGE: Should we change the names of these? Yes we need to define one more schema, but it's a little confusing.
+are `resource.id` and `scope.id` respectively rather than just `id`.
 3. Unlike other identifiers, `resource.id` and `scope.id` have no single table that "owns" them and defines the valid
 set of Ids.
 
-**Example**: Consider a BAR containing 1000 logs from 3 services (resources):
-- LOGS table: 1000 rows with `resource.id` values of 0, 1, or 2
-- RESOURCE_ATTRS table: Rows with `parent_id` of 0, 1, or 2 defining attributes for each resource
-- No separate RESOURCE table exists; the resource is defined by the combination of `resource.id` and its associated RESOURCE_ATTRS rows
-
-**Design rationale**: Resources and scopes have minimal intrinsic properties (just schema_url, name, version, dropped_attributes_count) which are duplicated in root tables. Creating separate payload types would add complexity for little benefit, so OTAP embeds these fields directly in root tables.
-
-### 6.4 Relationship DAG
-
-The `id` and `parent_id` columns form a Rooted Directed Acyclic Graph (DAG) for each signal:
-
-- **Root**: The root payload type (LOGS, SPANS, or METRICS) with `id` but no `parent_id`
-- **Edges**: Each `parent_id` column creates an edge to the parent table's `id`
-- **Leaf nodes**: Attribute tables with `parent_id` but no `id`
-- **Intermediate nodes**: Tables with both `id` (primary key) and `parent_id` (foreign key)
-
-This structure ensures:
-- No circular references
-- Clear parent-child hierarchies
-- Efficient foreign key resolution
-
-See Section 2.1 for the complete DAG structure of each signal type.
-
 ### 6.5 Transport Optimized Encodings
 
-Beyond Arrow's built-in compression features, OTAP defines specialized column encodings that transform ID and parent_id columns before serialization to maximize compression efficiency during network transport. These transformations exploit patterns in telemetry data, such as sequential IDs and clustered foreign keys.
+OTAP defines specialized column encodings that transform `id` and `parent_id` columns before serialization to 
+maximize compression efficiency during network transport.
 
-The key insight is that id columns often exhibit strong sequential patterns:
+Id columns often exhibit strong sequential patterns:
 - Primary IDs are often sequential (0, 1, 2, 3...)
 - Foreign keys (`parent_id`) are often clustered (many attributes reference the same parent item)
 - When sorted by `parent_id`, related records appear together
 
-By encoding these patterns explicitly (e.g., storing deltas between values rather than absolute values), we create long runs of small integers and repeated values that compress extremely well with standard algorithms like LZ4 or Zstandard.
+By encoding these patterns explicitly (e.g., storing deltas between values rather than absolute values),
+we create long runs of small integers and repeated values that compress extremely well.
 
-**Important**: These encodings apply **only to id columns** (`id`, `parent_id`, `resource.id`, `scope.id`). Other columns use plain encoding or dictionary encoding as appropriate.
+Id columns, including `id`, `parent_id`, `resource.id`, and `scope.id`, are by default encoded using
+one of the delta encoding techniques listed below unless their field metadata has `"encoding": "plain"`
+explicitly set.
+
+Which fields use which encodings are listed in section 6.5.6
 
 #### 6.5.1 PLAIN Encoding
 
@@ -697,43 +721,21 @@ No transformation applied. Values are stored as-is in the Arrow array.
 
 **Applicability**: All id columns
 
-**When to use**: Default encoding when no optimization is beneficial or when concatenating BARs.
-
 #### 6.5.2 DELTA Encoding
 
 **Encoding identifier**: `"delta"`
 
-Stores the difference between consecutive values instead of absolute values. Used for columns that are sorted and contain sequential or near-sequential values.
+Stores the difference between consecutive values instead of absolute values. Used for columns that are 
+sorted and contain sequential or near-sequential values.
 
-**Algorithm**:
-```
-encoded[0] = original[0]
-encoded[i] = original[i] - original[i-1]  (for i > 0)
-```
-
-**Applicability**: Unsigned integer columns that are sorted
-
-**Typical use**: Primary `id` columns and `parent_id` columns in data point tables when sorted by parent
-
-**Requirements**:
-- Column MUST be sorted in ascending order
-- Column type MUST support the delta operation
-- For UInt types, deltas are stored as the same UInt type (no negatives)
+**Applicability**: Primary `id` columns
 
 #### 6.5.3 QUASI-DELTA Encoding
 
 **Encoding identifier**: `"quasidelta"`
 
-A hybrid encoding that applies delta encoding selectively. Parent IDs are delta-encoded only within "runs" of rows that share the same attribute key/value or other identifying columns.
-
-**Algorithm for Attributes**:
-```
-For each row i:
-  If row i matches row i-1 on (type, key, str, int, double, bool, bytes):
-    encoded[i] = parent_id[i] - parent_id[i-1]
-  Else:
-    encoded[i] = parent_id[i]  (absolute value)
-```
+A hybrid encoding that applies delta encoding selectively. Parent IDs are delta-encoded only within 
+"runs" of rows that share the same attribute key/value or other identifying columns.
 
 **Algorithm for Columnar Quasi-Delta**:
 Similar, but matching based on specified column values (e.g., span event `name` field, exemplar `int_value`/`double_value`).
@@ -747,7 +749,7 @@ Similar, but matching based on specified column values (e.g., span event `name` 
 
 #### 6.5.4 Field Metadata
 
-Producers SHOULD include field metadata to indicate encoding:
+Producers SHOULD include field metadata to indicate encoding: // NEEDS_TRIAGE
 
 ```json
 {
@@ -757,14 +759,13 @@ Producers SHOULD include field metadata to indicate encoding:
 
 **Requirements**:
 - If metadata is present, `encoding` field SHOULD indicate the applied encoding
-- If metadata is absent, consumers SHOULD assume the column is encoded (for backward compatibility with implementations that don't write metadata)
+- If metadata is absent, consumers SHOULD assume the column is encoded according to the tables
+in section 5.
 - Consumers MUST handle both presence and absence of metadata
-
-**Note**: The Rust implementation includes this metadata; the Go implementation may not.
 
 #### 6.5.5 Schema Metadata
 
-Producers MAY include schema-level metadata:
+Producers MAY include schema-level metadata: // NEEDS_TRIAGE: We have sort columns defined in the code, but no references?
 
 ```json
 {
@@ -776,7 +777,7 @@ This indicates the columns by which the record batch has been sorted, which is u
 
 #### 6.5.6 Encoding Application by Payload Type
 
-The following table specifies recommended encodings per payload type:
+The following table specifies encodings per payload type:
 
 | Payload Type | Column | Encoding | Data Type |
 |--------------|--------|----------|-----------|
@@ -816,41 +817,51 @@ The following table specifies recommended encodings per payload type:
 
 **Note**: "DELTA (remapped)" means the producer creates new sequential IDs and remaps parent references. This is necessary because the original IDs may not be sorted.
 
-#### 6.5.7 Decoding Requirements
-
-Consumers MUST:
-1. Detect encoding type from field metadata or use heuristics if absent
-2. Reverse the encoding to reconstruct original values before processing
-3. Handle both encoded and plain data transparently
-
-#### 6.5.8 Default Encoding
-
-**Recommended defaults**:
-- If transport optimization is not enabled: Use **PLAIN** encoding for all id columns
-- If transport optimization is enabled: Use encodings per section 6.5.6
-
 ---
 
 ## 7. Schema Management
 
-One of OTAP's key features is dynamic schema management. Unlike protocols with fixed schemas (like OTLP's protobuf definitions), OTAP allows schemas to evolve during a connection's lifetime. This flexibility is essential for handling events like dictionary overflow, where a UInt16 dictionary exceeds 65,536 unique values and must be upgraded to UInt32.
+One of OTAP's key features is dynamic schema management. Unlike protocols with fixed schemas that 
+must be known a priori by all parties, OTAP allows schemas to evolve during a streams lifetime.
 
-Schema management in OTAP is coordinated through schema identifiers. Each unique schema configuration receives a unique ID, and consumers track which schemas they've seen. When a new schema_id appears, consumers know to reset their Arrow IPC readers and expect a new schema definition.
+Arrow IPC Streams provide negotiate schemas at the time the stream is established. Schemas define
+
+1. The field names and types of a RecordBatch
+2. The order in which the fields appear in the RecordBatch
+
+Certain details are flexible like the subset of fields for each payload type that are used;
+the order of the fields; and to some degree the type of some fields (such as Dictionary(u8, u32) vs u32),
+according to the OTAP spec, but once these are negotiated at the start of an Arrow IPC stream, they
+cannot be changed later without stopping and recreating a stream.
+
+### 7.1 Schema Resets
+
+The ability to negotiate a new schema by starting a new IPC Stream over the same gRPC connection,
+is a feature of OTAP known as a Schema Reset. This is useful when a client wants to change anything
+about the Schema of a payload, such as by upgrading the key size of a dictionary from u8 to u16 after detecting
+a dictionary overflow.
+
+Schema Resets are coordinated via a change in the `schema_id` field of ArrowPayload for a Payload Type.
+Servers MUST track the `schema_id` for each Payload Type within a Stream. 
+
+If the client changes the `schema_id` for a Payload Type, the client MUST reset any IPC writer state and 
+include the appropriate start of stream messages in the `record` field ahead of any more Record Batch messages.
+This means starting with a Schema message and any required dictionaries.
+
+The server MUST detect the change and reset any IPC reader state and assume that the `record` in that message
+contains the required messages to start a new Stream.
 
 ### 7.1 Schema Identification
 
-Each Arrow schema for a given payload type is identified by a unique `schema_id` string. This identifier serves as a contract between producer and consumer: "the data in this payload conforms to the schema identified by this ID."
-
-The schema_id allows both parties to recognize when a schema has changed without explicitly signaling "reset your state." If the consumer sees a schema_id it hasn't encountered before (for a given payload type), it knows the schema has changed.
+Each Arrow schema for a given payload type is identified by a unique `schema_id` string. This identifier serves 
+as a contract between producer and consumer: "the data in this payload conforms to the schema identified by this ID."
 
 **Requirements**:
-- Schema IDs MUST be unique within a payload type
-- Schema IDs MUST be deterministic: same schema structure produces same ID
-- Schema IDs MAY be any string format, but SHOULD be compact
+- Schema IDs MUST be unique within a payload type for a given stream
 
-### 7.2 Schema ID Generation
+### 7.2 Schema ID Generation 
 
-**Recommended algorithm**:
+**Recommended algorithm**: // NEEDS_TRIAGE: Should this be some kind of appendix or implementation detail thing?
 
 1. Sort fields by name at each nesting level
 2. Generate compact representation:
@@ -861,67 +872,28 @@ The schema_id allows both parties to recognize when a schema has changed without
 
 **Example**: `id:U16,parent_id:U16,key:Str,type:U8,str:Dic<U16,Str>`
 
-**Note**: Implementations MAY use alternative deterministic algorithms (e.g., hash-based), but MUST ensure:
-- Identical schemas produce identical IDs
-- Different schemas produce different IDs with high probability
-
-### 7.3 Schema Reset Triggers
-
-A schema reset occurs when the producer needs to change the structure, types, or encoding of a table's schema. This is communicated by changing the schema_id and sending a new Schema message. Schema resets are necessary in several scenarios, all related to the schema no longer being adequate for the data being sent.
-
-Producers MUST perform a schema reset (change schema_id) when:
-
-1. **Dictionary overflow**: Dictionary key type is too small for cardinality
-   - Example: UInt16 dictionary exceeds 65,536 unique values
-   - Solution: Upgrade to UInt32 dictionary encoding
-
-2. **Field addition/removal**: Schema structure changes
-   - Example: Adding a new optional field
-   - Solution: Create new schema with updated field list
-
-3. **Type changes**: Field data type changes
-   - Example: Changing from UInt16 to UInt32 for an ID field
-   - Solution: Create new schema with updated type
-
-4. **Encoding changes**: Dictionary encoding added or removed for a field
-   - Example: Converting a plain string field to dictionary-encoded
-   - Solution: Create new schema reflecting the encoding change
-
 **Note**: Metadata-only changes (e.g., updating `encoding` metadata) do NOT require schema reset.
-
-### 7.4 Schema Reset Procedure
-
-When performing a schema reset:
-
-1. **Determine new schema**: Create Arrow schema with necessary changes
-2. **Generate new schema_id**: Compute unique identifier for new schema
-3. **Send Schema message**: Include Schema message in next ArrowPayload with new schema_id
-4. **Initialize dictionaries**: Send initial DictionaryBatch messages if needed
-5. **Continue transmission**: Send RecordBatch messages using new schema
-
-**Consumer behavior**:
-- Upon receiving a new schema_id for a payload type, consumers MUST:
-  1. Close any existing Arrow IPC readers for that payload type
-  2. Discard dictionary state for old schema
-  3. Create new Arrow IPC reader for the new schema
-  4. Initialize new dictionary state as DictionaryBatch messages arrive
 
 ### 7.5 Schema Compatibility
 
-OTAP does NOT require forward or backward schema compatibility. Consumers need only handle the specific schema identified by schema_id.
+OTAP does NOT require forward or backward schema compatibility. Consumers need only handle the specific schema
+identified by schema_id. All schemas MUST conform to the specification in section 5.
 
 ---
 
 ## 8. Error Handling
 
-Robust error handling is critical for reliable telemetry collection. OTAP uses gRPC status codes to signal different error conditions, allowing clients to distinguish between transient failures (that should be retried) and permanent failures (that indicate bugs or misconfigurations).
+Robust error handling is critical for reliable telemetry collection. OTAP uses gRPC status codes to signal different 
+error conditions, allowing clients to distinguish between transient failures (that should be retried) and permanent 
+failures (that indicate bugs or misconfigurations).
 
 Error handling in OTAP operates at two levels:
 
 1. **BAR-level errors**: Reported via BatchStatus messages with non-OK status codes
 2. **Stream-level errors**: Reported by closing the gRPC stream with an error status
 
-Understanding which errors are retryable versus non-retryable is essential for implementing correct client behavior. Retrying non-retryable errors wastes resources, while failing to retry retryable errors can lead to data loss.
+Understanding which errors are retryable versus non-retryable is essential for implementing correct client behavior.
+Retrying non-retryable errors wastes resources, while failing to retry retryable errors can lead to data loss.
 
 ### 8.1 Error Categories
 
@@ -967,9 +939,11 @@ enum StatusCode {
 
 These match gRPC status codes for consistency.
 
-### 8.3 Error Handling Rules
+### 8.3 Error Handling Rules 
 
 #### 8.3.1 Schema Errors
+
+// NEEDS_TRIAGE: We probably need to define behaviors for all of these
 
 **Invalid schema**:
 - **Cause**: Schema message is malformed or uses unsupported types
@@ -1049,104 +1023,17 @@ If a BatchArrowRecords contains multiple payloads and one fails:
 
 ## 9. Field Specifications
 
-This section provides detailed semantics for fields in OTAP schemas, including which fields are required versus optional, special handling rules for attribute and body fields, and field metadata conventions.
+This section provides detailed semantics for fields in OTAP schemas, including which fields are required versus 
+optional, special handling rules for attribute and body fields, and field metadata conventions.
 
-Understanding field requirements is important for both producers (to ensure they send valid data) and consumers (to know which fields they can rely on being present). OTAP inherits most field semantics from OTLP but adapts them to the columnar model.
+Understanding field requirements is important for both producers (to ensure they send valid data) and consumers 
+(to know which fields they can rely on being present). OTAP inherits most field semantics from OTLP but adapts them 
+to the columnar model.
 
 ### 9.1 Required vs Optional Fields
-
-Fields in OTAP schemas are categorized based on whether they must always have a value. Note that Arrow's type system represents nullable and non-nullable separately from semantic requirements—a field may be marked nullable in the Arrow schema for technical reasons but be semantically required to have a value.
-
-Fields in OTAP schemas are categorized as:
-
-#### 9.1.1 Required (Non-Nullable) Fields
-
-These fields MUST always have a value (though Arrow arrays may have nulls for compatibility):
-
-**All Signals**:
-- Primary table `id` (though marked nullable in schema, semantically required)
-- Attribute `parent_id`
-- Attribute `key`
-- Attribute `type`
-
-**Logs**:
-- `time_unix_nano`
-- `observed_time_unix_nano`
-- `body_type`
-- `body_str` (even if empty string)
-
-**Metrics**:
-- Primary table `id`
-- `metric_type`
-- `name`
-- Data point `id`
-- Data point `parent_id`
-- Data point timestamp fields
-
-**Traces**:
-- `start_time_unix_nano`
-- `duration_time_unix_nano`
-- `trace_id`
-- `span_id`
-- `name`
-
-#### 9.1.2 Optional (Nullable) Fields
-
-These fields MAY be null/absent:
-
-- Most metadata fields: `description`, `unit`, `schema_url`
-- Foreign keys: `resource.id`, `scope.id` (when not present)
-- Trace correlation: `trace_id`, `span_id` in logs
-- All attribute value fields except the one matching `type`
-- Counter fields: `dropped_attributes_count`, `flags`
-
-**Semantics**: Optional fields that are null/absent indicate the value is not present or not applicable.
-
-### 9.2 Special Field Rules
-
-#### 9.2.1 Attribute Value Fields
-
-For attribute tables, exactly ONE of the value fields (`str`, `int`, `double`, `bool`, `bytes`, `ser`) MUST be non-null, corresponding to the `type` field:
-
-| type value | Active field |
-|------------|--------------|
-| 1 | str |
-| 2 | bool |
-| 3 | int |
-| 4 | double |
-| 5 | bytes |
-| 6 | ser (Array encoded as CBOR) |
-| 7 | ser (Map encoded as CBOR) |
-
-#### 9.2.2 Body Fields (Logs)
-
-For logs, the `body_type` field determines which `body_*` field is populated, similar to attribute fields.
-
-#### 9.2.3 Exemplar Value Fields
-
-For exemplar tables, either `int_value` or `double_value` MUST be non-null (or both may be present with appropriate semantics).
-
-### 9.3 Field Metadata
-
-Fields MAY include metadata key-value pairs:
-
-**Standard metadata keys**:
-
-| Key | Values | Meaning |
-|-----|--------|---------|
-| `encoding` | `"plain"`, `"delta"`, `"quasidelta"` | Transport encoding applied |
-
-**Custom metadata**:
-- Implementations MAY define custom metadata keys
-- Unknown metadata keys SHOULD be ignored by consumers
-
 ---
 
 ## 10. Compliance Requirements
-
-This section defines what it means to be a compliant OTAP producer or consumer. Compliance ensures interoperability—any compliant producer should be able to communicate with any compliant consumer, regardless of implementation language or vendor.
-
-Requirements are divided into MUST (mandatory for compliance) and SHOULD (strongly recommended but not strictly required). Following the SHOULD requirements improves efficiency, debuggability, and user experience, but violating them doesn't break protocol correctness.
 
 ### 10.1 Producer (Client) Requirements
 
@@ -1341,25 +1228,6 @@ BatchArrowRecords {
 3. **Transport encoding**: Most effective when data has strong sequential patterns
 4. **Memory pooling**: Reuse Arrow allocators and buffers across BARs
 
-### C.2 Debugging
-
-1. **Schema ID mismatches**: Compare schema structures field-by-field
-2. **Dictionary errors**: Verify DictionaryBatch sent before use
-3. **Encoding issues**: Check field metadata and verify decoding logic
-4. **Foreign key violations**: Validate parent_id references exist in parent table
-
-### C.3 Testing
-
-Implementations SHOULD test:
-
-1. Schema reset scenarios (dictionary overflow, type changes)
-2. Delta and quasi-delta encoding correctness
-3. Empty table handling (omitted payloads)
-4. Unknown field handling (forward compatibility)
-5. Error code correctness (retryable vs non-retryable)
-6. Memory limit enforcement
-7. Round-trip fidelity (encode/decode produces identical data)
-
 ---
 
 ## Appendix D: Changes from OTLP
@@ -1367,7 +1235,6 @@ Implementations SHOULD test:
 Major differences from OTLP:
 
 1. **Format**: Columnar (Arrow) vs row-based (Protobuf)
-2. **Compression**: Built-in Arrow compression vs external compression
 3. **Schema evolution**: Dynamic schemas with schema_id vs fixed protobuf schema
 4. **Dictionaries**: Stateful dictionary encoding vs no dictionary support
 5. **Normalization**: Related tables vs nested messages
@@ -1377,16 +1244,13 @@ Major differences from OTLP:
 
 ## Appendix E: Load Balancing
 
-OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges that do not arise with stateless unary RPCs. Because gRPC multiplexes streams over a single HTTP/2 connection, L4 (TCP-level) load balancers distribute work at connection granularity, not per-stream. Combined with kernel `SO_REUSEPORT` hashing, too few client connections can pin traffic to a single backend core.
+OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges that do not arise with stateless unary RPCs. 
+Because gRPC multiplexes streams over a single HTTP/2 connection, L4 (TCP-level) load balancers distribute work at connection
+granularity, not per-stream. Combined with kernel `SO_REUSEPORT` hashing, too few client connections can pin traffic to a 
+single backend core.
 
-Key considerations include:
-
-- **Connection fan-out**: Clients SHOULD open multiple gRPC channels (connections) to provide enough entropy for balanced distribution across backend listeners.
-- **Stream lifetime management**: Periodically recycling OTAP streams bounds dictionary growth and allows downstream rebalancers to redistribute load, at the cost of resending schemas and dictionaries.
-- **L7 load balancing**: An HTTP/2-aware proxy (e.g., Envoy, NGINX) can distribute individual gRPC streams across backends, which is the recommended approach for long-lived streaming RPCs.
-- **Server-side enforcement**: Servers SHOULD enforce memory and dictionary size limits regardless of client behavior.
-
-For a detailed treatment of challenges, solution techniques (client-side and server-side), and recommended baseline configurations, see [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
+For a detailed treatment of challenges, solution techniques (client-side and server-side), and recommended baseline configurations,
+see [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
 
 ---
 
@@ -1404,15 +1268,6 @@ For a detailed treatment of challenges, solution techniques (client-side and ser
 - **Apache Arrow IPC Format**: https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format
 - **Payload Type**: Also referred to as ArrowPayloadType, this is equivalent to a distinct table in the OTAP data model
 - **gRPC**: https://grpc.io/
-- **OTEP 0156**: Columnar Encoding proposal
-
----
-
-## Document History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2026-02-10 | Initial formal specification |
 
 ---
 
