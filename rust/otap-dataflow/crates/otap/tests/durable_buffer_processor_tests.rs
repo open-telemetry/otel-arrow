@@ -223,8 +223,8 @@ impl TestConfigBuilder {
             )
             .add_processor("durable_buffer", DURABLE_BUFFER_URN, Some(buffer_config))
             .add_exporter(exporter_name, exporter_urn, exporter_config)
-            .round_robin("fake_receiver", "out", ["durable_buffer"])
-            .round_robin("durable_buffer", "out", [exporter_name])
+            .one_of("fake_receiver", ["durable_buffer"])
+            .one_of("durable_buffer", [exporter_name])
             .build(
                 PipelineType::Otap,
                 pipeline_group_id.clone(),

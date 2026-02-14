@@ -5,13 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: traffic_generator:receiver
     config:
       data_source: static
       generation_strategy: pre_generated
@@ -22,7 +16,10 @@ nodes:
         trace_weight: 0
         log_weight: 30
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: otlp:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4317"
+
+connections:
+  - from: receiver
+    to: exporter

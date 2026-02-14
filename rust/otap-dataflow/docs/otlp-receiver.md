@@ -296,8 +296,7 @@ At least one protocol must be configured.
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:otlp:receiver" # or "otlp:receiver"
     config:
       protocols:
         grpc:
@@ -309,8 +308,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
+    type: "urn:otel:otlp:receiver"
     config:
       protocols:
         http:
@@ -322,8 +320,7 @@ nodes:
 ```yaml
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver" # or "otlp:receiver"
+    type: "urn:otel:otlp:receiver" # or "otlp:receiver"
     config:
       protocols:
         # ---------------------------------------------------------

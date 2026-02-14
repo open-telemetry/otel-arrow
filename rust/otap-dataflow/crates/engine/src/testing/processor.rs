@@ -118,9 +118,9 @@ impl ValidateContext {
     }
 }
 
-/// The name of the out_port that will be configured automatically on the [`ProcessorWrapper`] by
+/// The name of the output that will be configured automatically on the [`ProcessorWrapper`] by
 /// the [`TestRuntime`].
-pub const TEST_OUT_PORT_NAME: &str = "out";
+pub const TEST_OUT_PORT_NAME: &str = "default";
 
 /// A test runtime for simplifying processor tests.
 ///

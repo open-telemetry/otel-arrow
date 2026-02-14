@@ -202,13 +202,13 @@ pub enum Error {
     },
 
     /// The specified hyper-edge is invalid.
-    #[error("Invalid hyper-edge in node {source} with out port {out_port}: {error}")]
+    #[error("Invalid hyper-edge in node {source} with output port {output_port}: {error}")]
     InvalidHyperEdge {
         /// The name of the node that contains the invalid hyper-edge.
         r#source: NodeId,
 
-        /// The invalid out port.
-        out_port: PortName,
+        /// The invalid output port.
+        output_port: PortName,
 
         /// The reason why the hyper-edge is invalid.
         error: String,
@@ -356,6 +356,21 @@ pub enum Error {
         kind: Cow<'static, str>,
     },
 
+    /// Node wiring violates the node type contract.
+    #[error(
+        "Invalid wiring for node `{node}` output `{output}`: allowed at most {max_destinations} destination(s), found {actual_destinations:?}"
+    )]
+    InvalidNodeWiring {
+        /// The source node.
+        node: NodeName,
+        /// The source output port.
+        output: PortName,
+        /// Maximum allowed destination count for this node output.
+        max_destinations: usize,
+        /// Actual resolved destinations connected to this output.
+        actual_destinations: Vec<NodeName>,
+    },
+
     /// A task error that occurred during the execution of a join task.
     #[error("Join task error: {error}, cancelled: {is_canceled}, panic: {is_panic}")]
     JoinTaskError {
@@ -403,16 +418,16 @@ pub enum Error {
 
     /// No default output port is configured when multiple ports are connected.
     #[error(
-        "Ambiguous default out port for node {node}: multiple ports connected and no default configured"
+        "Ambiguous default output port for node {node}: multiple ports connected and no default configured"
     )]
-    NoDefaultOutPort {
+    NoDefaultOutputPort {
         /// The node that has no default port configured.
         node: NodeId,
     },
 
     /// An unknown output port was specified.
-    #[error("Unknown out port '{port}' for node {node}")]
-    UnknownOutPort {
+    #[error("Unknown output port '{port}' for node {node}")]
+    UnknownOutputPort {
         /// The node where the unknown port was referenced.
         node: NodeId,
         /// The name of the unknown port.
@@ -435,7 +450,7 @@ impl Error {
             Error::InvalidHyperEdge { .. } => "InvalidHyperEdge",
             Error::IoError { .. } => "IoError",
             Error::JoinTaskError { .. } => "JoinTaskError",
-            Error::NoDefaultOutPort { .. } => "NoDefaultPort",
+            Error::NoDefaultOutputPort { .. } => "NoDefaultOutputPort",
             Error::NodeControlMsgSendError { .. } => "NodeControlMsgSendError",
             Error::PDataError { .. } => "PDataError",
             Error::PdataConversionError { .. } => "PdataConversionError",
@@ -451,10 +466,11 @@ impl Error {
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
             Error::UnknownNode { .. } => "UnknownNode",
-            Error::UnknownOutPort { .. } => "UnknownPort",
+            Error::UnknownOutputPort { .. } => "UnknownOutputPort",
             Error::UnknownProcessor { .. } => "UnknownProcessor",
             Error::UnknownReceiver { .. } => "UnknownReceiver",
             Error::UnsupportedNodeKind { .. } => "UnsupportedNodeKind",
+            Error::InvalidNodeWiring { .. } => "InvalidNodeWiring",
         }
         .to_owned()
     }

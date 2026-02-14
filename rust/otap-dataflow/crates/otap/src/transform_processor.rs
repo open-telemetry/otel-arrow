@@ -146,7 +146,7 @@ impl TransformProcessor {
         }
     }
 
-    /// sends any result batches that were produced by the pipeline to the appropriate outports
+    /// sends any result batches that were produced by the pipeline to the appropriate output ports
     /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
@@ -166,7 +166,7 @@ impl TransformProcessor {
             })?;
 
         // access the batch that was the output of the call to pipeline.execute. This should
-        // eventually be sent on the default out_port
+        // eventually be sent on the default output port
         let default_otap_batch = match pipeline_result {
             Ok(otap_batch) => otap_batch,
             Err(e) => {
@@ -201,7 +201,7 @@ impl TransformProcessor {
                 source_detail: "".into(),
             })?;
 
-        // send the output of the pipeline to the default outport while juggling the context for
+        // send the output of the pipeline to the default output port while juggling the context for
         // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
         // any routed batches, and we don't want to Ack the inbound context until we receive Acks
         // from all downstream batches (including this result)
@@ -235,7 +235,7 @@ impl TransformProcessor {
         }
         effect_handler.send_message_with_source_node(pdata).await?;
 
-        // handle any batches that need to be forwarded to a specific out_port thanks to invocation
+        // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
         for (route_name, otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
@@ -247,7 +247,7 @@ impl TransformProcessor {
                     processor: effect_handler.processor_id(),
                     kind: ProcessorErrorKind::Transport,
                     error: "Routing error: ".into(),
-                    source_detail: format!("out_port name {} not configured", route_name),
+                    source_detail: format!("output port name {} not configured", route_name),
                 })?
                 .clone();
 
@@ -337,6 +337,7 @@ fn create_transform_processor(
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 #[async_trait(?Send)]
@@ -510,7 +511,7 @@ mod test {
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
         node_config.config = config;
-        node_config.default_out_port = Some(TEST_OUT_PORT_NAME.into());
+        node_config.default_output = Some(TEST_OUT_PORT_NAME.into());
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
@@ -766,7 +767,7 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
-    /// test helper function to set a pdata sender on the processor wrapper for the named out_port
+    /// test helper function to set a pdata sender on the processor wrapper for the named output port
     /// returns the receiver for the channel
     fn set_pdata_sender(
         port_name: &'static str,
@@ -1115,17 +1116,17 @@ mod test {
                     .await
                     .expect("no process error");
 
-                // get the outbound context from the default outport
+                // get the outbound context from the default output port
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 assert_ne!(inbound_context, outbound_ctx_default);
 
-                // get the outbound context from the routed outport
+                // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
                 let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
-                // simulate an Ack coming from the message that got sent on the default out port
+                // simulate an Ack coming from the message that got sent on the default output port
                 send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
@@ -1161,7 +1162,7 @@ mod test {
     #[test]
     fn test_nack_with_subscribers_with_routing_downstream_default_error() {
         // Test that we correctly Nack the inbound message when the batch that gets sent
-        // via the default outport is Nack'd by something downstream of this processor
+        // via the default output port is Nack'd by something downstream of this processor
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = r#"logs
             | if (severity_text == "ERROR") {
@@ -1193,17 +1194,17 @@ mod test {
                     .await
                     .expect("no process error");
 
-                // get the outbound context from the default outport
+                // get the outbound context from the default output port
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 assert_ne!(inbound_context, outbound_ctx_default);
 
-                // get the outbound context from the routed outport
+                // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
                 let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
-                // simulate an Nack coming from the message that got sent on the default out port
+                // simulate an Nack coming from the message that got sent on the default output port
                 send_nack(
                     &mut ctx,
                     outbound_ctx_default,
@@ -1221,7 +1222,7 @@ mod test {
                     .unwrap();
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
-                // messages that was sent out default out port was Nack'd
+                // messages sent on the default output port were Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
                     PipelineControlMsg::DeliverNack { node_id, nack } => {

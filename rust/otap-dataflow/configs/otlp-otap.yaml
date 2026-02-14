@@ -5,13 +5,7 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       protocols:
         grpc:
@@ -32,8 +26,7 @@ nodes:
       #   handshake_timeout: "10s"           # default is 10s
       #   reload_interval: "5m"              # default is 5m
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       # Downstream OTAP/gRPC collector endpoint.
       # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
@@ -51,3 +44,7 @@ nodes:
       #   server_name_override: "collector.example.com"
       #   cert_file: "/path/to/client.crt"   # optional: mTLS
       #   key_file: "/path/to/client.key"
+
+connections:
+  - from: receiver
+    to: exporter

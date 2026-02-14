@@ -380,7 +380,7 @@ impl DebugOutputPorts {
             .collect()
     }
 
-    async fn send_outports(&mut self, message: OtapPdata) -> Result<(), Error> {
+    async fn send_to_output_ports(&mut self, message: OtapPdata) -> Result<(), Error> {
         for port in self.ports.iter().cloned() {
             self.effect_handler
                 .send_message_with_source_node_to(port, message.clone())
@@ -405,7 +405,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OtlpProtoMessage::Metrics(metric_request).try_into()?)
+                    self.send_to_output_ports(OtlpProtoMessage::Metrics(metric_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -414,7 +414,7 @@ impl DebugOutput for DebugOutputPorts {
                 let metric_signals = self.split_metrics(metric_request);
                 for metric in metric_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OtlpProtoMessage::Metrics(metric).try_into()?)
+                        self.send_to_output_ports(OtlpProtoMessage::Metrics(metric).try_into()?)
                             .await
                     };
                     sampler.sample(send_message).await?;
@@ -431,7 +431,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OtlpProtoMessage::Traces(trace_request).try_into()?)
+                    self.send_to_output_ports(OtlpProtoMessage::Traces(trace_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -440,7 +440,7 @@ impl DebugOutput for DebugOutputPorts {
                 let trace_signals = self.split_traces(trace_request);
                 for trace in trace_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OtlpProtoMessage::Traces(trace).try_into()?)
+                        self.send_to_output_ports(OtlpProtoMessage::Traces(trace).try_into()?)
                             .await
                     };
                     sampler.sample(send_message).await?;
@@ -457,7 +457,7 @@ impl DebugOutput for DebugOutputPorts {
         match self.display_mode {
             DisplayMode::Batch => {
                 let send_message = async || -> Result<(), Error> {
-                    self.send_outports(OtlpProtoMessage::Logs(log_request).try_into()?)
+                    self.send_to_output_ports(OtlpProtoMessage::Logs(log_request).try_into()?)
                         .await
                 };
                 sampler.sample(send_message).await?;
@@ -466,7 +466,7 @@ impl DebugOutput for DebugOutputPorts {
                 let log_signals = self.split_logs(log_request);
                 for log in log_signals {
                     let send_message = async || -> Result<(), Error> {
-                        self.send_outports(OtlpProtoMessage::Logs(log).try_into()?)
+                        self.send_to_output_ports(OtlpProtoMessage::Logs(log).try_into()?)
                             .await
                     };
                     sampler.sample(send_message).await?;
@@ -477,7 +477,7 @@ impl DebugOutput for DebugOutputPorts {
     }
 
     fn is_basic(&self) -> bool {
-        // if we choose to output to outports then we don't care about verbosity level
+        // if we choose to output to output ports then we don't care about verbosity level
         false
     }
 }
