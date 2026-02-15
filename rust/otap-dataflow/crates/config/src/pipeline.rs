@@ -2,13 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline configuration specification.
-
-pub mod service;
+pub mod telemetry;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
 use crate::health::HealthPolicy;
 use crate::node::{NodeKind, NodeUserConfig};
-use crate::pipeline::service::ServiceConfig;
 use crate::settings::TelemetrySettings;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
@@ -16,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::path::Path;
 use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
@@ -59,10 +56,6 @@ pub struct PipelineConfig {
     /// the main pipeline graph.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     connections: Vec<PipelineConnection>,
-
-    /// Service-level telemetry configuration.
-    #[serde(default)]
-    service: ServiceConfig,
 }
 
 const fn default_pipeline_type() -> PipelineType {
@@ -538,8 +531,8 @@ pub struct PipelineSettings {
     /// These flags control capture of pipeline runtime metrics emitted by the pipeline
     /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
     ///
-    /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
-    /// signals to external backends.
+    /// This is distinct from top-level `engine.telemetry`, which configures
+    /// OpenTelemetry signal export settings.
     #[serde(default)]
     pub telemetry: TelemetrySettings,
 }
@@ -601,64 +594,6 @@ impl PipelineConfig {
         spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
         spec.validate(&pipeline_group_id, &pipeline_id)?;
         Ok(spec)
-    }
-
-    /// Load a [`PipelineConfig`] from a JSON file.
-    pub fn from_json_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-            details: e.to_string(),
-        })?;
-        Self::from_json(pipeline_group_id, pipeline_id, &contents)
-    }
-
-    /// Load a [`PipelineConfig`] from a YAML file.
-    pub fn from_yaml_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-            details: e.to_string(),
-        })?;
-        Self::from_yaml(pipeline_group_id, pipeline_id, &contents)
-    }
-
-    /// Load a [`PipelineConfig`] from a file, automatically detecting the format based on file extension.
-    ///
-    /// Supports:
-    /// - JSON files: `.json`
-    /// - YAML files: `.yaml`, `.yml`
-    pub fn from_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let extension = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_lowercase());
-
-        match extension.as_deref() {
-            Some("json") => Self::from_json_file(pipeline_group_id, pipeline_id, path),
-            Some("yaml") | Some("yml") => {
-                Self::from_yaml_file(pipeline_group_id, pipeline_id, path)
-            }
-            _ => {
-                let context = Context::new(pipeline_group_id, pipeline_id);
-                let details = format!(
-                    "Unsupported file extension: {}. Supported extensions are: .json, .yaml, .yml",
-                    extension.unwrap_or_else(|| "<none>".to_string())
-                );
-                Err(Error::FileReadError { context, details })
-            }
-        }
     }
 
     /// Returns the general settings for this pipeline.
@@ -783,12 +718,6 @@ impl PipelineConfig {
         ConnectedSets { incoming, outgoing }
     }
 
-    /// Returns the service-level telemetry configuration.
-    #[must_use]
-    pub const fn service(&self) -> &ServiceConfig {
-        &self.service
-    }
-
     /// Builds a dedicated engine observability pipeline configuration.
     #[must_use]
     pub fn for_observability_pipeline(
@@ -801,7 +730,6 @@ impl PipelineConfig {
             quota: Quota::default(),
             nodes,
             connections,
-            service: ServiceConfig::default(),
         }
     }
 
@@ -1398,7 +1326,6 @@ impl PipelineConfigBuilder {
                 settings: PipelineSettings::default(),
                 quota: Quota::default(),
                 r#type: pipeline_type,
-                service: ServiceConfig::default(),
             };
 
             spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
@@ -1419,12 +1346,12 @@ mod tests {
     use crate::error::Error;
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
-    use crate::pipeline::service::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
-    use crate::pipeline::service::telemetry::metrics::readers::{
+    use crate::pipeline::telemetry::metrics::MetricsConfig;
+    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
-    use crate::pipeline::service::telemetry::{AttributeValue, TelemetryConfig};
+    use crate::pipeline::telemetry::{AttributeValue, TelemetryConfig};
     use crate::pipeline::{CoreAllocation, CoreRange, PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
@@ -1846,244 +1773,6 @@ mod tests {
                 assert_eq!(pipeline_spec.nodes.len(), 18);
             }
             Err(e) => panic!("Failed to build pipeline DAG: {e:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_json_file() {
-        // Use a dedicated test fixture file
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.json"
-        );
-
-        // Test loading from JSON file
-        let result = super::PipelineConfig::from_json_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 2);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("exporter1"));
-
-        let telemetry_config = config.service.telemetry;
-        let reporting_interval = telemetry_config.reporting_interval;
-        assert_eq!(reporting_interval.as_secs(), 5);
-
-        let resource_attrs = &telemetry_config.resource;
-
-        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
-            assert_eq!(val, "test_service");
-        } else {
-            panic!("Expected service.name to be a string");
-        }
-        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
-            assert_eq!(val, "1.0.0");
-        } else {
-            panic!("Expected service.version to be a string");
-        }
-        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
-            assert_eq!(i, 10);
-        } else {
-            panic!("Expected instance.id to be an integer");
-        }
-
-        if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
-                panic!("Expected MetricsPeriodicExporterConfig");
-            }
-        } else {
-            panic!("Expected first metrics reader to be Periodic");
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_file() {
-        // Use a dedicated test fixture file
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.yaml"
-        );
-
-        // Test loading from YAML file
-        let result = super::PipelineConfig::from_yaml_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok(), "failed parsing {}", result.unwrap_err());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 3);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("processor1"));
-        assert!(config.nodes.contains_key("exporter1"));
-
-        let telemetry_config = &config.service().telemetry;
-        let reporting_interval = telemetry_config.reporting_interval;
-        assert_eq!(reporting_interval.as_secs(), 5);
-        let resource_attrs = &telemetry_config.resource;
-
-        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
-            assert_eq!(val, "test_service");
-        } else {
-            panic!("Expected service.name to be a string");
-        }
-        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
-            assert_eq!(val, "1.0.0");
-        } else {
-            panic!("Expected service.version to be a string");
-        }
-        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
-            assert_eq!(i, 10);
-        } else {
-            panic!("Expected instance.id to be an integer");
-        }
-
-        if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
-                panic!("Expected MetricsPeriodicExporterConfig");
-            }
-        } else {
-            panic!("Expected first metrics reader to be Periodic");
-        }
-    }
-
-    #[test]
-    fn test_from_json_file_nonexistent_file() {
-        let result = super::PipelineConfig::from_json_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/path/pipeline.json",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { .. }) => {}
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_file_nonexistent_file() {
-        let result = super::PipelineConfig::from_yaml_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/path/pipeline.yaml",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { .. }) => {}
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_json_extension() {
-        // Test auto-detection with .json extension
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.json"
-        );
-
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 2);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("exporter1"));
-    }
-
-    #[test]
-    fn test_from_file_yaml_extension() {
-        // Test auto-detection with .yaml extension
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.yaml"
-        );
-
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 3);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("processor1"));
-        assert!(config.nodes.contains_key("exporter1"));
-    }
-
-    #[test]
-    fn test_from_file_yml_extension() {
-        // Test auto-detection with .yml extension (alternative YAML extension)
-        // We'll create a simple test using a path that would have .yml extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/test.yml", // This will fail at file reading, but should pass extension detection
-        );
-
-        assert!(result.is_err());
-        // Should be FileReadError (file doesn't exist), not unsupported extension
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                // Make sure it's a file read error and not an extension error
-                assert!(!details.contains("Unsupported file extension"));
-            }
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_unsupported_extension() {
-        // Test with unsupported file extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/some/path/config.txt",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                assert!(details.contains("Unsupported file extension"));
-                assert!(details.contains("txt"));
-                assert!(details.contains(".json, .yaml, .yml"));
-            }
-            other => panic!("Expected FileReadError with unsupported extension, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_no_extension() {
-        // Test with file that has no extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/some/path/config",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                assert!(details.contains("Unsupported file extension"));
-                assert!(details.contains("<none>"));
-                assert!(details.contains(".json, .yaml, .yml"));
-            }
-            other => panic!("Expected FileReadError with no extension, got {other:?}"),
         }
     }
 

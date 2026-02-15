@@ -1,5 +1,22 @@
 version: otel_dataflow/v1
-engine: {}
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: "0.0.0.0"
+                port: 9090
+                path: "/metrics"
+    views:
+      - selector:
+          instrument_name: "logs.produced"
+        stream:
+          name: "otlp.logs.produced.count"
+          description: "Count of logs produced"
+    resource:
+      service.name: "fake-debug-noop-service"
 groups:
   default:
     pipelines:
@@ -33,21 +50,3 @@ groups:
           - from: debug
             to: noop
         
-        service:
-          telemetry:
-            metrics:
-              readers:
-                - pull:
-                    exporter:
-                      prometheus:
-                        host: "0.0.0.0"
-                        port: 9090
-                        path: "/metrics"
-              views:
-                - selector:
-                    instrument_name: "logs.produced"
-                  stream:
-                    name: "otlp.logs.produced.count"
-                    description: "Count of logs produced"
-            resource:
-              service.name: "fake-debug-noop-service"

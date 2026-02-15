@@ -52,8 +52,8 @@ struct PipelineSimulator {
 
 impl PipelineSimulator {
     fn new(yaml: &str) -> Result<Self, ValidationError> {
-        let engine_config =
-            OtelDataflowSpec::from_yaml(yaml).map_err(|e| ValidationError::Config(e.to_string()))?;
+        let engine_config = OtelDataflowSpec::from_yaml(yaml)
+            .map_err(|e| ValidationError::Config(e.to_string()))?;
         Ok(Self { engine_config })
     }
 

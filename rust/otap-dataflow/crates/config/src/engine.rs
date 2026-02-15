@@ -5,7 +5,7 @@
 
 use crate::error::{Context, Error};
 use crate::observed_state::ObservedStateSettings;
-use crate::pipeline::service::telemetry::TelemetryConfig;
+use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::{PipelineGroupId, PipelineId};
@@ -241,6 +241,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn valid_engine_yaml(version: &str) -> String {
         format!(
@@ -263,6 +264,21 @@ groups:
             to: exporter
 "#
         )
+    }
+
+    fn write_temp_file(ext: &str, contents: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "otap-df-config-engine-tests-{}-{}.{}",
+            std::process::id(),
+            suffix,
+            ext
+        ));
+        fs::write(&path, contents).expect("failed to write temporary test file");
+        path
     }
 
     #[test]
@@ -346,6 +362,104 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert!(config.engine.observability.pipeline.is_some());
+    }
+
+    #[test]
+    fn from_json_file_nonexistent_file() {
+        let result = OtelDataflowSpec::from_json_file("/nonexistent/path/spec.json");
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_yaml_file_nonexistent_file() {
+        let result = OtelDataflowSpec::from_yaml_file("/nonexistent/path/spec.yaml");
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { .. }) => {}
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_file_yml_extension() {
+        let result = OtelDataflowSpec::from_file("/nonexistent/spec.yml");
+
+        assert!(result.is_err());
+        // Should be a file read error (nonexistent), not an extension error.
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(!details.contains("Unsupported file extension"));
+            }
+            other => panic!("Expected FileReadError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_file_unsupported_extension() {
+        let result = OtelDataflowSpec::from_file("/some/path/spec.txt");
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("txt"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with unsupported extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_file_no_extension() {
+        let result = OtelDataflowSpec::from_file("/some/path/spec");
+
+        assert!(result.is_err());
+        match result {
+            Err(Error::FileReadError { details, .. }) => {
+                assert!(details.contains("Unsupported file extension"));
+                assert!(details.contains("<none>"));
+                assert!(details.contains(".json, .yaml, .yml"));
+            }
+            other => panic!("Expected FileReadError with no extension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_json_file_reads_valid_spec() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let model = OtelDataflowSpec::from_yaml(&yaml).expect("fixture yaml should parse");
+        let json = serde_json::to_string(&model).expect("fixture should serialize to json");
+        let path = write_temp_file("json", &json);
+
+        let result = OtelDataflowSpec::from_json_file(&path);
+        let _ = fs::remove_file(&path);
+
+        assert!(result.is_ok());
+        let parsed = result.expect("json file should parse");
+        assert_eq!(parsed.version, ENGINE_CONFIG_VERSION_V1);
+        assert!(parsed.groups.contains_key("default"));
+    }
+
+    #[test]
+    fn from_file_json_extension() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let model = OtelDataflowSpec::from_yaml(&yaml).expect("fixture yaml should parse");
+        let json = serde_json::to_string(&model).expect("fixture should serialize to json");
+        let path = write_temp_file("json", &json);
+
+        let result = OtelDataflowSpec::from_file(&path);
+        let _ = fs::remove_file(&path);
+
+        assert!(result.is_ok());
+        let parsed = result.expect("json file should parse");
+        assert_eq!(parsed.version, ENGINE_CONFIG_VERSION_V1);
+        assert!(parsed.groups.contains_key("default"));
     }
 
     #[test]

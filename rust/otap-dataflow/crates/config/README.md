@@ -19,7 +19,7 @@ Main public model types:
 
 - `engine::OtelDataflowSpec`: root multi-pipeline-group config
 - `pipeline_group::PipelineGroupConfig`
-- `pipeline::PipelineConfig`: nodes, connections, settings, service telemetry
+- `pipeline::PipelineConfig`: nodes, connections, settings
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 
@@ -34,7 +34,7 @@ the schema is extended.
 Typical loading APIs:
 
 - `OtelDataflowSpec::from_file`, `from_yaml`, `from_json`
-- `PipelineConfig::from_file`, `from_yaml`, `from_json`
+- `PipelineConfig::from_yaml`, `from_json` (in-memory parsing only)
 
 These entry points perform:
 

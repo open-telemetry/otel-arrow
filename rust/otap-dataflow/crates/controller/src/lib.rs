@@ -44,7 +44,7 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::{OtelDataflowSpec, EngineObservabilityPipelineConfig};
+use otap_df_config::engine::{EngineObservabilityPipelineConfig, OtelDataflowSpec};
 use otap_df_config::pipeline::CoreAllocation;
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;

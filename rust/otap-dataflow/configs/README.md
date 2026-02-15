@@ -20,7 +20,7 @@ Demonstrates the batch processor:
 A basic pipeline with telemetry export enabled:
 
 - Generates fake data -> debug processor -> noop exporter
-- Includes `service.telemetry` configuration with console metrics export
+- Includes `engine.telemetry` configuration with console metrics export
 
 ### `fake-debug-output-ports.yaml`
 

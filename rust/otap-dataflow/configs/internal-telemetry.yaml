@@ -1,5 +1,9 @@
 version: otel_dataflow/v1
 engine:
+  telemetry:
+    resource:
+      service.id: 1234
+      service.name: test
   observability:
     pipeline:
       # Internal telemetry pipeline
@@ -31,13 +35,6 @@ groups:
                 engine: its
                 internal: console_direct
                 admin: its
-        # OpenTelemetry-specific, visible in "its" modes
-        service:
-          telemetry:
-            resource:
-              service.id: 1234
-              service.name: test
-        
         nodes:
           generator:
             type: traffic_generator:receiver

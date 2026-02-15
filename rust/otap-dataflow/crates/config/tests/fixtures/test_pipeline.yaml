@@ -1,19 +1,4 @@
-settings:
-  default_node_ctrl_msg_channel_size: 100
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-nodes:
-  receiver1:
-    type: "urn:test:example:receiver"
-    config: null
-  processor1:
-    type: "urn:test:example:processor"
-    config: null
-  exporter1:
-    type: "urn:test:example:exporter"
-    config: null
-
-service:
+engine:
   telemetry:
     reporting_interval: "5s"
     metrics:
@@ -31,3 +16,19 @@ service:
       service.name: "test_service"
       service.version: "1.0.0"
       instance.id: 10
+
+settings:
+  default_node_ctrl_msg_channel_size: 100
+  default_pipeline_ctrl_msg_channel_size: 100
+  default_pdata_channel_size: 100
+
+nodes:
+  receiver1:
+    type: "urn:test:example:receiver"
+    config: null
+  processor1:
+    type: "urn:test:example:processor"
+    config: null
+  exporter1:
+    type: "urn:test:example:exporter"
+    config: null

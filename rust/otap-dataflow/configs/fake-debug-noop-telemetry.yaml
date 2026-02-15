@@ -1,5 +1,21 @@
 version: otel_dataflow/v1
-engine: {}
+engine:
+  telemetry:
+    metrics:
+      readers:
+        - periodic:
+            exporter:
+              otlp:
+                protocol: "grpc/protobuf"
+                endpoint: "http://127.0.0.1:43480"
+    views:
+      - selector:
+          instrument_name: "logs.produced"
+        stream:
+          name: "otlp.logs.produced.count"
+          description: "Count of logs produced"
+    resource:
+      service.name: "fake-debug-noop-service"
 groups:
   default:
     pipelines:
@@ -36,20 +52,3 @@ groups:
           - from: debug
             to: noop
         
-        service:
-          telemetry:
-            metrics:
-              readers:
-                - periodic:
-                    exporter:
-                      otlp:
-                        protocol: "grpc/protobuf"
-                        endpoint: "http://127.0.0.1:43480"
-              views:
-                - selector:
-                    instrument_name: "logs.produced"
-                  stream:
-                    name: "otlp.logs.produced.count"
-                    description: "Count of logs produced"
-            resource:
-              service.name: "fake-debug-noop-service"
