@@ -437,42 +437,76 @@ fn encode_scope_attribute(
     key: &str,
     value: &crate::attributes::AttributeValue,
 ) {
-    use crate::attributes::AttributeValue;
+    encode_key_value(buf, INSTRUMENTATION_SCOPE_ATTRIBUTES, key, value);
+}
 
+/// Encode a KeyValue message wrapped in the given outer field tag.
+///
+/// The outer field tag determines context:
+/// - `INSTRUMENTATION_SCOPE_ATTRIBUTES` (field 3) for scope attributes
+/// - `KEY_VALUE_LIST_VALUES` (field 1) for entries inside a kvlist
+#[inline]
+fn encode_key_value(
+    buf: &mut ProtoBuffer,
+    outer_field: u64,
+    key: &str,
+    value: &crate::attributes::AttributeValue,
+) {
     proto_encode_len_delimited_unknown_size!(
-        INSTRUMENTATION_SCOPE_ATTRIBUTES,
+        outer_field,
         {
             buf.encode_string(KEY_VALUE_KEY, key);
             proto_encode_len_delimited_unknown_size!(
                 KEY_VALUE_VALUE,
                 {
-                    match value {
-                        AttributeValue::String(s) => {
-                            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
-                        }
-                        AttributeValue::Boolean(b) => {
-                            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
-                            buf.encode_varint(u64::from(*b));
-                        }
-                        AttributeValue::Int(i) => {
-                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                            buf.encode_varint(*i as u64);
-                        }
-                        AttributeValue::UInt(u) => {
-                            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
-                            buf.encode_varint(*u);
-                        }
-                        AttributeValue::Double(f) => {
-                            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
-                            buf.extend_from_slice(&f.to_le_bytes());
-                        }
-                    }
+                    encode_any_value(buf, value);
                 },
                 buf
             );
         },
         buf
     );
+}
+
+/// Encode an `AttributeValue` as an OTLP AnyValue (the inner value without key wrapping).
+#[inline]
+fn encode_any_value(buf: &mut ProtoBuffer, value: &crate::attributes::AttributeValue) {
+    use crate::attributes::AttributeValue;
+
+    match value {
+        AttributeValue::String(s) => {
+            buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str());
+        }
+        AttributeValue::Boolean(b) => {
+            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT);
+            buf.encode_varint(u64::from(*b));
+        }
+        AttributeValue::Int(i) => {
+            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+            buf.encode_varint(*i as u64);
+        }
+        AttributeValue::UInt(u) => {
+            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT);
+            buf.encode_varint(*u);
+        }
+        AttributeValue::Double(f) => {
+            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64);
+            buf.extend_from_slice(&f.to_le_bytes());
+        }
+        AttributeValue::Map(m) => {
+            // Encode as kvlist: AnyValue.kvlist_value (field 6) containing
+            // KeyValueList with repeated KeyValue entries (field 1).
+            proto_encode_len_delimited_unknown_size!(
+                ANY_VALUE_KVLIST_VALUE,
+                {
+                    for (k, v) in m {
+                        encode_key_value(buf, KEY_VALUE_LIST_VALUES, k, v);
+                    }
+                },
+                buf
+            );
+        }
+    }
 }
 
 /// Encode a LogEvent as a complete ExportLogsServiceRequest.
@@ -506,7 +540,7 @@ pub fn encode_export_logs_request(
                         SCOPE_LOG_SCOPE,
                         {
                             // For each entity key in the log context, append its pre-encoded attributes
-                            for entity_key in event.record.context.entity_keys.iter() {
+                            for entity_key in event.record.context.iter() {
                                 let scope_bytes = scope_cache.get_or_encode(*entity_key);
                                 buf.extend_from_slice(&scope_bytes);
                             }

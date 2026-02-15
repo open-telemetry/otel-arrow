@@ -5,8 +5,42 @@
 //!
 //! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
+use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otap_df_telemetry::descriptor::{
+    AttributeField, AttributeValueType, AttributesDescriptor,
+};
 use otap_df_telemetry_macros::attribute_set;
 use std::borrow::Cow;
+use std::collections::BTreeMap;
+use std::hash::Hash;
+
+/// Convert from config `AttributeValue` to telemetry `AttributeValue`.
+#[must_use]
+pub fn config_to_telemetry_attr(
+    value: &otap_df_config::pipeline::service::telemetry::AttributeValue,
+) -> AttributeValue {
+    use otap_df_config::pipeline::service::telemetry::AttributeValue as ConfigValue;
+    match value {
+        ConfigValue::String(s) => AttributeValue::String(s.clone()),
+        ConfigValue::Bool(b) => AttributeValue::Boolean(*b),
+        ConfigValue::I64(i) => AttributeValue::Int(*i),
+        ConfigValue::F64(f) => AttributeValue::Double(*f),
+        ConfigValue::Array(arr) => {
+            // Encode arrays as a string representation
+            AttributeValue::String(format!("{:?}", arr))
+        }
+    }
+}
+
+/// Convert a map of config `AttributeValue`s to a telemetry `BTreeMap`.
+#[must_use]
+pub fn config_map_to_telemetry(
+    map: &std::collections::HashMap<String, otap_df_config::pipeline::service::telemetry::AttributeValue>,
+) -> BTreeMap<String, AttributeValue> {
+    map.iter()
+        .map(|(k, v)| (k.clone(), config_to_telemetry_attr(v)))
+        .collect()
+}
 
 /// Resource attributes (host id, process instance id, container id, ...).
 #[attribute_set(name = "resource.attrs")]
@@ -75,6 +109,64 @@ pub struct NodeAttributeSet {
     /// Node type (e.g., "receiver", "processor", "exporter").
     #[attribute]
     pub node_type: Cow<'static, str>,
+
+    /// Custom node telemetry attributes
+    #[compose]
+    pub node_telemetry_attrs: CustomAttributeSet,
+}
+
+/// A custom attribute set that holds arbitrary key-value pairs as a single
+/// "custom" attribute with a `Map` value. This allows extending telemetry
+/// with user-defined attributes without requiring static descriptors.
+#[derive(Debug, Clone)]
+pub struct CustomAttributeSet {
+    values: Vec<AttributeValue>,
+}
+
+impl Default for CustomAttributeSet {
+    fn default() -> Self {
+        Self {
+            values: vec![AttributeValue::Map(BTreeMap::new())],
+        }
+    }
+}
+
+impl Hash for CustomAttributeSet {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.values.len().hash(state);
+        for v in &self.values {
+            v.to_string_value().hash(state);
+        }
+    }
+}
+
+static CUSTOM_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+    name: "custom.attrs",
+    fields: &[AttributeField {
+        key: "custom",
+        brief: "Custom user-defined attributes",
+        r#type: AttributeValueType::Map,
+    }],
+};
+
+impl CustomAttributeSet {
+    /// Create a new custom attribute set from a map of key-value pairs.
+    #[must_use]
+    pub fn new(custom_attrs: BTreeMap<String, AttributeValue>) -> Self {
+        Self {
+            values: vec![AttributeValue::Map(custom_attrs)],
+        }
+    }
+}
+
+impl AttributeSetHandler for CustomAttributeSet {
+    fn descriptor(&self) -> &'static AttributesDescriptor {
+        &CUSTOM_ATTRIBUTES_DESCRIPTOR
+    }
+
+    fn attribute_values(&self) -> &[AttributeValue] {
+        &self.values
+    }
 }
 
 /// Channel endpoint attributes (sender or receiver).

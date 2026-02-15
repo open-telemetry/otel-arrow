@@ -89,6 +89,13 @@ impl MetricsDispatcher {
             AttributeValue::Double(v) => opentelemetry::Value::F64(*v),
             AttributeValue::UInt(v) => opentelemetry::Value::I64(*v as i64),
             AttributeValue::Boolean(v) => opentelemetry::Value::Bool(*v),
+            AttributeValue::Map(_) => {
+                // The OTel metrics SDK `Value` enum has no Map/kvlist variant
+                // (only Bool, I64, F64, String, Array). The logs SDK has
+                // `AnyValue::Map` but that's a different type. Encode as string
+                // for metrics attribute compatibility.
+                opentelemetry::Value::String(value.to_string_value().into())
+            }
         };
         opentelemetry::KeyValue::new(key.to_string(), otel_value)
     }

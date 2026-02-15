@@ -53,7 +53,7 @@ use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
 };
 use otap_df_engine::entity_context::{
-    node_custom_attrs, node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
+    node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::{Error as EngineError, error_summary_from};
 use otap_df_state::store::ObservedStateStore;
@@ -85,18 +85,14 @@ pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     pipeline_factory: &'static PipelineFactory<PData>,
 }
 
-/// Returns the log context relevant to the current execution context.
-///
-/// This populates the entity keys for scope encoding and the pre-encoded
-/// custom node attribute bytes for log record attributes.
+/// Returns the set of entity keys relevant to this context.
 fn engine_context() -> LogContext {
-    let custom_attrs = node_custom_attrs();
     if let Some(node) = node_entity_key() {
-        LogContext::with_custom_attrs(smallvec![node], custom_attrs)
+        smallvec![node]
     } else if let Some(pipeline) = pipeline_entity_key() {
-        LogContext::with_custom_attrs(smallvec![pipeline], custom_attrs)
+        smallvec![pipeline]
     } else {
-        LogContext::new()
+        smallvec![]
     }
 }
 

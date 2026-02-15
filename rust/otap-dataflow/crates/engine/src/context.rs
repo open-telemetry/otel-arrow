@@ -4,14 +4,17 @@
 //! Context providing general information on the current controller and the current pipeline.
 
 use crate::attributes::{
-    ChannelAttributeSet, EngineAttributeSet, NodeAttributeSet, PipelineAttributeSet,
+    ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
+    PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use otap_df_config::node::NodeKind;
+use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use std::collections::HashMap;
 use std::fmt::Debug;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
@@ -103,9 +106,12 @@ pub struct PipelineContext {
     thread_id: usize,
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
+    pipeline_telemetry_attrs: HashMap<String, AttributeValue>,
     node_id: NodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
+    node_telemetry_attrs: HashMap<String, AttributeValue>,
+
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
     internal_telemetry: Option<InternalTelemetrySettings>,
@@ -165,6 +171,8 @@ impl PipelineContext {
             node_id: Default::default(),
             node_urn: Default::default(),
             node_kind: Default::default(),
+            node_telemetry_attrs: HashMap::new(),
+            pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
         }
     }
@@ -314,6 +322,9 @@ impl PipelineContext {
             node_id: self.node_id.clone(),
             node_urn: self.node_urn.clone().into(),
             node_type: self.node_kind.into(),
+            node_telemetry_attrs: CustomAttributeSet::new(
+                config_map_to_telemetry(&self.node_telemetry_attrs),
+            ),
         }
     }
 
@@ -376,6 +387,7 @@ impl PipelineContext {
         node_id: NodeId,
         node_urn: NodeUrn,
         node_kind: NodeKind,
+        node_telemetry_attrs: HashMap<String, AttributeValue>,
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
@@ -384,9 +396,11 @@ impl PipelineContext {
             thread_id: self.thread_id,
             pipeline_group_id: self.pipeline_group_id.clone(),
             pipeline_id: self.pipeline_id.clone(),
+            pipeline_telemetry_attrs: self.pipeline_telemetry_attrs.clone(),
             node_id,
             node_urn,
             node_kind,
+            node_telemetry_attrs,
             internal_telemetry: None,
         }
     }

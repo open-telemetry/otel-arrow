@@ -12,39 +12,13 @@ pub mod formatter;
 
 use crate::registry::EntityKey;
 use encoder::DirectFieldVisitor;
-use otap_df_config::pipeline::service::telemetry::AttributeValue;
 use otap_df_pdata::otlp::ProtoBuffer;
 use serde::Serialize;
 use serde::ser::Serializer;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::fmt;
 use tracing::callsite::Identifier;
 use tracing::{Event, Level, Metadata};
-
-/// Pre-encode custom node attributes into protobuf bytes.
-///
-/// The returned bytes can be appended directly to a `ProtoBuffer` when
-/// building a `LogRecord`, avoiding re-encoding on every log event.
-pub fn encode_custom_attrs_to_bytes(attrs: &HashMap<String, AttributeValue>) -> bytes::Bytes {
-    if attrs.is_empty() {
-        return bytes::Bytes::new();
-    }
-    let mut buf = ProtoBuffer::with_capacity(128);
-    let mut visitor = DirectFieldVisitor::new(&mut buf);
-    let mut sorted_attrs: Vec<_> = attrs.iter().collect();
-    sorted_attrs.sort_by_key(|(k, _)| k.as_str());
-    for (key, value) in sorted_attrs {
-        match value {
-            AttributeValue::String(s) => visitor.encode_string_attribute(key, s),
-            AttributeValue::Bool(b) => visitor.encode_bool_attribute(key, *b),
-            AttributeValue::I64(i) => visitor.encode_int_attribute(key, *i),
-            AttributeValue::F64(f) => visitor.encode_double_attribute(key, *f),
-            AttributeValue::Array(_) => {} // Arrays not yet supported for log record attrs
-        }
-    }
-    buf.into_bytes()
-}
 
 pub use encoder::DirectLogRecordEncoder;
 pub use encoder::ScopeToBytesMap;
@@ -72,56 +46,9 @@ pub struct LogRecord {
     pub context: LogContext,
 }
 
-/// Context for log records, including entity keys for scope encoding
-/// and optional pre-encoded custom node attributes for log records.
-#[derive(Debug, Clone)]
-pub struct LogContext {
-    /// Entity keys that identify scope attribute sets in the telemetry registry.
-    pub entity_keys: SmallVec<[EntityKey; 1]>,
-    /// Pre-encoded custom node attributes bytes for log record attributes.
-    /// Encoded once at context creation to avoid re-encoding on every log event.
-    pub custom_attrs_bytes: bytes::Bytes,
-}
-
-impl LogContext {
-    /// Create a new empty context.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            entity_keys: SmallVec::new(),
-            custom_attrs_bytes: bytes::Bytes::new(),
-        }
-    }
-
-    /// Create a context from a single entity key.
-    #[must_use]
-    pub fn from_buf(buf: [EntityKey; 1]) -> Self {
-        Self {
-            entity_keys: SmallVec::from_buf(buf),
-            custom_attrs_bytes: bytes::Bytes::new(),
-        }
-    }
-
-    /// Create a context with entity keys and pre-encoded custom node attribute bytes.
-    ///
-    /// The attribute bytes are appended directly when constructing log records.
-    #[must_use]
-    pub fn with_custom_attrs(
-        entity_keys: SmallVec<[EntityKey; 1]>,
-        custom_attrs_bytes: bytes::Bytes,
-    ) -> Self {
-        Self {
-            entity_keys,
-            custom_attrs_bytes,
-        }
-    }
-}
-
-impl Default for LogContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Context for log records: entity keys that identify scope attribute
+/// sets in the telemetry registry.
+pub type LogContext = SmallVec<[EntityKey; 1]>;
 
 /// A log context function typically constructs context from
 /// thread-local state.
@@ -187,11 +114,6 @@ impl LogRecord {
         let mut buf = ProtoBuffer::with_capacity(256);
         let mut visitor = DirectFieldVisitor::new(&mut buf);
         event.record(&mut visitor);
-
-        // Append pre-encoded custom node attributes bytes, if any.
-        if !context.custom_attrs_bytes.is_empty() {
-            buf.extend_from_slice(&context.custom_attrs_bytes);
-        }
 
         Self {
             callsite_id: metadata.callsite(),

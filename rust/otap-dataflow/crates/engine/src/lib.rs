@@ -27,7 +27,7 @@ use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName, node::NodeUserConfig, pipeline::DispatchPolicy,
-    pipeline::PipelineConfig, pipeline::service::telemetry::AttributeValue,
+    pipeline::PipelineConfig,
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -429,19 +429,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (name, node_config) in config.node_iter() {
-            // @@@
-            // let base_ctx = pipeline_ctx.with_node_context(
-            //     name.clone(),
-            //     node_config.plugin_urn.clone(),
-            //     node_config.kind,
-            // );
-            // Custom node attributes to be included in log records.
-            let telemetry_attrs = node_config.telemetry_attributes.clone();
-            // @@@
-
             let node_kind = node_config.kind();
-            let base_ctx =
-                pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
+            let base_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.r#type.clone(),
+                node_kind,
+                node_config.telemetry_attributes.clone(),
+            );
 
             match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
@@ -466,7 +460,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id,
                         channel_metrics_enabled,
-                        telemetry_attrs,
                         || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     receivers.push(wrapper);
@@ -484,7 +477,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id,
                         channel_metrics_enabled,
-                        telemetry_attrs,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -508,7 +500,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id,
                         channel_metrics_enabled,
-                        telemetry_attrs,
                         || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
                     )?;
                     exporters.push(wrapper);
@@ -652,7 +643,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_type: NodeType,
         node_id: NodeId,
         channel_metrics_enabled: bool,
-        telemetry_attrs: HashMap<String, AttributeValue>,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -660,11 +650,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         F: FnOnce() -> Result<W, Error>,
     {
         let node_entity_key = base_ctx.register_node_entity();
-        let node_telemetry_handle = NodeTelemetryHandle::new(
-            base_ctx.metrics_registry(),
-            node_entity_key,
-            telemetry_attrs,
-        );
+        let node_telemetry_handle =
+            NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
         build_state.register_node(
