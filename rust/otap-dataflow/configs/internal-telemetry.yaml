@@ -1,13 +1,38 @@
 version: otel_dataflow/v1
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 256
+        pipeline: 256
+      pdata: 128
 engine:
   telemetry:
+    logs:
+      level: "debug"
+      providers:
+        global: its
+        engine: its
+        internal: console_direct
+        admin: its
     resource:
       service.id: 1234
       service.name: test
   observability:
     pipeline:
+      policies:
+        flow:
+          channel_capacity:
+            control:
+              node: 64
+              pipeline: 64
+            pdata: 64
+        telemetry:
+          pipeline_metrics: false
+          tokio_metrics: false
+          channel_metrics: false
       # Internal telemetry pipeline
-      # Uses hardcoded settings: single thread, no admin server
+      # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
         telemetry:
           type: "internal_telemetry:receiver"
@@ -22,19 +47,6 @@ groups:
   default:
     pipelines:
       main:
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-          telemetry:
-            # Internal logging
-            logs:
-              level: "debug"
-              providers:
-                global: its
-                engine: its
-                internal: console_direct
-                admin: its
         nodes:
           generator:
             type: traffic_generator:receiver

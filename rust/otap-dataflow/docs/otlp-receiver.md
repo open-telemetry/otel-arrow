@@ -134,14 +134,16 @@ regardless of which protocol clients use.
 #### Tuning Examples
 
 The `max_concurrent_requests` setting interacts with downstream pipeline capacity
-(configured via `default_pdata_channel_size` in pipeline settings). Here are
+(configured via `policies.flow.channel_capacity.pdata`). Here are
 common scenarios:
 
 ##### Scenario 1: Full Auto-Tuning (Recommended Default)
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100  # Downstream capacity
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100  # Downstream capacity
 
 config:
   protocols:
@@ -162,8 +164,10 @@ Result:
 ##### Scenario 2: Explicit Equal Limits
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -183,8 +187,10 @@ Result:
 ##### Scenario 3: Prioritize gRPC Over HTTP
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -204,8 +210,10 @@ Result:
 ##### Scenario 4: Oversubscribed Limits
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -227,8 +235,10 @@ Result:
 ##### Scenario 5: Single Protocol (gRPC-only)
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100
 
 config:
   protocols:
@@ -245,8 +255,10 @@ Result:
 ##### Scenario 6: Limit Below Downstream Capacity
 
 ```yaml
-settings:
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      pdata: 100
 
 config:
   protocols:

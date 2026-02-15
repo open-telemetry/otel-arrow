@@ -1,5 +1,8 @@
 version: otel_dataflow/v1
-engine: {}
+engine:
+  telemetry:
+    logs:
+      level: "error"
 groups:
   default:
     pipelines:
@@ -45,7 +48,3 @@ groups:
             to: debug
           - from: debug
             to: noop
-        settings:
-          telemetry:
-            logs:
-              level: "error"

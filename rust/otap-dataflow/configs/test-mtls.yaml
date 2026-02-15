@@ -12,11 +12,14 @@ groups:
         # 2. Start the collector: cargo run --features experimental-tls -- --config configs/test-mtls.yaml
         # 3. Send test data to the receiver on https://127.0.0.1:4317 with client cert
         
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-        
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
         nodes:
           receiver:
             type: otlp:receiver

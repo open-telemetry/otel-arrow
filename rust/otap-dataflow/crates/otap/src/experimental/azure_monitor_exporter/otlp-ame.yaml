@@ -9,10 +9,13 @@
 # 2. Assign the managed identity appropriate permissions to the DCR
 # 3. Deploy this configuration to your AKS cluster
 
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 100
+        pipeline: 100
+      pdata: 128
 
 nodes:
   otlp-receiver:

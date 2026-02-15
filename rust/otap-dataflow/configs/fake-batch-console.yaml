@@ -1,22 +1,25 @@
 version: otel_dataflow/v1
-engine: {}
+engine:
+  telemetry:
+    logs:
+      level: debug
+      providers:
+        engine: console_async
+        global: console_async
+        admin: console_direct
+        internal: console_direct
 groups:
   default:
     pipelines:
       main:
         # Shows the batch processor.
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-          telemetry:
-            logs:
-              level: debug
-              providers:
-                engine: console_async
-                global: console_async
-                admin:    console_direct
-                internal: console_direct
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
         
         nodes:
           generator:

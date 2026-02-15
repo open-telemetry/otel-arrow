@@ -19,7 +19,8 @@ Main public model types:
 
 - `engine::OtelDataflowSpec`: root multi-pipeline-group config
 - `pipeline_group::PipelineGroupConfig`
-- `pipeline::PipelineConfig`: nodes, connections, settings
+- `pipeline::PipelineConfig`: nodes, connections, quota, optional policies
+- `policy::Policies`: hierarchical flow/health/telemetry policies
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 
@@ -41,6 +42,26 @@ These entry points perform:
 1. Deserialization (YAML/JSON)
 2. Node URN canonicalization
 3. Structural validation (connections, graph constraints, etc.)
+
+## Policy Hierarchy
+
+Flow channel sizing is configured via:
+
+- `policies.flow.channel_capacity.control.node`
+- `policies.flow.channel_capacity.control.pipeline`
+- `policies.flow.channel_capacity.pdata`
+
+Health and runtime telemetry controls are configured via:
+
+- `policies.health`
+- `policies.telemetry.pipeline_metrics`
+- `policies.telemetry.tokio_metrics`
+- `policies.telemetry.channel_metrics`
+
+Resolution order:
+
+- regular pipelines: pipeline -> group -> top-level
+- observability pipeline: `engine.observability.pipeline` -> top-level
 
 ## Node Type (`NodeUrn`)
 

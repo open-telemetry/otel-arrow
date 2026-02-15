@@ -4,10 +4,12 @@
 //! The configuration for the dataflow engine.
 
 use crate::error::{Context, Error};
+use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
+use crate::policy::{FlowPolicy, Policies, TelemetryPolicy};
 use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,6 +26,10 @@ pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
 pub struct OtelDataflowSpec {
     /// Version of the engine configuration schema.
     pub version: String,
+
+    /// Top-level policy set.
+    #[serde(default)]
+    pub policies: Policies,
 
     /// Engine-wide runtime declarations.
     #[serde(default)]
@@ -66,6 +72,10 @@ pub struct EngineObservabilityConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
+    /// Optional policy set for this observability pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Policies>,
+
     /// Nodes of the observability pipeline.
     #[serde(default)]
     pub nodes: PipelineNodes,
@@ -79,7 +89,7 @@ impl EngineObservabilityPipelineConfig {
     /// Converts this config into a runtime [`PipelineConfig`].
     #[must_use]
     pub fn into_pipeline_config(self) -> PipelineConfig {
-        PipelineConfig::for_observability_pipeline(self.nodes, self.connections)
+        PipelineConfig::for_observability_pipeline(self.policies, self.nodes, self.connections)
     }
 }
 
@@ -188,11 +198,128 @@ impl OtelDataflowSpec {
         let _ = groups.insert(pipeline_group_id, pipeline_group);
         let config = OtelDataflowSpec {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
+            policies: Policies::default(),
             engine,
             groups,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Resolves the effective flow policy for a pipeline.
+    ///
+    /// Precedence:
+    /// 1. pipeline-level policies
+    /// 2. group-level policies
+    /// 3. top-level policies
+    #[must_use]
+    pub fn resolve_flow_policy(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Option<FlowPolicy> {
+        let pipeline_group = self.groups.get(pipeline_group_id)?;
+        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
+
+        pipeline
+            .policies()
+            .map(|p| p.flow.clone())
+            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.flow.clone()))
+            .or_else(|| Some(self.policies.flow.clone()))
+    }
+
+    /// Resolves the effective health policy for a pipeline.
+    ///
+    /// Precedence:
+    /// 1. pipeline-level policies
+    /// 2. group-level policies
+    /// 3. top-level policies
+    #[must_use]
+    pub fn resolve_health_policy(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Option<HealthPolicy> {
+        let pipeline_group = self.groups.get(pipeline_group_id)?;
+        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
+
+        pipeline
+            .policies()
+            .map(|p| p.health.clone())
+            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.health.clone()))
+            .or_else(|| Some(self.policies.health.clone()))
+    }
+
+    /// Resolves the effective runtime telemetry policy for a pipeline.
+    ///
+    /// Precedence:
+    /// 1. pipeline-level policies
+    /// 2. group-level policies
+    /// 3. top-level policies
+    #[must_use]
+    pub fn resolve_telemetry_policy(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Option<TelemetryPolicy> {
+        let pipeline_group = self.groups.get(pipeline_group_id)?;
+        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
+
+        pipeline
+            .policies()
+            .map(|p| p.telemetry.clone())
+            .or_else(|| {
+                pipeline_group
+                    .policies
+                    .as_ref()
+                    .map(|p| p.telemetry.clone())
+            })
+            .or_else(|| Some(self.policies.telemetry.clone()))
+    }
+
+    /// Resolves the effective flow policy for the engine observability pipeline.
+    ///
+    /// Precedence:
+    /// 1. `engine.observability.pipeline.policies`
+    /// 2. top-level policies
+    #[must_use]
+    pub fn resolve_observability_flow_policy(&self) -> FlowPolicy {
+        self.engine
+            .observability
+            .pipeline
+            .as_ref()
+            .and_then(|p| p.policies.as_ref())
+            .map_or_else(|| self.policies.flow.clone(), |p| p.flow.clone())
+    }
+
+    /// Resolves the effective health policy for the engine observability pipeline.
+    ///
+    /// Precedence:
+    /// 1. `engine.observability.pipeline.policies`
+    /// 2. top-level policies
+    #[must_use]
+    pub fn resolve_observability_health_policy(&self) -> HealthPolicy {
+        self.engine
+            .observability
+            .pipeline
+            .as_ref()
+            .and_then(|p| p.policies.as_ref())
+            .map_or_else(|| self.policies.health.clone(), |p| p.health.clone())
+    }
+
+    /// Resolves the effective runtime telemetry policy for the engine observability pipeline.
+    ///
+    /// Precedence:
+    /// 1. `engine.observability.pipeline.policies`
+    /// 2. top-level policies
+    #[must_use]
+    pub fn resolve_observability_telemetry_policy(&self) -> TelemetryPolicy {
+        self.engine
+            .observability
+            .pipeline
+            .as_ref()
+            .and_then(|p| p.policies.as_ref())
+            .map_or_else(|| self.policies.telemetry.clone(), |p| p.telemetry.clone())
     }
 
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
@@ -209,7 +336,22 @@ impl OtelDataflowSpec {
             });
         }
 
+        errors.extend(
+            self.policies
+                .validation_errors("policies")
+                .into_iter()
+                .map(|error| Error::InvalidUserConfig { error }),
+        );
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
+            if let Some(policies) = &observability_pipeline.policies {
+                errors.extend(
+                    policies
+                        .validation_errors("engine.observability.pipeline.policies")
+                        .into_iter()
+                        .map(|error| Error::InvalidUserConfig { error }),
+                );
+            }
             if observability_pipeline.nodes.is_empty() {
                 errors.push(Error::InvalidUserConfig {
                     error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
@@ -362,6 +504,260 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
         assert!(config.engine.observability.pipeline.is_some());
+    }
+
+    #[test]
+    fn from_yaml_uses_default_top_level_flow_policy() {
+        let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
+        let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
+        assert_eq!(config.policies.flow.channel_capacity.control.node, 256);
+        assert_eq!(config.policies.flow.channel_capacity.control.pipeline, 256);
+        assert_eq!(config.policies.flow.channel_capacity.pdata, 128);
+        assert_eq!(config.policies.health, HealthPolicy::default());
+        assert!(config.policies.telemetry.pipeline_metrics);
+        assert!(config.policies.telemetry.tokio_metrics);
+        assert!(config.policies.telemetry.channel_metrics);
+    }
+
+    #[test]
+    fn resolve_flow_policy_respects_scope_precedence() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 200
+        pipeline: 201
+      pdata: 202
+  health:
+    ready_if: [Running]
+  telemetry:
+    channel_metrics: false
+engine: {}
+groups:
+  g1:
+    policies:
+      flow:
+        channel_capacity:
+          control:
+            node: 150
+            pipeline: 151
+          pdata: 152
+      health:
+        ready_if: [Running, Updating]
+      telemetry:
+        channel_metrics: true
+    pipelines:
+      p1:
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 50
+                pipeline: 51
+              pdata: 52
+          health:
+            ready_if: [Failed]
+          telemetry:
+            channel_metrics: false
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+  g2:
+    pipelines:
+      p3:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+
+        let p1 = config
+            .resolve_flow_policy(&"g1".into(), &"p1".into())
+            .expect("p1 should resolve");
+        assert_eq!(p1.channel_capacity.control.node, 50);
+        assert_eq!(p1.channel_capacity.control.pipeline, 51);
+        assert_eq!(p1.channel_capacity.pdata, 52);
+
+        let p2 = config
+            .resolve_flow_policy(&"g1".into(), &"p2".into())
+            .expect("p2 should resolve");
+        assert_eq!(p2.channel_capacity.control.node, 150);
+        assert_eq!(p2.channel_capacity.control.pipeline, 151);
+        assert_eq!(p2.channel_capacity.pdata, 152);
+
+        let p3 = config
+            .resolve_flow_policy(&"g2".into(), &"p3".into())
+            .expect("p3 should resolve");
+        assert_eq!(p3.channel_capacity.control.node, 200);
+        assert_eq!(p3.channel_capacity.control.pipeline, 201);
+        assert_eq!(p3.channel_capacity.pdata, 202);
+
+        let h1 = config
+            .resolve_health_policy(&"g1".into(), &"p1".into())
+            .expect("p1 health should resolve");
+        assert_eq!(h1.ready_if, vec![crate::health::PhaseKind::Failed]);
+
+        let h2 = config
+            .resolve_health_policy(&"g1".into(), &"p2".into())
+            .expect("p2 health should resolve");
+        assert_eq!(
+            h2.ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ]
+        );
+
+        let h3 = config
+            .resolve_health_policy(&"g2".into(), &"p3".into())
+            .expect("p3 health should resolve");
+        assert_eq!(h3.ready_if, vec![crate::health::PhaseKind::Running]);
+
+        let t1 = config
+            .resolve_telemetry_policy(&"g1".into(), &"p1".into())
+            .expect("p1 telemetry should resolve");
+        assert!(!t1.channel_metrics);
+
+        let t2 = config
+            .resolve_telemetry_policy(&"g1".into(), &"p2".into())
+            .expect("p2 telemetry should resolve");
+        assert!(t2.channel_metrics);
+
+        let t3 = config
+            .resolve_telemetry_policy(&"g2".into(), &"p3".into())
+            .expect("p3 telemetry should resolve");
+        assert!(!t3.channel_metrics);
+    }
+
+    #[test]
+    fn resolve_observability_flow_policy_overrides_top_level() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 200
+        pipeline: 201
+      pdata: 202
+  health:
+    ready_if: [Running]
+  telemetry:
+    channel_metrics: false
+engine:
+  observability:
+    pipeline:
+      policies:
+        flow:
+          channel_capacity:
+            control:
+              node: 10
+              pipeline: 11
+            pdata: 12
+        health:
+          ready_if: [Failed]
+        telemetry:
+          channel_metrics: true
+      nodes:
+        itr:
+          type: "urn:otel:internal_telemetry:receiver"
+          config: {}
+        sink:
+          type: "urn:otel:console:exporter"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+        let flow = config.resolve_observability_flow_policy();
+        assert_eq!(flow.channel_capacity.control.node, 10);
+        assert_eq!(flow.channel_capacity.control.pipeline, 11);
+        assert_eq!(flow.channel_capacity.pdata, 12);
+
+        let health = config.resolve_observability_health_policy();
+        assert_eq!(health.ready_if, vec![crate::health::PhaseKind::Failed]);
+
+        let telemetry = config.resolve_observability_telemetry_policy();
+        assert!(telemetry.channel_metrics);
+    }
+
+    #[test]
+    fn from_yaml_rejects_zero_policy_capacities() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 0
+        pipeline: 0
+      pdata: 0
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("zero capacities should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("flow.channel_capacity.control.node"));
+        assert!(rendered.contains("flow.channel_capacity.control.pipeline"));
+        assert!(rendered.contains("flow.channel_capacity.pdata"));
     }
 
     #[test]

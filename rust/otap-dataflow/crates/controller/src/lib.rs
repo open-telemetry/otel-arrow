@@ -46,6 +46,7 @@ use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::{EngineObservabilityPipelineConfig, OtelDataflowSpec};
 use otap_df_config::pipeline::CoreAllocation;
+use otap_df_config::policy::{FlowPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -104,7 +105,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        let OtelDataflowSpec { engine, groups, .. } = engine_config;
+        let OtelDataflowSpec {
+            engine,
+            groups,
+            policies,
+            ..
+        } = engine_config;
+        let top_flow_policy = policies.flow;
+        let top_telemetry_policy = policies.telemetry;
+        let top_health_policy = policies.health;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -152,12 +161,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
         for (pipeline_group_id, pipeline_group) in groups.iter() {
+            let group_health_policy = pipeline_group.policies.as_ref().map(|p| p.health.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
                 let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
-                obs_state_store.register_pipeline_health_policy(
-                    pipeline_key,
-                    pipeline.pipeline_settings().health_policy.clone(),
-                );
+                let health_policy = pipeline
+                    .policies()
+                    .map(|p| p.health.clone())
+                    .or_else(|| group_health_policy.clone())
+                    .unwrap_or_else(|| top_health_policy.clone());
+                obs_state_store.register_pipeline_health_policy(pipeline_key, health_policy);
             }
         }
 
@@ -166,6 +178,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_core = *all_cores.first().expect("a cpu core");
         let its_key = Self::internal_pipeline_key(its_core);
+        if let Some(pipeline) = observability_pipeline.as_ref() {
+            let health_policy = pipeline
+                .policies
+                .as_ref()
+                .map(|p| p.health.clone())
+                .unwrap_or_else(|| top_health_policy.clone());
+            obs_state_store.register_pipeline_health_policy(
+                PipelineKey::new(
+                    its_key.pipeline_group_id.clone(),
+                    its_key.pipeline_id.clone(),
+                ),
+                health_policy,
+            );
+        }
         let available_core_ids = if pipeline_count == 0 {
             Vec::new()
         } else {
@@ -176,6 +202,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             its_key.clone(),
             its_core,
             observability_pipeline,
+            top_flow_policy.clone(),
+            top_telemetry_policy.clone(),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -250,7 +278,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         for (pipeline_group_id, pipeline_group) in groups {
+            let group_flow_policy = pipeline_group.policies.as_ref().map(|p| p.flow.clone());
+            let group_telemetry_policy = pipeline_group
+                .policies
+                .as_ref()
+                .map(|p| p.telemetry.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
+                let flow_policy = pipeline
+                    .policies()
+                    .map(|p| p.flow.clone())
+                    .or_else(|| group_flow_policy.clone())
+                    .unwrap_or_else(|| top_flow_policy.clone());
+                let telemetry_policy = pipeline
+                    .policies()
+                    .map(|p| p.telemetry.clone())
+                    .or_else(|| group_telemetry_policy.clone())
+                    .unwrap_or_else(|| top_telemetry_policy.clone());
                 let quota = pipeline.quota().clone();
                 let requested_cores = Self::select_cores_for_allocation(
                     available_core_ids.clone(),
@@ -264,11 +307,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_id: pipeline_id.clone(),
                         core_id: core_id.id,
                     };
-                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-                        pipeline
-                            .pipeline_settings()
-                            .default_pipeline_ctrl_msg_channel_size,
-                    );
+                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
+                        pipeline_ctrl_msg_channel(flow_policy.channel_capacity.control.pipeline);
                     ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
                     let pipeline_config = pipeline.clone();
@@ -294,6 +334,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     let run_key = pipeline_key.clone();
                     let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                     let engine_evt_reporter = engine_evt_reporter.clone();
+                    let effective_flow_policy = flow_policy.clone();
+                    let effective_telemetry_policy = telemetry_policy.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
@@ -301,6 +343,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 run_key,
                                 core_id,
                                 pipeline_config,
+                                effective_flow_policy,
+                                effective_telemetry_policy,
                                 pipeline_factory,
                                 pipeline_handle,
                                 engine_evt_reporter,
@@ -417,7 +461,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Starts the controller with the given engine configurations.
     /// ToDo [LQ] We need to minimize duplication of code here
     pub fn run_till_shutdown(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
-        let OtelDataflowSpec { engine, groups, .. } = engine_config;
+        let OtelDataflowSpec {
+            engine,
+            groups,
+            policies,
+            ..
+        } = engine_config;
+        let top_flow_policy = policies.flow;
+        let top_telemetry_policy = policies.telemetry;
+        let top_health_policy = policies.health;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -465,12 +517,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let controller_ctx = ControllerContext::new(telemetry_system.registry());
 
         for (pipeline_group_id, pipeline_group) in groups.iter() {
+            let group_health_policy = pipeline_group.policies.as_ref().map(|p| p.health.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines.iter() {
                 let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
-                obs_state_store.register_pipeline_health_policy(
-                    pipeline_key,
-                    pipeline.pipeline_settings().health_policy.clone(),
-                );
+                let health_policy = pipeline
+                    .policies()
+                    .map(|p| p.health.clone())
+                    .or_else(|| group_health_policy.clone())
+                    .unwrap_or_else(|| top_health_policy.clone());
+                obs_state_store.register_pipeline_health_policy(pipeline_key, health_policy);
             }
         }
 
@@ -479,6 +534,20 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
         let its_core = *all_cores.first().expect("a cpu core");
         let its_key = Self::internal_pipeline_key(its_core);
+        if let Some(pipeline) = observability_pipeline.as_ref() {
+            let health_policy = pipeline
+                .policies
+                .as_ref()
+                .map(|p| p.health.clone())
+                .unwrap_or_else(|| top_health_policy.clone());
+            obs_state_store.register_pipeline_health_policy(
+                PipelineKey::new(
+                    its_key.pipeline_group_id.clone(),
+                    its_key.pipeline_id.clone(),
+                ),
+                health_policy,
+            );
+        }
         let available_core_ids = if pipeline_count == 0 {
             Vec::new()
         } else {
@@ -489,6 +558,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             its_key.clone(),
             its_core,
             observability_pipeline,
+            top_flow_policy.clone(),
+            top_telemetry_policy.clone(),
             &telemetry_system,
             self.pipeline_factory,
             &controller_ctx,
@@ -560,7 +631,22 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         for (pipeline_group_id, pipeline_group) in groups {
+            let group_flow_policy = pipeline_group.policies.as_ref().map(|p| p.flow.clone());
+            let group_telemetry_policy = pipeline_group
+                .policies
+                .as_ref()
+                .map(|p| p.telemetry.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
+                let flow_policy = pipeline
+                    .policies()
+                    .map(|p| p.flow.clone())
+                    .or_else(|| group_flow_policy.clone())
+                    .unwrap_or_else(|| top_flow_policy.clone());
+                let telemetry_policy = pipeline
+                    .policies()
+                    .map(|p| p.telemetry.clone())
+                    .or_else(|| group_telemetry_policy.clone())
+                    .unwrap_or_else(|| top_telemetry_policy.clone());
                 let quota = pipeline.quota().clone();
                 let requested_cores = Self::select_cores_for_allocation(
                     available_core_ids.clone(),
@@ -574,11 +660,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                         pipeline_id: pipeline_id.clone(),
                         core_id: core_id.id,
                     };
-                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(
-                        pipeline
-                            .pipeline_settings()
-                            .default_pipeline_ctrl_msg_channel_size,
-                    );
+                    let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
+                        pipeline_ctrl_msg_channel(flow_policy.channel_capacity.control.pipeline);
                     ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
                     let pipeline_config = pipeline.clone();
@@ -604,6 +687,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     let run_key = pipeline_key.clone();
                     let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                     let engine_evt_reporter = engine_evt_reporter.clone();
+                    let effective_flow_policy = flow_policy.clone();
+                    let effective_telemetry_policy = telemetry_policy.clone();
                     let handle = thread::Builder::new()
                         .name(thread_name.clone())
                         .spawn(move || {
@@ -611,6 +696,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                                 run_key,
                                 core_id,
                                 pipeline_config,
+                                effective_flow_policy,
+                                effective_telemetry_policy,
                                 pipeline_factory,
                                 pipeline_handle,
                                 engine_evt_reporter,
@@ -840,6 +927,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         its_key: DeployedPipelineKey,
         its_core: CoreId,
         observability_pipeline: Option<EngineObservabilityPipelineConfig>,
+        default_flow_policy: FlowPolicy,
+        default_telemetry_policy: TelemetryPolicy,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
         controller_ctx: &ControllerContext,
@@ -847,8 +936,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: &MetricsReporter,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
-        let internal_config: PipelineConfig = match observability_pipeline {
-            Some(config) => config.into_pipeline_config(),
+        let (internal_config, flow_policy, telemetry_policy): (
+            PipelineConfig,
+            FlowPolicy,
+            TelemetryPolicy,
+        ) = match observability_pipeline {
+            Some(config) => {
+                let flow_policy = config
+                    .policies
+                    .as_ref()
+                    .map(|p| p.flow.clone())
+                    .unwrap_or(default_flow_policy);
+                let telemetry_policy = config
+                    .policies
+                    .as_ref()
+                    .map(|p| p.telemetry.clone())
+                    .unwrap_or(default_telemetry_policy);
+                (config.into_pipeline_config(), flow_policy, telemetry_policy)
+            }
             _ => {
                 // Note: Inconsistent configurations are checked elsewhere.
                 // This method is "_if_configured()" for lifetime reasons,
@@ -875,11 +980,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         );
 
         // Create control message channel for internal pipeline
-        let (internal_ctrl_tx, internal_ctrl_rx) = pipeline_ctrl_msg_channel(
-            internal_config
-                .pipeline_settings()
-                .default_pipeline_ctrl_msg_channel_size,
-        );
+        let (internal_ctrl_tx, internal_ctrl_rx) =
+            pipeline_ctrl_msg_channel(flow_policy.channel_capacity.control.pipeline);
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
@@ -887,6 +989,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let thread_name = "internal-pipeline".to_string();
         let internal_evt_reporter = engine_evt_reporter.clone();
         let internal_metrics_reporter = metrics_reporter.clone();
+        let internal_flow_policy = flow_policy;
+        let internal_telemetry_policy = telemetry_policy;
 
         let handle = thread::Builder::new()
             .name(thread_name.clone())
@@ -895,6 +999,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     its_key,
                     its_core,
                     internal_config,
+                    internal_flow_policy,
+                    internal_telemetry_policy,
                     pipeline_factory,
                     internal_pipeline_ctx,
                     internal_evt_reporter,
@@ -940,6 +1046,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
         pipeline_config: PipelineConfig,
+        flow_policy: FlowPolicy,
+        telemetry_policy: TelemetryPolicy,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
         obs_evt_reporter: ObservedEventReporter,
@@ -988,6 +1096,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .build(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
+                    flow_policy,
+                    telemetry_policy,
                     its_settings,
                 )
                 .map_err(|e| {

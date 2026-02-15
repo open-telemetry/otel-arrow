@@ -29,6 +29,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
+    policy::{FlowPolicy, TelemetryPolicy},
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -372,6 +373,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         mut config: PipelineConfig,
+        flow_policy: FlowPolicy,
+        telemetry_policy: TelemetryPolicy,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -425,7 +428,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
         self.validate_connection_wiring_contracts(&config)?;
 
-        let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+        let channel_metrics_enabled = telemetry_policy.channel_metrics;
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
@@ -457,7 +460,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id,
                         channel_metrics_enabled,
-                        || self.create_receiver(&base_ctx, node_id_for_create, node_config.clone()),
+                        || {
+                            self.create_receiver(
+                                &base_ctx,
+                                node_id_for_create,
+                                node_config.clone(),
+                                flow_policy.channel_capacity.control.node,
+                                flow_policy.channel_capacity.pdata,
+                            )
+                        },
                     )?;
                     receivers.push(wrapper);
                 }
@@ -479,6 +490,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 &base_ctx,
                                 node_id_for_create,
                                 node_config.clone(),
+                                flow_policy.channel_capacity.control.node,
+                                flow_policy.channel_capacity.pdata,
                             )
                         },
                     )?;
@@ -497,7 +510,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id,
                         channel_metrics_enabled,
-                        || self.create_exporter(&base_ctx, node_id_for_create, node_config.clone()),
+                        || {
+                            self.create_exporter(
+                                &base_ctx,
+                                node_id_for_create,
+                                node_config.clone(),
+                                flow_policy.channel_capacity.control.node,
+                                flow_policy.channel_capacity.pdata,
+                            )
+                        },
                     )?;
                     exporters.push(wrapper);
                 }
@@ -513,10 +534,17 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
-        let buffer_size = NonZeroUsize::new(config.pipeline_settings().default_pdata_channel_size)
-            .expect("default_pdata_channel_size must be non-zero");
+        let buffer_size = NonZeroUsize::new(flow_policy.channel_capacity.pdata)
+            .expect("flow.channel_capacity.pdata must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
-        let mut pipeline = RuntimePipeline::new(config, receivers, processors, exporters, nodes);
+        let mut pipeline = RuntimePipeline::new(
+            config,
+            receivers,
+            processors,
+            exporters,
+            nodes,
+            telemetry_policy,
+        );
         let wirings = edges
             .into_iter()
             .map(|hyper_edge| {
@@ -1127,6 +1155,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1154,7 +1184,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownReceiver {
                 plugin_urn: normalized,
             })?;
-        let runtime_config = ReceiverConfig::new(name.clone());
+        let runtime_config = ReceiverConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let node_id_for_create = node_id.clone();
@@ -1183,6 +1217,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ProcessorWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1210,7 +1246,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownProcessor {
                 plugin_urn: normalized,
             })?;
-        let processor_config = ProcessorConfig::new(name.clone());
+        let processor_config = ProcessorConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let node_id_for_create = node_id.clone();
@@ -1239,6 +1279,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         pipeline_ctx: &PipelineContext,
         node_id: NodeId,
         node_config: Arc<NodeUserConfig>,
+        control_channel_capacity: usize,
+        pdata_channel_capacity: usize,
     ) -> Result<ExporterWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
         let pipeline_id = pipeline_ctx.pipeline_id();
@@ -1266,7 +1308,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or(Error::UnknownExporter {
                 plugin_urn: normalized,
             })?;
-        let exporter_config = ExporterConfig::new(name.clone());
+        let exporter_config = ExporterConfig::with_channel_capacities(
+            name.clone(),
+            control_channel_capacity,
+            pdata_channel_capacity,
+        );
         let create = factory.create;
 
         let node_id_for_create = node_id.clone();

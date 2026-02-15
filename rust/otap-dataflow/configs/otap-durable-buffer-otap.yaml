@@ -14,11 +14,14 @@ groups:
         #
         # To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
         
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-        
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
         nodes:
           receiver:
             type: otap:receiver

@@ -5,11 +5,14 @@ groups:
     pipelines:
       main:
         # Shows the batch processor.
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-        
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
         nodes:
           receiver:
             type: traffic_generator:receiver

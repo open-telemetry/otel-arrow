@@ -17,9 +17,9 @@ At pipeline level:
 
 - `nodes`: map of node id -> node declaration
 - `connections`: explicit graph wiring
-- `settings`, `quota`, `service`
+- `quota`, `policies`
 
-Note: `settings`, `quota`, and `service` are not yet fully stabilized in v1.
+Note: `quota` and `policies` are not yet fully stabilized in v1.
 
 At node level:
 
@@ -42,6 +42,34 @@ Important behavior:
 - Parsing is strict: unknown fields are rejected (might be relaxed in the future
   if we find good use cases for extensibility, but for now this is intentional
   to catch typos and mistakes early).
+
+## Policy Hierarchy
+
+Policies include flow, health, and runtime telemetry controls:
+
+```yaml
+policies:
+  flow:
+    channel_capacity:
+      control:
+        node: 256
+        pipeline: 256
+      pdata: 128
+  health:
+    # optional overrides; defaults are applied when omitted
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: true
+```
+
+Scope precedence:
+
+- regular pipelines: `pipeline.policies` -> `group.policies` -> top-level `policies`
+- observability pipeline: `engine.observability.pipeline.policies` -> top-level `policies`
+
+Top-level policies carry defaults. Lower scopes are optional overrides.
+Policies are resolved as whole objects (no cross-scope deep merge).
 
 ## Output Ports
 

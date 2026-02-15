@@ -5,9 +5,8 @@
 pub mod telemetry;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
-use crate::health::HealthPolicy;
 use crate::node::{NodeKind, NodeUserConfig};
-use crate::settings::TelemetrySettings;
+use crate::policy::Policies;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -24,7 +23,8 @@ use std::sync::Arc;
 ///   communication semantics. For example, it can route each message to one destination (`one_of`), or
 ///   in the future it can broadcast to every destination.
 ///
-/// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
+/// This configuration defines the pipeline’s nodes, the interconnections
+/// (hyper-edges), optional pipeline-level policies, and resource quota.
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
 /// deserializing directly with serde to ensure plugin URNs are normalized.
@@ -38,9 +38,9 @@ pub struct PipelineConfig {
     #[serde(default = "default_pipeline_type")]
     r#type: PipelineType,
 
-    /// Settings for this pipeline.
-    #[serde(default)]
-    settings: PipelineSettings,
+    /// Optional policy set for this pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policies: Option<Policies>,
 
     /// Quota for this pipeline.
     #[serde(default)]
@@ -505,60 +505,6 @@ impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
     }
 }
 
-/// A configuration for a pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PipelineSettings {
-    /// The default size of the node control message channels.
-    /// These channels are used for sending control messages by the pipeline engine to nodes.
-    #[serde(default = "default_node_ctrl_msg_channel_size")]
-    pub default_node_ctrl_msg_channel_size: usize,
-
-    /// The default size of the pipeline control message channels.
-    /// This MPSC channel is used for sending control messages from nodes to the pipeline engine.
-    #[serde(default = "default_pipeline_ctrl_msg_channel_size")]
-    pub default_pipeline_ctrl_msg_channel_size: usize,
-
-    /// The default size of the pdata channels.
-    #[serde(default = "default_pdata_channel_size")]
-    pub default_pdata_channel_size: usize,
-
-    /// Health policy.
-    #[serde(default)]
-    pub health_policy: HealthPolicy,
-
-    /// Pipeline-level telemetry settings.
-    ///
-    /// These flags control capture of pipeline runtime metrics emitted by the pipeline
-    /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
-    ///
-    /// This is distinct from top-level `engine.telemetry`, which configures
-    /// OpenTelemetry signal export settings.
-    #[serde(default)]
-    pub telemetry: TelemetrySettings,
-}
-
-const fn default_node_ctrl_msg_channel_size() -> usize {
-    100
-}
-const fn default_pipeline_ctrl_msg_channel_size() -> usize {
-    100
-}
-const fn default_pdata_channel_size() -> usize {
-    100
-}
-
-impl Default for PipelineSettings {
-    fn default() -> Self {
-        Self {
-            default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
-            default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
-            default_pdata_channel_size: default_pdata_channel_size(),
-            health_policy: HealthPolicy::default(),
-            telemetry: TelemetrySettings::default(),
-        }
-    }
-}
-
 impl PipelineConfig {
     /// Create a new [`PipelineConfig`] from a JSON string.
     pub fn from_json(
@@ -596,10 +542,10 @@ impl PipelineConfig {
         Ok(spec)
     }
 
-    /// Returns the general settings for this pipeline.
+    /// Returns the policy set for this pipeline, if defined.
     #[must_use]
-    pub const fn pipeline_settings(&self) -> &PipelineSettings {
-        &self.settings
+    pub const fn policies(&self) -> Option<&Policies> {
+        self.policies.as_ref()
     }
 
     /// Returns the quota configuration for this pipeline.
@@ -721,33 +667,16 @@ impl PipelineConfig {
     /// Builds a dedicated engine observability pipeline configuration.
     #[must_use]
     pub fn for_observability_pipeline(
+        policies: Option<Policies>,
         nodes: PipelineNodes,
         connections: Vec<PipelineConnection>,
     ) -> Self {
         Self {
             r#type: PipelineType::Otap,
-            settings: Self::observability_pipeline_settings(),
+            policies,
             quota: Quota::default(),
             nodes,
             connections,
-        }
-    }
-
-    /// Returns hardcoded settings for the engine observability pipeline.
-    ///
-    /// TODO: these are hard-coded, add configurability.
-    #[must_use]
-    pub fn observability_pipeline_settings() -> PipelineSettings {
-        PipelineSettings {
-            default_node_ctrl_msg_channel_size: 50,
-            default_pipeline_ctrl_msg_channel_size: 50,
-            default_pdata_channel_size: 50,
-            health_policy: HealthPolicy::default(),
-            telemetry: TelemetrySettings {
-                pipeline_metrics: false,
-                tokio_metrics: false,
-                channel_metrics: false,
-            },
         }
     }
 
@@ -1323,7 +1252,7 @@ impl PipelineConfigBuilder {
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 connections: built_connections,
-                settings: PipelineSettings::default(),
+                policies: None,
                 quota: Quota::default(),
                 r#type: pipeline_type,
             };
@@ -1896,16 +1825,10 @@ sink:
         )
         .expect("connections should parse");
 
-        let config = super::PipelineConfig::for_observability_pipeline(nodes, connections);
+        let config = super::PipelineConfig::for_observability_pipeline(None, nodes, connections);
         assert_eq!(config.node_iter().count(), 2);
         assert_eq!(config.connection_iter().count(), 1);
-        assert_eq!(
-            config
-                .pipeline_settings()
-                .default_node_ctrl_msg_channel_size,
-            50
-        );
-        assert!(!config.pipeline_settings().telemetry.pipeline_metrics);
+        assert!(config.policies().is_none());
     }
 
     #[test]

@@ -16,11 +16,14 @@ groups:
         #
         # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
         
-        settings:
-          default_pipeline_ctrl_msg_channel_size: 100
-          default_node_ctrl_msg_channel_size: 100
-          default_pdata_channel_size: 100
-        
+        policies:
+          flow:
+            channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
+
         nodes:
           receiver:
             type: otlp:receiver
