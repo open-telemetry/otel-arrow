@@ -587,6 +587,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
+    use std::collections::BTreeMap;
     use std::time::{Duration, SystemTime};
     use tracing::Level;
 
@@ -703,6 +704,100 @@ mod tests {
             format_log_record_to_string(None, &log_event.record),
             format!("INFO  {event_name} entity={:?}\n", entity_key),
         );
+        assert_eq!(expected, decoded);
+    }
+
+    // --- Test infrastructure for Map (kvlist) scope attributes ---
+
+    static TEST_MAP_ATTRIBUTES_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+        name: "TestMap",
+        fields: &[AttributeField {
+            key: "custom",
+            r#type: AttributeValueType::Map,
+            brief: "Custom user-defined attributes",
+        }],
+    };
+
+    /// Mirrors engine::CustomAttributeSet: a single "custom" field of type Map.
+    #[derive(Debug)]
+    struct TestMapAttributes {
+        values: Vec<AttributeValue>,
+    }
+
+    impl TestMapAttributes {
+        fn new(map: BTreeMap<String, AttributeValue>) -> Self {
+            Self {
+                values: vec![AttributeValue::Map(map)],
+            }
+        }
+    }
+
+    impl AttributeSetHandler for TestMapAttributes {
+        fn descriptor(&self) -> &'static AttributesDescriptor {
+            &TEST_MAP_ATTRIBUTES_DESCRIPTOR
+        }
+
+        fn attribute_values(&self) -> &[AttributeValue] {
+            &self.values
+        }
+    }
+
+    /// Validate that Map attributes encode as OTLP kvlist values in
+    /// InstrumentationScope.attributes. This mirrors what CustomAttributeSet
+    /// does for user-defined node/pipeline attributes.
+    #[test]
+    fn encode_export_logs_request_with_map_scope_attribute() {
+        let registry = TelemetryRegistryHandle::new();
+
+        let mut custom_map = BTreeMap::new();
+        let _ = custom_map.insert(
+            "priority".to_string(),
+            AttributeValue::Int(5),
+        );
+        let _ = custom_map.insert(
+            "region".to_string(),
+            AttributeValue::String("us-east-1".into()),
+        );
+
+        let entity_key = registry.register_entity(TestMapAttributes::new(custom_map));
+        let mut scope_cache = ScopeToBytesMap::new(registry.clone());
+
+        let mut record = __log_record_impl!(Level::INFO, "test.map.encoding");
+        record.context = LogContext::from_buf([entity_key]);
+
+        let timestamp_ns: u64 = 1_705_321_845_000_000_000;
+        let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
+        let log_event = LogEvent { time, record };
+
+        let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
+        let mut buf = ProtoBuffer::with_capacity(512);
+        encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
+
+        let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
+        let event_name = &decoded.resource_logs[0].scope_logs[0].log_records[0].event_name;
+        assert!(event_name.starts_with("otap-df-telemetry::test.map.encoding"));
+
+        // BTreeMap iterates in sorted key order: "priority" before "region".
+        let expected = ExportLogsServiceRequest::new([ResourceLogs::new(
+            Resource::build().finish(),
+            [ScopeLogs::new(
+                InstrumentationScope::build()
+                    .attributes([KeyValue::new(
+                        "custom",
+                        AnyValue::new_kvlist(vec![
+                            KeyValue::new("priority", AnyValue::new_int(5)),
+                            KeyValue::new("region", AnyValue::new_string("us-east-1")),
+                        ]),
+                    )])
+                    .finish(),
+                [LogRecord::build()
+                    .event_name(event_name)
+                    .time_unix_nano(timestamp_ns)
+                    .severity_number(SeverityNumber::Info)
+                    .finish()],
+            )],
+        )]);
+
         assert_eq!(expected, decoded);
     }
 }
