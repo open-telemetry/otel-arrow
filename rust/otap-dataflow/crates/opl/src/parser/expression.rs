@@ -451,6 +451,10 @@ pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         Rule::index_expression => parse_index_expression(rule),
         Rule::primitive_expression => parse_primitive_expression(rule),
         Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
+        Rule::datetime_expression => {
+            let date_time_expr = parse_datetime_expression(rule)?;
+            Ok(ScalarExpression::Static(date_time_expr).into())
+        }
         Rule::function_call => parse_function_call(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -581,15 +585,10 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             BooleanScalarExpression::new(query_location, false),
         ))
         .into()),
-
         Rule::null_token => Ok(ScalarExpression::Static(StaticScalarExpression::Null(
             NullScalarExpression::new(query_location),
         ))
         .into()),
-        Rule::datetime_expression => {
-            let date_time_expr = parse_datetime_expression(rule)?;
-            Ok(ScalarExpression::Static(date_time_expr).into())
-        }
         Rule::expression => parse_expression(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -785,6 +784,20 @@ mod test {
             ),
             (
                 "datetime(2026-02-04)",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
+            ),
+            (
+                "datetime(\"2026-02-04\")",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
+            ),
+            (
+                "datetime('2026-02-04')",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
                     create_utc(2026, 2, 4, 0, 0, 0, 0),

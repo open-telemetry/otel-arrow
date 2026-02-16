@@ -36,7 +36,6 @@ primitive_expression = {
   | bool_true_token
   | bool_false_token
   | null_token
-  | datetime_expression
   | identifier_expression
   | "(" ~ expression ~ ")"
 }
@@ -63,8 +62,9 @@ function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 member_expression = {
     index_expression
   | attribute_selection_expression
+  | datetime_expression
   | function_call
-  | primitive_expression // TODO function calls
+  | primitive_expression
 }
 
 integer_literal = @{
