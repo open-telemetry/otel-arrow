@@ -71,6 +71,8 @@ pub(crate) fn create_fixed(
         .unwrap()
 }
 
+/// parse string representation of date to [`DateTime<FixedOffset>`]
+#[allow(clippy::result_unit_err)]
 pub fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> {
     let mut raw_value: String = input.into();
 
