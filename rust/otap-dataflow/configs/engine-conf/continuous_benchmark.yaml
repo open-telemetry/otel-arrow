@@ -22,10 +22,11 @@ groups:
       # ======================================================================
       # First group of traffic generators based a static pre-generated dataset
       traffic_gen1:
-        quota:
-          core_allocation:
-            type: core_count
-            count: 15
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 15
 
         nodes:
           receiver:
@@ -51,13 +52,13 @@ groups:
             to: exporter
 
       traffic_gen2:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 21
-                end: 35
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 21
+                  end: 35
 
         nodes:
           receiver:
@@ -83,13 +84,13 @@ groups:
           - from: receiver
             to: exporter
       sut:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 0
-                end: 1
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
         nodes:
           otlp_recv1:
             type: otlp:receiver
@@ -150,13 +151,13 @@ groups:
             to: logs_exporter
 
       backend:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 1
-                end: 1
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 1
+                  end: 1
 
         nodes:
           receiver:

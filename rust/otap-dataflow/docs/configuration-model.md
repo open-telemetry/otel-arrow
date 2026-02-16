@@ -17,9 +17,9 @@ At pipeline level:
 
 - `nodes`: map of node id -> node declaration
 - `connections`: explicit graph wiring
-- `quota`, `policies`
+- `policies`
 
-Note: `quota` and `policies` are not yet fully stabilized in v1.
+Note: `policies` are not yet fully stabilized in v1.
 
 At node level:
 
@@ -45,7 +45,7 @@ Important behavior:
 
 ## Policy Hierarchy
 
-Policies include flow, health, and runtime telemetry controls:
+Policies include flow, health, runtime telemetry, and resources controls:
 
 ```yaml
 policies:
@@ -61,12 +61,17 @@ policies:
     pipeline_metrics: true
     tokio_metrics: true
     channel_metrics: true
+  resources:
+    core_allocation:
+      type: all_cores
 ```
 
 Scope precedence:
 
 - regular pipelines: `pipeline.policies` -> `group.policies` -> top-level `policies`
 - observability pipeline: `engine.observability.pipeline.policies` -> top-level `policies`
+
+Note: `engine.observability.pipeline.policies.resources` is currently not supported.
 
 Top-level policies carry defaults. Lower scopes are optional overrides.
 Policies are resolved as whole objects (no cross-scope deep merge).

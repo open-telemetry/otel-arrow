@@ -6,8 +6,9 @@
 //! This controller is responsible for deploying, managing, and monitoring pipeline groups
 //! within the current process.
 //!
-//! Each pipeline configuration declares its CPU requirements through quota settings.
-//! Based on these settings, the controller allocates CPU cores and spawns one dedicated
+//! Each pipeline configuration declares its CPU requirements through
+//! `policies.resources.core_allocation`.
+//! Based on this policy, the controller allocates CPU cores and spawns one dedicated
 //! thread per assigned core. Threads are pinned to distinct CPU cores, following a
 //! strict thread-per-core model.
 //!
@@ -45,8 +46,7 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::{EngineObservabilityPipelineConfig, OtelDataflowSpec};
-use otap_df_config::pipeline::CoreAllocation;
-use otap_df_config::policy::{FlowPolicy, TelemetryPolicy};
+use otap_df_config::policy::{CoreAllocation, FlowPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -114,6 +114,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let top_flow_policy = policies.flow;
         let top_telemetry_policy = policies.telemetry;
         let top_health_policy = policies.health;
+        let top_resources_policy = policies.resources;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -283,6 +284,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .policies
                 .as_ref()
                 .map(|p| p.telemetry.clone());
+            let group_resources_policy = pipeline_group
+                .policies
+                .as_ref()
+                .map(|p| p.resources.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let flow_policy = pipeline
                     .policies()
@@ -294,10 +299,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .map(|p| p.telemetry.clone())
                     .or_else(|| group_telemetry_policy.clone())
                     .unwrap_or_else(|| top_telemetry_policy.clone());
-                let quota = pipeline.quota().clone();
+                let resources_policy = pipeline
+                    .policies()
+                    .map(|p| p.resources.clone())
+                    .or_else(|| group_resources_policy.clone())
+                    .unwrap_or_else(|| top_resources_policy.clone());
                 let requested_cores = Self::select_cores_for_allocation(
                     available_core_ids.clone(),
-                    &quota.core_allocation,
+                    &resources_policy.core_allocation,
                 )?;
 
                 let num_cores = requested_cores.len();
@@ -470,6 +479,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let top_flow_policy = policies.flow;
         let top_telemetry_policy = policies.telemetry;
         let top_health_policy = policies.health;
+        let top_resources_policy = policies.resources;
         let observability_pipeline = engine.observability.pipeline;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
@@ -636,6 +646,10 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .policies
                 .as_ref()
                 .map(|p| p.telemetry.clone());
+            let group_resources_policy = pipeline_group
+                .policies
+                .as_ref()
+                .map(|p| p.resources.clone());
             for (pipeline_id, pipeline) in pipeline_group.pipelines {
                 let flow_policy = pipeline
                     .policies()
@@ -647,10 +661,14 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     .map(|p| p.telemetry.clone())
                     .or_else(|| group_telemetry_policy.clone())
                     .unwrap_or_else(|| top_telemetry_policy.clone());
-                let quota = pipeline.quota().clone();
+                let resources_policy = pipeline
+                    .policies()
+                    .map(|p| p.resources.clone())
+                    .or_else(|| group_resources_policy.clone())
+                    .unwrap_or_else(|| top_resources_policy.clone());
                 let requested_cores = Self::select_cores_for_allocation(
                     available_core_ids.clone(),
-                    &quota.core_allocation,
+                    &resources_policy.core_allocation,
                 )?;
 
                 let num_cores = requested_cores.len();
@@ -1161,7 +1179,7 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::CoreRange;
+    use otap_df_config::policy::CoreRange;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![

@@ -19,8 +19,8 @@ Main public model types:
 
 - `engine::OtelDataflowSpec`: root multi-pipeline-group config
 - `pipeline_group::PipelineGroupConfig`
-- `pipeline::PipelineConfig`: nodes, connections, quota, optional policies
-- `policy::Policies`: hierarchical flow/health/telemetry policies
+- `pipeline::PipelineConfig`: nodes, connections, optional policies
+- `policy::Policies`: hierarchical flow/health/telemetry/resources policies
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 
@@ -58,10 +58,16 @@ Health and runtime telemetry controls are configured via:
 - `policies.telemetry.tokio_metrics`
 - `policies.telemetry.channel_metrics`
 
+Resource controls are configured via:
+
+- `policies.resources.core_allocation`
+
 Resolution order:
 
 - regular pipelines: pipeline -> group -> top-level
 - observability pipeline: `engine.observability.pipeline` -> top-level
+
+Note: observability pipeline policies currently do not accept `resources`.
 
 ## Node Type (`NodeUrn`)
 

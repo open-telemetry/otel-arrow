@@ -34,13 +34,13 @@ groups:
       # Validation pipeline to validate equivalence
       # ======================================================================
       validate:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 1
-                end: 1
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 1
+                  end: 1
         nodes:
           suv_receiver:
             type: "{{ suv_receiver_plugin_urn }}"
@@ -78,26 +78,26 @@ groups:
       # System Under Validation pipeline
       # ======================================================================
       suv:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 0
-                end: 0
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 0
 {{ suv_pipeline | indent(8, true)}}
 
       # ======================================================================
       # Pipeline generating traffic
       # ======================================================================
       traffic_gen:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 2
-                end: 2
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 2
+                  end: 2
 
         nodes:
           receiver:

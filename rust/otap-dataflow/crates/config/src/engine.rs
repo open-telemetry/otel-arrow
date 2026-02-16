@@ -9,7 +9,7 @@ use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
-use crate::policy::{FlowPolicy, Policies, TelemetryPolicy};
+use crate::policy::{FlowPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
 use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ pub struct OtelDataflowSpec {
 
     /// Engine-wide runtime declarations.
     #[serde(default)]
-    pub engine: EngineSectionConfig,
+    pub engine: EngineConfig,
 
     /// All groups managed by this engine, keyed by group ID.
     pub groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
@@ -42,7 +42,7 @@ pub struct OtelDataflowSpec {
 /// Top-level engine configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
-pub struct EngineSectionConfig {
+pub struct EngineConfig {
     /// Optional HTTP admin server configuration.
     pub http_admin: Option<HttpAdminSettings>,
 
@@ -73,8 +73,10 @@ pub struct EngineObservabilityConfig {
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
     /// Optional policy set for this observability pipeline.
+    ///
+    /// Note: resources policy is intentionally unsupported for observability for now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policies: Option<Policies>,
+    pub policies: Option<EngineObservabilityPolicies>,
 
     /// Nodes of the observability pipeline.
     #[serde(default)]
@@ -89,7 +91,46 @@ impl EngineObservabilityPipelineConfig {
     /// Converts this config into a runtime [`PipelineConfig`].
     #[must_use]
     pub fn into_pipeline_config(self) -> PipelineConfig {
-        PipelineConfig::for_observability_pipeline(self.policies, self.nodes, self.connections)
+        PipelineConfig::for_observability_pipeline(
+            self.policies
+                .map(EngineObservabilityPolicies::into_policies),
+            self.nodes,
+            self.connections,
+        )
+    }
+}
+
+/// Policy declarations allowed on the dedicated engine observability pipeline.
+///
+/// Note: `resources` is intentionally not supported yet for observability.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct EngineObservabilityPolicies {
+    /// Flow-related policies.
+    #[serde(default)]
+    pub flow: FlowPolicy,
+    /// Health policy used by observed-state liveness/readiness evaluation.
+    #[serde(default)]
+    pub health: HealthPolicy,
+    /// Runtime telemetry policy controlling pipeline-local metric collection.
+    #[serde(default)]
+    pub telemetry: TelemetryPolicy,
+}
+
+impl EngineObservabilityPolicies {
+    #[must_use]
+    fn into_policies(self) -> Policies {
+        Policies {
+            flow: self.flow,
+            health: self.health,
+            telemetry: self.telemetry,
+            resources: ResourcesPolicy::default(),
+        }
+    }
+
+    #[must_use]
+    fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        self.clone().into_policies().validation_errors(path_prefix)
     }
 }
 
@@ -190,7 +231,7 @@ impl OtelDataflowSpec {
         pipeline_group_id: PipelineGroupId,
         pipeline_id: PipelineId,
         pipeline: PipelineConfig,
-        engine: EngineSectionConfig,
+        engine: EngineConfig,
     ) -> Result<Self, Error> {
         let mut pipeline_group = PipelineGroupConfig::new();
         pipeline_group.add_pipeline(pipeline_id, pipeline)?;
@@ -275,6 +316,33 @@ impl OtelDataflowSpec {
                     .map(|p| p.telemetry.clone())
             })
             .or_else(|| Some(self.policies.telemetry.clone()))
+    }
+
+    /// Resolves the effective resources policy for a pipeline.
+    ///
+    /// Precedence:
+    /// 1. pipeline-level policies
+    /// 2. group-level policies
+    /// 3. top-level policies
+    #[must_use]
+    pub fn resolve_resources_policy(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        pipeline_id: &PipelineId,
+    ) -> Option<ResourcesPolicy> {
+        let pipeline_group = self.groups.get(pipeline_group_id)?;
+        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
+
+        pipeline
+            .policies()
+            .map(|p| p.resources.clone())
+            .or_else(|| {
+                pipeline_group
+                    .policies
+                    .as_ref()
+                    .map(|p| p.resources.clone())
+            })
+            .or_else(|| Some(self.policies.resources.clone()))
     }
 
     /// Resolves the effective flow policy for the engine observability pipeline.
@@ -517,6 +585,10 @@ groups:
         assert!(config.policies.telemetry.pipeline_metrics);
         assert!(config.policies.telemetry.tokio_metrics);
         assert!(config.policies.telemetry.channel_metrics);
+        assert_eq!(
+            config.policies.resources.core_allocation,
+            crate::policy::CoreAllocation::AllCores
+        );
     }
 
     #[test]
@@ -534,6 +606,10 @@ policies:
     ready_if: [Running]
   telemetry:
     channel_metrics: false
+  resources:
+    core_allocation:
+      type: core_count
+      count: 9
 engine: {}
 groups:
   g1:
@@ -548,6 +624,10 @@ groups:
         ready_if: [Running, Updating]
       telemetry:
         channel_metrics: true
+      resources:
+        core_allocation:
+          type: core_count
+          count: 5
     pipelines:
       p1:
         policies:
@@ -561,6 +641,10 @@ groups:
             ready_if: [Failed]
           telemetry:
             channel_metrics: false
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
         nodes:
           receiver:
             type: "urn:test:example:receiver"
@@ -655,6 +739,30 @@ groups:
             .resolve_telemetry_policy(&"g2".into(), &"p3".into())
             .expect("p3 telemetry should resolve");
         assert!(!t3.channel_metrics);
+
+        let r1 = config
+            .resolve_resources_policy(&"g1".into(), &"p1".into())
+            .expect("p1 resources should resolve");
+        assert_eq!(
+            r1.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 2 }
+        );
+
+        let r2 = config
+            .resolve_resources_policy(&"g1".into(), &"p2".into())
+            .expect("p2 resources should resolve");
+        assert_eq!(
+            r2.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 5 }
+        );
+
+        let r3 = config
+            .resolve_resources_policy(&"g2".into(), &"p3".into())
+            .expect("p3 resources should resolve");
+        assert_eq!(
+            r3.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 9 }
+        );
     }
 
     #[test]
@@ -723,6 +831,53 @@ groups:
 
         let telemetry = config.resolve_observability_telemetry_policy();
         assert!(telemetry.channel_metrics);
+    }
+
+    #[test]
+    fn from_yaml_rejects_observability_resources_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      policies:
+        resources:
+          core_allocation:
+            type: core_count
+            count: 2
+      nodes:
+        itr:
+          type: "urn:otel:internal_telemetry:receiver"
+          config: {}
+        sink:
+          type: "urn:otel:console:exporter"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject resources");
+        match err {
+            Error::DeserializationError { details, .. } => {
+                assert!(details.contains("unknown field `resources`"));
+            }
+            other => panic!("expected deserialization error, got: {other:?}"),
+        }
     }
 
     #[test]
