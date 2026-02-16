@@ -134,6 +134,46 @@ impl EngineObservabilityPolicies {
     }
 }
 
+/// Resolved policy snapshot for an engine configuration.
+///
+/// This is a deterministic snapshot computed from [`OtelDataflowSpec`]
+/// using hierarchy precedence rules.
+#[derive(Debug, Clone)]
+pub struct ResolvedOtelDataflowSpec {
+    /// Engine-wide runtime declarations.
+    pub engine: EngineConfig,
+    /// Resolved pipeline configurations for all regular pipelines.
+    pub pipelines: Vec<ResolvedPipelineConfig>,
+    /// Resolved observability pipeline when configured.
+    pub observability_pipeline: Option<ResolvedObservabilityPipeline>,
+}
+
+/// Resolved data for one regular pipeline.
+#[derive(Debug, Clone)]
+pub struct ResolvedPipelineConfig {
+    /// Pipeline group identifier.
+    pub pipeline_group_id: PipelineGroupId,
+    /// Pipeline identifier.
+    pub pipeline_id: PipelineId,
+    /// Pipeline definition.
+    pub pipeline: PipelineConfig,
+    /// Resolved policies after hierarchy resolution.
+    pub policies: Policies,
+}
+
+/// Resolved data for the observability pipeline.
+#[derive(Debug, Clone)]
+pub struct ResolvedObservabilityPipeline {
+    /// Pipeline declaration.
+    pub pipeline: EngineObservabilityPipelineConfig,
+    /// Resolved flow policy after hierarchy resolution.
+    pub flow_policy: FlowPolicy,
+    /// Resolved health policy after hierarchy resolution.
+    pub health_policy: HealthPolicy,
+    /// Resolved telemetry policy after hierarchy resolution.
+    pub telemetry_policy: TelemetryPolicy,
+}
+
 /// Configuration for the HTTP admin endpoints.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -245,6 +285,78 @@ impl OtelDataflowSpec {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Resolves and materializes policies once for all pipelines.
+    ///
+    /// The returned snapshot is deterministic: pipelines are ordered by
+    /// `(group_id, pipeline_id)` lexicographically.
+    #[must_use]
+    pub fn resolve(&self) -> ResolvedOtelDataflowSpec {
+        let mut pipeline_keys = Vec::new();
+        for (pipeline_group_id, pipeline_group) in &self.groups {
+            for pipeline_id in pipeline_group.pipelines.keys() {
+                pipeline_keys.push((pipeline_group_id.clone(), pipeline_id.clone()));
+            }
+        }
+        pipeline_keys.sort_by(|(g1, p1), (g2, p2)| {
+            g1.as_ref()
+                .cmp(g2.as_ref())
+                .then_with(|| p1.as_ref().cmp(p2.as_ref()))
+        });
+
+        let pipelines = pipeline_keys
+            .into_iter()
+            .map(|(pipeline_group_id, pipeline_id)| {
+                let pipeline_group = self
+                    .groups
+                    .get(&pipeline_group_id)
+                    .expect("pipeline group collected during resolve must still exist in map");
+                let pipeline = pipeline_group
+                    .pipelines
+                    .get(&pipeline_id)
+                    .expect("pipeline collected during resolve must still exist in group map")
+                    .clone();
+                let flow_policy = self
+                    .resolve_flow_policy(&pipeline_group_id, &pipeline_id)
+                    .expect("effective flow policy must resolve for existing pipeline");
+                let health_policy = self
+                    .resolve_health_policy(&pipeline_group_id, &pipeline_id)
+                    .expect("effective health policy must resolve for existing pipeline");
+                let telemetry_policy = self
+                    .resolve_telemetry_policy(&pipeline_group_id, &pipeline_id)
+                    .expect("effective telemetry policy must resolve for existing pipeline");
+                let resources_policy = self
+                    .resolve_resources_policy(&pipeline_group_id, &pipeline_id)
+                    .expect("effective resources policy must resolve for existing pipeline");
+                ResolvedPipelineConfig {
+                    pipeline_group_id,
+                    pipeline_id,
+                    pipeline,
+                    policies: Policies {
+                        flow: flow_policy,
+                        health: health_policy,
+                        telemetry: telemetry_policy,
+                        resources: resources_policy,
+                    },
+                }
+            })
+            .collect();
+
+        let observability_pipeline = self.engine.observability.pipeline.clone().map(|pipeline| {
+            ResolvedObservabilityPipeline {
+                pipeline,
+                flow_policy: self.resolve_observability_flow_policy(),
+                health_policy: self.resolve_observability_health_policy(),
+                telemetry_policy: self.resolve_observability_telemetry_policy(),
+            }
+        });
+
+        ResolvedOtelDataflowSpec {
+            engine: self.engine.clone(),
+            pipelines,
+            observability_pipeline,
+        }
     }
 
     /// Resolves the effective flow policy for a pipeline.
@@ -763,6 +875,40 @@ groups:
             r3.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
+
+        let resolved = config.resolve();
+        assert_eq!(resolved.pipelines.len(), 3);
+        let resolved_ids: Vec<(String, String)> = resolved
+            .pipelines
+            .iter()
+            .map(|p| (p.pipeline_group_id.to_string(), p.pipeline_id.to_string()))
+            .collect();
+        assert_eq!(
+            resolved_ids,
+            vec![
+                ("g1".to_string(), "p1".to_string()),
+                ("g1".to_string(), "p2".to_string()),
+                ("g2".to_string(), "p3".to_string()),
+            ]
+        );
+
+        let p1_resolved = &resolved.pipelines[0];
+        assert_eq!(p1_resolved.policies.flow.channel_capacity.control.node, 50);
+        assert_eq!(
+            p1_resolved.policies.resources.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 2 }
+        );
+        assert_eq!(
+            p1_resolved.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Failed]
+        );
+
+        let p2_resolved = &resolved.pipelines[1];
+        assert_eq!(p2_resolved.policies.flow.channel_capacity.control.node, 150);
+        assert_eq!(
+            p2_resolved.policies.resources.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 5 }
+        );
     }
 
     #[test]
@@ -831,6 +977,19 @@ groups:
 
         let telemetry = config.resolve_observability_telemetry_policy();
         assert!(telemetry.channel_metrics);
+
+        let resolved = config.resolve();
+        let obs = resolved
+            .observability_pipeline
+            .expect("observability pipeline should be resolved");
+        assert_eq!(obs.flow_policy.channel_capacity.control.node, 10);
+        assert_eq!(obs.flow_policy.channel_capacity.control.pipeline, 11);
+        assert_eq!(obs.flow_policy.channel_capacity.pdata, 12);
+        assert_eq!(
+            obs.health_policy.ready_if,
+            vec![crate::health::PhaseKind::Failed]
+        );
+        assert!(obs.telemetry_policy.channel_metrics);
     }
 
     #[test]

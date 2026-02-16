@@ -18,11 +18,13 @@ guidance.
 Main public model types:
 
 - `engine::OtelDataflowSpec`: root multi-pipeline-group config
+- `engine::EngineConfig`: top-level engine section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
 - `policy::Policies`: hierarchical flow/health/telemetry/resources policies
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
+- `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
 
 The model is strict (`serde(deny_unknown_fields)` in key types) and validated on
 load.
@@ -35,13 +37,21 @@ the schema is extended.
 Typical loading APIs:
 
 - `OtelDataflowSpec::from_file`, `from_yaml`, `from_json`
-- `PipelineConfig::from_yaml`, `from_json` (in-memory parsing only)
+- `PipelineConfig::from_yaml`, `from_json` (in-memory parsing only; not a runtime root config format)
 
 These entry points perform:
 
 1. Deserialization (YAML/JSON)
 2. Node URN canonicalization
 3. Structural validation (connections, graph constraints, etc.)
+
+The root model requires a schema version:
+
+- `version: otel_dataflow/v1`
+
+For runtime consumption, resolve hierarchy once:
+
+- `OtelDataflowSpec::resolve()` -> `ResolvedOtelDataflowSpec`
 
 ## Policy Hierarchy
 
