@@ -62,7 +62,7 @@ mod test {
     use super::*;
 
     use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
-    use chrono_tz::{Canada, Tz, TzOffset};
+    use chrono_tz::{Canada, Tz};
     use data_engine_expressions::DateTimeValue;
     use pest::Parser;
 
@@ -95,7 +95,7 @@ mod test {
         min: u32,
         sec: u32,
         micro: u32,
-        tz: Tz
+        tz: Tz,
     ) -> DateTime<FixedOffset> {
         let native_dt = NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
@@ -156,6 +156,11 @@ mod test {
         }
     }
 
+    fn run_test_failure(expr: &str) -> ParserError {
+        let mut result = OplPestParser::parse(Rule::datetime_expression, &expr).unwrap();
+        parse_datetime_expression(result.next().unwrap()).unwrap_err()
+    }
+
     #[test]
     fn test_parse_from_datetime_literal() {
         for (input, expected) in valid_test_cases() {
@@ -165,7 +170,10 @@ mod test {
     }
 
     #[test]
-    fn test_parse_from_invalid_datetime_literal() {}
+    fn test_parse_from_invalid_datetime_literal() {
+        let err = run_test_failure("datetime(halloween)"); // not a valid date format
+        assert_eq!("Invalid datetime literal halloween", err.to_string())
+    }
 
     #[test]
     fn test_parse_from_string_literal() {
@@ -177,6 +185,10 @@ mod test {
 
     #[test]
     fn test_parse_from_invalid_string_literal() {
-        todo!()
+        let err = run_test_failure("datetime('monday')"); // not a valid date format
+        assert_eq!(
+            "Invalid datetime string literal \"monday\"",
+            err.to_string()
+        )
     }
 }
