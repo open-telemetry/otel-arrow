@@ -8,6 +8,9 @@ use data_engine_parser_abstractions::{
 };
 use pest::iterators::Pair;
 
+#[cfg(test)]
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+
 use crate::parser::{Rule, expression::no_inner_rule_error};
 
 pub(crate) fn parse_datetime_expression(
@@ -57,34 +60,36 @@ pub(crate) fn parse_datetime_expression(
     ))
 }
 
+/// test helper for creating [`DateTime`]s
+#[cfg(test)]
+pub(crate) fn create_utc(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    min: u32,
+    sec: u32,
+    micro: u32,
+) -> DateTime<FixedOffset> {
+    NaiveDate::from_ymd_opt(year, month, day)
+        .unwrap()
+        .and_hms_micro_opt(hour, min, sec, micro)
+        .unwrap()
+        .and_local_timezone(Utc)
+        .unwrap()
+        .into()
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
 
-    use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+    use chrono::TimeZone;
     use chrono_tz::{Canada, Tz};
     use data_engine_expressions::DateTimeValue;
     use pest::Parser;
 
     use crate::parser::pest::OplPestParser;
-
-    pub(crate) fn create_utc(
-        year: i32,
-        month: u32,
-        day: u32,
-        hour: u32,
-        min: u32,
-        sec: u32,
-        micro: u32,
-    ) -> DateTime<FixedOffset> {
-        NaiveDate::from_ymd_opt(year, month, day)
-            .unwrap()
-            .and_hms_micro_opt(hour, min, sec, micro)
-            .unwrap()
-            .and_local_timezone(Utc)
-            .unwrap()
-            .into()
-    }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_with_tz(
@@ -145,7 +150,7 @@ mod test {
     }
 
     fn run_test_success(expr: &str, expected: DateTime<FixedOffset>) {
-        let mut result = OplPestParser::parse(Rule::datetime_expression, &expr).unwrap();
+        let mut result = OplPestParser::parse(Rule::datetime_expression, expr).unwrap();
         match parse_datetime_expression(result.next().unwrap()).unwrap() {
             StaticScalarExpression::DateTime(d) => assert_eq!(
                 d.get_value(),
@@ -157,7 +162,7 @@ mod test {
     }
 
     fn run_test_failure(expr: &str) -> ParserError {
-        let mut result = OplPestParser::parse(Rule::datetime_expression, &expr).unwrap();
+        let mut result = OplPestParser::parse(Rule::datetime_expression, expr).unwrap();
         parse_datetime_expression(result.next().unwrap()).unwrap_err()
     }
 

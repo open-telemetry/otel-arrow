@@ -21,7 +21,7 @@ use pest::{
     pratt_parser::PrattParser,
 };
 
-use crate::parser::{Rule, invalid_child_rule_error};
+use crate::parser::{Rule, invalid_child_rule_error, temporal::parse_datetime_expression};
 
 fn parse_next_child_rule<F, E>(
     rules: &mut Pairs<'_, Rule>,
@@ -570,7 +570,6 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             ))
             .into())
         }
-        // TODO add datetime handling + test
         Rule::string_literal => {
             Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
         }
@@ -587,6 +586,10 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             NullScalarExpression::new(query_location),
         ))
         .into()),
+        Rule::datetime_expression => {
+            let date_time_expr = parse_datetime_expression(rule)?;
+            Ok(ScalarExpression::Static(date_time_expr).into())
+        }
         Rule::expression => parse_expression(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -703,12 +706,12 @@ fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, Pars
 mod test {
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        ContainsLogicalExpression, DoubleScalarExpression, EqualToLogicalExpression,
-        GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-        IntegerScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
-        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
-        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        ValueAccessor,
+        ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
+        EqualToLogicalExpression, GreaterThanLogicalExpression,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
+        MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
+        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     use pest::Parser;
     use pretty_assertions::assert_eq;
@@ -721,6 +724,7 @@ mod test {
             parse_unary_expression,
         },
         pest::OplPestParser,
+        temporal::create_utc,
     };
 
     #[test]
@@ -778,6 +782,13 @@ mod test {
             (
                 "null",
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
+            ),
+            (
+                "datetime(2026-02-04)",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 02, 04, 0, 0, 0, 0),
+                )),
             ),
         ];
 
