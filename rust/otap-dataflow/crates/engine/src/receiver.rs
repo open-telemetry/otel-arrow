@@ -310,6 +310,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
+                    source_tag,
                     ..
                 },
                 metrics_reporter,
@@ -326,13 +327,14 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
@@ -342,6 +344,7 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
+                    source_tag,
                     ..
                 },
                 metrics_reporter,
@@ -358,13 +361,14 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }

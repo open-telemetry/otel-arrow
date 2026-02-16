@@ -326,6 +326,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -338,12 +339,13 @@ impl<PData> ProcessorWrapper<PData> {
                     })?,
                 );
                 let default_port = user_config.default_output.clone();
-                let effect_handler = local::EffectHandler::new(
+                let mut effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -357,6 +359,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
+                source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -369,12 +372,13 @@ impl<PData> ProcessorWrapper<PData> {
                     })?),
                 );
                 let default_port = user_config.default_output.clone();
-                let effect_handler = shared::EffectHandler::new(
+                let mut effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
+                effect_handler.set_source_tagging(source_tag);
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,

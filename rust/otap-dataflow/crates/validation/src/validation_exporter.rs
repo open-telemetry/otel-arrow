@@ -22,6 +22,7 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::assert_equivalent;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::panic::AssertUnwindSafe;
@@ -180,6 +181,8 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             self.control_msgs.push(msg);
                             self.compare_and_record();
                         }
+                    } else {
+                        otel_error!("validation.missing.source");
                     }
                 }
                 _ => {}
