@@ -20,6 +20,9 @@ string_literal = {
   | ("'" ~ single_quote_string_char* ~ "'")
 }
 
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+  }
+datetime_expression = { "datetime(" ~ (string_literal|datetime_literal) ~ ")"}
+
 identifier_expression = {
     ident
 }
@@ -33,6 +36,7 @@ primitive_expression = {
   | bool_true_token
   | bool_false_token
   | null_token
+  | datetime_expression
   | identifier_expression
   | "(" ~ expression ~ ")"
 }
@@ -41,7 +45,7 @@ index_expression = {
     // TODO: the way this grammar is defined doesn't yet handle
     // - nested indexing (e.g. a["x"]["y"])
     // - computing index from some complex expression (e.g. a[i + 1])
-    // 
+    //
     // This should probably be defined as  `member_expression ~ "[" ~ expression ~ "]"
     // but that makes the grammar left recursive so it would need which makes parsing a
     // bit more complicated, so we can change the implementation when this is needed.

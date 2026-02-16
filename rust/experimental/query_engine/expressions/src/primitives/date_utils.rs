@@ -71,7 +71,7 @@ pub(crate) fn create_fixed(
         .unwrap()
 }
 
-pub(crate) fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> {
+pub fn parse_date_time(input: &str) -> Result<DateTime<FixedOffset>, ()> {
     let mut raw_value: String = input.into();
 
     let date = parse_date(&raw_value);

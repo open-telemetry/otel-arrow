@@ -70,7 +70,7 @@ pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         .ok_or_else(|| no_inner_rule_error(query_location))
 }
 
-fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
+pub(crate) fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
     ParserError::SyntaxError(
         query_location,
         "No inner rule found in expression".to_string(),
@@ -570,6 +570,7 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             ))
             .into())
         }
+        // TODO add datetime handling + test
         Rule::string_literal => {
             Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
         }

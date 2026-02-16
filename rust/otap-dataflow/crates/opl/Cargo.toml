@@ -19,4 +19,5 @@ pest = { workspace = true }
 pest_derive = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }
 pretty_assertions = { workspace = true }
