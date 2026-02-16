@@ -11,6 +11,7 @@ use pest::iterators::Pair;
 #[cfg(test)]
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 
+use crate::parser::invalid_child_rule_error;
 use crate::parser::{Rule, expression::no_inner_rule_error};
 
 pub(crate) fn parse_datetime_expression(
@@ -45,13 +46,20 @@ pub(crate) fn parse_datetime_expression(
                         )
                     })?
                 }
-                _ => {
-                    todo!("missed the buss")
+                invalid_expr => {
+                    return Err(ParserError::SyntaxError(
+                        rule_query_location,
+                        format!("Expected static string literal, found {:?}", invalid_expr),
+                    ));
                 }
             }
         }
-        _ => {
-            todo!("AH HELL MA")
+        other_rule => {
+            return Err(invalid_child_rule_error(
+                rule_query_location.clone(),
+                Rule::datetime_expression,
+                other_rule,
+            ));
         }
     };
 
