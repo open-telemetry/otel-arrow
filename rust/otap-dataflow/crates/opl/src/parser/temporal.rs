@@ -61,7 +61,8 @@ pub(crate) fn parse_datetime_expression(
 mod test {
     use super::*;
 
-    use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
+    use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+    use chrono_tz::{Canada, Tz, TzOffset};
     use data_engine_expressions::DateTimeValue;
     use pest::Parser;
 
@@ -86,7 +87,7 @@ mod test {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn create_fixed(
+    pub(crate) fn create_with_tz(
         year: i32,
         month: u32,
         day: u32,
@@ -94,16 +95,20 @@ mod test {
         min: u32,
         sec: u32,
         micro: u32,
-        offset: i32,
+        tz: Tz
     ) -> DateTime<FixedOffset> {
-        NaiveDate::from_ymd_opt(year, month, day)
+        let native_dt = NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
             .and_hms_micro_opt(hour, min, sec, micro)
-            .unwrap()
-            .and_local_timezone(FixedOffset::east_opt(offset).unwrap())
-            .unwrap()
+            .unwrap();
+        tz.from_local_datetime(&native_dt).unwrap().fixed_offset()
     }
 
+    /// Generate a few valid datetime expressions, as well as the expected `DateTime` we expect
+    /// them to be parsed as.
+    ///
+    /// Note: a more comprehensive suite of formats already exists for the [`parse_date_time`]
+    /// utility to which [`parse_datetime_expression`] delegates
     fn valid_test_cases() -> Vec<(&'static str, DateTime<FixedOffset>)> {
         vec![
             // mid-endian (US) date format
@@ -114,27 +119,64 @@ mod test {
             ("2026-02-04", create_utc(2026, 02, 04, 0, 0, 0, 0)),
             // ISO 8601 with time
             ("2026-02-04T05:30:00", create_utc(2026, 02, 04, 5, 30, 0, 0)),
+            // RFC 822
+            ("4 Feb 26 15:05", create_utc(2026, 02, 04, 15, 5, 0, 0)),
+            // RFC 822 with time and day of week
+            (
+                "Wed, 4 Feb 26 15:05:02 GMT",
+                create_utc(2026, 02, 04, 15, 5, 2, 0),
+            ),
+            // Explicit timezone offsets
+            (
+                "2026-02-04T05:30:00-05:00",
+                create_with_tz(2026, 02, 04, 5, 30, 0, 0, Canada::Eastern),
+            ),
+            (
+                "2026-07-31T11:15-04:00",
+                create_with_tz(2026, 07, 31, 11, 15, 0, 0, Canada::Eastern),
+            ),
+            // TODO reenable this test case when TZ parsing bug fixed:
+            // https://github.com/open-telemetry/otel-arrow/issues/2047
+            // (
+            //     "Wed, 4 Feb 26 15:05:02 EST",
+            //     create_with_tz(2026, 02, 04, 15, 5, 2, 0, Canada::Eastern),
+            // ),
         ]
     }
+
+    fn run_test_success(expr: &str, expected: DateTime<FixedOffset>) {
+        let mut result = OplPestParser::parse(Rule::datetime_expression, &expr).unwrap();
+        match parse_datetime_expression(result.next().unwrap()).unwrap() {
+            StaticScalarExpression::DateTime(d) => assert_eq!(
+                d.get_value(),
+                expected,
+                "failed to correctly parse expr {expr:?}"
+            ),
+            s => panic!("Unexpected scalar expr. Expected DateTime found {s:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_from_datetime_literal() {
+        for (input, expected) in valid_test_cases() {
+            let expr = format!("datetime({input})");
+            run_test_success(&expr, expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_from_invalid_datetime_literal() {}
 
     #[test]
     fn test_parse_from_string_literal() {
         for (input, expected) in valid_test_cases() {
             let expr = format!("datetime('{input}')");
-            let mut result = OplPestParser::parse(Rule::datetime_expression, &expr).unwrap();
-            match parse_datetime_expression(result.next().unwrap()).unwrap() {
-                StaticScalarExpression::DateTime(d) => assert_eq!(d.get_value(), expected),
-                s => panic!("Unexpected scalar expr. Expected DateTime found {s:?}"),
-            }
+            run_test_success(&expr, expected);
         }
     }
 
     #[test]
-    fn test_parse_from_invalid_string_literal() {}
-
-    #[test]
-    fn test_parse_from_datetime_literal() {}
-
-    #[test]
-    fn test_parse_from_invalid_datetime_literal() {}
+    fn test_parse_from_invalid_string_literal() {
+        todo!()
+    }
 }
