@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1770997852867,
+  "lastUpdate": 1771219412869,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7390,6 +7390,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11304379.3173831,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jmacd@users.noreply.github.com",
+            "name": "Joshua MacDonald",
+            "username": "jmacd"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cb40f580d296d43b12f319e1f8e43c0be4fd7199",
+          "message": "otap_df_otap::pdata::Context remove source_node, use last frame's node_id (#2011)\n\n# Change Summary\n\nRemoves the `Option<Cow<str>>` field in `OtapPdata`.\n\nUses the `.stack.last().map(|frame| frame.node_id)` i.e., the last\nnode's frame.\n\nThis makes a simpler/smaller `OtapPdata` at the expense of always adding\na Frame.\n\nI think this makes sense because for us to implement the Collector's\nspecification for component-level telemetry (with producer/consumer\ncounts, with outcome attributes) requires maintaining a small amount of\nstate for every node that opts in. The current PR does not support an\n\"opt-in\" concept, so all nodes produce a frame and the current user of\nsource_node information (validation logic) continues to work. As a TODO\nfor the future, we can add this opt-in mechanism, for example to let\nusers disable this frame behavior when it is not useful (thus disabling\ncertain metrics).\n\nSee\nhttps://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md\n\nRenames `current_calldata()` which was confusingly named and used in two\nreal cases (retry behavior w/ delayed data) and some test cases. Now\nthat we have `source_node()`, the semantics are more clear if we name\nthis `source_calldata()`. Added comments to indicate that this changes\nafter a call to subscribe_to() otherwise is automatically maintained.\n\n## What issue does this PR close?\n\nPart of #2018 \nPart of #1950 \nHistorical connection with #487 \nFollows #1899 \n\n## How are these changes tested?\n\nNew tests.\n\n## Are there any user-facing changes?\n\nNo.\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-02-16T04:30:36Z",
+          "tree_id": "35b9136c4f147a429b4ccab257b6b4c712802530",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/cb40f580d296d43b12f319e1f8e43c0be4fd7199"
+        },
+        "date": 1771219412447,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.552156448364258,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.25482698750483,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.65246920571208,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.824869791666664,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 47.87890625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 498177.2827497582,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 510891.54658616567,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001901,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11268328.430527734,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11203366.79630846,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
