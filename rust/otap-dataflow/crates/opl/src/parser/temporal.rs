@@ -117,28 +117,28 @@ mod test {
     fn valid_test_cases() -> Vec<(&'static str, DateTime<FixedOffset>)> {
         vec![
             // mid-endian (US) date format
-            ("02/04/2026", create_utc(2026, 02, 04, 0, 0, 0, 0)),
+            ("02/04/2026", create_utc(2026, 2, 4, 0, 0, 0, 0)),
             // mid-endian (US) date format with time
-            ("02/04/2026 5:30 AM", create_utc(2026, 02, 04, 5, 30, 0, 0)),
+            ("02/04/2026 5:30 AM", create_utc(2026, 2, 4, 5, 30, 0, 0)),
             // ISO 8601
-            ("2026-02-04", create_utc(2026, 02, 04, 0, 0, 0, 0)),
+            ("2026-02-04", create_utc(2026, 2, 4, 0, 0, 0, 0)),
             // ISO 8601 with time
-            ("2026-02-04T05:30:00", create_utc(2026, 02, 04, 5, 30, 0, 0)),
+            ("2026-02-04T05:30:00", create_utc(2026, 2, 4, 5, 30, 0, 0)),
             // RFC 822
-            ("4 Feb 26 15:05", create_utc(2026, 02, 04, 15, 5, 0, 0)),
+            ("4 Feb 26 15:05", create_utc(2026, 2, 4, 15, 5, 0, 0)),
             // RFC 822 with time and day of week
             (
                 "Wed, 4 Feb 26 15:05:02 GMT",
-                create_utc(2026, 02, 04, 15, 5, 2, 0),
+                create_utc(2026, 2, 4, 15, 5, 2, 0),
             ),
             // Explicit timezone offsets
             (
                 "2026-02-04T05:30:00-05:00",
-                create_with_tz(2026, 02, 04, 5, 30, 0, 0, Canada::Eastern),
+                create_with_tz(2026, 2, 4, 5, 30, 0, 0, Canada::Eastern),
             ),
             (
                 "2026-07-31T11:15-04:00",
-                create_with_tz(2026, 07, 31, 11, 15, 0, 0, Canada::Eastern),
+                create_with_tz(2026, 7, 31, 11, 15, 0, 0, Canada::Eastern),
             ),
             // TODO reenable this test case when TZ parsing bug fixed:
             // https://github.com/open-telemetry/otel-arrow/issues/2047

@@ -787,7 +787,7 @@ mod test {
                 "datetime(2026-02-04)",
                 StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
                     QueryLocation::new_fake(),
-                    create_utc(2026, 02, 04, 0, 0, 0, 0),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
                 )),
             ),
         ];
