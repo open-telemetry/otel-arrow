@@ -426,6 +426,7 @@ mod test {
     use otap_df_engine::{
         context::ControllerContext,
         control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
+        effect_handler::SourceTagging,
         local::message::LocalSender,
         message::Sender,
         node::NodeWithPDataSender,
@@ -951,7 +952,7 @@ mod test {
             .set_processor(processor)
             .run_test(|mut ctx| async move {
                 // Enable source node tagging to simulate multi-source wiring
-                ctx.set_needs_source_tag(true);
+                ctx.set_source_tagging(SourceTagging::Enabled);
 
                 // Create a log record
                 let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
@@ -1039,7 +1040,7 @@ mod test {
             .set_processor(processor)
             .run_test(|mut ctx| async move {
                 // Enable source node tagging to simulate multi-source wiring
-                ctx.set_needs_source_tag(true);
+                ctx.set_source_tagging(SourceTagging::Enabled);
 
                 let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {

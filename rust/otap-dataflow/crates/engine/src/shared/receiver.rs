@@ -33,7 +33,9 @@
 //! parallel on different cores, each with its own receiver instance.
 
 use crate::control::{NodeControlMsg, PipelineCtrlMsgSender};
-use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
+use crate::effect_handler::{
+    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+};
 use crate::error::{Error, TypedError};
 use crate::node::NodeId;
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -91,7 +93,7 @@ impl<PData> ControlChannel<PData> {
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct EffectHandler<PData> {
-    pub(crate) core: EffectHandlerCore<PData>,
+    core: EffectHandlerCore<PData>,
 
     /// A sender used to forward messages from the receiver.
     /// Supports multiple named output ports.
@@ -140,15 +142,15 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Sets whether outgoing messages need source node tagging.
-    pub fn set_needs_source_tag(&mut self, value: bool) {
-        self.core.set_needs_source_tag(value);
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.core.set_source_tagging(value);
     }
 
     /// Returns whether outgoing messages need source node tagging.
     /// This is true when the destination node has multiple input sources.
     #[must_use]
-    pub const fn needs_source_tag(&self) -> bool {
-        self.core.needs_source_tag()
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.core.source_tagging()
     }
 
     /// Returns the list of connected output ports for this receiver.

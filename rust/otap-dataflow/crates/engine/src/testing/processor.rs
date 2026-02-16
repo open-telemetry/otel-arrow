@@ -8,6 +8,7 @@
 
 use crate::config::ProcessorConfig;
 use crate::control::pipeline_ctrl_msg_channel;
+use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Message, Receiver, Sender};
@@ -90,13 +91,13 @@ impl<PData> TestContext<PData> {
     }
 
     /// Sets whether outgoing messages need source node tagging on the effect handler.
-    pub fn set_needs_source_tag(&mut self, value: bool) {
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
         match &mut self.runtime {
             ProcessorWrapperRuntime::Local { effect_handler, .. } => {
-                effect_handler.set_needs_source_tag(value);
+                effect_handler.set_source_tagging(value);
             }
             ProcessorWrapperRuntime::Shared { effect_handler, .. } => {
-                effect_handler.set_needs_source_tag(value);
+                effect_handler.set_source_tagging(value);
             }
         }
     }

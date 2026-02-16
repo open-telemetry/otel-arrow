@@ -12,6 +12,7 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -57,8 +58,8 @@ pub enum ProcessorWrapper<PData> {
         pdata_receiver: Option<Receiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Whether outgoing messages need source node tagging (destination has multiple inputs).
-        needs_source_tag: bool,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -81,8 +82,8 @@ pub enum ProcessorWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Whether outgoing messages need source node tagging (destination has multiple inputs).
-        needs_source_tag: bool,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
 }
 
@@ -137,7 +138,7 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            needs_source_tag: false,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -165,7 +166,7 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            needs_source_tag: false,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -180,7 +181,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                needs_source_tag,
+                source_tag,
                 ..
             } => ProcessorWrapper::Local {
                 node_id,
@@ -192,7 +193,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                needs_source_tag,
+                source_tag,
             },
             ProcessorWrapper::Shared {
                 node_id,
@@ -203,7 +204,7 @@ impl<PData> ProcessorWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                needs_source_tag,
+                source_tag,
                 ..
             } => ProcessorWrapper::Shared {
                 node_id,
@@ -215,7 +216,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                needs_source_tag,
+                source_tag,
             },
         }
     }
@@ -244,7 +245,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                needs_source_tag,
+                source_tag,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -268,7 +269,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    needs_source_tag,
+                    source_tag,
                 }
             }
             ProcessorWrapper::Shared {
@@ -281,7 +282,7 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                needs_source_tag,
+                source_tag,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -305,7 +306,7 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    needs_source_tag,
+                    source_tag,
                 }
             }
         }
@@ -325,7 +326,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
-                needs_source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -338,15 +338,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?,
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = local::EffectHandler::new(
+                let effect_handler = local::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
-                if needs_source_tag {
-                    effect_handler.core.set_needs_source_tag(true);
-                }
                 Ok(ProcessorWrapperRuntime::Local {
                     processor,
                     effect_handler,
@@ -360,7 +357,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 user_config,
-                needs_source_tag,
                 ..
             } => {
                 let message_channel = MessageChannel::new(
@@ -373,15 +369,12 @@ impl<PData> ProcessorWrapper<PData> {
                     })?),
                 );
                 let default_port = user_config.default_output.clone();
-                let mut effect_handler = shared::EffectHandler::new(
+                let effect_handler = shared::EffectHandler::new(
                     node_id,
                     pdata_senders,
                     default_port,
                     metrics_reporter,
                 );
-                if needs_source_tag {
-                    effect_handler.core.set_needs_source_tag(true);
-                }
                 Ok(ProcessorWrapperRuntime::Shared {
                     processor,
                     effect_handler,
@@ -550,14 +543,10 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
         }
     }
 
-    fn set_needs_source_tag(&mut self) {
+    fn set_source_tagging(&mut self, value: SourceTagging) {
         match self {
-            ProcessorWrapper::Local {
-                needs_source_tag, ..
-            } => *needs_source_tag = true,
-            ProcessorWrapper::Shared {
-                needs_source_tag, ..
-            } => *needs_source_tag = true,
+            ProcessorWrapper::Local { source_tag, .. } => *source_tag = value,
+            ProcessorWrapper::Shared { source_tag, .. } => *source_tag = value,
         }
     }
 }

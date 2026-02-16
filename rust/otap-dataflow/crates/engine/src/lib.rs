@@ -11,6 +11,7 @@ use crate::{
     },
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     control::{AckMsg, CallData, NackMsg},
+    effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
     exporter::ExporterWrapper,
@@ -1497,7 +1498,7 @@ where
                     node: source.node_id.name.clone(),
                 })?;
             if multi_source {
-                src_node.set_needs_source_tag();
+                src_node.set_source_tagging(SourceTagging::Enabled);
             }
             otel_debug!(
                 "pdata.sender.set",

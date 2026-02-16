@@ -12,6 +12,7 @@ use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ReceiverConfig;
 use crate::context::PipelineContext;
 use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ReceiverErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
@@ -56,8 +57,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<LocalReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Whether outgoing messages need source node tagging (destination has multiple inputs).
-        needs_source_tag: bool,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -80,8 +81,8 @@ pub enum ReceiverWrapper<PData> {
         pdata_receiver: Option<SharedReceiver<PData>>,
         /// Telemetry guard for node lifecycle cleanup.
         telemetry: Option<NodeTelemetryGuard>,
-        /// Whether outgoing messages need source node tagging (destination has multiple inputs).
-        needs_source_tag: bool,
+        /// Whether outgoing messages need source node tagging.
+        source_tag: SourceTagging,
     },
 }
 
@@ -122,7 +123,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            needs_source_tag: false,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -149,7 +150,7 @@ impl<PData> ReceiverWrapper<PData> {
             pdata_senders: HashMap::new(),
             pdata_receiver: None,
             telemetry: None,
-            needs_source_tag: false,
+            source_tag: SourceTagging::Disabled,
         }
     }
 
@@ -164,7 +165,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                needs_source_tag,
+                source_tag,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -176,7 +177,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                needs_source_tag,
+                source_tag,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -187,7 +188,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 pdata_senders,
                 pdata_receiver,
-                needs_source_tag,
+                source_tag,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -199,7 +200,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry: Some(guard),
-                needs_source_tag,
+                source_tag,
             },
         }
     }
@@ -228,7 +229,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                needs_source_tag,
+                source_tag,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -252,7 +253,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    needs_source_tag,
+                    source_tag,
                 }
             }
             ReceiverWrapper::Shared {
@@ -265,7 +266,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 telemetry,
-                needs_source_tag,
+                source_tag,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -289,7 +290,7 @@ impl<PData> ReceiverWrapper<PData> {
                     pdata_senders,
                     pdata_receiver,
                     telemetry,
-                    needs_source_tag,
+                    source_tag,
                 }
             }
         }
@@ -309,7 +310,6 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
-                    needs_source_tag,
                     ..
                 },
                 metrics_reporter,
@@ -326,16 +326,13 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-                let mut effect_handler = local::EffectHandler::new(
+                let effect_handler = local::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
-                if needs_source_tag {
-                    effect_handler.core.set_needs_source_tag(true);
-                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             (
@@ -345,7 +342,6 @@ impl<PData> ReceiverWrapper<PData> {
                     control_receiver,
                     pdata_senders,
                     user_config,
-                    needs_source_tag,
                     ..
                 },
                 metrics_reporter,
@@ -362,16 +358,13 @@ impl<PData> ReceiverWrapper<PData> {
                 };
                 let default_port = user_config.default_output.clone();
                 let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
-                let mut effect_handler = shared::EffectHandler::new(
+                let effect_handler = shared::EffectHandler::new(
                     node_id,
                     msg_senders,
                     default_port,
                     pipeline_ctrl_msg_tx,
                     metrics_reporter,
                 );
-                if needs_source_tag {
-                    effect_handler.core.set_needs_source_tag(true);
-                }
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }
@@ -456,14 +449,10 @@ impl<PData> NodeWithPDataSender<PData> for ReceiverWrapper<PData> {
         }
     }
 
-    fn set_needs_source_tag(&mut self) {
+    fn set_source_tagging(&mut self, value: SourceTagging) {
         match self {
-            ReceiverWrapper::Local {
-                needs_source_tag, ..
-            } => *needs_source_tag = true,
-            ReceiverWrapper::Shared {
-                needs_source_tag, ..
-            } => *needs_source_tag = true,
+            ReceiverWrapper::Local { source_tag, .. } => *source_tag = value,
+            ReceiverWrapper::Shared { source_tag, .. } => *source_tag = value,
         }
     }
 }
