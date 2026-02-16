@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771267807027,
+  "lastUpdate": 1771280045780,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7726,6 +7726,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11184745.769696085,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54af7f91de26266d14fc69f35e2bb7cb6b250572",
+          "message": "Support datetime in OPL Parser (#2048)\n\n# Change Summary\n\nAdds support for datetime literals in OPL Parser. This uses the same\nsyntax as KQL, where various formats are supported either as literal\ntext, or embedded w/in a string.\n```kql\nlogs | where time_unix_nano > datetime(2026-02-04)\nlogs | where time_unix_nano > datetime(\"2026-02-04\")\n```\n\nSupported formats include those currently also supported in KQL parser:\n- US/mid-endian (MM/DD/YYYY)\n- RFC 822 (e.g. \"Wed, Feb 4, 2026, 14:10:00 GMT\")\n- ISO 8601 (e.g. 2026-02-04T05:30:00-05:00).\n\n## What issue does this PR close?\n\n* Closes #2035\n\n## How are these changes tested?\n\nNew unit tests. \n\nNote: the tests for the actual String to DateTime parsing of many\nformats is already covered by the test cases in\n[`data_engine_expressions::primitives::date_utils`](https://github.com/open-telemetry/otel-arrow/blob/947ff506f68fad78f3e97294f38795274cc1fc3f/rust/experimental/query_engine/expressions/src/primitives/date_utils.rs#L329-L532)\n\n## Are there any user-facing changes?\n\nNo",
+          "timestamp": "2026-02-16T21:22:48Z",
+          "tree_id": "a5c90b86dab95ee44e6333b2cbc9c5e9e584faa9",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/54af7f91de26266d14fc69f35e2bb7cb6b250572"
+        },
+        "date": 1771280044767,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.131578207015991,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.29993275587856,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.65668400612557,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.78984375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 48.15234375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 500395.18693248543,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 511061.5008997036,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.001984,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11344334.071761262,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11278244.574612964,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
