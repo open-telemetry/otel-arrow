@@ -8,14 +8,20 @@ use crate::attributes::{
     PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::service::telemetry::AttributeValue;
-use otap_df_config::{NodeId, NodeUrn, PipelineGroupId, PipelineId};
+use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
+
+/// A shared, immutable mapping from otap_df_config node names
+/// (without index numbers) to their engine-specific pipeline indices.
+pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
 // Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
 // Choose UUID v7 for better sortability in telemetry signals
@@ -108,6 +114,7 @@ pub struct PipelineContext {
     pipeline_id: PipelineId,
     pipeline_telemetry_attrs: HashMap<String, AttributeValue>,
     node_id: NodeId,
+    node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_telemetry_attrs: HashMap<String, AttributeValue>,
@@ -115,6 +122,11 @@ pub struct PipelineContext {
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
     internal_telemetry: Option<InternalTelemetrySettings>,
+    /// Shared mapping from node names to pipeline indices for mapping
+    /// node names to the index used to send node control messages by,
+    /// for example to map source-node name to index for inferring
+    /// routes at runtime (e.g., how crates/validation works).
+    node_names: NodeNameIndex,
 }
 
 impl ControllerContext {
@@ -174,6 +186,7 @@ impl PipelineContext {
             node_telemetry_attrs: HashMap::new(),
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
+            node_names: Arc::new(HashMap::new()),
         }
     }
 
@@ -219,6 +232,17 @@ impl PipelineContext {
     #[must_use]
     pub const fn internal_telemetry(&self) -> Option<&InternalTelemetrySettings> {
         self.internal_telemetry.as_ref()
+    }
+
+    /// Sets the shared node-name-to-index mapping for this pipeline context.
+    pub fn set_node_names(&mut self, node_names: NodeNameIndex) {
+        self.node_names = node_names;
+    }
+
+    /// Returns the pipeline index for the given node name, if it exists.
+    #[must_use]
+    pub fn node_by_name(&self, name: &str) -> Option<EngineNodeId> {
+        self.node_names.get(name).cloned()
     }
 
     /// Takes the internal telemetry settings, leaving None in its place.
@@ -384,7 +408,7 @@ impl PipelineContext {
     #[must_use]
     pub fn with_node_context(
         &self,
-        node_id: NodeId,
+        node_id: ConfigNodeId,
         node_urn: NodeUrn,
         node_kind: NodeKind,
         node_telemetry_attrs: HashMap<String, AttributeValue>,
@@ -402,6 +426,7 @@ impl PipelineContext {
             node_kind,
             node_telemetry_attrs,
             internal_telemetry: None,
+            node_names: self.node_names.clone(),
         }
     }
 }

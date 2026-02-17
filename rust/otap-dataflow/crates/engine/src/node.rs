@@ -8,6 +8,7 @@
 //! Processors and exporters implement the [`NodeWithPDataReceiver`] trait.
 
 use crate::control::NodeControlMsg;
+use crate::effect_handler::SourceTagging;
 use crate::error::Error;
 use crate::message::{Receiver, Sender};
 use otap_df_channel::error::SendError;
@@ -69,6 +70,10 @@ pub trait NodeWithPDataSender<PData>: Node<PData> {
         port: PortName,
         sender: Sender<PData>,
     ) -> Result<(), Error>;
+
+    /// Marks this node as needing to tag outgoing messages with the source node id.
+    /// Called by the pipeline wiring when the destination node has multiple input sources.
+    fn set_source_tagging(&mut self, source_tag: SourceTagging);
 }
 
 /// Trait for nodes that can receive pdata.
