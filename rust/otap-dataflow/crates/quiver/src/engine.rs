@@ -1472,11 +1472,28 @@ fn probe_set_permissions_support(dir: &Path) -> bool {
     );
     let probe_path = dir.join(&probe_name);
 
-    let result = (|| -> std::io::Result<()> {
-        // Create a temporary probe file
-        let _file = fs::File::create(&probe_path)?;
+    // Create a temporary probe file. If this fails (disk full, quota exceeded,
+    // directory missing, etc.) we cannot probe permissions at all. Treat this as
+    // a setup error rather than evidence that permissions are unsupported —
+    // default to `true` so we don't silently disable readonly enforcement.
+    let file_created = match fs::File::create(&probe_path) {
+        Ok(_file) => true,
+        Err(e) => {
+            otel_warn!(
+                "quiver.engine.init",
+                error = %e,
+                path = %dir.display(),
+                reason = "permissions_probe_create_failed",
+                message = "could not create probe file to test permission support; \
+                    assuming permissions are supported",
+            );
+            return true;
+        }
+    };
+    debug_assert!(file_created);
 
-        // Attempt to set permissions and verify they took effect.
+    // Attempt to set permissions and verify they took effect.
+    let result = (|| -> std::io::Result<()> {
         // Some filesystems (e.g., FAT32/vfat) silently accept chmod but
         // don't actually change the permission bits. We must read back
         // and compare to detect this.
