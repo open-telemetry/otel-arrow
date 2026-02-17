@@ -444,7 +444,6 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, KeyValue, any_value::Value};
     use otap_df_pdata::schema::consts;
-    use otap_df_telemetry::metrics::SnapshotValue;
     use parquet::arrow::async_reader::ParquetRecordBatchStreamBuilder;
     use tokio::fs::File;
     use tokio::time::sleep;
@@ -1525,12 +1524,8 @@ mod test {
             if desc.name == "exporter.pdata" {
                 saw_exporter_pdata = true;
                 for (_field, value) in iter {
-                    if let SnapshotValue::Scalar(v) = value {
-                        if v.to_f64() > 0.0 {
-                            any_positive = true;
-                        }
-                    } else {
-                        unreachable!("exporter.pdata metrics should be scalar values");
+                    if value.to_f64() > 0.0 {
+                        any_positive = true;
                     }
                 }
             }

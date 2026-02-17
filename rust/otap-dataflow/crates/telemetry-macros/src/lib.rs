@@ -265,7 +265,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                 "Counter" | "UpDownCounter" | "Mmsc" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
-                        if !otap_df_telemetry::metrics::SnapshotValue::from(self.#field_ident.get()).is_zero() {
+                        if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
                             return true;
                         }
                     ));
@@ -298,9 +298,9 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                     };
                 &#desc_ident
             }
-            fn snapshot_values(&self) -> ::std::vec::Vec<otap_df_telemetry::metrics::SnapshotValue> {
+            fn snapshot_values(&self) -> ::std::vec::Vec<otap_df_telemetry::metrics::MetricValue> {
                 let mut out = ::std::vec::Vec::with_capacity(self.descriptor().metrics.len());
-                #( out.push(otap_df_telemetry::metrics::SnapshotValue::from(self.#metric_field_idents.get())); )*
+                #( out.push(otap_df_telemetry::metrics::MetricValue::from(self.#metric_field_idents.get())); )*
                 out
             }
             fn clear_values(&mut self) {

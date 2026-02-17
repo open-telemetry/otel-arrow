@@ -92,7 +92,7 @@ mod tests {
         MetricsDescriptor, MetricsField, Temporality,
     };
     use crate::metrics::MetricSetHandler;
-    use crate::metrics::SnapshotValue;
+    use crate::metrics::MetricValue;
     use crate::registry::MetricSetKey;
     use std::collections::HashMap;
     use std::fmt::Debug;
@@ -102,13 +102,13 @@ mod tests {
 
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<SnapshotValue>,
+        values: Vec<MetricValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![SnapshotValue::from(0u64), SnapshotValue::from(0u64)],
+                values: vec![MetricValue::from(0u64), MetricValue::from(0u64)],
             }
         }
     }
@@ -154,11 +154,11 @@ mod tests {
         fn descriptor(&self) -> &'static MetricsDescriptor {
             &MOCK_METRICS_DESCRIPTOR
         }
-        fn snapshot_values(&self) -> Vec<SnapshotValue> {
+        fn snapshot_values(&self) -> Vec<MetricValue> {
             self.values.clone()
         }
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(SnapshotValue::reset);
+            self.values.iter_mut().for_each(MetricValue::reset);
         }
         fn needs_flush(&self) -> bool {
             self.values.iter().any(|&v| !v.is_zero())
@@ -207,7 +207,7 @@ mod tests {
         }
     }
 
-    fn create_test_snapshot(key: MetricSetKey, values: Vec<SnapshotValue>) -> MetricSetSnapshot {
+    fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
             metrics: values,
@@ -249,14 +249,14 @@ mod tests {
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![SnapshotValue::from(10u64), SnapshotValue::from(20u64)],
+                vec![MetricValue::from(10u64), MetricValue::from(20u64)],
             ))
             .await
             .unwrap();
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![SnapshotValue::from(5u64), SnapshotValue::from(15u64)],
+                vec![MetricValue::from(5u64), MetricValue::from(15u64)],
             ))
             .await
             .unwrap();
@@ -275,9 +275,9 @@ mod tests {
         assert_eq!(collected.len(), 2);
         // Order follows descriptor order
         assert_eq!(collected[0].0, "counter1");
-        assert_eq!(collected[0].1, SnapshotValue::from(15u64));
+        assert_eq!(collected[0].1, MetricValue::from(15u64));
         assert_eq!(collected[1].0, "counter2");
-        assert_eq!(collected[1].1, SnapshotValue::from(35u64));
+        assert_eq!(collected[1].1, MetricValue::from(35u64));
 
         // Close the channel and ensure loop ends returning None
         drop(reporter);
@@ -298,7 +298,7 @@ mod tests {
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![SnapshotValue::from(7u64), SnapshotValue::from(0u64)],
+                vec![MetricValue::from(7u64), MetricValue::from(0u64)],
             ))
             .await
             .unwrap();
@@ -314,8 +314,8 @@ mod tests {
         assert_eq!(
             first,
             vec![
-                ("counter1", SnapshotValue::from(7u64)),
-                ("counter2", SnapshotValue::from(0u64))
+                ("counter1", MetricValue::from(7u64)),
+                ("counter2", MetricValue::from(0u64))
             ]
         );
 

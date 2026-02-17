@@ -8,7 +8,7 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    MetricSet, MetricSetHandler, MetricSetRegistry, MetricsIterator, SnapshotValue,
+    MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
 use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
@@ -144,7 +144,7 @@ impl TelemetryRegistryHandle {
     pub fn accumulate_metric_set_snapshot(
         &self,
         metric_set_key: MetricSetKey,
-        metrics: &[SnapshotValue],
+        metrics: &[MetricValue],
     ) {
         self.registry
             .lock()
@@ -232,13 +232,13 @@ mod tests {
     // Mock implementations for testing
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<SnapshotValue>,
+        values: Vec<MetricValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![SnapshotValue::from(0u64), SnapshotValue::from(0u64)],
+                values: vec![MetricValue::from(0u64), MetricValue::from(0u64)],
             }
         }
     }
@@ -285,12 +285,12 @@ mod tests {
             &MOCK_METRICS_DESCRIPTOR
         }
 
-        fn snapshot_values(&self) -> Vec<SnapshotValue> {
+        fn snapshot_values(&self) -> Vec<MetricValue> {
             self.values.clone()
         }
 
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(SnapshotValue::reset);
+            self.values.iter_mut().for_each(MetricValue::reset);
         }
 
         fn needs_flush(&self) -> bool {
@@ -349,7 +349,7 @@ mod tests {
         let telemetry_registry = TelemetryRegistryHandle::new();
         let mut handles = Vec::new();
 
-        for i in 0..5 {
+        for i in 0u64..5 {
             let telemetry_registry_clone = telemetry_registry.clone();
             let thread_handle = thread::spawn(move || {
                 let attrs = MockAttributeSet::new(format!("value_{i}"));
@@ -359,7 +359,7 @@ mod tests {
 
                 telemetry_registry_clone.accumulate_metric_set_snapshot(
                     metrics_key,
-                    &[SnapshotValue::from(i * 10), SnapshotValue::from(i * 20)],
+                    &[MetricValue::from(i * 10), MetricValue::from(i * 20)],
                 );
             });
             handles.push(thread_handle);

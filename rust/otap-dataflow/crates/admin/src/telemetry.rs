@@ -15,7 +15,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
-use otap_df_telemetry::metrics::{MetricValue, MetricsIterator, SnapshotValue};
+use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
@@ -61,7 +61,7 @@ struct MetricDataPointWithMetadata {
     #[serde(flatten)]
     metadata: MetricsField,
     /// Current value.
-    value: SnapshotValue,
+    value: MetricValue,
 }
 
 /// Container of all aggregated metrics (no metadata).
@@ -75,7 +75,7 @@ struct AllMetrics {
 struct MetricSet {
     name: String,
     attributes: HashMap<String, AttributeValue>,
-    metrics: HashMap<String, SnapshotValue>,
+    metrics: HashMap<String, MetricValue>,
 }
 
 /// Output format for telemetry endpoints.
@@ -126,7 +126,7 @@ struct AggregateGroup {
     /// Selected attributes for this group
     attributes: HashMap<String, AttributeValue>,
     /// Aggregated metrics by field name
-    metrics: HashMap<String, SnapshotValue>,
+    metrics: HashMap<String, MetricValue>,
 }
 
 #[inline]
@@ -300,7 +300,7 @@ fn aggregate_metric_groups(
         GroupKey,
         (
             HashMap<String, AttributeValue>,
-            HashMap<String, SnapshotValue>,
+            HashMap<String, MetricValue>,
             &'static MetricsDescriptor,
         ),
     > = HashMap::new();
@@ -432,48 +432,52 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     out
 }
 
-fn format_lp_value(value: SnapshotValue, value_type: Option<MetricValueType>) -> String {
+fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
-        SnapshotValue::Scalar(scalar) => {
-            let vtype = value_type.unwrap_or(match scalar {
+        MetricValue::U64(_) | MetricValue::F64(_) => {
+            let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
+                MetricValue::Mmsc(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => {
-                    let int_val = match scalar {
+                    let int_val = match value {
                         MetricValue::U64(v) => v,
                         MetricValue::F64(v) => v as u64,
+                        MetricValue::Mmsc(_) => unreachable!(),
                     };
                     format!("{int_val}i")
                 }
-                MetricValueType::F64 => scalar.to_f64().to_string(),
+                MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
         // MMSC values are expanded into multiple fields at the call site;
         // this arm should not be reached.
-        SnapshotValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
     }
 }
 
-fn format_prom_value(value: SnapshotValue, value_type: Option<MetricValueType>) -> String {
+fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
-        SnapshotValue::Scalar(scalar) => {
-            let vtype = value_type.unwrap_or(match scalar {
+        MetricValue::U64(_) | MetricValue::F64(_) => {
+            let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
+                MetricValue::Mmsc(_) => unreachable!(),
             });
             match vtype {
-                MetricValueType::U64 => match scalar {
+                MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
                     MetricValue::F64(v) => (v as u64).to_string(),
+                    MetricValue::Mmsc(_) => unreachable!(),
                 },
-                MetricValueType::F64 => scalar.to_f64().to_string(),
+                MetricValueType::F64 => value.to_f64().to_string(),
             }
         }
         // MMSC values are expanded into summary lines at the call site;
         // this arm should not be reached.
-        SnapshotValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
     }
 }
 
@@ -505,7 +509,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                 .find(|f| f.name == fname.as_str())
                 .map(|f| f.value_type);
             match val {
-                SnapshotValue::Scalar(_) => {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
                     if !first {
                         fields.push(',');
                     }
@@ -517,7 +521,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         format_lp_value(*val, field_type)
                     );
                 }
-                SnapshotValue::Mmsc(s) => {
+                MetricValue::Mmsc(s) => {
                     for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
                         if !first {
                             fields.push(',');
@@ -589,7 +593,7 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
             if let Some(value) = g.metrics.get(field.name) {
                 let metric_name = sanitize_prom_metric_name(field.name);
                 match value {
-                    SnapshotValue::Scalar(_) => {
+                    MetricValue::U64(_) | MetricValue::F64(_) => {
                         if seen.insert(metric_name.clone()) {
                             if !field.brief.is_empty() {
                                 let _ = writeln!(
@@ -618,7 +622,7 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                             );
                         }
                     }
-                    SnapshotValue::Mmsc(s) => {
+                    MetricValue::Mmsc(s) => {
                         let brief = escape_prom_help(field.brief);
                         for (suffix, prom_type, val) in [
                             ("_min", "gauge", s.min),
@@ -838,7 +842,7 @@ fn format_line_protocol(
         let mut first = true;
         for (field, value) in metrics_iter {
             match value {
-                SnapshotValue::Scalar(_) => {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
                     if !first {
                         fields.push(',');
                     }
@@ -850,7 +854,7 @@ fn format_line_protocol(
                         format_lp_value(value, Some(field.value_type))
                     );
                 }
-                SnapshotValue::Mmsc(s) => {
+                MetricValue::Mmsc(s) => {
                     for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
                         if !first {
                             fields.push(',');
@@ -931,7 +935,7 @@ fn format_prometheus_text(
             let metric_name = sanitize_prom_metric_name(field.name);
 
             match value {
-                SnapshotValue::Scalar(_) => {
+                MetricValue::U64(_) | MetricValue::F64(_) => {
                     // HELP/TYPE once per metric name
                     if seen.insert(metric_name.clone()) {
                         if !field.brief.is_empty() {
@@ -961,7 +965,7 @@ fn format_prometheus_text(
                         );
                     }
                 }
-                SnapshotValue::Mmsc(s) => {
+                MetricValue::Mmsc(s) => {
                     let brief = escape_prom_help(field.brief);
                     for (suffix, prom_type, val) in [
                         ("_min", "gauge", s.min),
@@ -1185,7 +1189,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), SnapshotValue::from(10u64));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(10u64));
                     m
                 },
             },
@@ -1195,8 +1199,8 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), SnapshotValue::from(5u64));
-                    let _ = m.insert("metric2".to_string(), SnapshotValue::from(15u64));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(5u64));
+                    let _ = m.insert("metric2".to_string(), MetricValue::from(15u64));
                     m
                 },
             },
@@ -1206,7 +1210,7 @@ mod tests {
                 attributes: HashMap::new(),
                 metrics: {
                     let mut m = HashMap::new();
-                    let _ = m.insert("metric1".to_string(), SnapshotValue::from(8u64));
+                    let _ = m.insert("metric1".to_string(), MetricValue::from(8u64));
                     m
                 },
             },
@@ -1295,8 +1299,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<SnapshotValue> {
-                vec![SnapshotValue::from(10u64), SnapshotValue::from(1u64)]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(10u64), MetricValue::from(1u64)]
             } // requests_total=10, errors_total=1
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1307,8 +1311,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<SnapshotValue> {
-                vec![SnapshotValue::from(5u64), SnapshotValue::from(0u64)]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(5u64), MetricValue::from(0u64)]
             } // requests_total=5, errors_total=0
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1319,8 +1323,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<SnapshotValue> {
-                vec![SnapshotValue::from(5u64), SnapshotValue::from(4u64)]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(5u64), MetricValue::from(4u64)]
             } // requests_total=5, errors_total=4
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1331,8 +1335,8 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &TEST_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<SnapshotValue> {
-                vec![SnapshotValue::from(2u64), SnapshotValue::from(2u64)]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(2u64), MetricValue::from(2u64)]
             } // requests_total=2, errors_total=2
             fn clear_values(&mut self) {}
             fn needs_flush(&self) -> bool {
@@ -1375,11 +1379,11 @@ mod tests {
                     prod_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&SnapshotValue::from(10u64 + 5))
+                        Some(&MetricValue::from(10u64 + 5))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&SnapshotValue::from(1u64 + 4))
+                        Some(&MetricValue::from(1u64 + 4))
                     );
                     // Only grouped attribute should be present (env), not region
                     assert!(g.attributes.contains_key("env"));
@@ -1389,11 +1393,11 @@ mod tests {
                     dev_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&SnapshotValue::from(5u64 + 2))
+                        Some(&MetricValue::from(5u64 + 2))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&SnapshotValue::from(2u64))
+                        Some(&MetricValue::from(2u64))
                     );
                     assert!(g.attributes.contains_key("env"));
                     assert!(!g.attributes.contains_key("region"));
@@ -1432,11 +1436,11 @@ mod tests {
                     prod_us_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&SnapshotValue::from(10u64 + 5))
+                        Some(&MetricValue::from(10u64 + 5))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&SnapshotValue::from(1u64 + 4))
+                        Some(&MetricValue::from(1u64 + 4))
                     );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
@@ -1445,11 +1449,11 @@ mod tests {
                     dev_eu_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&SnapshotValue::from(5u64))
+                        Some(&MetricValue::from(5u64))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&SnapshotValue::from(0u64))
+                        Some(&MetricValue::from(0u64))
                     );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
@@ -1458,11 +1462,11 @@ mod tests {
                     dev_us_found = true;
                     assert_eq!(
                         g.metrics.get("requests_total"),
-                        Some(&SnapshotValue::from(2u64))
+                        Some(&MetricValue::from(2u64))
                     );
                     assert_eq!(
                         g.metrics.get("errors_total"),
-                        Some(&SnapshotValue::from(2u64))
+                        Some(&MetricValue::from(2u64))
                     );
                     assert!(g.attributes.contains_key("env"));
                     assert!(g.attributes.contains_key("region"));
@@ -1521,7 +1525,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    SnapshotValue::Mmsc(MmscSnapshot {
+                    MetricValue::Mmsc(MmscSnapshot {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,
@@ -1570,7 +1574,7 @@ mod tests {
                 let mut m = HashMap::new();
                 let _ = m.insert(
                     "request_duration".to_string(),
-                    SnapshotValue::Mmsc(MmscSnapshot {
+                    MetricValue::Mmsc(MmscSnapshot {
                         min: 1.5,
                         max: 100.0,
                         sum: 250.5,

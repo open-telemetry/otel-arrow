@@ -14,7 +14,7 @@ use crate::{
     descriptor::{Instrument, MetricsField, Temporality},
     error::Error,
     instrument::MmscSnapshot,
-    metrics::{MetricValue, SnapshotValue},
+    metrics::MetricValue,
     registry::TelemetryRegistryHandle,
 };
 
@@ -97,75 +97,51 @@ impl MetricsDispatcher {
     fn add_opentelemetry_metric(
         &self,
         field: &MetricsField,
-        value: SnapshotValue,
+        value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         match field.instrument {
             Instrument::Counter => match field.temporality {
                 Some(Temporality::Delta) => {
-                    if let SnapshotValue::Scalar(v) = value {
-                        self.add_opentelemetry_counter(field, v, attributes, meter)
-                    } else {
-                        unreachable!("Counter instrument must have scalar value");
-                    }
+                    self.add_opentelemetry_counter(field, value, attributes, meter)
                 }
                 Some(Temporality::Cumulative) | None => {
                     debug_assert!(
                         field.temporality.is_some(),
                         "sum-like instrument must have a temporality"
                     );
-                    if let SnapshotValue::Scalar(v) = value {
-                        // Cumulative counters are exported as gauges to avoid double-counting.
-                        // Note for reviewers: This is a temporary workaround until we figure out a
-                        // better way to handle cumulative sums via the Rust Client SDK.
-                        self.add_opentelemetry_gauge(field, v, attributes, meter)
-                    } else {
-                        unreachable!("Counter instrument must have scalar value");
-                    }
+                    // Cumulative counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
             Instrument::UpDownCounter => match field.temporality {
                 Some(Temporality::Delta) => {
-                    if let SnapshotValue::Scalar(v) = value {
-                        self.add_opentelemetry_up_down_counter(field, v, attributes, meter)
-                    } else {
-                        unreachable!("UpDownCounter instrument must have scalar value");
-                    }
+                    self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
                 }
                 Some(Temporality::Cumulative) | None => {
                     debug_assert!(
                         field.temporality.is_some(),
                         "sum-like instrument must have a temporality"
                     );
-                    if let SnapshotValue::Scalar(v) = value {
-                        // Cumulative up-down counters are exported as gauges to avoid double-counting.
-                        // Note for reviewers: This is a temporary workaround until we figure out a
-                        // better way to handle cumulative sums via the Rust Client SDK.
-                        self.add_opentelemetry_gauge(field, v, attributes, meter)
-                    } else {
-                        unreachable!("UpDownCounter instrument must have scalar value");
-                    }
+                    // Cumulative up-down counters are exported as gauges to avoid double-counting.
+                    // Note for reviewers: This is a temporary workaround until we figure out a
+                    // better way to handle cumulative sums via the Rust Client SDK.
+                    self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
-            Instrument::Gauge => {
-                if let SnapshotValue::Scalar(v) = value {
-                    self.add_opentelemetry_gauge(field, v, attributes, meter)
-                } else {
-                    unreachable!("Gauge instrument must have scalar value");
-                }
-            }
+            Instrument::Gauge => self.add_opentelemetry_gauge(field, value, attributes, meter),
             Instrument::Histogram => {
                 // TODO: Handle snapshot values that represent pre-aggregated histograms when we add support for them in the MetricsSnapshot.
-                if let SnapshotValue::Scalar(v) = value {
-                    self.add_opentelemetry_histogram(field, v, attributes, meter)
-                }
+                self.add_opentelemetry_histogram(field, value, attributes, meter)
             }
             Instrument::Mmsc => {
-                if let SnapshotValue::Mmsc(s) = value {
+                if let MetricValue::Mmsc(s) = value {
                     Self::record_synthetic_histogram(field, &s, attributes, meter);
                 } else {
-                    unreachable!("MMSC instrument must have MmscSnapshot value");
+                    unreachable!("MMSC instrument must have Mmsc value");
                 }
             }
         }
@@ -195,6 +171,7 @@ impl MetricsDispatcher {
                     .build();
                 counter.add(v, attributes);
             }
+            MetricValue::Mmsc(_) => unreachable!("Counter instrument cannot have Mmsc value"),
         }
     }
 
@@ -222,6 +199,7 @@ impl MetricsDispatcher {
                     .build();
                 gauge.record(v, attributes);
             }
+            MetricValue::Mmsc(_) => unreachable!("Gauge instrument cannot have Mmsc value"),
         }
     }
 
@@ -249,6 +227,7 @@ impl MetricsDispatcher {
                     .build();
                 histogram.record(v, attributes);
             }
+            MetricValue::Mmsc(_) => unreachable!("Histogram instrument cannot have Mmsc value"),
         }
     }
 
@@ -322,6 +301,7 @@ impl MetricsDispatcher {
                     .build();
                 up_down_counter.add(v, attributes);
             }
+            MetricValue::Mmsc(_) => unreachable!("UpDownCounter instrument cannot have Mmsc value"),
         }
     }
 }
@@ -457,7 +437,7 @@ mod tests {
             temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
-        let value = SnapshotValue::Scalar(MetricValue::U64(42));
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -478,7 +458,7 @@ mod tests {
             temporality: None,
             value_type: MetricValueType::U64,
         };
-        let value = SnapshotValue::Scalar(MetricValue::U64(42));
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -499,7 +479,7 @@ mod tests {
             temporality: None,
             value_type: MetricValueType::U64,
         };
-        let value = SnapshotValue::Scalar(MetricValue::U64(42));
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -520,7 +500,7 @@ mod tests {
             temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
-        let value = SnapshotValue::Scalar(MetricValue::U64(42));
+        let value = MetricValue::U64(42);
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -548,7 +528,7 @@ mod tests {
         );
 
         // Test with count == 0 (should be a no-op)
-        let value = SnapshotValue::Mmsc(MmscSnapshot {
+        let value = MetricValue::Mmsc(MmscSnapshot {
             min: f64::MAX,
             max: f64::MIN,
             sum: 0.0,
@@ -557,7 +537,7 @@ mod tests {
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
 
         // Test with count == 1
-        let value = SnapshotValue::Mmsc(MmscSnapshot {
+        let value = MetricValue::Mmsc(MmscSnapshot {
             min: 5.0,
             max: 5.0,
             sum: 5.0,
@@ -566,7 +546,7 @@ mod tests {
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
 
         // Test with count == 2
-        let value = SnapshotValue::Mmsc(MmscSnapshot {
+        let value = MetricValue::Mmsc(MmscSnapshot {
             min: 3.0,
             max: 7.0,
             sum: 10.0,
@@ -575,7 +555,7 @@ mod tests {
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
 
         // Test with count >= 3
-        let value = SnapshotValue::Mmsc(MmscSnapshot {
+        let value = MetricValue::Mmsc(MmscSnapshot {
             min: 1.0,
             max: 10.0,
             sum: 25.0,
@@ -625,14 +605,14 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &MMSC_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<SnapshotValue> {
-                vec![SnapshotValue::from(self.latency.get())]
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                vec![MetricValue::from(self.latency.get())]
             }
             fn clear_values(&mut self) {
                 self.latency.reset();
             }
             fn needs_flush(&self) -> bool {
-                !SnapshotValue::from(self.latency.get()).is_zero()
+                !MetricValue::from(self.latency.get()).is_zero()
             }
         }
 
