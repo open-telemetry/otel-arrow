@@ -22,6 +22,7 @@ use otap_df_pdata::otlp::OtlpProtoBytes;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::assert_equivalent;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::panic::AssertUnwindSafe;
@@ -58,7 +59,9 @@ struct ValidationExporterMetrics {
 
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
 pub struct ValidationExporter {
-    config: ValidationExporterConfig,
+    suv_index: usize,
+    control_index: usize,
+    expect_failure: bool,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<OtlpProtoMessage>,
     metrics: MetricSet<ValidationExporterMetrics>,
@@ -101,7 +104,7 @@ impl ValidationExporter {
         } else {
             self.metrics.failed_comparisons.add(1);
         }
-        let passed = equiv ^ self.config.expect_failure;
+        let passed = equiv ^ self.expect_failure;
         self.metrics.valid.set(passed as u64);
     }
 
@@ -117,8 +120,23 @@ impl ValidationExporter {
                     error: e.to_string(),
                 }
             })?;
+        let suv_node = pipeline_ctx
+            .node_by_name(&config.suv_input)
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: format!("unknown node name for suv_input: {}", config.suv_input),
+            })?;
+        let control_node = pipeline_ctx
+            .node_by_name(&config.control_input)
+            .ok_or_else(|| ConfigError::InvalidUserConfig {
+                error: format!(
+                    "unknown node name for control_input: {}",
+                    config.control_input
+                ),
+            })?;
         Ok(Self {
-            config,
+            suv_index: suv_node.index,
+            control_index: control_node.index,
+            expect_failure: config.expect_failure,
             metrics,
             control_msgs: Vec::new(),
             suv_msgs: Vec::new(),
@@ -154,20 +172,17 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
 
                     if let Some(msg) = msg
-                        && let Some(node_name) = source_node
+                        && let Some(node_index) = source_node
                     {
-                        match node_name {
-                            // match node name and update the vec of msgs and compare
-                            name if name == self.config.suv_input => {
-                                self.suv_msgs.push(msg);
-                                self.compare_and_record();
-                            }
-                            name if name == self.config.control_input => {
-                                self.control_msgs.push(msg);
-                                self.compare_and_record();
-                            }
-                            _ => {}
+                        if node_index == self.suv_index {
+                            self.suv_msgs.push(msg);
+                            self.compare_and_record();
+                        } else if node_index == self.control_index {
+                            self.control_msgs.push(msg);
+                            self.compare_and_record();
                         }
+                    } else {
+                        otel_error!("validation.missing.source");
                     }
                 }
                 _ => {}
