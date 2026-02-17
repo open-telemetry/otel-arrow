@@ -266,7 +266,7 @@ config: {}
     }
 
     #[test]
-    fn node_user_config_with_tellemetry_attribute_array_expects_error() {
+    fn node_user_config_with_telemetry_attribute_array_expects_error() {
         let json = r#"{
             "type": "urn:example:demo:receiver",
             "telemetry_attributes": {
