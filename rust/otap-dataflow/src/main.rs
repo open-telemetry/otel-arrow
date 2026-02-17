@@ -77,6 +77,10 @@ struct Args {
     /// Defaults to 127.0.0.1:8080 when unset.
     #[arg(long)]
     http_admin_bind: Option<String>,
+
+    /// Validate the provided configuration and exit without starting the engine.
+    #[arg(long)]
+    validate_config: bool,
 }
 
 fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
@@ -121,6 +125,68 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
     Ok(CoreRange { start, end })
 }
 
+fn validate_pipeline_plugins(
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    pipeline_cfg: &PipelineConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (node_id, node_cfg) in pipeline_cfg.node_iter() {
+        let kind = node_cfg.kind();
+        let normalized = otap_df_config::node_urn::validate_plugin_urn(node_cfg.r#type.as_ref(), kind)
+            .map_err(|e| {
+                std::io::Error::other(format!(
+                    "Invalid plugin URN in pipeline_group={} pipeline={} node={}: {}",
+                    pipeline_group_id.as_ref(),
+                    pipeline_id.as_ref(),
+                    node_id.as_ref(),
+                    e
+                ))
+            })?;
+
+        let exists = match kind {
+            otap_df_config::node::NodeKind::Receiver => OTAP_PIPELINE_FACTORY
+                .get_receiver_factory_map()
+                .contains_key(normalized.as_str()),
+            otap_df_config::node::NodeKind::Processor
+            | otap_df_config::node::NodeKind::ProcessorChain => OTAP_PIPELINE_FACTORY
+                .get_processor_factory_map()
+                .contains_key(normalized.as_str()),
+            otap_df_config::node::NodeKind::Exporter => OTAP_PIPELINE_FACTORY
+                .get_exporter_factory_map()
+                .contains_key(normalized.as_str()),
+        };
+
+        if !exists {
+            let kind_name = match kind {
+                otap_df_config::node::NodeKind::Receiver => "receiver",
+                otap_df_config::node::NodeKind::Processor
+                | otap_df_config::node::NodeKind::ProcessorChain => "processor",
+                otap_df_config::node::NodeKind::Exporter => "exporter",
+            };
+            return Err(std::io::Error::other(format!(
+                "Unknown {} plugin `{}` in pipeline_group={} pipeline={} node={}",
+                kind_name,
+                normalized.as_str(),
+                pipeline_group_id.as_ref(),
+                pipeline_id.as_ref(),
+                node_id.as_ref()
+            ))
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_engine_plugins(engine_cfg: &EngineConfig) -> Result<(), Box<dyn std::error::Error>> {
+    for (pipeline_group_id, pipeline_group) in &engine_cfg.pipeline_groups {
+        for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
+            validate_pipeline_plugins(pipeline_group_id, pipeline_id, pipeline_cfg)?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize rustls crypto provider (required for rustls 0.23+)
     // We use ring as the default provider
@@ -135,6 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         num_cores,
         core_id_range,
         http_admin_bind,
+        validate_config,
     } = Args::try_parse().unwrap_or_else(|e| {
         // Replace the confusing ArgGroup syntax with a human-readable message.
         if e.kind() == ErrorKind::MissingRequiredArgument {
@@ -178,11 +245,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-
-    let result = if let Some(config_path) = config {
-        let engine_cfg = EngineConfig::from_file(config_path)?;
-        controller.run_forever(engine_cfg)
+    let engine_cfg = if let Some(config_path) = config {
+        EngineConfig::from_file(config_path)?
     } else {
         let core_allocation_override = match (core_id_range, num_cores) {
             (Some(range), _) => Some(range),
@@ -229,8 +293,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pipeline_cfg,
             engine_settings,
         )?;
-        controller.run_forever(engine_cfg)
+        engine_cfg
     };
+
+    validate_engine_plugins(&engine_cfg)?;
+
+    if validate_config {
+        println!("Configuration is valid.");
+        std::process::exit(0);
+    }
+
+    let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
+    let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
@@ -328,6 +402,44 @@ Configuration files can be found in the configs/ directory.{}",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn collect_yaml_files(
+        dir: &Path,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                collect_yaml_files(&path, files)?;
+                continue;
+            }
+
+            let is_yaml = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| matches!(ext, "yaml" | "yml"))
+                .unwrap_or(false);
+
+            if is_yaml {
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    fn should_skip_for_current_features(path: &Path) -> bool {
+        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+
+        if file_name == "fake-kql-debug-noop.yaml" && !cfg!(feature = "recordset-kql-processor")
+        {
+            return true;
+        }
+
+        false
+    }
 
     #[test]
     fn parse_core_range_ok() {
@@ -391,5 +503,129 @@ mod tests {
             parse_core_id_range("1..2a"),
             Err("invalid end (expected unsigned integer)".to_string())
         );
+    }
+
+    #[test]
+    fn parse_validate_config_flag() {
+        let args = Args::parse_from([
+            "df_engine",
+            "--pipeline",
+            "pipeline.yaml",
+            "--validate-config",
+        ]);
+        assert!(args.validate_config);
+        assert_eq!(args.pipeline, Some(PathBuf::from("pipeline.yaml")));
+    }
+
+    #[test]
+    fn missing_config_source_even_with_validate_flag() {
+        let result = Args::try_parse_from(["df_engine", "--validate-config"]);
+        match result {
+            Ok(_) => panic!("Expected missing required argument error"),
+            Err(err) => assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument),
+        }
+    }
+
+    #[test]
+    fn validate_unknown_plugin_rejected() {
+        let pipeline_group_id: PipelineGroupId = "test_group".into();
+        let pipeline_id: PipelineId = "test_pipeline".into();
+        let yaml = r#"
+nodes:
+  receiver:
+    type: sss:receiver
+    config: {}
+  exporter:
+    type: noop:exporter
+    config: {}
+connections:
+  - from: receiver
+    to: exporter
+"#;
+
+        let pipeline_cfg =
+            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), yaml)
+                .expect("pipeline YAML should parse");
+
+        let err = validate_pipeline_plugins(&pipeline_group_id, &pipeline_id, &pipeline_cfg)
+            .expect_err("semantic plugin validation should fail");
+        assert!(err.to_string().contains("Unknown receiver plugin"));
+    }
+
+    #[test]
+    fn validate_all_example_configs() -> Result<(), Box<dyn std::error::Error>> {
+        let configs_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("configs");
+        let mut yaml_files = Vec::new();
+        collect_yaml_files(&configs_dir, &mut yaml_files)?;
+        yaml_files.sort();
+
+        assert!(
+            !yaml_files.is_empty(),
+            "No YAML config files found under {}",
+            configs_dir.display()
+        );
+
+        for file in yaml_files {
+            if should_skip_for_current_features(&file) {
+                continue;
+            }
+
+            if let Ok(engine_cfg) = EngineConfig::from_file(&file) {
+                validate_engine_plugins(&engine_cfg).map_err(|engine_err| {
+                    format!(
+                        "{} failed semantic engine plugin validation: {}",
+                        file.display(),
+                        engine_err
+                    )
+                })?;
+                continue;
+            }
+
+            let pipeline_group_id: PipelineGroupId = "ci_validation_group".into();
+            let pipeline_id: PipelineId = "ci_validation_pipeline".into();
+
+            let pipeline_cfg =
+                PipelineConfig::from_file(pipeline_group_id.clone(), pipeline_id.clone(), &file)
+                    .map_err(|pipeline_err| {
+                        format!(
+                            "{} is neither a valid engine config nor pipeline config: {}",
+                            file.display(),
+                            pipeline_err
+                        )
+                    })?;
+
+            let admin_settings = HttpAdminSettings {
+                bind_address: HttpAdminSettings::default().bind_address,
+            };
+            let engine_settings = EngineSettings {
+                http_admin: Some(admin_settings),
+                telemetry: pipeline_cfg.service().telemetry.clone(),
+                observed_state: Default::default(),
+            };
+
+            let engine_cfg = EngineConfig::from_pipeline(
+                pipeline_group_id,
+                pipeline_id,
+                pipeline_cfg,
+                engine_settings,
+            )
+            .map_err(|engine_err| {
+                format!(
+                    "{} failed conversion from pipeline to engine config: {}",
+                    file.display(),
+                    engine_err
+                )
+            })?;
+
+            validate_engine_plugins(&engine_cfg).map_err(|plugin_err| {
+                format!(
+                    "{} failed semantic plugin validation: {}",
+                    file.display(),
+                    plugin_err
+                )
+            })?;
+        }
+
+        Ok(())
     }
 }
