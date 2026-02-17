@@ -31,6 +31,8 @@ use super::transformer::Transformer;
 use crate::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 const STATS_PRINT_INTERVAL: u64 = 3;
@@ -128,6 +130,8 @@ impl AzureMonitorExporter {
         self.stats.add_batch();
         self.stats.add_client_latency(duration.as_secs_f64());
 
+        otel_debug!("export.success", batch_id = batch_id, row_count = row_count, duration_ms = duration.as_millis() as u64);
+
         for (_, context, payload) in completed_messages {
             effect_handler
                 .notify_ack(AckMsg::new(OtapPdata::new(context, payload)))
@@ -149,10 +153,7 @@ impl AzureMonitorExporter {
         self.stats.add_failed_rows(row_count);
         self.stats.add_failed_batch();
 
-        println!(
-            "[AzureMonitorExporter] Export failed: {:?} - {:?}",
-            batch_id, error
-        );
+        otel_error!("export.failed", batch_id = batch_id, error = %error);
 
         for (_, context, payload) in failed_messages {
             effect_handler
@@ -300,7 +301,7 @@ impl AzureMonitorExporter {
         self.drain_in_flight_exports(effect_handler).await?;
 
         for (msg_id, context, payload) in self.state.drain_all() {
-            print!("Found orphaned message {msg_id} in shutdown");
+            otel_warn!("shutdown.orphaned_message", msg_id = msg_id);
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",
@@ -308,6 +309,8 @@ impl AzureMonitorExporter {
                 ))
                 .await?;
         }
+
+        otel_info!("exporter.shutdown");
 
         Ok(())
     }
@@ -472,10 +475,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     let minutes = (total_secs % 3600) / 60;
                                     let seconds = total_secs % 60;
 
-                                    println!("[AzureMonitorExporter] Access token refreshed, next refresh scheduled in {}h {}m {}s", hours, minutes, seconds);
+                                    otel_info!("auth.token_refresh", refresh_in = format!("{}h {}m {}s", hours, minutes, seconds));
                                 }
                                 Err(e) => {
-                                    println!("[AzureMonitorExporter] Failed to create auth header: {:?}", e);
+                                    otel_error!("auth.header_creation_failed", error = ?e);
                                     // Retry every 10 seconds
                                     next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
                                 }
@@ -483,7 +486,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
                         }
                         Err(e) => {
-                            println!("[AzureMonitorExporter] Failed to refresh access token: {:?}", e);
+                            otel_error!("auth.token_refresh_failed", error = ?e);
                             // Retry every 10 seconds
                             next_token_refresh = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
                         }
@@ -493,8 +496,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_heartbeat_send) => {
                     next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
                     match self.heartbeat.send().await {
-                        Ok(_) => println!("[AzureMonitorExporter] Heartbeat sent"),
-                        Err(e) => println!("[AzureMonitorExporter] Heartbeat send failed: {:?}", e),
+                        Ok(_) => otel_debug!("heartbeat.sent"),
+                        Err(e) => otel_warn!("heartbeat.send_failed", error = ?e),
                     }
                 }
 
@@ -508,7 +511,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     next_periodic_export = tokio::time::Instant::now() + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
 
                     if self.last_batch_queued_at.elapsed() >= std::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL) && self.gzip_batcher.has_pending_data() {
-                        println!("[AzureMonitorExporter] Periodic export pending data");
+                        otel_debug!("export.periodic_flush");
                         self.queue_current_batch(&effect_handler).await?;
                     }
                 }

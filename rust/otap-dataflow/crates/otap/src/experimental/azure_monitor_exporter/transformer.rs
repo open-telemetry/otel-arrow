@@ -7,6 +7,7 @@ use otap_df_pdata::views::{
     logs::{LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView},
     resource::ResourceView,
 };
+use otap_df_telemetry::otel_warn;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
@@ -125,7 +126,6 @@ pub struct Transformer {
     schema: ParsedSchema,
 }
 
-#[allow(clippy::print_stdout)]
 impl Transformer {
     /// Create a new Transformer with the given configuration
     ///
@@ -180,7 +180,7 @@ impl Transformer {
                         let writer = (&mut buf).writer();
                         let mut ser = serde_json::Serializer::new(writer);
                         if let Err(e) = record_map.serialize(&mut ser) {
-                            println!("Failed to serialize log entry: {e}");
+                            otel_warn!("transform.serialize_failed", error = %e);
                             continue;
                         }
                     }

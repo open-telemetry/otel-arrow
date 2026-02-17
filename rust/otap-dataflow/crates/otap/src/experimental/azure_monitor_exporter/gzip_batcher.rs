@@ -524,8 +524,6 @@ mod tests {
         let batch = batcher.take_pending_batch().unwrap();
         let size = batch.compressed_data.len();
 
-        println!("Final batch size: {} bytes", size);
-
         // 1. Must not exceed 1MB
         assert!(size <= ONE_MB, "Batch size {} exceeds 1MB limit", size);
 
