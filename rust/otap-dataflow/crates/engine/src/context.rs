@@ -113,7 +113,6 @@ pub struct PipelineContext {
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
     pipeline_telemetry_attrs: HashMap<String, AttributeValue>,
-    node_id: NodeId,
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
