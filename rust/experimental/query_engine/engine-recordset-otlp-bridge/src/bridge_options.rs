@@ -19,7 +19,7 @@ impl BridgeOptions {
     pub fn new() -> BridgeOptions {
         Self {
             attributes_schema: None,
-            include_dropped_records: true
+            include_dropped_records: true,
         }
     }
 

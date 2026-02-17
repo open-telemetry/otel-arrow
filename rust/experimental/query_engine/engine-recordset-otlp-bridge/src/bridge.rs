@@ -63,7 +63,7 @@ pub fn get_log_record_schema() -> &'static ParserMapSchema {
 pub struct BridgePipeline {
     attributes_schema: Option<ParserMapSchema>,
     pipeline: PipelineExpression,
-    include_dropped_records: bool
+    include_dropped_records: bool,
 }
 
 impl BridgePipeline {
@@ -84,8 +84,7 @@ impl BridgeResponse {
     pub fn into_otlp_bytes(self) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
         let mut included_records_otlp_response = Vec::new();
         if let Some(ref included) = self.included_records {
-            match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY)
-            {
+            match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY) {
                 Ok(r) => {
                     included_records_otlp_response = r.to_vec();
                 }
@@ -118,7 +117,9 @@ pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<BridgePipeline, Vec<ParserError>> {
-    let include_dropped_records = options.as_ref().map_or(true, |v| v.get_include_dropped_records());
+    let include_dropped_records = options
+        .as_ref()
+        .is_none_or(|v| v.get_include_dropped_records());
     let parser_options = build_parser_options(options).map_err(|e| vec![e])?;
     let attributes_schema = match parser_options
         .get_source_map_schema()
@@ -131,7 +132,7 @@ pub fn parse_kql_query_into_pipeline(
     Ok(BridgePipeline {
         attributes_schema,
         pipeline: result.pipeline,
-        include_dropped_records
+        include_dropped_records,
     })
 }
 
@@ -398,7 +399,12 @@ pub fn process_export_logs_service_request_using_pipeline(
         included_records = Some(export_logs_service_request);
     }
 
-    Ok(BridgeResponse { included_records, included_record_count, dropped_records, dropped_record_count })
+    Ok(BridgeResponse {
+        included_records,
+        included_record_count,
+        dropped_records,
+        dropped_record_count,
+    })
 }
 
 fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions, ParserError> {
@@ -662,7 +668,11 @@ mod tests {
 
         {
             // Drop everything but turn off include dropped records
-            let pipeline_id = register_pipeline_for_kql_query("s | where false", Some(BridgeOptions::new().set_include_dropped_records(false))).unwrap();
+            let pipeline_id = register_pipeline_for_kql_query(
+                "s | where false",
+                Some(BridgeOptions::new().set_include_dropped_records(false)),
+            )
+            .unwrap();
 
             let response =
                 process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
@@ -685,13 +695,12 @@ mod tests {
 
         let pipeline = parse_kql_query_into_pipeline("source | where false", None).unwrap();
 
-        let response =
-            process_export_logs_service_request_using_pipeline(
-                &pipeline,
-                RecordSetEngineDiagnosticLevel::Verbose,
-                request,
-            )
-            .unwrap();
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
 
         assert_eq!(0, response.included_record_count);
         assert_eq!(1, response.dropped_record_count);
@@ -710,13 +719,12 @@ mod tests {
 
         let pipeline = parse_kql_query_into_pipeline("source | where true", None).unwrap();
 
-        let response =
-            process_export_logs_service_request_using_pipeline(
-                &pipeline,
-                RecordSetEngineDiagnosticLevel::Verbose,
-                request,
-            )
-            .unwrap();
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
 
         assert_eq!(1, response.included_record_count);
         assert_eq!(0, response.dropped_record_count);
@@ -736,13 +744,12 @@ mod tests {
         let pipeline =
             parse_kql_query_into_pipeline("source | summarize Count = count()", None).unwrap();
 
-        let response =
-            process_export_logs_service_request_using_pipeline(
-                &pipeline,
-                RecordSetEngineDiagnosticLevel::Verbose,
-                request,
-            )
-            .unwrap();
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
 
         assert_eq!(1, response.included_record_count);
         assert_eq!(1, response.dropped_record_count);
@@ -842,13 +849,12 @@ mod tests {
         )
         .unwrap();
 
-        let response =
-            process_export_logs_service_request_using_pipeline(
-                &pipeline,
-                RecordSetEngineDiagnosticLevel::Verbose,
-                request,
-            )
-            .unwrap();
+        let response = process_export_logs_service_request_using_pipeline(
+            &pipeline,
+            RecordSetEngineDiagnosticLevel::Verbose,
+            request,
+        )
+        .unwrap();
 
         assert_eq!(1, response.included_record_count);
         assert_eq!(0, response.dropped_record_count);
@@ -998,8 +1004,15 @@ mod tests {
         )
         .unwrap();
 
-        let canonical_logs = &response_canonical.included_records.unwrap().resource_logs[0].scope_logs[0].log_records;
-        let aliased_logs = &response_with_aliases.included_records.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let canonical_logs = &response_canonical.included_records.unwrap().resource_logs[0]
+            .scope_logs[0]
+            .log_records;
+        let aliased_logs = &response_with_aliases
+            .included_records
+            .unwrap()
+            .resource_logs[0]
+            .scope_logs[0]
+            .log_records;
 
         assert_eq!(canonical_logs.len(), 1);
         assert_eq!(aliased_logs.len(), 1);
