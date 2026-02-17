@@ -80,7 +80,7 @@ below along with the relationships between each table.
 | NUMBER_DP_EXEMPLAR_ATTRS | Exemplar attributes for number data points | NUMBER_DP_EXEMPLARS |
 | HISTOGRAM_DP_EXEMPLAR_ATTRS | Exemplar attributes for histogram data points | HISTOGRAM_DP_EXEMPLARS |
 | EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS | Exemplar attributes for exponential histogram data points | EXP_HISTOGRAM_DP_EXEMPLARS |
-| METRIC_ATTRS | Metric-level attributes | METRICS |
+| METRIC_ATTRS | Metric-level attributes (metadata) | METRICS |
 | RESOURCE_ATTRS | Resource attributes | METRICS |
 | SCOPE_ATTRS | Scope attributes | METRICS |
 
@@ -266,7 +266,6 @@ a standardized format that can be read by any Arrow-compatible library. This lay
 
 - **Dictionary/Delta Dictionary encoding**: Efficient representation of repeated string values
 - **Zero-copy deserialization**: Data can be read directly from wire format without copying
-- **Columnar layout**: Data organized by column rather than by row, enabling better compression and SIMD processing
 
 Clients and servers communicating over a Stream are managing multiple independent Arrow IPC streams,
 one for each Payload Type that the client has sent. On the server side, each `record` is routed to a separate 
@@ -327,26 +326,27 @@ The type information in the table is for the `id` field.
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
-| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
+| resource.schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
 | scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
-| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
-| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
+| scope.name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope name |
+| scope.version | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope version |
 | scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
-| schema_url | Utf8 | — | Yes | No | — | — | Log schema URL |
+| schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Log schema URL |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Log timestamp in Unix nanoseconds |
 | observed_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Observation timestamp in Unix nanoseconds |
-| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Trace `id` for correlation |
-| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Span `id` for correlation |
-| severity_number | Int32 | — | Yes | No | — | — | Numeric severity level |
-| severity_text | Utf8 | — | Yes | No | — | — | Textual severity level |
-| body_type | UInt8 | — | No | Yes | — | — | Body value type (same encoding as attribute type) |
-| body_str | Utf8 | — | No | Yes | — | — | String body (may be empty) |
-| body_int | Int64 | — | Yes | No | — | — | Integer body (when body_type=3) |
-| body_double | Float64 | — | Yes | No | — | — | Double body (when body_type=4) |
-| body_bool | Boolean | — | Yes | No | — | — | Boolean body (when body_type=2) |
-| body_bytes | Binary | — | Yes | No | — | — | Bytes body (when body_type=5) |
-| body_ser | Binary | — | Yes | No | — | — | CBOR-encoded complex body (when body_type=6 or 7) |
+| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | — | — | Trace `id` for correlation |
+| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | — | — | Span `id` for correlation |
+| severity_number | Int32 | Dict(u8), Dict(u16) | Yes | No | — | — | Numeric severity level |
+| severity_text | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Textual severity level |
+| event_name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Event name |
+| body.type | UInt8 | — | No | Yes | — | — | Body value type (same encoding as attribute type) |
+| body.str | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | String body (may be empty) |
+| body.int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer body (when body.type=3) |
+| body.double | Float64 | — | Yes | No | — | — | Double body (when body.type=4) |
+| body.bool | Boolean | — | Yes | No | — | — | Boolean body (when body.type=2) |
+| body.bytes | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | Bytes body (when body.type=5) |
+| body_ser | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | CBOR-encoded complex body (when body.type=6 or 7) |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped log attributes |
 | flags | UInt32 | — | Yes | No | — | — | Trace flags |
 
@@ -624,7 +624,7 @@ For attribute tables, exactly ONE of the value fields (`str`, `int`, `double`, `
 
 #### Body Fields (Logs)
 
-For logs, the `body_type` field determines which `body_*` field is populated, similar to attribute fields.
+For logs, the `body.type` field determines which `body.*` field is populated, similar to attribute fields.
 
 #### Exemplar Value Fields
 
