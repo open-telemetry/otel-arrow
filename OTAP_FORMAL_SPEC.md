@@ -589,6 +589,7 @@ All parent-child relationships in the OTAP data model follow a uniform conventio
 - **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
 - All `id` columns are nullable, with a null indicating that there are no child rows
 - `parent_id` columns are not nullable as they must be linked back to some parent `id` column
+- `id` columns are only unique within a BAR, Ids may be reused across batches in the same stream
 
 **Example**: In the Logs signal:
 - The LOGS table has an `id` column (UInt16)
