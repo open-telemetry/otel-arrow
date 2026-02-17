@@ -112,7 +112,10 @@ impl Auth {
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
             AuthMethod::Development => {
-                otel_info!("azure_monitor_exporter.auth.credential_type", method = "developer_tools");
+                otel_info!(
+                    "azure_monitor_exporter.auth.credential_type",
+                    method = "developer_tools"
+                );
                 Ok(
                     DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
                         .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,

@@ -306,7 +306,10 @@ impl AzureMonitorExporter {
         self.drain_in_flight_exports(effect_handler).await?;
 
         for (msg_id, context, payload) in self.state.drain_all() {
-            otel_warn!("azure_monitor_exporter.shutdown.orphaned_message", msg_id = msg_id);
+            otel_warn!(
+                "azure_monitor_exporter.shutdown.orphaned_message",
+                msg_id = msg_id
+            );
             effect_handler
                 .notify_nack(NackMsg::new(
                     "Shutdown before export completed",

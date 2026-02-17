@@ -234,11 +234,17 @@ impl LogsIngestionClient {
 
         match status.as_u16() {
             401 => {
-                otel_warn!("azure_monitor_exporter.export.unauthorized", status = status.as_u16());
+                otel_warn!(
+                    "azure_monitor_exporter.export.unauthorized",
+                    status = status.as_u16()
+                );
                 Err(Error::unauthorized(body))
             }
             403 => {
-                otel_warn!("azure_monitor_exporter.export.forbidden", status = status.as_u16());
+                otel_warn!(
+                    "azure_monitor_exporter.export.forbidden",
+                    status = status.as_u16()
+                );
                 Err(Error::forbidden(body))
             }
             413 => Err(Error::PayloadTooLarge),
