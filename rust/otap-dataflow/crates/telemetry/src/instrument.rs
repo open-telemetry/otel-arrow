@@ -515,6 +515,7 @@ impl Mmsc {
 
     /// Returns the current MMSC snapshot.
     #[inline]
+    #[must_use]
     pub const fn get(&self) -> MmscSnapshot {
         MmscSnapshot {
             min: self.min,

@@ -616,17 +616,9 @@ mod tests {
             }],
         };
 
-        #[derive(Debug)]
+        #[derive(Debug, Default)]
         struct MmscMetricSet {
             latency: Mmsc,
-        }
-
-        impl Default for MmscMetricSet {
-            fn default() -> Self {
-                Self {
-                    latency: Mmsc::default(),
-                }
-            }
         }
 
         impl MetricSetHandler for MmscMetricSet {
