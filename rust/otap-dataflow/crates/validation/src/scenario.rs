@@ -13,9 +13,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Backwards-compatible alias for [`TlsConfig`].
-pub type TlsScenarioConfig = TlsConfig;
-
 const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
