@@ -20,6 +20,9 @@ string_literal = {
   | ("'" ~ single_quote_string_char* ~ "'")
 }
 
+datetime_literal    = { (ASCII_ALPHANUMERIC | "-" | "+" | ":" | "/" | "." | ",")+ }
+datetime_expression = { "datetime(" ~ (string_literal | datetime_literal) ~ ")" }
+
 identifier_expression = {
     ident
 }
@@ -59,8 +62,9 @@ function_call = { identifier_expression ~ "(" ~ argument_list ~ ")" }
 member_expression = {
     index_expression
   | attribute_selection_expression
+  | datetime_expression
   | function_call
-  | primitive_expression // TODO function calls
+  | primitive_expression
 }
 
 integer_literal = @{
