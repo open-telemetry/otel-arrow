@@ -6,6 +6,7 @@ use data_engine_kql_parser::*;
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeOptions {
     attributes_schema: Option<ParserMapSchema>,
+    include_dropped_records: bool,
 }
 
 impl Default for BridgeOptions {
@@ -18,6 +19,7 @@ impl BridgeOptions {
     pub fn new() -> BridgeOptions {
         Self {
             attributes_schema: None,
+            include_dropped_records: true
         }
     }
 
@@ -54,6 +56,19 @@ impl BridgeOptions {
     pub fn with_attributes_schema(mut self, attributes_schema: ParserMapSchema) -> BridgeOptions {
         self.attributes_schema = Some(attributes_schema);
         self
+    }
+
+    pub fn set_include_dropped_records(mut self, include_dropped_records: bool) -> BridgeOptions {
+        self.include_dropped_records = include_dropped_records;
+        self
+    }
+
+    pub fn get_attributes_schema(&self) -> Option<&ParserMapSchema> {
+        self.attributes_schema.as_ref()
+    }
+
+    pub fn get_include_dropped_records(&self) -> bool {
+        self.include_dropped_records
     }
 
     pub fn take_attributes_schema(&mut self) -> Option<ParserMapSchema> {

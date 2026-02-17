@@ -63,6 +63,7 @@ pub fn get_log_record_schema() -> &'static ParserMapSchema {
 pub struct BridgePipeline {
     attributes_schema: Option<ParserMapSchema>,
     pipeline: PipelineExpression,
+    include_dropped_records: bool
 }
 
 impl BridgePipeline {
@@ -71,22 +72,66 @@ impl BridgePipeline {
     }
 }
 
+#[derive(Debug)]
+pub struct BridgeResponse {
+    pub included_records: Option<ExportLogsServiceRequest>,
+    pub included_record_count: usize,
+    pub dropped_records: Option<ExportLogsServiceRequest>,
+    pub dropped_record_count: usize,
+}
+
+impl BridgeResponse {
+    pub fn into_otlp_bytes(self) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
+        let mut included_records_otlp_response = Vec::new();
+        if let Some(ref included) = self.included_records {
+            match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY)
+            {
+                Ok(r) => {
+                    included_records_otlp_response = r.to_vec();
+                }
+                Err(e) => {
+                    return Err(BridgeError::OtlpProtobufWriteError(e));
+                }
+            }
+        }
+
+        let mut dropped_records_otlp_response = Vec::new();
+        if let Some(ref dropped) = self.dropped_records {
+            match ExportLogsServiceRequest::to_protobuf(dropped, OTLP_BUFFER_INITIAL_CAPACITY) {
+                Ok(r) => {
+                    dropped_records_otlp_response = r.to_vec();
+                }
+                Err(e) => {
+                    return Err(BridgeError::OtlpProtobufWriteError(e));
+                }
+            }
+        }
+
+        Ok((
+            included_records_otlp_response,
+            dropped_records_otlp_response,
+        ))
+    }
+}
+
 pub fn parse_kql_query_into_pipeline(
     query: &str,
     options: Option<BridgeOptions>,
 ) -> Result<BridgePipeline, Vec<ParserError>> {
-    let options = build_parser_options(options).map_err(|e| vec![e])?;
-    let attributes_schema = match options
+    let include_dropped_records = options.as_ref().map_or(true, |v| v.get_include_dropped_records());
+    let parser_options = build_parser_options(options).map_err(|e| vec![e])?;
+    let attributes_schema = match parser_options
         .get_source_map_schema()
         .and_then(|s| s.get_schema_for_key("Attributes"))
     {
         Some(ParserMapKeySchema::Map(Some(attributes_schema))) => Some(attributes_schema.clone()),
         _ => None,
     };
-    let result = KqlParser::parse_with_options(query, options)?;
+    let result = KqlParser::parse_with_options(query, parser_options)?;
     Ok(BridgePipeline {
         attributes_schema,
         pipeline: result.pipeline,
+        include_dropped_records
     })
 }
 
@@ -105,7 +150,7 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_registered_pipeli
     pipeline: usize,
     log_level: RecordSetEngineDiagnosticLevel,
     export_logs_service_request_protobuf_data: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
+) -> Result<BridgeResponse, BridgeError> {
     let expressions = EXPRESSIONS.read().unwrap();
 
     let pipeline_registration = expressions.get(pipeline);
@@ -126,7 +171,7 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_pipeline(
     pipeline: &BridgePipeline,
     log_level: RecordSetEngineDiagnosticLevel,
     export_logs_service_request_protobuf_data: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
+) -> Result<BridgeResponse, BridgeError> {
     let request =
         ExportLogsServiceRequest::from_protobuf(export_logs_service_request_protobuf_data);
 
@@ -134,54 +179,14 @@ pub fn process_protobuf_otlp_export_logs_service_request_using_pipeline(
         return Err(BridgeError::OtlpProtobufReadError(e));
     }
 
-    match process_export_logs_service_request_using_pipeline(pipeline, log_level, request.unwrap())
-    {
-        Ok((included, dropped)) => {
-            let mut included_records_otlp_response = Vec::new();
-            if let Some(ref included) = included {
-                match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY)
-                {
-                    Ok(r) => {
-                        included_records_otlp_response = r.to_vec();
-                    }
-                    Err(e) => {
-                        return Err(BridgeError::OtlpProtobufWriteError(e));
-                    }
-                }
-            }
-
-            let mut dropped_records_otlp_response = Vec::new();
-            if let Some(ref dropped) = dropped {
-                match ExportLogsServiceRequest::to_protobuf(dropped, OTLP_BUFFER_INITIAL_CAPACITY) {
-                    Ok(r) => {
-                        dropped_records_otlp_response = r.to_vec();
-                    }
-                    Err(e) => {
-                        return Err(BridgeError::OtlpProtobufWriteError(e));
-                    }
-                }
-            }
-
-            Ok((
-                included_records_otlp_response,
-                dropped_records_otlp_response,
-            ))
-        }
-        Err(e) => Err(e),
-    }
+    process_export_logs_service_request_using_pipeline(pipeline, log_level, request.unwrap())
 }
 
 pub fn process_export_logs_service_request_using_pipeline(
     pipeline: &BridgePipeline,
     log_level: RecordSetEngineDiagnosticLevel,
     mut export_logs_service_request: ExportLogsServiceRequest,
-) -> Result<
-    (
-        Option<ExportLogsServiceRequest>,
-        Option<ExportLogsServiceRequest>,
-    ),
-    BridgeError,
-> {
+) -> Result<BridgeResponse, BridgeError> {
     let engine = RecordSetEngine::new_with_options(
         RecordSetEngineOptions::new().with_diagnostic_level(log_level),
     );
@@ -230,47 +235,58 @@ pub fn process_export_logs_service_request_using_pipeline(
         }
     }
 
-    let dropped_records = batch.push_records(&mut export_logs_service_request);
+    let initial_dropped_records = batch.push_records(&mut export_logs_service_request);
 
     let mut final_results = batch.flush();
 
-    for record in dropped_records.into_iter() {
-        final_results.dropped_records.push(record);
-    }
-
     let mut dropped_records = None;
-
-    if !final_results.dropped_records.is_empty() {
-        let mut dropped_records_request = ExportLogsServiceRequest::new();
-
-        for original_resource_logs in &export_logs_service_request.resource_logs {
-            let mut resource_logs = ResourceLogs::new();
-
-            resource_logs.resource = original_resource_logs.resource.clone();
-            resource_logs.extra_fields = original_resource_logs.extra_fields.clone();
-
-            for original_scope_logs in &original_resource_logs.scope_logs {
-                let mut scope_logs = ScopeLogs::new();
-
-                scope_logs.instrumentation_scope =
-                    original_scope_logs.instrumentation_scope.clone();
-                scope_logs.extra_fields = original_scope_logs.extra_fields.clone();
-
-                resource_logs.scope_logs.push(scope_logs);
-            }
-
-            dropped_records_request.resource_logs.push(resource_logs);
+    let dropped_record_count = if pipeline.include_dropped_records {
+        for record in initial_dropped_records.into_iter() {
+            final_results.dropped_records.push(record);
         }
 
-        process_log_record_results(&mut dropped_records_request, final_results.dropped_records);
+        if !final_results.dropped_records.is_empty() {
+            let mut dropped_records_request = ExportLogsServiceRequest::new();
 
-        dropped_records = Some(dropped_records_request);
-    }
+            for original_resource_logs in &export_logs_service_request.resource_logs {
+                let mut resource_logs = ResourceLogs::new();
+
+                resource_logs.resource = original_resource_logs.resource.clone();
+                resource_logs.extra_fields = original_resource_logs.extra_fields.clone();
+
+                for original_scope_logs in &original_resource_logs.scope_logs {
+                    let mut scope_logs = ScopeLogs::new();
+
+                    scope_logs.instrumentation_scope =
+                        original_scope_logs.instrumentation_scope.clone();
+                    scope_logs.extra_fields = original_scope_logs.extra_fields.clone();
+
+                    resource_logs.scope_logs.push(scope_logs);
+                }
+
+                dropped_records_request.resource_logs.push(resource_logs);
+            }
+
+            let count = final_results.dropped_records.len();
+
+            process_log_record_results(&mut dropped_records_request, final_results.dropped_records);
+
+            dropped_records = Some(dropped_records_request);
+
+            count
+        } else {
+            0
+        }
+    } else {
+        initial_dropped_records.len() + final_results.dropped_records.len()
+    };
 
     let mut included_records = None;
 
+    let mut included_record_count = final_results.included_records.len();
+    let has_included_records = included_record_count > 0;
+
     let has_summaries = !final_results.summaries.included_summaries.is_empty();
-    let has_included_records = !final_results.included_records.is_empty();
     if has_summaries || has_included_records {
         if has_included_records {
             process_log_record_results(
@@ -305,6 +321,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                     }
 
                     log_records.push(LogRecord::new().with_attributes(attributes));
+                    included_record_count += 1;
                 } else {
                     let mut attributes: Vec<(Box<str>, AnyValue)> = Vec::with_capacity(
                         summary.aggregation_values.len() + summary.group_by_values.len() + 1,
@@ -361,6 +378,7 @@ pub fn process_export_logs_service_request_using_pipeline(
                     }
 
                     log_records.push(LogRecord::new().with_attributes(attributes));
+                    included_record_count += 1;
                 }
             }
 
@@ -380,7 +398,7 @@ pub fn process_export_logs_service_request_using_pipeline(
         included_records = Some(export_logs_service_request);
     }
 
-    Ok((included_records, dropped_records))
+    Ok(BridgeResponse { included_records, included_record_count, dropped_records, dropped_record_count })
 }
 
 fn build_parser_options(options: Option<BridgeOptions>) -> Result<ParserOptions, ParserError> {
@@ -614,6 +632,8 @@ mod tests {
                     RecordSetEngineDiagnosticLevel::Error,
                     &protobuf_data,
                 )
+                .unwrap()
+                .into_otlp_bytes()
                 .unwrap();
 
             let response = OtlpExportLogsServiceRequest::decode(&included[..]).unwrap();
@@ -631,11 +651,29 @@ mod tests {
                     RecordSetEngineDiagnosticLevel::Error,
                     &protobuf_data,
                 )
+                .unwrap()
+                .into_otlp_bytes()
                 .unwrap();
 
             let response = OtlpExportLogsServiceRequest::decode(&dropped[..]).unwrap();
 
             assert_eq!(request, response);
+        }
+
+        {
+            // Drop everything but turn off include dropped records
+            let pipeline_id = register_pipeline_for_kql_query("s | where false", Some(BridgeOptions::new().set_include_dropped_records(false))).unwrap();
+
+            let response =
+                process_protobuf_otlp_export_logs_service_request_using_registered_pipeline(
+                    pipeline_id,
+                    RecordSetEngineDiagnosticLevel::Error,
+                    &protobuf_data,
+                )
+                .unwrap();
+
+            assert_eq!(1, response.dropped_record_count);
+            assert!(response.dropped_records.is_none())
         }
     }
 
@@ -647,7 +685,7 @@ mod tests {
 
         let pipeline = parse_kql_query_into_pipeline("source | where false", None).unwrap();
 
-        let (included_records, dropped_records) =
+        let response =
             process_export_logs_service_request_using_pipeline(
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -655,8 +693,13 @@ mod tests {
             )
             .unwrap();
 
-        assert!(included_records.is_none());
-        assert!(dropped_records.is_some());
+        assert_eq!(0, response.included_record_count);
+        assert_eq!(1, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(included_records.is_empty());
+        assert!(!dropped_records.is_empty());
     }
 
     #[test]
@@ -667,7 +710,7 @@ mod tests {
 
         let pipeline = parse_kql_query_into_pipeline("source | where true", None).unwrap();
 
-        let (included_records, dropped_records) =
+        let response =
             process_export_logs_service_request_using_pipeline(
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -675,8 +718,13 @@ mod tests {
             )
             .unwrap();
 
-        assert!(included_records.is_some());
-        assert!(dropped_records.is_none());
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(0, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(dropped_records.is_empty());
     }
 
     #[test]
@@ -688,7 +736,7 @@ mod tests {
         let pipeline =
             parse_kql_query_into_pipeline("source | summarize Count = count()", None).unwrap();
 
-        let (included_records, dropped_records) =
+        let response =
             process_export_logs_service_request_using_pipeline(
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -696,8 +744,13 @@ mod tests {
             )
             .unwrap();
 
-        assert!(included_records.is_some());
-        assert!(dropped_records.is_some());
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(1, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(!dropped_records.is_empty());
     }
 
     #[test]
@@ -789,7 +842,7 @@ mod tests {
         )
         .unwrap();
 
-        let (included_records, dropped_records) =
+        let response =
             process_export_logs_service_request_using_pipeline(
                 &pipeline,
                 RecordSetEngineDiagnosticLevel::Verbose,
@@ -797,8 +850,13 @@ mod tests {
             )
             .unwrap();
 
-        assert!(included_records.is_some());
-        assert!(dropped_records.is_none());
+        assert_eq!(1, response.included_record_count);
+        assert_eq!(0, response.dropped_record_count);
+
+        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+
+        assert!(!included_records.is_empty());
+        assert!(dropped_records.is_empty());
     }
 
     #[test]
@@ -921,7 +979,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let (result_canonical, _) = process_export_logs_service_request_using_pipeline(
+        let response_canonical = process_export_logs_service_request_using_pipeline(
             &pipeline_canonical,
             RecordSetEngineDiagnosticLevel::Error,
             create_request(),
@@ -933,15 +991,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let (result_with_aliases, _) = process_export_logs_service_request_using_pipeline(
+        let response_with_aliases = process_export_logs_service_request_using_pipeline(
             &pipeline_with_aliases,
             RecordSetEngineDiagnosticLevel::Error,
             create_request(),
         )
         .unwrap();
 
-        let canonical_logs = &result_canonical.unwrap().resource_logs[0].scope_logs[0].log_records;
-        let aliased_logs = &result_with_aliases.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let canonical_logs = &response_canonical.included_records.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let aliased_logs = &response_with_aliases.included_records.unwrap().resource_logs[0].scope_logs[0].log_records;
 
         assert_eq!(canonical_logs.len(), 1);
         assert_eq!(aliased_logs.len(), 1);
