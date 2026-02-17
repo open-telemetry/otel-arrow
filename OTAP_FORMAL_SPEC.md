@@ -309,7 +309,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
+| id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
 | resource | Struct | - | Yes | No | — | — | Resource information |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Resource schema URL |
@@ -344,7 +344,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Span identifier (primary key) |
+| id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Span identifier (primary key) |
 | resource | Struct | - | Yes | No | — | — | Resource information |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
@@ -373,7 +373,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Event identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Event identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (name) | encoding | Foreign key to [SPANS](#spans) `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Event timestamp in Unix nanoseconds |
 | name | Utf8 | — | No | Yes | — | — | Event name |
@@ -383,7 +383,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#spans) `id` column |
 | trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
 | span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
@@ -418,7 +418,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Timestamp in Unix nanoseconds |
@@ -430,7 +430,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -446,7 +446,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -462,7 +462,7 @@ The type information in the table is for the `id` field.
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| id | UInt32 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
 | parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
@@ -485,7 +485,7 @@ Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPL
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | - | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
+| id | UInt32 | - | Yes | No | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
 | parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | - | Yes | No | - | - | Timestamp in Unix nanoseconds |
 | int_value | Int64 | Dict(u8), Dict(u16) | Yes | No | - | - | Integer exemplar value |
@@ -587,6 +587,8 @@ All parent-child relationships in the OTAP data model follow a uniform conventio
 
 - **Parent tables** define an `id` column as their primary key
 - **Child tables** define a `parent_id` column as a foreign key that always references their parent table's `id` column
+- All `id` columns are nullable, with a null indicating that there are no child rows
+- `parent_id` columns are not nullable as they must be linked back to some parent `id` column
 
 **Example**: In the Logs signal:
 - The LOGS table has an `id` column (UInt16)
