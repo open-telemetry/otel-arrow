@@ -286,7 +286,8 @@ Implementation specifics are discussed in later sections // NEEDS TRIAGE.
 
 ## 4. Payload Specifications
 
-This section defines the complete Arrow schema for all OTAP payload types, organized by signal category.
+This section defines the complete Arrow schema for all OTAP payload types. Entities are organized
+by signal category with attributes for all tables at the end. 
 
 **Table Column Descriptions:**
 - **Name**: Field name in the Arrow schema
@@ -302,7 +303,9 @@ NOTE: Column names that contain a `.` character indicate the presence of a struc
 example `resource.id` indicates a struct array column called `resource` with a field called `id`.
 The type information in the table is for the `id` field.
 
-### 4.1 LOGS (ROOT)
+### 4.1 Logs
+
+#### LOGS (ROOT)
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -332,15 +335,17 @@ The type information in the table is for the `id` field.
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped log attributes |
 | flags | UInt32 | — | Yes | No | — | — | Trace flags |
 
-### 4.2 SPANS (ROOT)
+### 4.2 TRACES
+
+#### SPANS (ROOT)
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Span identifier (primary key) |
-| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to resource |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to scope |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS |
 | scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
 | scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
@@ -359,7 +364,7 @@ The type information in the table is for the `id` field.
 | status_code | Int32 | — | Yes | No | — | — | Span status code |
 | status_status_message | Utf8 | — | Yes | No | — | — | Status message |
 
-### 4.3 SPAN_EVENTS
+#### SPAN_EVENTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -369,7 +374,7 @@ The type information in the table is for the `id` field.
 | name | Utf8 | — | No | Yes | — | — | Event name |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped event attributes |
 
-### 4.4 SPAN_LINKS
+#### SPAN_LINKS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -380,7 +385,9 @@ The type information in the table is for the `id` field.
 | trace_state | Utf8 | — | Yes | No | — | — | Linked trace state |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped link attributes |
 
-### 4.5 UNIVARIATE_METRICS (ROOT)
+### METRICS
+
+#### UNIVARIATE_METRICS (ROOT)
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -400,7 +407,7 @@ The type information in the table is for the `id` field.
 | aggregation_temporality | Int32 | — | Yes | No | — | — | Aggregation temporality enum |
 | is_monotonic | Boolean | — | Yes | No | — | — | Whether the metric is monotonic |
 
-### 4.6 NUMBER_DATA_POINTS
+#### NUMBER_DATA_POINTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -412,7 +419,7 @@ The type information in the table is for the `id` field.
 | double_value | Float64 | — | No | Yes | — | — | Double value |
 | flags | UInt32 | — | Yes | No | — | — | Data point flags |
 
-### 4.7 SUMMARY_DATA_POINTS
+#### SUMMARY_DATA_POINTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -426,7 +433,7 @@ The type information in the table is for the `id` field.
 | value | Float64 | List(Float64) | Yes | No | — | — | Quantile observation values |
 | flags | UInt32 | — | Yes | No | — | — | Data point flags |
 
-### 4.8 HISTOGRAM_DATA_POINTS
+#### HISTOGRAM_DATA_POINTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -442,7 +449,7 @@ The type information in the table is for the `id` field.
 | min | Float64 | — | Yes | No | — | — | Minimum value |
 | max | Float64 | — | Yes | No | — | — | Maximum value |
 
-### 4.9 EXP_HISTOGRAM_DATA_POINTS
+#### EXP_HISTOGRAM_DATA_POINTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -462,7 +469,26 @@ The type information in the table is for the `id` field.
 | min | Float64 | — | Yes | No | — | — | Minimum value |
 | max | Float64 | — | Yes | No | — | — | Maximum value |
 
-### 4.10 NUMBER_DP_EXEMPLAR_ATTRS / HISTOGRAM_DP_EXEMPLAR_ATTRS / EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS / SPAN_EVENT_ATTRS / SPAN_LINK_ATTRS / NUMBER_DP_ATTRS / SUMMARY_DP_ATTRS / HISTOGRAM_DP_ATTRS / EXP_HISTOGRAM_DP_ATTRS
+
+#### NUMBER_DP_EXEMPLARS / HISTOGRAM_DP_EXEMPLARS / EXP_HISTOGRAM_DP_EXEMPLARS
+
+Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPLARS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt32 | - | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
+| time_unix_nano | Timestamp(Nanosecond) | - | Yes | No | - | - | Timestamp in Unix nanoseconds |
+| int_value | Int64 | Dict(u8), Dict(u16) | Yes | No | - | - | Integer exemplar value |
+| double_value | Float64 | - | Yes | No | - | - | Double exemplar value |
+| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated span `id` |
+| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated trace `id` |
+
+### Attributes
+
+#### U32 Attributes
+
+Applies to: SPAN_EVENT_ATTRS / SPAN_LINK_ATTRS / NUMBER_DP_ATTRS / SUMMARY_DP_ATTRS / HISTOGRAM_DP_ATTRS / EXP_HISTOGRAM_DP_ATTRS / NUMBER_DP_EXEMPLAR_ATTRS / HISTOGRAM_DP_EXEMPLAR_ATTRS / EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -470,13 +496,15 @@ The type information in the table is for the `id` field.
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
+| int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
+| bytes | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | Bytes value (when type=5) |
+| ser | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-### 4.1 RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS 
+#### U16 Attributes 
+
+Applies to: RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS 
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -484,11 +512,11 @@ The type information in the table is for the `id` field.
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
+| int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
+| bytes | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | Bytes value (when type=5) |
+| ser | Binary | Dict(u8), Dict(u16) | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
 #### 4.5.1 Allowed Dictionary Key Types
 
