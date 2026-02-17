@@ -34,8 +34,8 @@ See [Appendix F: Glossary](#appendix-f-glossary) for terminology and [Appendix G
 
 ### 2.1 Normalized Representation
 
-OTAP represents telemetry Signals as a set of normalized tables connected by foreign key relationships; 
-effectively a database. Each Signal type has a different number and set of tables reflecting the data 
+OTAP represents telemetry Signals as a set of normalized tables connected by foreign key relationships
+. Each Signal type has a different number and set of tables reflecting the data 
 transported by that Signal. 
 
 Each table within a Signal has a designated Payload Type that identifies it. The foreign key
@@ -44,9 +44,9 @@ Root Payload Type being the root of that graph.
 
 For example, the Logs signal type consists of four Payload Types: LOGS, LOG_ATTRS, RESOURCE_ATTRS, 
 and SCOPE_ATTRS. The LOGS table is the Root Payload Type for Logs and fills a similar role as an OTLP Log. 
-Each Log has a unique `id` which identifies it, and links it to the LOG_ATTRS table which defines the log's
-attributes. LOGS similarly contains `resource` and `scope` fields, each having an `id`  which links them 
-to the RESOURCE_ATTRS and SCOPE_ATTRS tables.
+Each Log has an `id` which identifies it, and links it to the LOG_ATTRS table  which defines the log's attributes. 
+LOGS similarly contains `resource` and `scope` fields, each having an `id`  which links them to the RESOURCE_ATTRS 
+and SCOPE_ATTRS tables.
 
 The Metrics and Traces signals have a similar structure, but with more tables and are defined 
 below along with the relationships between each table.
@@ -64,8 +64,8 @@ below along with the relationships between each table.
 
 | Payload Type | Description | Parent Payload Type |
 |---|---|---|
-| UNIVARIATE_METRICS | Core metric metadata (Root) | — |
-| MULTIVARIATE_METRICS | Core metric metadata (Root) | — |
+| UNIVARIATE_METRICS | Definition of univariate metrics (Root) | — |
+| MULTIVARIATE_METRICS | Definition of multivariate metrics (Root) | — |
 | NUMBER_DATA_POINTS | Gauge and sum data points | METRICS |
 | SUMMARY_DATA_POINTS | Summary data points | METRICS |
 | HISTOGRAM_DATA_POINTS | Histogram data points | METRICS |
@@ -154,7 +154,8 @@ successfully processed and handle failures for BARs that were rejected.
 ```protobuf
 message BatchStatus {
   // [REQUIRED] The identifier of the BAR being acknowledged. This MUST match the
-  // batch_id from the BatchArrowRecords message that was received.
+  // batch_id from the BatchArrowRecords message that was received. Unique within
+  // the context of a single stream.
   int64 batch_id = 1;
 
   // [REQUIRED] Indicates whether processing succeeded or failed, and if failed,
@@ -181,8 +182,8 @@ Servers MUST send BatchStatus messages to acknowledge received BARs.
 ### 3.2 OTAP Message Layer
 
 The OTAP message layer defines additional restrictions and requirements for the contents of a BAR,
-the ArrowPayload, and BatchStatus messages. It defines which Payload Types are valid for which Services/Signals; rules
-around Schema Evolution, Schema Resets, and Error Handling; and when it is allowable to omit payloads
+the ArrowPayload, and BatchStatus messages. It defines which Payload Types are valid for which Services/Signals;
+rules around Schema Evolution, Schema Resets, and Error Handling; and when it is allowable to omit payloads
 entirely.
 
 #### 3.2.1 BatchArrowRecords Message
