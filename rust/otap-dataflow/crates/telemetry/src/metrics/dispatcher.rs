@@ -13,7 +13,8 @@ use crate::{
     attributes::{AttributeSetHandler, AttributeValue},
     descriptor::{Instrument, MetricsField, Temporality},
     error::Error,
-    metrics::MetricValue,
+    instrument::MmscSnapshot,
+    metrics::{MetricValue, SnapshotValue},
     registry::TelemetryRegistryHandle,
 };
 
@@ -96,44 +97,76 @@ impl MetricsDispatcher {
     fn add_opentelemetry_metric(
         &self,
         field: &MetricsField,
-        value: MetricValue,
+        value: SnapshotValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
     ) {
         match field.instrument {
             Instrument::Counter => match field.temporality {
                 Some(Temporality::Delta) => {
-                    self.add_opentelemetry_counter(field, value, attributes, meter)
+                    if let SnapshotValue::Scalar(v) = value {
+                        self.add_opentelemetry_counter(field, v, attributes, meter)
+                    } else {
+                        unreachable!("Counter instrument must have scalar value");
+                    }
                 }
                 Some(Temporality::Cumulative) | None => {
                     debug_assert!(
                         field.temporality.is_some(),
                         "sum-like instrument must have a temporality"
                     );
-                    // Cumulative counters are exported as gauges to avoid double-counting.
-                    // Note for reviewers: This is a temporary workaround until we figure out a
-                    // better way to handle cumulative sums via the Rust Client SDK.
-                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                    if let SnapshotValue::Scalar(v) = value {
+                        // Cumulative counters are exported as gauges to avoid double-counting.
+                        // Note for reviewers: This is a temporary workaround until we figure out a
+                        // better way to handle cumulative sums via the Rust Client SDK.
+                        self.add_opentelemetry_gauge(field, v, attributes, meter)
+                    } else {
+                        unreachable!("Counter instrument must have scalar value");
+                    }
                 }
             },
             Instrument::UpDownCounter => match field.temporality {
                 Some(Temporality::Delta) => {
-                    self.add_opentelemetry_up_down_counter(field, value, attributes, meter)
+                    if let SnapshotValue::Scalar(v) = value {
+                        self.add_opentelemetry_up_down_counter(field, v, attributes, meter)
+                    } else {
+                        unreachable!("UpDownCounter instrument must have scalar value");
+                    }
                 }
                 Some(Temporality::Cumulative) | None => {
                     debug_assert!(
                         field.temporality.is_some(),
                         "sum-like instrument must have a temporality"
                     );
-                    // Cumulative up-down counters are exported as gauges to avoid double-counting.
-                    // Note for reviewers: This is a temporary workaround until we figure out a
-                    // better way to handle cumulative sums via the Rust Client SDK.
-                    self.add_opentelemetry_gauge(field, value, attributes, meter)
+                    if let SnapshotValue::Scalar(v) = value {
+                        // Cumulative up-down counters are exported as gauges to avoid double-counting.
+                        // Note for reviewers: This is a temporary workaround until we figure out a
+                        // better way to handle cumulative sums via the Rust Client SDK.
+                        self.add_opentelemetry_gauge(field, v, attributes, meter)
+                    } else {
+                        unreachable!("UpDownCounter instrument must have scalar value");
+                    }
                 }
             },
-            Instrument::Gauge => self.add_opentelemetry_gauge(field, value, attributes, meter),
+            Instrument::Gauge => {
+                if let SnapshotValue::Scalar(v) = value {
+                    self.add_opentelemetry_gauge(field, v, attributes, meter)
+                } else {
+                    unreachable!("Gauge instrument must have scalar value");
+                }
+            }
             Instrument::Histogram => {
-                self.add_opentelemetry_histogram(field, value, attributes, meter)
+                // TODO: Handle snapshot values that represent pre-aggregated histograms when we add support for them in the MetricsSnapshot.
+                if let SnapshotValue::Scalar(v) = value {
+                    self.add_opentelemetry_histogram(field, v, attributes, meter)
+                }
+            }
+            Instrument::Mmsc => {
+                if let SnapshotValue::Mmsc(s) = value {
+                    Self::record_synthetic_histogram(field, &s, attributes, meter);
+                } else {
+                    unreachable!("MMSC instrument must have MmscSnapshot value");
+                }
             }
         }
     }
@@ -215,6 +248,52 @@ impl MetricsDispatcher {
                     .with_unit(field.unit)
                     .build();
                 histogram.record(v, attributes);
+            }
+        }
+    }
+
+    /// Records synthetic histogram observations from pre-aggregated MMSC values.
+    ///
+    /// This produces `count` calls to `histogram.record()` that yield
+    /// the same min/max/sum/count on the exported `HistogramDataPoint`:
+    /// - count == 0: no records
+    /// - count == 1: record(sum)  (since min == max == sum)
+    /// - count == 2: record(min), record(max)
+    /// - count >= 3: record(min), record(max), then record a fill value
+    ///   `(sum - min - max) / (count - 2)` for the remaining `count - 2` times.
+    ///
+    /// **Note:** The histogram is built with `.with_boundaries(vec![])` to
+    /// disable bucket counting, so only min/max/sum/count are exported.
+    fn record_synthetic_histogram(
+        field: &MetricsField,
+        s: &MmscSnapshot,
+        attributes: &[opentelemetry::KeyValue],
+        meter: &Meter,
+    ) {
+        if s.count == 0 {
+            return;
+        }
+        let histogram = meter
+            .f64_histogram(field.name)
+            .with_description(field.brief)
+            .with_unit(field.unit)
+            .with_boundaries(vec![])
+            .build();
+        match s.count {
+            1 => {
+                histogram.record(s.sum, attributes);
+            }
+            2 => {
+                histogram.record(s.min, attributes);
+                histogram.record(s.max, attributes);
+            }
+            n => {
+                histogram.record(s.min, attributes);
+                histogram.record(s.max, attributes);
+                let fill = (s.sum - s.min - s.max) / (n - 2) as f64;
+                for _ in 0..(n - 2) {
+                    histogram.record(fill, attributes);
+                }
             }
         }
     }
@@ -378,7 +457,7 @@ mod tests {
             temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
-        let value = MetricValue::U64(42);
+        let value = SnapshotValue::Scalar(MetricValue::U64(42));
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -399,7 +478,7 @@ mod tests {
             temporality: None,
             value_type: MetricValueType::U64,
         };
-        let value = MetricValue::U64(42);
+        let value = SnapshotValue::Scalar(MetricValue::U64(42));
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -420,7 +499,7 @@ mod tests {
             temporality: None,
             value_type: MetricValueType::U64,
         };
-        let value = MetricValue::U64(42);
+        let value = SnapshotValue::Scalar(MetricValue::U64(42));
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -441,7 +520,7 @@ mod tests {
             temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         };
-        let value = MetricValue::U64(42);
+        let value = SnapshotValue::Scalar(MetricValue::U64(42));
         let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
         let dispatcher = MetricsDispatcher::new(
             TelemetryRegistryHandle::new(),
@@ -449,5 +528,224 @@ mod tests {
         );
         dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
         // Nothing to assert here. Test the function call and it should not panic.
+    }
+
+    #[test]
+    fn test_add_opentelemetry_mmsc() {
+        let meter = global::meter("test_meter_mmsc");
+        let field = MetricsField {
+            name: "test_mmsc",
+            brief: "A test MMSC instrument",
+            unit: "ms",
+            instrument: Instrument::Mmsc,
+            temporality: Some(Temporality::Delta),
+            value_type: MetricValueType::F64,
+        };
+        let attributes = vec![opentelemetry::KeyValue::new("key", "value")];
+        let dispatcher = MetricsDispatcher::new(
+            TelemetryRegistryHandle::new(),
+            std::time::Duration::from_secs(10),
+        );
+
+        // Test with count == 0 (should be a no-op)
+        let value = SnapshotValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+
+        // Test with count == 1
+        let value = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 5.0,
+            max: 5.0,
+            sum: 5.0,
+            count: 1,
+        });
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+
+        // Test with count == 2
+        let value = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 3.0,
+            max: 7.0,
+            sum: 10.0,
+            count: 2,
+        });
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+
+        // Test with count >= 3
+        let value = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 10.0,
+            sum: 25.0,
+            count: 5,
+        });
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        // Nothing to assert here. Test the function call and it should not panic.
+    }
+
+    /// Verifies that MMSC instruments are exported as OTel SDK histograms
+    /// with no bucket boundaries (only min/max/sum/count).
+    ///
+    /// Flow: Mmsc::record → snapshot → accumulate into registry →
+    /// visit_metrics_and_reset → add_opentelemetry_metric →
+    /// record_synthetic_histogram → OTel SDK histogram export.
+    #[test]
+    fn test_mmsc_exported_as_histogram_with_no_buckets() {
+        use opentelemetry::metrics::MeterProvider as _;
+        use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+        use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+
+        use crate::attributes::AttributeIterator;
+        use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+        use crate::instrument::Mmsc;
+        use crate::metrics::{MetricSetHandler, MetricsDescriptor};
+
+        // --- Mock metric set with a single MMSC field --------------------------
+
+        static MMSC_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "mmsc_e2e_test",
+            metrics: &[MetricsField {
+                name: "latency",
+                unit: "ms",
+                brief: "request latency",
+                instrument: Instrument::Mmsc,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        #[derive(Debug)]
+        struct MmscMetricSet {
+            latency: Mmsc,
+        }
+
+        impl Default for MmscMetricSet {
+            fn default() -> Self {
+                Self {
+                    latency: Mmsc::default(),
+                }
+            }
+        }
+
+        impl MetricSetHandler for MmscMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MMSC_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<SnapshotValue> {
+                vec![SnapshotValue::from(self.latency.get())]
+            }
+            fn clear_values(&mut self) {
+                self.latency.reset();
+            }
+            fn needs_flush(&self) -> bool {
+                !SnapshotValue::from(self.latency.get()).is_zero()
+            }
+        }
+
+        static MOCK_ATTRS_DESCRIPTOR: AttributesDescriptor = AttributesDescriptor {
+            name: "test_attrs",
+            fields: &[AttributeField {
+                key: "service",
+                r#type: AttributeValueType::String,
+                brief: "service name",
+            }],
+        };
+
+        #[derive(Debug)]
+        struct MockAttrs {
+            values: Vec<AttributeValue>,
+        }
+
+        impl AttributeSetHandler for MockAttrs {
+            fn descriptor(&self) -> &'static AttributesDescriptor {
+                &MOCK_ATTRS_DESCRIPTOR
+            }
+            fn attribute_values(&self) -> &[AttributeValue] {
+                &self.values
+            }
+            fn iter_attributes<'a>(&'a self) -> AttributeIterator<'a> {
+                AttributeIterator::new(self.descriptor().fields, &self.values)
+            }
+        }
+
+        // --- Set up OTel SDK with in-memory exporter ---------------------------
+
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        // --- Register, record, accumulate, dispatch ----------------------------
+
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<MmscMetricSet>(MockAttrs {
+            values: vec![AttributeValue::String("my-svc".into())],
+        });
+
+        // Simulate recording five latency observations.
+        metric_set.latency.record(1.0);
+        metric_set.latency.record(4.0);
+        metric_set.latency.record(4.0);
+        metric_set.latency.record(4.0);
+        metric_set.latency.record(10.0);
+
+        // Snapshot and accumulate into the registry.
+        let snapshot = metric_set.snapshot();
+        registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
+
+        // Dispatch: walk the registry and push to OTel SDK (via a
+        // provider-specific meter instead of the global one).
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+            let meter = meter_provider.meter(descriptor.name);
+            let otel_attributes = MetricsDispatcher::to_opentelemetry_attributes(attributes);
+            for (field, value) in metrics_iter {
+                dispatcher.add_opentelemetry_metric(field, value, &otel_attributes, &meter);
+            }
+        });
+
+        // Flush to trigger export.
+        meter_provider.force_flush().expect("force_flush failed");
+
+        // --- Assert on the exported histogram ----------------------------------
+
+        let finished = exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed");
+
+        let mut found = false;
+        for rm in &finished {
+            for sm in rm.scope_metrics() {
+                for metric in sm.metrics() {
+                    if metric.name() == "latency" {
+                        if let AggregatedMetrics::F64(MetricData::Histogram(h)) = metric.data() {
+                            let dp = h.data_points().next().expect("no data point");
+
+                            let bounds: Vec<f64> = dp.bounds().collect();
+                            let bucket_counts: Vec<u64> = dp.bucket_counts().collect();
+
+                            assert!(bounds.is_empty(), "expected no bucket boundaries");
+                            assert!(
+                                bucket_counts.is_empty(),
+                                "no bucket counts when boundaries are empty"
+                            );
+                            assert_eq!(dp.min(), Some(1.0));
+                            assert_eq!(dp.max(), Some(10.0));
+                            assert!((dp.sum() - 23.0).abs() < f64::EPSILON);
+                            assert_eq!(dp.count(), 5);
+
+                            found = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found,
+            "histogram metric 'latency' not found in exported data"
+        );
     }
 }

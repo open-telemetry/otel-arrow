@@ -8,7 +8,7 @@ use otap_df_telemetry::attributes::AttributeValue;
 use otap_df_telemetry::descriptor::{
     Instrument, MetricValueType, MetricsDescriptor, MetricsField, Temporality,
 };
-pub use otap_df_telemetry::metrics::MetricValue;
+pub use otap_df_telemetry::metrics::{MetricValue, SnapshotValue};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -60,10 +60,16 @@ fn format_attribute_value(value: &AttributeValue) -> String {
     }
 }
 
-fn format_metric_value(value: &MetricValue) -> String {
+fn format_metric_value(value: &SnapshotValue) -> String {
     match value {
-        MetricValue::U64(v) => v.to_string(),
-        MetricValue::F64(v) => v.to_string(),
+        SnapshotValue::Scalar(MetricValue::U64(v)) => v.to_string(),
+        SnapshotValue::Scalar(MetricValue::F64(v)) => v.to_string(),
+        SnapshotValue::Mmsc(s) => {
+            format!(
+                "min={} max={} sum={} count={}",
+                s.min, s.max, s.sum, s.count
+            )
+        }
     }
 }
 
@@ -86,8 +92,8 @@ mod tests {
             "true"
         );
 
-        assert_eq!(format_metric_value(&MetricValue::U64(42)), "42");
-        assert_eq!(format_metric_value(&MetricValue::F64(4.1)), "4.1");
+        assert_eq!(format_metric_value(&SnapshotValue::from(42u64)), "42");
+        assert_eq!(format_metric_value(&SnapshotValue::from(4.1f64)), "4.1");
     }
 
     #[test]
@@ -108,7 +114,7 @@ mod tests {
                     instrument: Instrument::Counter,
                     temporality: Some(Temporality::Cumulative),
                     value_type: MetricValueType::U64,
-                    value: MetricValue::U64(123),
+                    value: SnapshotValue::from(123u64),
                 }],
             }],
         };
@@ -151,5 +157,5 @@ pub struct MetricDataPoint {
     /// Metric value encoding (e.g. integer or float).
     pub value_type: MetricValueType,
     /// The recorded value for this data point.
-    pub value: MetricValue,
+    pub value: SnapshotValue,
 }

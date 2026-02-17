@@ -8,7 +8,7 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
+    MetricSet, MetricSetHandler, MetricSetRegistry, MetricsIterator, SnapshotValue,
 };
 use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
@@ -144,7 +144,7 @@ impl TelemetryRegistryHandle {
     pub fn accumulate_metric_set_snapshot(
         &self,
         metric_set_key: MetricSetKey,
-        metrics: &[MetricValue],
+        metrics: &[SnapshotValue],
     ) {
         self.registry
             .lock()
@@ -232,13 +232,13 @@ mod tests {
     // Mock implementations for testing
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<MetricValue>,
+        values: Vec<SnapshotValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                values: vec![SnapshotValue::from(0u64), SnapshotValue::from(0u64)],
             }
         }
     }
@@ -285,12 +285,12 @@ mod tests {
             &MOCK_METRICS_DESCRIPTOR
         }
 
-        fn snapshot_values(&self) -> Vec<MetricValue> {
+        fn snapshot_values(&self) -> Vec<SnapshotValue> {
             self.values.clone()
         }
 
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(MetricValue::reset);
+            self.values.iter_mut().for_each(SnapshotValue::reset);
         }
 
         fn needs_flush(&self) -> bool {
@@ -359,7 +359,7 @@ mod tests {
 
                 telemetry_registry_clone.accumulate_metric_set_snapshot(
                     metrics_key,
-                    &[MetricValue::U64(i * 10), MetricValue::U64(i * 20)],
+                    &[SnapshotValue::from(i * 10), SnapshotValue::from(i * 20)],
                 );
             });
             handles.push(thread_handle);

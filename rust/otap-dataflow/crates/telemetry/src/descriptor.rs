@@ -17,6 +17,11 @@ pub enum Instrument {
     Gauge,
     /// Distribution of recorded values, used for latencies or request sizes
     Histogram,
+    /// Pre-aggregated min/max/sum/count summary.
+    ///
+    /// Internally tracked as an `Mmsc` instrument; the dispatcher exports the
+    /// aggregated snapshot as a synthetic OTel histogram without bucket counts.
+    Mmsc,
 }
 
 /// Aggregation temporality for sum-like instruments.

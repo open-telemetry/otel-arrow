@@ -12,6 +12,7 @@ pub mod dispatcher;
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality};
 use crate::entity::EntityRegistry;
+use crate::instrument::MmscSnapshot;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
@@ -50,7 +51,7 @@ impl MetricValue {
     }
 
     /// Adds another metric value to this one, converting between numeric kinds if needed.
-    pub fn add_in_place(&mut self, other: MetricValue) {
+    pub const fn add_in_place(&mut self, other: MetricValue) {
         match other {
             MetricValue::U64(rhs) => match self {
                 MetricValue::U64(lhs) => {
@@ -120,6 +121,162 @@ impl std::ops::AddAssign for MetricValue {
     }
 }
 
+/// A value in a metric snapshot — either a simple scalar or a pre-aggregated MMSC summary.
+///
+/// [`MetricValue`] represents what gets *recorded* (a `u64` or `f64` observation).
+/// `SnapshotValue` represents what gets *transported* through the snapshot pipeline:
+/// scalar instruments produce `Scalar(MetricValue)`, while [`crate::instrument::Mmsc`]
+/// instruments produce `Mmsc(MmscSnapshot)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for Scalar; acceptable for internal telemetry.
+pub enum SnapshotValue {
+    /// A single scalar metric value (counter, gauge, histogram, up-down counter).
+    Scalar(MetricValue),
+    /// A pre-aggregated min/max/sum/count summary from an [`crate::instrument::Mmsc`] instrument.
+    Mmsc(MmscSnapshot),
+}
+
+impl SnapshotValue {
+    /// Returns `true` when the value is zero / empty.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        match self {
+            SnapshotValue::Scalar(v) => v.is_zero(),
+            SnapshotValue::Mmsc(s) => s.count == 0,
+        }
+    }
+
+    /// Returns a zero value of the same variant.
+    ///
+    /// For `Mmsc`, the zero state uses sentinel values (`f64::MAX` for min,
+    /// `f64::MIN` for max) so that subsequent merges work correctly.
+    #[must_use]
+    pub const fn zero_of_kind(self) -> Self {
+        match self {
+            SnapshotValue::Scalar(v) => SnapshotValue::Scalar(v.zero_of_kind()),
+            SnapshotValue::Mmsc(_) => SnapshotValue::Mmsc(MmscSnapshot {
+                min: f64::MAX,
+                max: f64::MIN,
+                sum: 0.0,
+                count: 0,
+            }),
+        }
+    }
+
+    /// Resets the value to zero while keeping the variant.
+    pub const fn reset(&mut self) {
+        *self = self.zero_of_kind();
+    }
+
+    /// Merges another MMSC snapshot into this one.
+    ///
+    /// Only valid when both `self` and `other` are `Mmsc`.
+    pub const fn merge_mmsc(&mut self, other: SnapshotValue) {
+        if let (SnapshotValue::Mmsc(lhs), SnapshotValue::Mmsc(rhs)) = (self, other) {
+            lhs.min = lhs.min.min(rhs.min);
+            lhs.max = lhs.max.max(rhs.max);
+            lhs.sum += rhs.sum;
+            lhs.count += rhs.count;
+        } else {
+            debug_assert!(false, "merge_mmsc called on non-Mmsc SnapshotValue");
+        }
+    }
+
+    /// Adds a scalar value in place. Only valid for `Scalar` variants.
+    pub const fn add_scalar_in_place(&mut self, other: SnapshotValue) {
+        match (self, other) {
+            (SnapshotValue::Scalar(lhs), SnapshotValue::Scalar(rhs)) => {
+                lhs.add_in_place(rhs);
+            }
+            _ => {
+                debug_assert!(false, "add_scalar_in_place called with Mmsc SnapshotValue");
+            }
+        }
+    }
+
+    /// Accumulates another snapshot value into this one.
+    ///
+    /// For scalars, this performs addition.  For MMSC, this performs a
+    /// merge (min of mins, max of maxes, sum of sums, count of counts).
+    ///
+    /// # Panics (debug only)
+    /// Debug-asserts that both values are the same variant.
+    pub const fn add_in_place(&mut self, other: SnapshotValue) {
+        match (self, other) {
+            (SnapshotValue::Scalar(lhs), SnapshotValue::Scalar(rhs)) => {
+                lhs.add_in_place(rhs);
+            }
+            (SnapshotValue::Mmsc(lhs), SnapshotValue::Mmsc(rhs)) => {
+                lhs.min = lhs.min.min(rhs.min);
+                lhs.max = lhs.max.max(rhs.max);
+                lhs.sum += rhs.sum;
+                lhs.count += rhs.count;
+            }
+            _ => {
+                debug_assert!(
+                    false,
+                    "add_in_place called with mismatched SnapshotValue variants"
+                );
+            }
+        }
+    }
+
+    /// Returns the floating-point representation of the value.
+    ///
+    /// This method is intended for **scalar** values only.
+    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
+    #[must_use]
+    pub const fn to_f64(self) -> f64 {
+        match self {
+            SnapshotValue::Scalar(v) => v.to_f64(),
+            SnapshotValue::Mmsc(_) => {
+                debug_assert!(false, "to_f64() called on Mmsc SnapshotValue");
+                0.0
+            }
+        }
+    }
+
+    /// Lossy conversion to `u64`.
+    ///
+    /// This method is intended for **scalar** values only.
+    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
+    #[must_use]
+    pub const fn to_u64_lossy(self) -> u64 {
+        match self {
+            SnapshotValue::Scalar(v) => v.to_u64_lossy(),
+            SnapshotValue::Mmsc(_) => {
+                debug_assert!(false, "to_u64_lossy() called on Mmsc SnapshotValue");
+                0
+            }
+        }
+    }
+}
+
+impl From<MetricValue> for SnapshotValue {
+    fn from(value: MetricValue) -> Self {
+        SnapshotValue::Scalar(value)
+    }
+}
+
+impl From<MmscSnapshot> for SnapshotValue {
+    fn from(value: MmscSnapshot) -> Self {
+        SnapshotValue::Mmsc(value)
+    }
+}
+
+impl From<u64> for SnapshotValue {
+    fn from(value: u64) -> Self {
+        SnapshotValue::Scalar(MetricValue::U64(value))
+    }
+}
+
+impl From<f64> for SnapshotValue {
+    fn from(value: f64) -> Self {
+        SnapshotValue::Scalar(MetricValue::F64(value))
+    }
+}
+
 /// A concrete set of metrics values grouped under a single descriptor/key.
 #[derive(Clone)]
 pub struct MetricSet<M: MetricSetHandler> {
@@ -179,13 +336,13 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
 #[derive(Debug)]
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricSetKey,
-    pub(crate) metrics: Vec<MetricValue>,
+    pub(crate) metrics: Vec<SnapshotValue>,
 }
 
 impl MetricSetSnapshot {
     /// get a reference to the metric values
     #[must_use]
-    pub fn get_metrics(&self) -> &[MetricValue] {
+    pub fn get_metrics(&self) -> &[SnapshotValue] {
         &self.metrics
     }
 }
@@ -195,7 +352,7 @@ pub trait MetricSetHandler {
     /// Returns the static descriptor describing this metric set (name + ordered fields).
     fn descriptor(&self) -> &'static MetricsDescriptor;
     /// Returns a snapshot of all metric field values in descriptor order.
-    fn snapshot_values(&self) -> Vec<MetricValue>;
+    fn snapshot_values(&self) -> Vec<SnapshotValue>;
     /// Resets all metric field values to zero.
     fn clear_values(&mut self);
     /// Returns true if at least one metric value is non-zero (fast path check).
@@ -206,8 +363,8 @@ pub trait MetricSetHandler {
 pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
     pub metrics_descriptor: &'static MetricsDescriptor,
-    /// Current metric values stored as a vector
-    pub metric_values: Vec<MetricValue>,
+    /// Current snapshot values stored as a vector
+    pub metric_values: Vec<SnapshotValue>,
 
     /// Entity key for the associated attribute set
     pub entity_key: EntityKey,
@@ -228,7 +385,7 @@ impl MetricsEntry {
     #[must_use]
     pub const fn new(
         metrics_descriptor: &'static MetricsDescriptor,
-        metric_values: Vec<MetricValue>,
+        metric_values: Vec<SnapshotValue>,
         entity_key: EntityKey,
     ) -> Self {
         Self {
@@ -242,14 +399,14 @@ impl MetricsEntry {
 /// Lightweight iterator over metrics (no heap allocs).
 pub struct MetricsIterator<'a> {
     fields: &'static [MetricsField],
-    values: &'a [MetricValue],
+    values: &'a [SnapshotValue],
     idx: usize,
     len: usize,
 }
 
 impl<'a> MetricsIterator<'a> {
     #[inline]
-    pub(crate) fn new(fields: &'static [MetricsField], values: &'a [MetricValue]) -> Self {
+    pub(crate) fn new(fields: &'static [MetricsField], values: &'a [SnapshotValue]) -> Self {
         let len = values.len();
         debug_assert_eq!(
             fields.len(),
@@ -266,7 +423,7 @@ impl<'a> MetricsIterator<'a> {
 }
 
 impl<'a> Iterator for MetricsIterator<'a> {
-    type Item = (&'static MetricsField, MetricValue);
+    type Item = (&'static MetricsField, SnapshotValue);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -368,7 +525,7 @@ impl MetricSetRegistry {
     pub(crate) fn accumulate_snapshot(
         &mut self,
         metrics_key: MetricSetKey,
-        metrics_values: &[MetricValue], // snapshot values
+        metrics_values: &[SnapshotValue], // snapshot values
     ) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
             debug_assert_eq!(
@@ -388,13 +545,17 @@ impl MetricSetRegistry {
                         *current = *incoming;
                     }
                     Instrument::Histogram => {
-                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
-                        current.add_in_place(*incoming);
+                        // Histograms report per-interval changes.
+                        current.add_scalar_in_place(*incoming);
+                    }
+                    Instrument::Mmsc => {
+                        // MMSC instruments merge pre-aggregated summaries.
+                        current.merge_mmsc(*incoming);
                     }
                     Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
                         Some(Temporality::Delta) => {
                             // Delta sums report per-interval changes => accumulate.
-                            current.add_in_place(*incoming);
+                            current.add_scalar_in_place(*incoming);
                         }
                         Some(Temporality::Cumulative) => {
                             // Cumulative sums report the current value => replace.
@@ -443,7 +604,7 @@ impl MetricSetRegistry {
                 }
 
                 // Zero after reporting.
-                values.iter_mut().for_each(MetricValue::reset);
+                values.iter_mut().for_each(SnapshotValue::reset);
             }
         }
     }
@@ -495,13 +656,13 @@ mod tests {
 
     #[derive(Debug)]
     struct MockMetricSet {
-        values: Vec<MetricValue>,
+        values: Vec<SnapshotValue>,
     }
 
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                values: vec![SnapshotValue::from(0u64), SnapshotValue::from(0u64)],
             }
         }
     }
@@ -548,12 +709,12 @@ mod tests {
             &MOCK_METRICS_DESCRIPTOR
         }
 
-        fn snapshot_values(&self) -> Vec<MetricValue> {
+        fn snapshot_values(&self) -> Vec<SnapshotValue> {
             self.values.clone()
         }
 
         fn clear_values(&mut self) {
-            self.values.iter_mut().for_each(MetricValue::reset);
+            self.values.iter_mut().for_each(SnapshotValue::reset);
         }
 
         fn needs_flush(&self) -> bool {
@@ -638,8 +799,14 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(15)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(10u64), SnapshotValue::from(20u64)],
+        );
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(5u64), SnapshotValue::from(15u64)],
+        );
 
         let mut accumulated_values = Vec::new();
         metrics.visit_metrics_and_reset(
@@ -654,7 +821,7 @@ mod tests {
 
         assert_eq!(
             accumulated_values,
-            vec![MetricValue::U64(15), MetricValue::U64(35)]
+            vec![SnapshotValue::from(15u64), SnapshotValue::from(35u64)]
         );
     }
 
@@ -663,7 +830,10 @@ mod tests {
         let mut metrics = MetricSetRegistry::default();
         let invalid_key = MetricSetKey::default();
 
-        metrics.accumulate_snapshot(invalid_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
+        metrics.accumulate_snapshot(
+            invalid_key,
+            &[SnapshotValue::from(10u64), SnapshotValue::from(20u64)],
+        );
         assert_eq!(metrics.len(), 0);
     }
 
@@ -679,9 +849,15 @@ mod tests {
 
         metrics.accumulate_snapshot(
             metrics_key,
-            &[MetricValue::U64(u64::MAX), MetricValue::U64(u64::MAX - 5)],
+            &[
+                SnapshotValue::from(u64::MAX),
+                SnapshotValue::from(u64::MAX - 5),
+            ],
         );
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(10u64), SnapshotValue::from(10u64)],
+        );
 
         let mut accumulated_values = Vec::new();
         metrics.visit_metrics_and_reset(
@@ -696,7 +872,7 @@ mod tests {
 
         assert_eq!(
             accumulated_values,
-            vec![MetricValue::U64(9), MetricValue::U64(4)]
+            vec![SnapshotValue::from(9u64), SnapshotValue::from(4u64)]
         );
     }
 
@@ -711,8 +887,8 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(u64::MAX)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(1)]);
+        metrics.accumulate_snapshot(metrics_key, &[SnapshotValue::from(u64::MAX)]);
+        metrics.accumulate_snapshot(metrics_key, &[SnapshotValue::from(1u64)]);
     }
 
     #[test]
@@ -724,7 +900,10 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(100), MetricValue::U64(0)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(100u64), SnapshotValue::from(0u64)],
+        );
 
         let mut visit_count = 0;
         let mut collected_values = Vec::new();
@@ -746,8 +925,8 @@ mod tests {
         assert_eq!(
             collected_values,
             vec![
-                ("counter1", MetricValue::U64(100)),
-                ("counter2", MetricValue::U64(0))
+                ("counter1", SnapshotValue::from(100u64)),
+                ("counter2", SnapshotValue::from(0u64))
             ]
         );
 
@@ -787,21 +966,21 @@ mod tests {
         ];
 
         let values = [
-            MetricValue::U64(0),
-            MetricValue::U64(5),
-            MetricValue::U64(0),
-            MetricValue::U64(10),
-            MetricValue::U64(0),
+            SnapshotValue::from(0u64),
+            SnapshotValue::from(5u64),
+            SnapshotValue::from(0u64),
+            SnapshotValue::from(10u64),
+            SnapshotValue::from(0u64),
         ];
         let mut iter = MetricsIterator::new(fields, &values[..2]);
 
         let item1 = iter.next().unwrap();
         assert_eq!(item1.0.name, "metric1");
-        assert_eq!(item1.1, MetricValue::U64(0));
+        assert_eq!(item1.1, SnapshotValue::from(0u64));
 
         let item2 = iter.next().unwrap();
         assert_eq!(item2.0.name, "metric2");
-        assert_eq!(item2.1, MetricValue::U64(5));
+        assert_eq!(item2.1, SnapshotValue::from(5u64));
 
         assert!(iter.next().is_none());
     }
@@ -817,9 +996,8 @@ mod tests {
             value_type: MetricValueType::U64,
         }];
 
-        let values = [MetricValue::U64(10)];
+        let values = [SnapshotValue::from(10u64)];
         let iter = MetricsIterator::new(fields, &values);
-
         let (lower, upper) = iter.size_hint();
         assert_eq!(lower, 1);
         assert_eq!(upper, Some(1));
@@ -836,11 +1014,12 @@ mod tests {
             value_type: MetricValueType::U64,
         }];
 
-        let values = [MetricValue::U64(10)];
+        let values = [SnapshotValue::from(10u64)];
         let mut iter = MetricsIterator::new(fields, &values);
 
-        let _first = iter.next();
-
+        // Consume the single item
+        assert!(iter.next().is_some());
+        // After exhaustion, further calls must keep returning None (fused)
         assert!(iter.next().is_none());
         assert!(iter.next().is_none());
     }
@@ -849,13 +1028,13 @@ mod tests {
     fn test_accumulate_snapshot_gauge_replaces_counter_accumulates() {
         #[derive(Debug)]
         struct MockGaugeMetricSet {
-            values: Vec<MetricValue>,
+            values: Vec<SnapshotValue>,
         }
 
         impl MockGaugeMetricSet {
             fn new() -> Self {
                 Self {
-                    values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                    values: vec![SnapshotValue::from(0u64), SnapshotValue::from(0u64)],
                 }
             }
         }
@@ -892,11 +1071,11 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &MOCK_GAUGE_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<MetricValue> {
+            fn snapshot_values(&self) -> Vec<SnapshotValue> {
                 self.values.clone()
             }
             fn clear_values(&mut self) {
-                self.values.iter_mut().for_each(MetricValue::reset);
+                self.values.iter_mut().for_each(SnapshotValue::reset);
             }
             fn needs_flush(&self) -> bool {
                 self.values.iter().any(|&v| !v.is_zero())
@@ -910,13 +1089,19 @@ mod tests {
         let metric_set: MetricSet<MockGaugeMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(10)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(2), MetricValue::U64(3)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(5u64), SnapshotValue::from(10u64)],
+        );
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::from(2u64), SnapshotValue::from(3u64)],
+        );
 
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
         assert_eq!(
             entry.metric_values,
-            vec![MetricValue::U64(2), MetricValue::U64(13)]
+            vec![SnapshotValue::from(2u64), SnapshotValue::from(13u64)]
         );
     }
 
@@ -924,13 +1109,13 @@ mod tests {
     fn test_accumulate_snapshot_observe_counter_replaces() {
         #[derive(Debug)]
         struct MockCumulativeCounterMetricSet {
-            values: Vec<MetricValue>,
+            values: Vec<SnapshotValue>,
         }
 
         impl MockCumulativeCounterMetricSet {
             fn new() -> Self {
                 Self {
-                    values: vec![MetricValue::U64(0)],
+                    values: vec![SnapshotValue::from(0u64)],
                 }
             }
         }
@@ -957,11 +1142,11 @@ mod tests {
             fn descriptor(&self) -> &'static MetricsDescriptor {
                 &MOCK_OBSERVED_METRICS_DESCRIPTOR
             }
-            fn snapshot_values(&self) -> Vec<MetricValue> {
+            fn snapshot_values(&self) -> Vec<SnapshotValue> {
                 self.values.clone()
             }
             fn clear_values(&mut self) {
-                self.values.iter_mut().for_each(MetricValue::reset);
+                self.values.iter_mut().for_each(SnapshotValue::reset);
             }
             fn needs_flush(&self) -> bool {
                 self.values.iter().any(|&v| !v.is_zero())
@@ -975,10 +1160,218 @@ mod tests {
         let metric_set: MetricSet<MockCumulativeCounterMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(15)]);
+        metrics.accumulate_snapshot(metrics_key, &[SnapshotValue::from(10u64)]);
+        metrics.accumulate_snapshot(metrics_key, &[SnapshotValue::from(15u64)]);
 
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
-        assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
+        assert_eq!(entry.metric_values, vec![SnapshotValue::from(15u64)]);
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_is_zero() {
+        let zero = SnapshotValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        assert!(zero.is_zero());
+
+        let non_zero = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 5.0,
+            sum: 6.0,
+            count: 2,
+        });
+        assert!(!non_zero.is_zero());
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_zero_of_kind() {
+        let val = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 5.0,
+            sum: 6.0,
+            count: 2,
+        });
+        let zero = val.zero_of_kind();
+        assert!(zero.is_zero());
+        match zero {
+            SnapshotValue::Mmsc(s) => {
+                assert_eq!(s.min, f64::MAX);
+                assert_eq!(s.max, f64::MIN);
+                assert_eq!(s.sum, 0.0);
+                assert_eq!(s.count, 0);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_merge() {
+        let mut a = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 2.0,
+            max: 8.0,
+            sum: 15.0,
+            count: 3,
+        });
+        let b = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 10.0,
+            sum: 20.0,
+            count: 4,
+        });
+        a.merge_mmsc(b);
+        match a {
+            SnapshotValue::Mmsc(s) => {
+                assert_eq!(s.min, 1.0);
+                assert_eq!(s.max, 10.0);
+                assert_eq!(s.sum, 35.0);
+                assert_eq!(s.count, 7);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_merge_zero_to_value() {
+        // Merging into a zero/sentinel Mmsc should produce the incoming value
+        let mut a = SnapshotValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        let b = SnapshotValue::Mmsc(MmscSnapshot {
+            min: 3.0,
+            max: 7.0,
+            sum: 10.0,
+            count: 2,
+        });
+        a.merge_mmsc(b);
+        match a {
+            SnapshotValue::Mmsc(s) => {
+                assert_eq!(s.min, 3.0);
+                assert_eq!(s.max, 7.0);
+                assert_eq!(s.sum, 10.0);
+                assert_eq!(s.count, 2);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_from_snapshot() {
+        let snap = MmscSnapshot {
+            min: 1.0,
+            max: 10.0,
+            sum: 25.0,
+            count: 5,
+        };
+        let val = SnapshotValue::from(snap);
+        assert_eq!(
+            val,
+            SnapshotValue::Mmsc(MmscSnapshot {
+                min: 1.0,
+                max: 10.0,
+                sum: 25.0,
+                count: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_mmsc() {
+        #[derive(Debug)]
+        struct MockMmscMetricSet {
+            values: Vec<SnapshotValue>,
+        }
+
+        impl MockMmscMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![SnapshotValue::Mmsc(MmscSnapshot {
+                        min: f64::MAX,
+                        max: f64::MIN,
+                        sum: 0.0,
+                        count: 0,
+                    })],
+                }
+            }
+        }
+
+        impl Default for MockMmscMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_MMSC_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_mmsc_metrics",
+            metrics: &[MetricsField {
+                name: "latency",
+                unit: "ms",
+                brief: "Test MMSC instrument",
+                instrument: Instrument::Mmsc,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        impl MetricSetHandler for MockMmscMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_MMSC_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<SnapshotValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(SnapshotValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMmscMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        // First snapshot: min=2, max=8, sum=15, count=3
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::Mmsc(MmscSnapshot {
+                min: 2.0,
+                max: 8.0,
+                sum: 15.0,
+                count: 3,
+            })],
+        );
+
+        // Second snapshot: min=1, max=10, sum=20, count=4
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[SnapshotValue::Mmsc(MmscSnapshot {
+                min: 1.0,
+                max: 10.0,
+                sum: 20.0,
+                count: 4,
+            })],
+        );
+
+        // Accumulated: min=1, max=10, sum=35, count=7
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        match entry.metric_values[0] {
+            SnapshotValue::Mmsc(s) => {
+                assert_eq!(s.min, 1.0);
+                assert_eq!(s.max, 10.0);
+                assert_eq!(s.sum, 35.0);
+                assert_eq!(s.count, 7);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
     }
 }
