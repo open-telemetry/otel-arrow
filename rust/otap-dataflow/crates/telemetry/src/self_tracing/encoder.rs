@@ -750,10 +750,7 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
 
         let mut custom_map = BTreeMap::new();
-        let _ = custom_map.insert(
-            "priority".to_string(),
-            AttributeValue::Int(5),
-        );
+        let _ = custom_map.insert("priority".to_string(), AttributeValue::Int(5));
         let _ = custom_map.insert(
             "region".to_string(),
             AttributeValue::String("us-east-1".into()),

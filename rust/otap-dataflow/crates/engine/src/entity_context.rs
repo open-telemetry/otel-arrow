@@ -369,8 +369,7 @@ mod tests {
         let dest_entity_key = dest_ctx.register_node_entity();
         let source_handle =
             NodeTelemetryHandle::new(source_ctx.metrics_registry(), source_entity_key);
-        let dest_handle =
-            NodeTelemetryHandle::new(dest_ctx.metrics_registry(), dest_entity_key);
+        let dest_handle = NodeTelemetryHandle::new(dest_ctx.metrics_registry(), dest_entity_key);
         let source_guard = NodeTelemetryGuard::new(source_handle.clone());
         let dest_guard = NodeTelemetryGuard::new(dest_handle.clone());
 

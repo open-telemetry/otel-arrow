@@ -6,9 +6,7 @@
 //! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::descriptor::{
-    AttributeField, AttributeValueType, AttributesDescriptor,
-};
+use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
 use otap_df_telemetry_macros::attribute_set;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -35,7 +33,10 @@ pub fn config_to_telemetry_attr(
 /// Convert a map of config `AttributeValue`s to a telemetry `BTreeMap`.
 #[must_use]
 pub fn config_map_to_telemetry(
-    map: &std::collections::HashMap<String, otap_df_config::pipeline::service::telemetry::AttributeValue>,
+    map: &std::collections::HashMap<
+        String,
+        otap_df_config::pipeline::service::telemetry::AttributeValue,
+    >,
 ) -> BTreeMap<String, AttributeValue> {
     map.iter()
         .map(|(k, v)| (k.clone(), config_to_telemetry_attr(v)))

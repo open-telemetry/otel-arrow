@@ -322,9 +322,9 @@ impl PipelineContext {
             node_id: self.node_id.clone(),
             node_urn: self.node_urn.clone().into(),
             node_type: self.node_kind.into(),
-            node_telemetry_attrs: CustomAttributeSet::new(
-                config_map_to_telemetry(&self.node_telemetry_attrs),
-            ),
+            node_telemetry_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+                &self.node_telemetry_attrs,
+            )),
         }
     }
 
