@@ -45,7 +45,10 @@
 use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
-use otap_df_config::engine::{OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole};
+use otap_df_config::engine::{
+    OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID, OBSERVABILITY_INTERNAL_PIPELINE_ID, OtelDataflowSpec,
+    ResolvedPipelineConfig, ResolvedPipelineRole,
+};
 use otap_df_config::policy::{CoreAllocation, FlowPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
@@ -128,18 +131,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     ) -> Result<(), Error> {
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
-        let mut pipelines = Vec::new();
-        let mut observability_pipeline = None;
-        for pipeline in resolved_config.pipelines {
-            match pipeline.role {
-                ResolvedPipelineRole::Regular => pipelines.push(pipeline),
-                ResolvedPipelineRole::ObservabilityInternal => {
-                    observability_pipeline = Some(pipeline)
-                }
-            }
-        }
+        let (engine, pipelines, observability_pipeline) = resolved_config.into_parts();
         let num_pipelines = pipelines.len();
-        let engine = resolved_config.engine;
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
         // Initialize metrics system and observed event store.
         // ToDo A hierarchical metrics system will be implemented to better support hardware with multiple NUMA nodes.
@@ -562,8 +555,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
-            pipeline_group_id: "internal".into(),
-            pipeline_id: "internal".into(),
+            pipeline_group_id: OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID.into(),
+            pipeline_id: OBSERVABILITY_INTERNAL_PIPELINE_ID.into(),
             core_id: core_id.id,
         }
     }

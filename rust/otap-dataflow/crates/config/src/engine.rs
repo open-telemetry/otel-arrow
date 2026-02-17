@@ -3,18 +3,28 @@
 
 //! The configuration for the dataflow engine.
 
-use crate::error::{Context, Error};
+mod io;
+mod resolve;
+mod validate;
+
+use crate::PipelineGroupId;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{FlowPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
-use crate::{PipelineGroupId, PipelineId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+
+pub use self::resolve::{
+    OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID, OBSERVABILITY_INTERNAL_PIPELINE_ID,
+    ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+};
+
+#[cfg(test)]
+use crate::error::Error;
 
 /// Current engine configuration schema version.
 pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
@@ -129,45 +139,9 @@ impl EngineObservabilityPolicies {
     }
 
     #[must_use]
-    fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+    pub(crate) fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         self.clone().into_policies().validation_errors(path_prefix)
     }
-}
-
-/// Resolved policy snapshot for an engine configuration.
-///
-/// This is a deterministic snapshot computed from [`OtelDataflowSpec`]
-/// using hierarchy precedence rules.
-#[derive(Debug, Clone)]
-pub struct ResolvedOtelDataflowSpec {
-    /// Engine-wide runtime declarations.
-    pub engine: EngineConfig,
-    /// Resolved pipeline configurations.
-    pub pipelines: Vec<ResolvedPipelineConfig>,
-}
-
-/// Pipeline role in the resolved snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResolvedPipelineRole {
-    /// A user-defined regular pipeline from `groups.<group>.pipelines`.
-    Regular,
-    /// The dedicated engine observability pipeline.
-    ObservabilityInternal,
-}
-
-/// Resolved data for one pipeline.
-#[derive(Debug, Clone)]
-pub struct ResolvedPipelineConfig {
-    /// Pipeline group identifier.
-    pub pipeline_group_id: PipelineGroupId,
-    /// Pipeline identifier.
-    pub pipeline_id: PipelineId,
-    /// Pipeline definition.
-    pub pipeline: PipelineConfig,
-    /// Resolved policies after hierarchy resolution.
-    pub policies: Policies,
-    /// Pipeline role.
-    pub role: ResolvedPipelineRole,
 }
 
 /// Configuration for the HTTP admin endpoints.
@@ -189,378 +163,6 @@ impl Default for HttpAdminSettings {
 
 fn default_bind_address() -> String {
     "127.0.0.1:8080".into()
-}
-
-impl OtelDataflowSpec {
-    /// Creates a new [`OtelDataflowSpec`] with the given JSON string.
-    pub fn from_json(json: &str) -> Result<Self, Error> {
-        let config: OtelDataflowSpec =
-            serde_json::from_str(json).map_err(|e| Error::DeserializationError {
-                context: Default::default(),
-                format: "JSON".to_string(),
-                details: e.to_string(),
-            })?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Creates a new [`OtelDataflowSpec`] with the given YAML string.
-    pub fn from_yaml(yaml: &str) -> Result<Self, Error> {
-        let config: OtelDataflowSpec =
-            serde_yaml::from_str(yaml).map_err(|e| Error::DeserializationError {
-                context: Context::default(),
-                format: "YAML".to_string(),
-                details: e.to_string(),
-            })?;
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Load an [`OtelDataflowSpec`] from a JSON file.
-    pub fn from_json_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::default(),
-            details: e.to_string(),
-        })?;
-        Self::from_json(&contents)
-    }
-
-    /// Load an [`OtelDataflowSpec`] from a YAML file.
-    pub fn from_yaml_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::default(),
-            details: e.to_string(),
-        })?;
-        Self::from_yaml(&contents)
-    }
-
-    /// Load an [`OtelDataflowSpec`] from a file, automatically detecting the format based on file extension.
-    ///
-    /// Supports:
-    /// - JSON files: `.json`
-    /// - YAML files: `.yaml`, `.yml`
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let extension = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_lowercase());
-
-        match extension.as_deref() {
-            Some("json") => Self::from_json_file(path),
-            Some("yaml") | Some("yml") => Self::from_yaml_file(path),
-            _ => {
-                let details = format!(
-                    "Unsupported file extension: {}. Supported extensions are: .json, .yaml, .yml",
-                    extension.unwrap_or_else(|| "<none>".to_string())
-                );
-                Err(Error::FileReadError {
-                    context: Context::default(),
-                    details,
-                })
-            }
-        }
-    }
-
-    /// Creates a new [`OtelDataflowSpec`] from a single pipeline definition.
-    pub fn from_pipeline(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        pipeline: PipelineConfig,
-        engine: EngineConfig,
-    ) -> Result<Self, Error> {
-        let mut pipeline_group = PipelineGroupConfig::new();
-        pipeline_group.add_pipeline(pipeline_id, pipeline)?;
-        let mut groups = HashMap::new();
-        let _ = groups.insert(pipeline_group_id, pipeline_group);
-        let config = OtelDataflowSpec {
-            version: ENGINE_CONFIG_VERSION_V1.to_string(),
-            policies: Policies::default(),
-            engine,
-            groups,
-        };
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// Resolves and materializes policies once for all pipelines.
-    ///
-    /// The returned snapshot is deterministic: pipelines are ordered by
-    /// `(group_id, pipeline_id)` lexicographically.
-    #[must_use]
-    pub fn resolve(&self) -> ResolvedOtelDataflowSpec {
-        let mut pipeline_keys = Vec::new();
-        for (pipeline_group_id, pipeline_group) in &self.groups {
-            for pipeline_id in pipeline_group.pipelines.keys() {
-                pipeline_keys.push((pipeline_group_id.clone(), pipeline_id.clone()));
-            }
-        }
-        pipeline_keys.sort_by(|(g1, p1), (g2, p2)| {
-            g1.as_ref()
-                .cmp(g2.as_ref())
-                .then_with(|| p1.as_ref().cmp(p2.as_ref()))
-        });
-
-        let mut pipelines: Vec<ResolvedPipelineConfig> = pipeline_keys
-            .into_iter()
-            .map(|(pipeline_group_id, pipeline_id)| {
-                let pipeline_group = self
-                    .groups
-                    .get(&pipeline_group_id)
-                    .expect("pipeline group collected during resolve must still exist in map");
-                let pipeline = pipeline_group
-                    .pipelines
-                    .get(&pipeline_id)
-                    .expect("pipeline collected during resolve must still exist in group map")
-                    .clone();
-                let flow_policy = self
-                    .resolve_flow_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective flow policy must resolve for existing pipeline");
-                let health_policy = self
-                    .resolve_health_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective health policy must resolve for existing pipeline");
-                let telemetry_policy = self
-                    .resolve_telemetry_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective telemetry policy must resolve for existing pipeline");
-                let resources_policy = self
-                    .resolve_resources_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective resources policy must resolve for existing pipeline");
-                ResolvedPipelineConfig {
-                    pipeline_group_id,
-                    pipeline_id,
-                    pipeline,
-                    policies: Policies {
-                        flow: flow_policy,
-                        health: health_policy,
-                        telemetry: telemetry_policy,
-                        resources: resources_policy,
-                    },
-                    role: ResolvedPipelineRole::Regular,
-                }
-            })
-            .collect();
-
-        if let Some(pipeline) = self.engine.observability.pipeline.clone() {
-            let flow_policy = self.resolve_observability_flow_policy();
-            let health_policy = self.resolve_observability_health_policy();
-            let telemetry_policy = self.resolve_observability_telemetry_policy();
-            pipelines.push(ResolvedPipelineConfig {
-                pipeline_group_id: "internal".into(),
-                pipeline_id: "internal".into(),
-                pipeline: pipeline.into_pipeline_config(),
-                policies: Policies {
-                    flow: flow_policy,
-                    health: health_policy,
-                    telemetry: telemetry_policy,
-                    resources: ResourcesPolicy::default(),
-                },
-                role: ResolvedPipelineRole::ObservabilityInternal,
-            });
-        }
-
-        ResolvedOtelDataflowSpec {
-            engine: self.engine.clone(),
-            pipelines,
-        }
-    }
-
-    /// Resolves the effective flow policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_flow_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<FlowPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.flow.clone())
-            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.flow.clone()))
-            .or_else(|| Some(self.policies.flow.clone()))
-    }
-
-    /// Resolves the effective health policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_health_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<HealthPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.health.clone())
-            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.health.clone()))
-            .or_else(|| Some(self.policies.health.clone()))
-    }
-
-    /// Resolves the effective runtime telemetry policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_telemetry_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<TelemetryPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.telemetry.clone())
-            .or_else(|| {
-                pipeline_group
-                    .policies
-                    .as_ref()
-                    .map(|p| p.telemetry.clone())
-            })
-            .or_else(|| Some(self.policies.telemetry.clone()))
-    }
-
-    /// Resolves the effective resources policy for a pipeline.
-    ///
-    /// Precedence:
-    /// 1. pipeline-level policies
-    /// 2. group-level policies
-    /// 3. top-level policies
-    #[must_use]
-    fn resolve_resources_policy(
-        &self,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-    ) -> Option<ResourcesPolicy> {
-        let pipeline_group = self.groups.get(pipeline_group_id)?;
-        let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
-
-        pipeline
-            .policies()
-            .map(|p| p.resources.clone())
-            .or_else(|| {
-                pipeline_group
-                    .policies
-                    .as_ref()
-                    .map(|p| p.resources.clone())
-            })
-            .or_else(|| Some(self.policies.resources.clone()))
-    }
-
-    /// Resolves the effective flow policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_flow_policy(&self) -> FlowPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.flow.clone(), |p| p.flow.clone())
-    }
-
-    /// Resolves the effective health policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_health_policy(&self) -> HealthPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.health.clone(), |p| p.health.clone())
-    }
-
-    /// Resolves the effective runtime telemetry policy for the engine observability pipeline.
-    ///
-    /// Precedence:
-    /// 1. `engine.observability.pipeline.policies`
-    /// 2. top-level policies
-    #[must_use]
-    fn resolve_observability_telemetry_policy(&self) -> TelemetryPolicy {
-        self.engine
-            .observability
-            .pipeline
-            .as_ref()
-            .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.telemetry.clone(), |p| p.telemetry.clone())
-    }
-
-    /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
-    /// containing all validation errors found in the pipeline groups.
-    pub fn validate(&self) -> Result<(), Error> {
-        let mut errors = Vec::new();
-
-        if self.version != ENGINE_CONFIG_VERSION_V1 {
-            errors.push(Error::InvalidUserConfig {
-                error: format!(
-                    "unsupported engine config version `{}`; expected `{}`",
-                    self.version, ENGINE_CONFIG_VERSION_V1
-                ),
-            });
-        }
-
-        errors.extend(
-            self.policies
-                .validation_errors("policies")
-                .into_iter()
-                .map(|error| Error::InvalidUserConfig { error }),
-        );
-
-        if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
-            if let Some(policies) = &observability_pipeline.policies {
-                errors.extend(
-                    policies
-                        .validation_errors("engine.observability.pipeline.policies")
-                        .into_iter()
-                        .map(|error| Error::InvalidUserConfig { error }),
-                );
-            }
-            if observability_pipeline.nodes.is_empty() {
-                errors.push(Error::InvalidUserConfig {
-                    error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
-                });
-            } else {
-                let pipeline_cfg = observability_pipeline.into_pipeline_config();
-                if let Err(e) = pipeline_cfg.validate(&"engine".into(), &"observability".into()) {
-                    errors.push(e);
-                }
-            }
-        }
-
-        for (pipeline_group_id, pipeline_group) in &self.groups {
-            if let Err(e) = pipeline_group.validate(pipeline_group_id) {
-                errors.push(e);
-            }
-        }
-
-        if !errors.is_empty() {
-            Err(Error::InvalidConfiguration { errors })
-        } else {
-            Ok(())
-        }
-    }
 }
 
 #[cfg(test)]
