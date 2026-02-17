@@ -4,7 +4,7 @@
 //! Support for splitting and merging sequences of `OtapArrowRecords` in support of batching.
 use std::{
     iter::{once, repeat, repeat_n},
-    num::NonZeroU64,
+    num::{NonZeroU32, NonZeroU64},
     ops::{Add, Range, RangeInclusive},
 };
 
@@ -30,7 +30,7 @@ use itertools::Itertools;
 use otap_df_config::SignalType;
 use smallvec::SmallVec;
 
-use super::transform::concatenate::concatenate;
+use super::transform::{concatenate::concatenate, split};
 
 /// Represents a sequence of OtapArrowRecords that all share exactly
 /// the same signal.  Invarients:
@@ -137,25 +137,18 @@ impl RecordsGroup {
     /// Split `RecordBatch`es as needed when they're larger than our threshold or when we need them in
     /// smaller pieces to concatenate together into our target size.
     pub(crate) fn split(self, max_items: NonZeroU64) -> Result<Self> {
+        let max_items = NonZeroU32::new(max_items.get() as u32)
+            .unwrap_or(NonZeroU32::try_from(u32::MAX).expect("u32::MAX is not 0"));
         Ok(match self {
-            RecordsGroup::Logs(items) => RecordsGroup::Logs(generic_split(
-                items,
-                max_items,
-                Logs::allowed_payload_types(),
-                ArrowPayloadType::Logs,
-            )?),
-            RecordsGroup::Metrics(items) => RecordsGroup::Metrics(generic_split(
-                items,
-                max_items,
-                Metrics::allowed_payload_types(),
-                ArrowPayloadType::UnivariateMetrics,
-            )?),
-            RecordsGroup::Traces(items) => RecordsGroup::Traces(generic_split(
-                items,
-                max_items,
-                Traces::allowed_payload_types(),
-                ArrowPayloadType::Spans,
-            )?),
+            RecordsGroup::Logs(mut items) => {
+                RecordsGroup::Logs(split::split::<{ Logs::COUNT }>(&mut items, max_items)?)
+            }
+            RecordsGroup::Metrics(mut items) => {
+                RecordsGroup::Metrics(split::split::<{ Metrics::COUNT }>(&mut items, max_items)?)
+            }
+            RecordsGroup::Traces(mut items) => {
+                RecordsGroup::Traces(split::split::<{ Traces::COUNT }>(&mut items, max_items)?)
+            }
         })
     }
 

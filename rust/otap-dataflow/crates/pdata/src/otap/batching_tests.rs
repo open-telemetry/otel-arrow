@@ -218,26 +218,24 @@ fn generate_metrics_batching_test_cases() -> Vec<MetricsBatchingTestCase> {
     }
 
     // Test with varying attributes enabled - temporarily disabled
-    // TODO: Investigate parent_id column type issue with varying attributes,
-    // there is a problem with splitting
-    // for limit in [20, 50] {
-    //     add_case(
-    //         &format!("with_attrs_gauges_limit_{}", limit),
-    //         MetricsConfig::new()
-    //             .with_gauges(vec![3, 5])
-    //             .with_varying_attributes(true),
-    //         limit as u64,
-    //         4,
-    //     );
-    //     add_case(
-    //         &format!("with_attrs_sums_limit_{}", limit),
-    //         MetricsConfig::new()
-    //             .with_sums(vec![4, 2])
-    //             .with_varying_attributes(true),
-    //         limit as u64,
-    //         4,
-    //     );
-    // }
+    for limit in [20, 50] {
+        add_case(
+            &format!("with_attrs_gauges_limit_{}", limit),
+            MetricsConfig::new()
+                .with_gauges(vec![3, 5])
+                .with_varying_attributes(true),
+            limit as u64,
+            4,
+        );
+        add_case(
+            &format!("with_attrs_sums_limit_{}", limit),
+            MetricsConfig::new()
+                .with_sums(vec![4, 2])
+                .with_varying_attributes(true),
+            limit as u64,
+            4,
+        );
+    }
 
     //
     // A bunch of gauges!

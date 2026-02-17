@@ -19,6 +19,7 @@ use arrow::datatypes::{
 };
 use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
+use arrow_schema::SortOptions;
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_required_array,
@@ -36,7 +37,11 @@ use crate::schema::{get_field_metadata, update_field_metadata};
 
 pub mod concatenate;
 pub mod reindex;
+pub mod split;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod transport_optimize;
+pub mod util;
 
 pub fn remove_delta_encoding<T>(
     record_batch: &RecordBatch,
