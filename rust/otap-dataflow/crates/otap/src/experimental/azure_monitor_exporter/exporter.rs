@@ -130,7 +130,12 @@ impl AzureMonitorExporter {
         self.stats.add_batch();
         self.stats.add_client_latency(duration.as_secs_f64());
 
-        otel_debug!("export.success", batch_id = batch_id, row_count = row_count, duration_ms = duration.as_millis() as u64);
+        otel_debug!(
+            "export.success",
+            batch_id = batch_id,
+            row_count = row_count,
+            duration_ms = duration.as_millis() as u64
+        );
 
         for (_, context, payload) in completed_messages {
             effect_handler

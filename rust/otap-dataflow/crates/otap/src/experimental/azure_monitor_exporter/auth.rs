@@ -85,7 +85,10 @@ impl Auth {
             let delay_secs = (capped_delay_secs + jitter).max(1.0);
             let delay = tokio::time::Duration::from_secs_f64(delay_secs);
 
-            otel_info!("auth.retry_scheduled", delay_secs = format!("{:.1}", delay_secs));
+            otel_info!(
+                "auth.retry_scheduled",
+                delay_secs = format!("{:.1}", delay_secs)
+            );
             tokio::time::sleep(delay).await;
         }
     }
@@ -99,7 +102,10 @@ impl Auth {
                     otel_info!("auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
-                    otel_info!("auth.credential_type", method = "system_assigned_managed_identity");
+                    otel_info!(
+                        "auth.credential_type",
+                        method = "system_assigned_managed_identity"
+                    );
                 }
 
                 Ok(ManagedIdentityCredential::new(Some(options))
