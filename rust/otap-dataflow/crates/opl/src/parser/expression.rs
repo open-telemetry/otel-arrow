@@ -21,7 +21,7 @@ use pest::{
     pratt_parser::PrattParser,
 };
 
-use crate::parser::{Rule, invalid_child_rule_error};
+use crate::parser::{Rule, invalid_child_rule_error, temporal::parse_datetime_expression};
 
 fn parse_next_child_rule<F, E>(
     rules: &mut Pairs<'_, Rule>,
@@ -70,7 +70,7 @@ pub(crate) fn parse_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         .ok_or_else(|| no_inner_rule_error(query_location))
 }
 
-fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
+pub(crate) fn no_inner_rule_error(query_location: QueryLocation) -> ParserError {
     ParserError::SyntaxError(
         query_location,
         "No inner rule found in expression".to_string(),
@@ -451,6 +451,10 @@ pub fn parse_member_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarEx
         Rule::index_expression => parse_index_expression(rule),
         Rule::primitive_expression => parse_primitive_expression(rule),
         Rule::attribute_selection_expression => parse_attribute_selection_expression(rule),
+        Rule::datetime_expression => {
+            let date_time_expr = parse_datetime_expression(rule)?;
+            Ok(ScalarExpression::Static(date_time_expr).into())
+        }
         Rule::function_call => parse_function_call(rule),
         invalid_rule => Err(invalid_child_rule_error(
             query_location,
@@ -581,7 +585,6 @@ fn parse_primitive_expression(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExp
             BooleanScalarExpression::new(query_location, false),
         ))
         .into()),
-
         Rule::null_token => Ok(ScalarExpression::Static(StaticScalarExpression::Null(
             NullScalarExpression::new(query_location),
         ))
@@ -702,12 +705,12 @@ fn parse_function_call(rule: Pair<'_, Rule>) -> Result<LogicalOrScalarExpr, Pars
 mod test {
     use data_engine_expressions::{
         AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-        ContainsLogicalExpression, DoubleScalarExpression, EqualToLogicalExpression,
-        GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-        IntegerScalarExpression, LogicalExpression, MatchesLogicalExpression, MathScalarExpression,
-        NotLogicalExpression, NullScalarExpression, OrLogicalExpression, QueryLocation,
-        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
-        ValueAccessor,
+        ContainsLogicalExpression, DateTimeScalarExpression, DoubleScalarExpression,
+        EqualToLogicalExpression, GreaterThanLogicalExpression,
+        GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression, LogicalExpression,
+        MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression, NullScalarExpression,
+        OrLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
+        StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     use pest::Parser;
     use pretty_assertions::assert_eq;
@@ -720,6 +723,7 @@ mod test {
             parse_unary_expression,
         },
         pest::OplPestParser,
+        temporal::create_utc,
     };
 
     #[test]
@@ -777,6 +781,27 @@ mod test {
             (
                 "null",
                 StaticScalarExpression::Null(NullScalarExpression::new(QueryLocation::new_fake())),
+            ),
+            (
+                "datetime(2026-02-04)",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
+            ),
+            (
+                "datetime(\"2026-02-04\")",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
+            ),
+            (
+                "datetime('2026-02-04')",
+                StaticScalarExpression::DateTime(DateTimeScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    create_utc(2026, 2, 4, 0, 0, 0, 0),
+                )),
             ),
         ];
 
