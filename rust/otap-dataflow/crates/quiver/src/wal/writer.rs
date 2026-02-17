@@ -1503,8 +1503,12 @@ impl WalCoordinator {
         while let Some(front) = self.rotated_files.front() {
             if front.wal_position_end <= self.cursor_state.wal_position {
                 // On non-Unix platforms, read-only files cannot be deleted directly.
+                // Only attempt to clear the read-only flag when we actually set it
+                // during rotation; otherwise we may hit errors on filesystems that
+                // don't support permission changes (e.g. certain Kubernetes
+                // volumeMounts, Azure Files SMB mounts).
                 #[cfg(not(unix))]
-                {
+                if self.options.enforce_file_readonly {
                     let mut permissions = std::fs::metadata(&front.path)?.permissions();
                     // The clippy warning about world-writable files only applies to Unix.
                     #[allow(clippy::permissions_set_readonly_false)]
