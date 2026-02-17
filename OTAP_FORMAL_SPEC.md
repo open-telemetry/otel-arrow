@@ -310,18 +310,18 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
-| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPR_ATTRS |
 | scope.name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope version |
 | scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
 | schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Log schema URL |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Log timestamp in Unix nanoseconds |
 | observed_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Observation timestamp in Unix nanoseconds |
-| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | — | — | Trace `id` for correlation |
-| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | — | — | Span `id` for correlation |
+| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | — | — | Trace id for correlation |
+| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | — | — | Span id for correlation |
 | severity_number | Int32 | Dict(u8), Dict(u16) | Yes | No | — | — | Numeric severity level |
 | severity_text | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Textual severity level |
 | event_name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Event name |
@@ -352,10 +352,10 @@ The type information in the table is for the `id` field.
 | schema_url | Utf8 | — | Yes | No | — | — | Span schema URL |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Span start time in Unix nanoseconds |
 | duration_time_unix_nano | Duration(Nanosecond) | — | No | Yes | — | — | Span duration in nanoseconds |
-| trace_id | FixedSizeBinary(16) | — | No | Yes | — | — | Trace `id` |
-| span_id | FixedSizeBinary(8) | — | No | Yes | — | — | Span `id` |
+| trace_id | FixedSizeBinary(16) | — | No | Yes | — | — | Trace id |
+| span_id | FixedSizeBinary(8) | — | No | Yes | — | — | Span id |
 | trace_state | Utf8 | — | Yes | No | — | — | W3C trace state |
-| parent_span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Parent span `id` |
+| parent_span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Parent span id |
 | name | Utf8 | — | No | Yes | — | — | Span name |
 | kind | Int32 | — | Yes | No | — | — | Span kind enum |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped span attributes |
@@ -369,7 +369,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Event identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (name) | encoding | Foreign key to [SPANS](#spans).id |
+| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (name) | encoding | Foreign key to [SPANS](#spans) `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Event timestamp in Unix nanoseconds |
 | name | Utf8 | — | No | Yes | — | — | Event name |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped event attributes |
@@ -379,7 +379,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to SPANS.id |
+| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#spans) `id` column |
 | trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
 | span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
 | trace_state | Utf8 | — | Yes | No | — | — | Linked trace state |
@@ -392,10 +392,10 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Metric identifier (primary key) |
-| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS |
 | scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
 | scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
@@ -412,7 +412,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Timestamp in Unix nanoseconds |
 | int_value | Int64 | — | No | Yes | — | — | Integer value |
@@ -424,7 +424,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | count | UInt64 | — | Yes | No | — | — | Count of observations |
@@ -438,7 +438,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | count | UInt64 | — | Yes | No | — | — | Count of observations |
@@ -454,7 +454,7 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS `id` column |
 | start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | count | UInt64 | — | Yes | No | — | — | Count of observations |
@@ -477,12 +477,12 @@ Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPL
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt32 | - | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS `id` column |
 | time_unix_nano | Timestamp(Nanosecond) | - | Yes | No | - | - | Timestamp in Unix nanoseconds |
 | int_value | Int64 | Dict(u8), Dict(u16) | Yes | No | - | - | Integer exemplar value |
 | double_value | Float64 | - | Yes | No | - | - | Double exemplar value |
-| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated span `id` |
-| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated trace `id` |
+| span_id | FixedSizeBinary(8) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated span id |
+| trace_id | FixedSizeBinary(16) | Dict(u8), Dict(u16) | Yes | No | - | - | Associated trace id |
 
 ### Attributes
 
@@ -492,7 +492,7 @@ Applies to: SPAN_EVENT_ATTRS / SPAN_LINK_ATTRS / NUMBER_DP_ATTRS / SUMMARY_DP_AT
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS `id` column |
 | key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
 | str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
