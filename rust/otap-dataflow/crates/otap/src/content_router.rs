@@ -15,7 +15,8 @@
 //! ```yaml
 //! processors:
 //!   content_router:
-//!     routing_key: "service.namespace"
+//!     routing_key:
+//!       resource_attribute: "service.namespace"
 //!     case_sensitive: false
 //!     routes:
 //!       "frontend": "frontend_pipeline"
@@ -40,6 +41,7 @@ use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::PortName;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
@@ -67,7 +69,7 @@ use otap_df_pdata::views::resource::ResourceView;
 use otap_df_pdata::views::trace::{ResourceSpansView, TracesView};
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::otel_warn;
+
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -76,6 +78,26 @@ use std::sync::Arc;
 
 /// URN for the ContentRouter processor
 pub const CONTENT_ROUTER_URN: &str = "urn:otel:content_router:processor";
+
+/// Specifies where and how the routing key value is extracted from a telemetry message.
+///
+/// Using an explicit source type makes the configuration unambiguous and allows
+/// future variants (e.g. scope attributes, metric names) to be added without
+/// breaking existing configs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingKeyExpr {
+    /// Extract the routing value from a resource attribute with the given key.
+    ResourceAttribute(String),
+}
+
+impl std::fmt::Display for RoutingKeyExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ResourceAttribute(key) => write!(f, "resource_attribute({})", key),
+        }
+    }
+}
 
 /// Metrics for the ContentRouter processor.
 #[metric_set(name = "content_router.processor.metrics")]
@@ -107,7 +129,8 @@ pub struct ContentRouterMetrics {
 /// ```yaml
 /// processors:
 ///   content_router:
-///     routing_key: "service.namespace"
+///     routing_key:
+///       resource_attribute: "service.namespace"
 ///     case_sensitive: false
 ///     routes:
 ///       "frontend": "frontend_pipeline"
@@ -116,8 +139,8 @@ pub struct ContentRouterMetrics {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentRouterConfig {
-    /// The resource attribute key used for routing decisions.
-    pub routing_key: String,
+    /// The source and key used to extract the routing value from a telemetry message.
+    pub routing_key: RoutingKeyExpr,
     /// Map of attribute values to output port names.
     pub routes: HashMap<String, String>,
     /// Output port for messages that don't match any route.
@@ -135,11 +158,18 @@ const fn default_case_sensitive() -> bool {
 
 impl ContentRouterConfig {
     /// Validates the configuration.
-    fn validate(&self) -> Result<(), ConfigError> {
-        if self.routing_key.trim().is_empty() {
-            return Err(ConfigError::InvalidUserConfig {
-                error: "routing_key must not be empty".to_string(),
-            });
+    ///
+    /// If `declared_outputs` is non-empty, also checks that every route
+    /// destination and `default_output` refers to a declared node output port.
+    fn validate(&self, declared_outputs: &[PortName]) -> Result<(), ConfigError> {
+        match &self.routing_key {
+            RoutingKeyExpr::ResourceAttribute(key) => {
+                if key.trim().is_empty() {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: "routing_key.resource_attribute must not be empty".to_string(),
+                    });
+                }
+            }
         }
         if self.routes.is_empty() {
             return Err(ConfigError::InvalidUserConfig {
@@ -175,17 +205,48 @@ impl ContentRouterConfig {
                 });
             }
         }
+        // Validate that every route destination and default_output refer to a
+        // declared node output port. Skip this check when no outputs are declared
+        // (e.g. pipeline-level wiring without explicit port declarations).
+        if !declared_outputs.is_empty() {
+            for (value, port) in &self.routes {
+                if !declared_outputs.iter().any(|o| o.as_ref() == port.as_str()) {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "route for value '{}' references undeclared output port '{}'",
+                            value, port
+                        ),
+                    });
+                }
+            }
+            if let Some(ref default) = self.default_output {
+                if !declared_outputs
+                    .iter()
+                    .any(|o| o.as_ref() == default.as_str())
+                {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: format!(
+                            "default_output '{}' references undeclared output port",
+                            default
+                        ),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
     /// Returns a normalized routes map (lowercased keys if case-insensitive).
-    fn normalized_routes(&self) -> HashMap<String, String> {
+    fn normalized_routes(&self) -> HashMap<String, PortName> {
         if self.case_sensitive {
-            self.routes.clone()
+            self.routes
+                .iter()
+                .map(|(k, v)| (k.clone(), PortName::from(v.clone())))
+                .collect()
         } else {
             self.routes
                 .iter()
-                .map(|(k, v)| (k.to_lowercase(), v.clone()))
+                .map(|(k, v)| (k.to_lowercase(), PortName::from(v.clone())))
                 .collect()
         }
     }
@@ -208,10 +269,10 @@ enum RouteResolution {
 /// The ContentRouter processor routes messages to output ports based on
 /// a resource attribute value.
 pub struct ContentRouter {
-    /// The attribute key to inspect for routing.
-    routing_key: String,
+    /// The source and key used to extract the routing value.
+    routing_key: RoutingKeyExpr,
     /// Normalized routes: attribute value -> output port name.
-    routes: HashMap<String, String>,
+    routes: HashMap<String, PortName>,
     /// Default output port for unmatched messages.
     default_output: Option<String>,
     /// Whether matching is case-sensitive.
@@ -246,7 +307,9 @@ impl ContentRouter {
     /// Extracts the routing key value from a resource's attributes using zero-copy views.
     /// Returns the resolved port name or None if the key is missing/not a route match.
     fn extract_route_from_resource<R: ResourceView>(&self, resource: &R) -> RouteResolution {
-        let key_bytes = self.routing_key.as_bytes();
+        let key_bytes = match &self.routing_key {
+            RoutingKeyExpr::ResourceAttribute(key) => key.as_bytes(),
+        };
 
         for attr in resource.attributes() {
             if attr.key() == key_bytes {
@@ -279,7 +342,7 @@ impl ContentRouter {
                 };
 
                 if let Some(port) = self.routes.get(lookup.as_ref()) {
-                    return RouteResolution::Matched(port.clone());
+                    return RouteResolution::Matched(port.to_string());
                 }
                 return RouteResolution::NoMatch;
             }
@@ -515,7 +578,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                             let reason = if matches!(resolution, RouteResolution::MissingKey) {
                                 format!(
                                     "routing key '{}' not found on resource and no default output configured",
-                                    self.routing_key
+                                    self.routing_key // Display: e.g. resource_attribute(service.namespace)
                                 )
                             } else {
                                 format!(
@@ -523,11 +586,6 @@ impl local::Processor<OtapPdata> for ContentRouter {
                                     self.routing_key
                                 )
                             };
-                            otel_warn!(
-                                "content_router.nack",
-                                routing_key = self.routing_key.as_str(),
-                                message = reason.as_str()
-                            );
                             effect_handler
                                 .notify_nack(NackMsg::new_permanent(reason, data))
                                 .await?;
@@ -541,12 +599,7 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         let reason = format!(
                             "batch contains resources with inconsistent routing for key '{}'; \
                              all resources must resolve to the same destination",
-                            self.routing_key
-                        );
-                        otel_warn!(
-                            "content_router.mixed_batch",
-                            routing_key = self.routing_key.as_str(),
-                            message = reason.as_str()
+                            self.routing_key // Display: e.g. resource_attribute(service.namespace)
                         );
                         effect_handler
                             .notify_nack(NackMsg::new_permanent(reason, data))
@@ -561,11 +614,6 @@ impl local::Processor<OtapPdata> for ContentRouter {
                         let reason =
                             "internal error: failed to convert telemetry format for routing"
                                 .to_string();
-                        otel_warn!(
-                            "content_router.conversion_error",
-                            routing_key = self.routing_key.as_str(),
-                            message = reason.as_str()
-                        );
                         effect_handler
                             .notify_nack(NackMsg::new_permanent(reason, data))
                             .await?;
@@ -587,7 +635,7 @@ pub fn create_content_router(
         .map_err(|e| ConfigError::InvalidUserConfig {
             error: format!("Failed to parse ContentRouter configuration: {e}"),
         })?;
-    router_config.validate()?;
+    router_config.validate(&node_config.outputs)?;
 
     let router = ContentRouter::new(router_config);
 
@@ -613,7 +661,7 @@ pub static CONTENT_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactor
             .map_err(|e| ConfigError::InvalidUserConfig {
                 error: format!("Failed to parse ContentRouter configuration: {e}"),
             })?;
-        router_config.validate()?;
+        router_config.validate(&node_config.outputs)?;
 
         let router = ContentRouter::with_pipeline_ctx(pipeline, router_config);
 
@@ -782,7 +830,7 @@ mod tests {
         default: Option<String>,
     ) -> ContentRouterConfig {
         ContentRouterConfig {
-            routing_key: "service.namespace".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
             routes,
             default_output: default,
             case_sensitive: true,
@@ -796,7 +844,7 @@ mod tests {
     #[test]
     fn test_config_deserialization() {
         let config_json = json!({
-            "routing_key": "service.namespace",
+            "routing_key": { "resource_attribute": "service.namespace" },
             "routes": {
                 "/subscriptions/aaa": "tenant_a",
                 "/subscriptions/bbb": "tenant_b"
@@ -805,7 +853,10 @@ mod tests {
             "case_sensitive": false
         });
         let cfg: ContentRouterConfig = serde_json::from_value(config_json).unwrap();
-        assert_eq!(cfg.routing_key, "service.namespace");
+        assert!(matches!(
+            cfg.routing_key,
+            RoutingKeyExpr::ResourceAttribute(ref k) if k == "service.namespace"
+        ));
         assert_eq!(cfg.routes.len(), 2);
         assert_eq!(cfg.default_output, Some("fallback".to_string()));
         assert!(!cfg.case_sensitive);
@@ -814,7 +865,7 @@ mod tests {
     #[test]
     fn test_config_deserialization_defaults() {
         let config_json = json!({
-            "routing_key": "tenant.id",
+            "routing_key": { "resource_attribute": "tenant.id" },
             "routes": { "a": "port_a" }
         });
         let cfg: ContentRouterConfig = serde_json::from_value(config_json).unwrap();
@@ -825,73 +876,111 @@ mod tests {
     #[test]
     fn test_config_validation_empty_key() {
         let cfg = ContentRouterConfig {
-            routing_key: "".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("".to_string()),
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: None,
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_config_validation_whitespace_key() {
         let cfg = ContentRouterConfig {
-            routing_key: "  ".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("  ".to_string()),
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: None,
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_config_validation_empty_routes() {
         let cfg = ContentRouterConfig {
-            routing_key: "key".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
             routes: HashMap::new(),
             default_output: None,
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_config_validation_empty_port_name() {
         let cfg = ContentRouterConfig {
-            routing_key: "key".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
             routes: HashMap::from([("value".into(), "".into())]),
             default_output: None,
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_config_validation_empty_route_key() {
         let cfg = ContentRouterConfig {
-            routing_key: "key".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
             routes: HashMap::from([("".into(), "port_a".into())]),
             default_output: None,
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_config_validation_empty_default_output() {
         let cfg = ContentRouterConfig {
-            routing_key: "key".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
             routes: HashMap::from([("a".into(), "b".into())]),
             default_output: Some("".to_string()),
             case_sensitive: true,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
+    }
+
+    #[test]
+    fn test_config_validation_route_undeclared_output() {
+        let cfg = ContentRouterConfig {
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
+            routes: HashMap::from([("a".into(), "port_a".into())]),
+            default_output: None,
+            case_sensitive: true,
+        };
+        // "port_a" is not in the declared outputs
+        let declared: Vec<PortName> = vec!["other_port".into()];
+        assert!(cfg.validate(&declared).is_err());
+    }
+
+    #[test]
+    fn test_config_validation_default_output_undeclared() {
+        let cfg = ContentRouterConfig {
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
+            routes: HashMap::from([("a".into(), "port_a".into())]),
+            default_output: Some("fallback".to_string()),
+            case_sensitive: true,
+        };
+        // "port_a" is declared but "fallback" is not
+        let declared: Vec<PortName> = vec!["port_a".into()];
+        assert!(cfg.validate(&declared).is_err());
+    }
+
+    #[test]
+    fn test_config_validation_all_outputs_declared_ok() {
+        let cfg = ContentRouterConfig {
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
+            routes: HashMap::from([("a".into(), "port_a".into())]),
+            default_output: Some("fallback".to_string()),
+            case_sensitive: true,
+        };
+        let declared: Vec<PortName> = vec!["port_a".into(), "fallback".into()];
+        assert!(cfg.validate(&declared).is_ok());
     }
 
     #[test]
     fn test_config_validation_case_insensitive_collision() {
         let cfg = ContentRouterConfig {
-            routing_key: "key".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("key".to_string()),
             routes: HashMap::from([
                 ("Tenant_A".into(), "port_a".into()),
                 ("tenant_a".into(), "port_b".into()),
@@ -899,24 +988,44 @@ mod tests {
             default_output: None,
             case_sensitive: false,
         };
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate(&[]).is_err());
     }
 
     #[test]
     fn test_factory_creation_ok() {
         let config = json!({
-            "routing_key": "service.namespace",
+            "routing_key": { "resource_attribute": "service.namespace" },
             "routes": { "/sub/a": "tenant_a" }
         });
         let processor_config = ProcessorConfig::new("test_content_router");
         let mut node_config = NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN);
         node_config.config = config;
+        node_config.add_output("tenant_a");
         let result = create_content_router(
             test_node(processor_config.name.clone()),
             Arc::new(node_config),
             &processor_config,
         );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_factory_creation_undeclared_output() {
+        let config = json!({
+            "routing_key": { "resource_attribute": "service.namespace" },
+            "routes": { "/sub/a": "tenant_a" }
+        });
+        let processor_config = ProcessorConfig::new("test_content_router");
+        let mut node_config = NodeUserConfig::new_processor_config(CONTENT_ROUTER_URN);
+        node_config.config = config;
+        // Declare an unrelated output — "tenant_a" is not in the list.
+        node_config.add_output("other_port");
+        let result = create_content_router(
+            test_node(processor_config.name.clone()),
+            Arc::new(node_config),
+            &processor_config,
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -983,7 +1092,7 @@ mod tests {
     fn test_resolve_case_insensitive() {
         let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
         let config = ContentRouterConfig {
-            routing_key: "service.namespace".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
             routes,
             default_output: None,
             case_sensitive: false,
@@ -1225,7 +1334,7 @@ mod tests {
     fn test_process_control_message() {
         let test_runtime = TestRuntime::new();
         let config = ContentRouterConfig {
-            routing_key: "service.namespace".to_string(),
+            routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
             routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
             default_output: None,
             case_sensitive: true,
@@ -1313,7 +1422,7 @@ mod tests {
                 let node_id = test_node("content_router_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "service.namespace".to_string(),
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
@@ -1368,7 +1477,7 @@ mod tests {
                 let node_id = test_node("content_router_nack_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "service.namespace".to_string(),
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
@@ -1419,7 +1528,7 @@ mod tests {
                 let node_id = test_node("content_router_default_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "service.namespace".to_string(),
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: Some("fallback".to_string()),
                     case_sensitive: true,
@@ -1480,7 +1589,7 @@ mod tests {
                 let node_id = test_node("content_router_conversion_error_test");
 
                 let config = ContentRouterConfig {
-                    routing_key: "service.namespace".to_string(),
+                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
                     routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
                     default_output: None,
                     case_sensitive: true,
