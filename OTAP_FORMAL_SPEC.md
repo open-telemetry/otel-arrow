@@ -429,7 +429,9 @@ The type information in the table is for the `id` field.
 | time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
 | count | UInt64 | — | Yes | No | — | — | Count of observations |
 | sum | Float64 | — | Yes | No | — | — | Sum of observations |
-| quantile | Float64 | List(Float64) | Yes | No | — | — | Quantile values |
+| quantile | List(Struct) | - | Yes | No | — | — | List of quantil values |
+| quantile[].quantile | Float64 | Float64 | Yes | No | — | — | Quantile quantile // NEEDS_TRIAGE |
+| quantile[].value | Float64 | Float64 | Yes | No | — | — | Quantile value // NEEDS_TRIAGE |
 | value | Float64 | List(Float64) | Yes | No | — | — | Quantile observation values |
 | flags | UInt32 | — | Yes | No | — | — | Data point flags |
 
