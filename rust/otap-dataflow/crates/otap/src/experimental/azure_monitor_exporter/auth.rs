@@ -61,11 +61,11 @@ impl Auth {
 
             match self.get_token_internal().await {
                 Ok(token) => {
-                    otel_info!("auth.get_token_succeeded", expires_on = %token.expires_on);
+                    otel_info!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
                     return Ok(token);
                 }
                 Err(e) => {
-                    otel_warn!("auth.get_token_failed", attempt = attempt, error = %e);
+                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
                 }
             }
 
@@ -86,7 +86,7 @@ impl Auth {
             let delay = tokio::time::Duration::from_secs_f64(delay_secs);
 
             otel_info!(
-                "auth.retry_scheduled",
+                "azure_monitor_exporter.auth.retry_scheduled",
                 delay_secs = format!("{:.1}", delay_secs)
             );
             tokio::time::sleep(delay).await;
@@ -99,11 +99,11 @@ impl Auth {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
                 if let Some(client_id) = &auth_config.client_id {
-                    otel_info!("auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
+                    otel_info!("azure_monitor_exporter.auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
                     otel_info!(
-                        "auth.credential_type",
+                        "azure_monitor_exporter.auth.credential_type",
                         method = "system_assigned_managed_identity"
                     );
                 }
@@ -112,7 +112,7 @@ impl Auth {
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
             AuthMethod::Development => {
-                otel_info!("auth.credential_type", method = "developer_tools");
+                otel_info!("azure_monitor_exporter.auth.credential_type", method = "developer_tools");
                 Ok(
                     DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
                         .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,

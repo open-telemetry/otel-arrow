@@ -194,7 +194,7 @@ impl LogsIngestionClient {
                         base_delay.mul_f64(jitter_factor)
                     };
 
-                    otel_warn!("export.retry_delay", delay_ms = delay.as_millis() as u64, error = ?e);
+                    otel_warn!("azure_monitor_exporter.export.retry_delay", delay_ms = delay.as_millis() as u64, error = ?e);
 
                     tokio::time::sleep(delay).await;
                 }
@@ -234,17 +234,17 @@ impl LogsIngestionClient {
 
         match status.as_u16() {
             401 => {
-                otel_warn!("export.unauthorized", status = status.as_u16());
+                otel_warn!("azure_monitor_exporter.export.unauthorized", status = status.as_u16());
                 Err(Error::unauthorized(body))
             }
             403 => {
-                otel_warn!("export.forbidden", status = status.as_u16());
+                otel_warn!("azure_monitor_exporter.export.forbidden", status = status.as_u16());
                 Err(Error::forbidden(body))
             }
             413 => Err(Error::PayloadTooLarge),
             429 => {
                 let retry_after_secs = retry_after.map(|d| d.as_secs());
-                otel_warn!("export.rate_limited", retry_after_secs = ?retry_after_secs);
+                otel_warn!("azure_monitor_exporter.export.rate_limited", retry_after_secs = ?retry_after_secs);
                 Err(Error::RateLimited { body, retry_after })
             }
             500..=599 => Err(Error::ServerError {

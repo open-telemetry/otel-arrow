@@ -180,7 +180,9 @@ impl Transformer {
                         let writer = (&mut buf).writer();
                         let mut ser = serde_json::Serializer::new(writer);
                         if let Err(e) = record_map.serialize(&mut ser) {
-                            otel_warn!("transform.serialize_failed", error = %e);
+                            otel_warn!("azure_monitor_exporter.transform.serialize_failed",
+                                error = %e,
+                                message = "failed to serialize log record to JSON, skipping this record");
                             continue;
                         }
                     }
