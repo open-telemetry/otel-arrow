@@ -242,7 +242,7 @@ config: {}
     }
 
     #[test]
-    fn node_user_config_with_tellemetry_attributes_valid() {
+    fn node_user_config_with_telemetry_attributes_valid() {
         let json = r#"{
             "type": "urn:example:demo:receiver",
             "telemetry_attributes": {
