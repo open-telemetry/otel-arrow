@@ -310,9 +310,11 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Log record identifier (primary key) |
+| resource | Struct | - | Yes | No | — | — | Resource information |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope | Struct | - | Yes | No | — | — | Instrumentation scope |
 | scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPR_ATTRS |
 | scope.name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Instrumentation scope version |
@@ -325,6 +327,7 @@ The type information in the table is for the `id` field.
 | severity_number | Int32 | Dict(u8), Dict(u16) | Yes | No | — | — | Numeric severity level |
 | severity_text | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Textual severity level |
 | event_name | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | Event name |
+| body | Struct | - | Yes | Yes | - | - | Log body |
 | body.type | UInt8 | — | No | Yes | — | — | Body value type (same encoding as attribute type) |
 | body.str | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | String body (may be empty) |
 | body.int | Int64 | Dict(u8), Dict(u16) | Yes | No | — | — | Integer body (when body.type=3) |
@@ -342,9 +345,11 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Span identifier (primary key) |
+| resource | Struct | - | Yes | No | — | — | Resource information |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope | Struct | - | Yes | No | — | — | Instrumentation scope |
 | scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS |
 | scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
@@ -392,9 +397,11 @@ The type information in the table is for the `id` field.
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
 | id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Metric identifier (primary key) |
+| resource | Struct | - | Yes | No | — | — | Resource information |
 | resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS |
 | resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
 | resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope | Struct | - | Yes | No | — | — | Instrumentation scope information |
 | scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS |
 | scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
 | scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
