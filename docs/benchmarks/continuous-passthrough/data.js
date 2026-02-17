@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771339006070,
+  "lastUpdate": 1771359724024,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -7978,6 +7978,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11264544.75014184,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "a.lockett@f5.com",
+            "name": "albertlockett",
+            "username": "albertlockett"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "f78e71317c77316c428df86b330f48da50104095",
+          "message": "perf: improve take performance when deleting rows in transform attributes (#2038)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nWhen we delete attributes, we compute the ranges of rows in the\nattributes record batch that did not have deletions and then take them.\nBefore, we were using `slice` and `concat` for each range, which has a\nbit of overhead.\n\nWhen there are many ranges, this overhead adds up and makes the\nperformance quite bad. This can happen when we convert OTLP to OTAP,\nbecause the attributes end up sorted by parent_id so the ranges of\ndeleted/kept attribtue keys are all over the place.\n\nThis change uses the MutableArrayData to take the ranges instead,\ninspired by what the arrow\n[`filter`](https://docs.rs/arrow/latest/arrow/compute/kernels/filter/fn.filter.html)\nkernel does internally:\n\nhttps://github.com/apache/arrow-rs/blob/d8946ca0775ab7fe0eef2fdea4b8bb3d55ec6664/arrow-select/src/filter.rs#L475-L498\n\nThe PR also adds a benchmark for transforming attributes that are in the\nproblematic sort order, to measure the performance imrovement.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Closes #2037 \n\n## How are these changes tested?\n\nExisting unit tests cover this function\n\n## Are there any user-facing changes?\n\nNo\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
+          "timestamp": "2026-02-17T19:32:25Z",
+          "tree_id": "4374c1d9a8cd533c2fdab94f7f65f0babafbdd0d",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/f78e71317c77316c428df86b330f48da50104095"
+        },
+        "date": 1771359723376,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -1.9859533309936523,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.07455830731791,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.5231140857963,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 48.37356770833333,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 49.9375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 500561.76017008896,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 510502.68360601267,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002474,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11212841.779130647,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11153180.072374187,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
