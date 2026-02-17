@@ -142,13 +142,20 @@ impl EngineObservabilityPolicies {
 pub struct ResolvedOtelDataflowSpec {
     /// Engine-wide runtime declarations.
     pub engine: EngineConfig,
-    /// Resolved pipeline configurations for all regular pipelines.
+    /// Resolved pipeline configurations.
     pub pipelines: Vec<ResolvedPipelineConfig>,
-    /// Resolved observability pipeline when configured.
-    pub observability_pipeline: Option<ResolvedObservabilityPipeline>,
 }
 
-/// Resolved data for one regular pipeline.
+/// Pipeline role in the resolved snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedPipelineRole {
+    /// A user-defined regular pipeline from `groups.<group>.pipelines`.
+    Regular,
+    /// The dedicated engine observability pipeline.
+    ObservabilityInternal,
+}
+
+/// Resolved data for one pipeline.
 #[derive(Debug, Clone)]
 pub struct ResolvedPipelineConfig {
     /// Pipeline group identifier.
@@ -159,19 +166,8 @@ pub struct ResolvedPipelineConfig {
     pub pipeline: PipelineConfig,
     /// Resolved policies after hierarchy resolution.
     pub policies: Policies,
-}
-
-/// Resolved data for the observability pipeline.
-#[derive(Debug, Clone)]
-pub struct ResolvedObservabilityPipeline {
-    /// Pipeline declaration.
-    pub pipeline: EngineObservabilityPipelineConfig,
-    /// Resolved flow policy after hierarchy resolution.
-    pub flow_policy: FlowPolicy,
-    /// Resolved health policy after hierarchy resolution.
-    pub health_policy: HealthPolicy,
-    /// Resolved telemetry policy after hierarchy resolution.
-    pub telemetry_policy: TelemetryPolicy,
+    /// Pipeline role.
+    pub role: ResolvedPipelineRole,
 }
 
 /// Configuration for the HTTP admin endpoints.
@@ -305,7 +301,7 @@ impl OtelDataflowSpec {
                 .then_with(|| p1.as_ref().cmp(p2.as_ref()))
         });
 
-        let pipelines = pipeline_keys
+        let mut pipelines: Vec<ResolvedPipelineConfig> = pipeline_keys
             .into_iter()
             .map(|(pipeline_group_id, pipeline_id)| {
                 let pipeline_group = self
@@ -339,23 +335,32 @@ impl OtelDataflowSpec {
                         telemetry: telemetry_policy,
                         resources: resources_policy,
                     },
+                    role: ResolvedPipelineRole::Regular,
                 }
             })
             .collect();
 
-        let observability_pipeline = self.engine.observability.pipeline.clone().map(|pipeline| {
-            ResolvedObservabilityPipeline {
-                pipeline,
-                flow_policy: self.resolve_observability_flow_policy(),
-                health_policy: self.resolve_observability_health_policy(),
-                telemetry_policy: self.resolve_observability_telemetry_policy(),
-            }
-        });
+        if let Some(pipeline) = self.engine.observability.pipeline.clone() {
+            let flow_policy = self.resolve_observability_flow_policy();
+            let health_policy = self.resolve_observability_health_policy();
+            let telemetry_policy = self.resolve_observability_telemetry_policy();
+            pipelines.push(ResolvedPipelineConfig {
+                pipeline_group_id: "internal".into(),
+                pipeline_id: "internal".into(),
+                pipeline: pipeline.into_pipeline_config(),
+                policies: Policies {
+                    flow: flow_policy,
+                    health: health_policy,
+                    telemetry: telemetry_policy,
+                    resources: ResourcesPolicy::default(),
+                },
+                role: ResolvedPipelineRole::ObservabilityInternal,
+            });
+        }
 
         ResolvedOtelDataflowSpec {
             engine: self.engine.clone(),
             pipelines,
-            observability_pipeline,
         }
     }
 
@@ -366,7 +371,7 @@ impl OtelDataflowSpec {
     /// 2. group-level policies
     /// 3. top-level policies
     #[must_use]
-    pub fn resolve_flow_policy(
+    fn resolve_flow_policy(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
@@ -388,7 +393,7 @@ impl OtelDataflowSpec {
     /// 2. group-level policies
     /// 3. top-level policies
     #[must_use]
-    pub fn resolve_health_policy(
+    fn resolve_health_policy(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
@@ -410,7 +415,7 @@ impl OtelDataflowSpec {
     /// 2. group-level policies
     /// 3. top-level policies
     #[must_use]
-    pub fn resolve_telemetry_policy(
+    fn resolve_telemetry_policy(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
@@ -437,7 +442,7 @@ impl OtelDataflowSpec {
     /// 2. group-level policies
     /// 3. top-level policies
     #[must_use]
-    pub fn resolve_resources_policy(
+    fn resolve_resources_policy(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
@@ -463,7 +468,7 @@ impl OtelDataflowSpec {
     /// 1. `engine.observability.pipeline.policies`
     /// 2. top-level policies
     #[must_use]
-    pub fn resolve_observability_flow_policy(&self) -> FlowPolicy {
+    fn resolve_observability_flow_policy(&self) -> FlowPolicy {
         self.engine
             .observability
             .pipeline
@@ -478,7 +483,7 @@ impl OtelDataflowSpec {
     /// 1. `engine.observability.pipeline.policies`
     /// 2. top-level policies
     #[must_use]
-    pub fn resolve_observability_health_policy(&self) -> HealthPolicy {
+    fn resolve_observability_health_policy(&self) -> HealthPolicy {
         self.engine
             .observability
             .pipeline
@@ -493,7 +498,7 @@ impl OtelDataflowSpec {
     /// 1. `engine.observability.pipeline.policies`
     /// 2. top-level policies
     #[must_use]
-    pub fn resolve_observability_telemetry_policy(&self) -> TelemetryPolicy {
+    fn resolve_observability_telemetry_policy(&self) -> TelemetryPolicy {
         self.engine
             .observability
             .pipeline
@@ -795,89 +800,14 @@ groups:
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
 
-        let p1 = config
-            .resolve_flow_policy(&"g1".into(), &"p1".into())
-            .expect("p1 should resolve");
-        assert_eq!(p1.channel_capacity.control.node, 50);
-        assert_eq!(p1.channel_capacity.control.pipeline, 51);
-        assert_eq!(p1.channel_capacity.pdata, 52);
-
-        let p2 = config
-            .resolve_flow_policy(&"g1".into(), &"p2".into())
-            .expect("p2 should resolve");
-        assert_eq!(p2.channel_capacity.control.node, 150);
-        assert_eq!(p2.channel_capacity.control.pipeline, 151);
-        assert_eq!(p2.channel_capacity.pdata, 152);
-
-        let p3 = config
-            .resolve_flow_policy(&"g2".into(), &"p3".into())
-            .expect("p3 should resolve");
-        assert_eq!(p3.channel_capacity.control.node, 200);
-        assert_eq!(p3.channel_capacity.control.pipeline, 201);
-        assert_eq!(p3.channel_capacity.pdata, 202);
-
-        let h1 = config
-            .resolve_health_policy(&"g1".into(), &"p1".into())
-            .expect("p1 health should resolve");
-        assert_eq!(h1.ready_if, vec![crate::health::PhaseKind::Failed]);
-
-        let h2 = config
-            .resolve_health_policy(&"g1".into(), &"p2".into())
-            .expect("p2 health should resolve");
-        assert_eq!(
-            h2.ready_if,
-            vec![
-                crate::health::PhaseKind::Running,
-                crate::health::PhaseKind::Updating,
-            ]
-        );
-
-        let h3 = config
-            .resolve_health_policy(&"g2".into(), &"p3".into())
-            .expect("p3 health should resolve");
-        assert_eq!(h3.ready_if, vec![crate::health::PhaseKind::Running]);
-
-        let t1 = config
-            .resolve_telemetry_policy(&"g1".into(), &"p1".into())
-            .expect("p1 telemetry should resolve");
-        assert!(!t1.channel_metrics);
-
-        let t2 = config
-            .resolve_telemetry_policy(&"g1".into(), &"p2".into())
-            .expect("p2 telemetry should resolve");
-        assert!(t2.channel_metrics);
-
-        let t3 = config
-            .resolve_telemetry_policy(&"g2".into(), &"p3".into())
-            .expect("p3 telemetry should resolve");
-        assert!(!t3.channel_metrics);
-
-        let r1 = config
-            .resolve_resources_policy(&"g1".into(), &"p1".into())
-            .expect("p1 resources should resolve");
-        assert_eq!(
-            r1.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 2 }
-        );
-
-        let r2 = config
-            .resolve_resources_policy(&"g1".into(), &"p2".into())
-            .expect("p2 resources should resolve");
-        assert_eq!(
-            r2.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 5 }
-        );
-
-        let r3 = config
-            .resolve_resources_policy(&"g2".into(), &"p3".into())
-            .expect("p3 resources should resolve");
-        assert_eq!(
-            r3.core_allocation,
-            crate::policy::CoreAllocation::CoreCount { count: 9 }
-        );
-
         let resolved = config.resolve();
         assert_eq!(resolved.pipelines.len(), 3);
+        assert!(
+            resolved
+                .pipelines
+                .iter()
+                .all(|p| p.role == ResolvedPipelineRole::Regular)
+        );
         let resolved_ids: Vec<(String, String)> = resolved
             .pipelines
             .iter()
@@ -892,8 +822,17 @@ groups:
             ]
         );
 
-        let p1_resolved = &resolved.pipelines[0];
+        let p1_resolved = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p1")
+            .expect("g1/p1 should be resolved");
         assert_eq!(p1_resolved.policies.flow.channel_capacity.control.node, 50);
+        assert_eq!(
+            p1_resolved.policies.flow.channel_capacity.control.pipeline,
+            51
+        );
+        assert_eq!(p1_resolved.policies.flow.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
@@ -902,12 +841,51 @@ groups:
             p1_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
+        assert!(!p1_resolved.policies.telemetry.channel_metrics);
 
-        let p2_resolved = &resolved.pipelines[1];
+        let p2_resolved = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p2")
+            .expect("g1/p2 should be resolved");
         assert_eq!(p2_resolved.policies.flow.channel_capacity.control.node, 150);
+        assert_eq!(
+            p2_resolved.policies.flow.channel_capacity.control.pipeline,
+            151
+        );
+        assert_eq!(p2_resolved.policies.flow.channel_capacity.pdata, 152);
+        assert_eq!(
+            p2_resolved.policies.health.ready_if,
+            vec![
+                crate::health::PhaseKind::Running,
+                crate::health::PhaseKind::Updating,
+            ]
+        );
+        assert!(p2_resolved.policies.telemetry.channel_metrics);
         assert_eq!(
             p2_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 5 }
+        );
+
+        let p3_resolved = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "g2" && p.pipeline_id.as_ref() == "p3")
+            .expect("g2/p3 should be resolved");
+        assert_eq!(p3_resolved.policies.flow.channel_capacity.control.node, 200);
+        assert_eq!(
+            p3_resolved.policies.flow.channel_capacity.control.pipeline,
+            201
+        );
+        assert_eq!(p3_resolved.policies.flow.channel_capacity.pdata, 202);
+        assert_eq!(
+            p3_resolved.policies.health.ready_if,
+            vec![crate::health::PhaseKind::Running]
+        );
+        assert!(!p3_resolved.policies.telemetry.channel_metrics);
+        assert_eq!(
+            p3_resolved.policies.resources.core_allocation,
+            crate::policy::CoreAllocation::CoreCount { count: 9 }
         );
     }
 
@@ -967,29 +945,41 @@ groups:
 "#;
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
-        let flow = config.resolve_observability_flow_policy();
-        assert_eq!(flow.channel_capacity.control.node, 10);
-        assert_eq!(flow.channel_capacity.control.pipeline, 11);
-        assert_eq!(flow.channel_capacity.pdata, 12);
-
-        let health = config.resolve_observability_health_policy();
-        assert_eq!(health.ready_if, vec![crate::health::PhaseKind::Failed]);
-
-        let telemetry = config.resolve_observability_telemetry_policy();
-        assert!(telemetry.channel_metrics);
-
         let resolved = config.resolve();
         let obs = resolved
-            .observability_pipeline
+            .pipelines
+            .iter()
+            .find(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
             .expect("observability pipeline should be resolved");
-        assert_eq!(obs.flow_policy.channel_capacity.control.node, 10);
-        assert_eq!(obs.flow_policy.channel_capacity.control.pipeline, 11);
-        assert_eq!(obs.flow_policy.channel_capacity.pdata, 12);
+        assert_eq!(obs.pipeline_group_id.as_ref(), "internal");
+        assert_eq!(obs.pipeline_id.as_ref(), "internal");
+        assert_eq!(obs.policies.flow.channel_capacity.control.node, 10);
+        assert_eq!(obs.policies.flow.channel_capacity.control.pipeline, 11);
+        assert_eq!(obs.policies.flow.channel_capacity.pdata, 12);
         assert_eq!(
-            obs.health_policy.ready_if,
+            obs.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
         );
-        assert!(obs.telemetry_policy.channel_metrics);
+        assert!(obs.policies.telemetry.channel_metrics);
+        assert_eq!(
+            obs.policies.resources.core_allocation,
+            crate::policy::CoreAllocation::AllCores
+        );
+        assert_eq!(
+            resolved
+                .pipelines
+                .iter()
+                .filter(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
+                .count(),
+            1
+        );
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.role == ResolvedPipelineRole::Regular)
+            .expect("main pipeline should be resolved");
+        assert_eq!(main.pipeline_group_id.as_ref(), "default");
+        assert_eq!(main.pipeline_id.as_ref(), "main");
     }
 
     #[test]
