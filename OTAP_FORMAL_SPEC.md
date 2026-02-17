@@ -302,25 +302,7 @@ NOTE: Column names that contain a `.` character indicate the presence of a struc
 example `resource.id` indicates a struct array column called `resource` with a field called `id`.
 The type information in the table is for the `id` field.
 
-### 4.1 Common Payloads
-
-#### RESOURCE_ATTRS / SCOPE_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id` or `scope.id` |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-### 4.2 Logs Payloads
-
-#### LOGS
+### 4.1 LOGS (ROOT)
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -350,167 +332,7 @@ The type information in the table is for the `id` field.
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped log attributes |
 | flags | UInt32 | — | Yes | No | — | — | Trace flags |
 
-#### LOG_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [LOGS](#logs).id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-### 4.3 Metrics Payloads
-
-#### UNIVARIATE_METRICS / MULTIVARIATE_METRICS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Metric identifier (primary key) |
-| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
-| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
-| resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
-| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
-| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
-| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
-| scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
-| schema_url | Utf8 | — | Yes | No | — | — | Metric schema URL |
-| metric_type | UInt8 | — | No | Yes | — | — | Metric type enum (Gauge, Sum, Histogram, etc.) |
-| name | Utf8 | — | No | Yes | — | — | Metric name |
-| description | Utf8 | — | Yes | No | — | — | Metric description |
-| unit | Utf8 | — | Yes | No | — | — | Metric unit |
-| aggregation_temporality | Int32 | — | Yes | No | — | — | Aggregation temporality enum |
-| is_monotonic | Boolean | — | Yes | No | — | — | Whether the metric is monotonic |
-
-#### NUMBER_DATA_POINTS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Start time in Unix nanoseconds |
-| time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Timestamp in Unix nanoseconds |
-| int_value | Int64 | — | No | Yes | — | — | Integer value |
-| double_value | Float64 | — | No | Yes | — | — | Double value |
-| flags | UInt32 | — | Yes | No | — | — | Data point flags |
-
-#### SUMMARY_DATA_POINTS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| count | UInt64 | — | Yes | No | — | — | Count of observations |
-| sum | Float64 | — | Yes | No | — | — | Sum of observations |
-| quantile | Float64 | List(Float64) | Yes | No | — | — | Quantile values |
-| value | Float64 | List(Float64) | Yes | No | — | — | Quantile observation values |
-| flags | UInt32 | — | Yes | No | — | — | Data point flags |
-
-#### HISTOGRAM_DATA_POINTS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| count | UInt64 | — | Yes | No | — | — | Count of observations |
-| sum | Float64 | — | Yes | No | — | — | Sum of observations |
-| bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Count per bucket |
-| explicit_bounds | Float64 | List(Float64) | Yes | No | — | — | Histogram bucket boundaries |
-| flags | UInt32 | — | Yes | No | — | — | Data point flags |
-| min | Float64 | — | Yes | No | — | — | Minimum value |
-| max | Float64 | — | Yes | No | — | — | Maximum value |
-
-#### EXP_HISTOGRAM_DATA_POINTS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| count | UInt64 | — | Yes | No | — | — | Count of observations |
-| sum | Float64 | — | Yes | No | — | — | Sum of observations |
-| scale | Int32 | — | Yes | No | — | — | Exponential histogram scale |
-| zero_count | UInt64 | — | Yes | No | — | — | Count of zero values |
-| positive_offset | Int32 | — | Yes | No | — | — | Positive bucket offset |
-| positive_bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Positive bucket counts |
-| negative_offset | Int32 | — | Yes | No | — | — | Negative bucket offset |
-| negative_bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Negative bucket counts |
-| flags | UInt32 | — | Yes | No | — | — | Data point flags |
-| min | Float64 | — | Yes | No | — | — | Minimum value |
-| max | Float64 | — | Yes | No | — | — | Maximum value |
-
-#### *_DP_ATTRS
-
-Applies to: NUMBER_DP_ATTRS, SUMMARY_DP_ATTRS, HISTOGRAM_DP_ATTRS, EXP_HISTOGRAM_DP_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### *_DP_EXEMPLARS
-
-Applies to: NUMBER_DP_EXEMPLARS, HISTOGRAM_DP_EXEMPLARS, EXP_HISTOGRAM_DP_EXEMPLARS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Exemplar identifier (primary key) |
-| parent_id | UInt32 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (int_value, double_value) | encoding | Foreign key to the corresponding \*_DATA_POINTS.id |
-| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
-| int_value | Int64 | — | Yes | No | — | — | Integer exemplar value |
-| double_value | Float64 | — | Yes | No | — | — | Double exemplar value |
-| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Associated span `id` |
-| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Associated trace `id` |
-
-#### *_DP_EXEMPLAR_ATTRS
-
-Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### METRIC_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-### 4.4 Traces Payloads
-
-#### SPANS
+### 4.2 SPANS (ROOT)
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -537,21 +359,7 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 | status_code | Int32 | — | Yes | No | — | — | Span status code |
 | status_status_message | Utf8 | — | Yes | No | — | — | Status message |
 
-#### SPAN_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPANS](#spans).id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
-| type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
-| int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
-| double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
-| bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
-| bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
-| ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
-
-#### SPAN_EVENTS
+### 4.3 SPAN_EVENTS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
@@ -561,39 +369,121 @@ Applies to: NUMBER_DP_EXEMPLAR_ATTRS, HISTOGRAM_DP_EXEMPLAR_ATTRS, EXP_HISTOGRAM
 | name | Utf8 | — | No | Yes | — | — | Event name |
 | dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped event attributes |
 
-#### SPAN_EVENT_ATTRS
+### 4.4 SPAN_LINKS
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_EVENTS](#span_events).id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
+| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to SPANS.id |
+| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
+| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
+| trace_state | Utf8 | — | Yes | No | — | — | Linked trace state |
+| dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped link attributes |
+
+### 4.5 UNIVARIATE_METRICS (ROOT)
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Metric identifier (primary key) |
+| resource.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `resource.id` |
+| resource.schema_url | Utf8 | — | Yes | No | — | — | Resource schema URL |
+| resource.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped resource attributes |
+| scope.id | UInt16 | — | Yes | No | [DELTA](#652-delta-encoding) | encoding | Foreign key to `scope.id` |
+| scope.name | Utf8 | — | Yes | No | — | — | Instrumentation scope name |
+| scope.version | Utf8 | — | Yes | No | — | — | Instrumentation scope version |
+| scope.dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped scope attributes |
+| schema_url | Utf8 | — | Yes | No | — | — | Metric schema URL |
+| metric_type | UInt8 | — | No | Yes | — | — | Metric type enum (Gauge, Sum, Histogram, etc.) |
+| name | Utf8 | — | No | Yes | — | — | Metric name |
+| description | Utf8 | — | Yes | No | — | — | Metric description |
+| unit | Utf8 | — | Yes | No | — | — | Metric unit |
+| aggregation_temporality | Int32 | — | Yes | No | — | — | Aggregation temporality enum |
+| is_monotonic | Boolean | — | Yes | No | — | — | Whether the metric is monotonic |
+
+### 4.6 NUMBER_DATA_POINTS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt32 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to [UNIVARIATE_METRICS / MULTIVARIATE_METRICS](#univariate_metrics--multivariate_metrics).id |
+| start_time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | — | No | Yes | — | — | Timestamp in Unix nanoseconds |
+| int_value | Int64 | — | No | Yes | — | — | Integer value |
+| double_value | Float64 | — | No | Yes | — | — | Double value |
+| flags | UInt32 | — | Yes | No | — | — | Data point flags |
+
+### 4.7 SUMMARY_DATA_POINTS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
+| count | UInt64 | — | Yes | No | — | — | Count of observations |
+| sum | Float64 | — | Yes | No | — | — | Sum of observations |
+| quantile | Float64 | List(Float64) | Yes | No | — | — | Quantile values |
+| value | Float64 | List(Float64) | Yes | No | — | — | Quantile observation values |
+| flags | UInt32 | — | Yes | No | — | — | Data point flags |
+
+### 4.8 HISTOGRAM_DATA_POINTS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
+| count | UInt64 | — | Yes | No | — | — | Count of observations |
+| sum | Float64 | — | Yes | No | — | — | Sum of observations |
+| bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Count per bucket |
+| explicit_bounds | Float64 | List(Float64) | Yes | No | — | — | Histogram bucket boundaries |
+| flags | UInt32 | — | Yes | No | — | — | Data point flags |
+| min | Float64 | — | Yes | No | — | — | Minimum value |
+| max | Float64 | — | Yes | No | — | — | Maximum value |
+
+### 4.9 EXP_HISTOGRAM_DATA_POINTS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Data point identifier (primary key) |
+| parent_id | UInt16 | — | No | Yes | [DELTA](#652-delta-encoding) | encoding | Foreign key to UNIVARIATE_METRICS.id |
+| start_time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Start time in Unix nanoseconds |
+| time_unix_nano | Timestamp(Nanosecond) | — | Yes | No | — | — | Timestamp in Unix nanoseconds |
+| count | UInt64 | — | Yes | No | — | — | Count of observations |
+| sum | Float64 | — | Yes | No | — | — | Sum of observations |
+| scale | Int32 | — | Yes | No | — | — | Exponential histogram scale |
+| zero_count | UInt64 | — | Yes | No | — | — | Count of zero values |
+| positive_offset | Int32 | — | Yes | No | — | — | Positive bucket offset |
+| positive_bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Positive bucket counts |
+| negative_offset | Int32 | — | Yes | No | — | — | Negative bucket offset |
+| negative_bucket_counts | UInt64 | List(UInt64) | Yes | No | — | — | Negative bucket counts |
+| flags | UInt32 | — | Yes | No | — | — | Data point flags |
+| min | Float64 | — | Yes | No | — | — | Minimum value |
+| max | Float64 | — | Yes | No | — | — | Maximum value |
+
+### 4.10 NUMBER_DP_EXEMPLAR_ATTRS / HISTOGRAM_DP_EXEMPLAR_ATTRS / EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS / SPAN_EVENT_ATTRS / SPAN_LINK_ATTRS / NUMBER_DP_ATTRS / SUMMARY_DP_ATTRS / HISTOGRAM_DP_ATTRS / EXP_HISTOGRAM_DP_ATTRS
+
+| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
+|------|------|---------------------|----------|----------|-------------|----------|-------------|
+| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to the corresponding \*_DP_EXEMPLARS.id |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
 | bytes | Binary | — | Yes | No | — | — | Bytes value (when type=5) |
 | ser | Binary | — | Yes | No | — | — | CBOR-encoded Array or Map (when type=6 or 7) |
 
-#### SPAN_LINKS
+### 4.1 RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS 
 
 | Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
 |------|------|---------------------|----------|----------|-------------|----------|-------------|
-| id | UInt32 | — | Yes | Yes | [DELTA](#652-delta-encoding) | encoding | Link identifier (primary key) |
-| parent_id | UInt16 | — | No | Yes | [COLUMNAR QUASI-DELTA](#653-quasi-delta-encoding) (trace_id) | encoding | Foreign key to [SPANS](#spans).id |
-| trace_id | FixedSizeBinary(16) | — | Yes | No | — | — | Linked trace `id` |
-| span_id | FixedSizeBinary(8) | — | Yes | No | — | — | Linked span `id` |
-| trace_state | Utf8 | — | Yes | No | — | — | Linked trace state |
-| dropped_attributes_count | UInt32 | — | Yes | No | — | — | Number of dropped link attributes |
-
-#### SPAN_LINK_ATTRS
-
-| Name | Type | Alt Representations | Nullable | Required | Id Encoding | Metadata | Description |
-|------|------|---------------------|----------|----------|-------------|----------|-------------|
-| parent_id | UInt32 | Dict(u8), Dict(u16) | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to [SPAN_LINKS](#span_links).id |
-| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | Attribute key name |
+| parent_id | UInt16 | — | No | Yes | [QUASI-DELTA](#653-quasi-delta-encoding) | encoding | Foreign key to parent table's `resource.id`, `scope.id`, or `id` column |
+| key | Utf8 | Dict(u8), Dict(u16) | No | Yes | — | — | Attribute key name |
 | type | UInt8 | — | No | Yes | — | — | Value type: 0=None, 1=String, 2=Bool, 3=Int, 4=Double, 5=Bytes, 6=Array, 7=Map |
-| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | String value (when type=1) |
+| str | Utf8 | Dict(u8), Dict(u16) | Yes | No | — | — | String value (when type=1) |
 | int | Int64 | — | Yes | No | — | — | Integer value (when type=3) |
 | double | Float64 | — | Yes | No | — | — | Double value (when type=4) |
 | bool | Boolean | — | Yes | No | — | — | Boolean value (when type=2) |
