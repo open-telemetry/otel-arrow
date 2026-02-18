@@ -79,7 +79,7 @@ impl RecordsetKqlProcessor {
                     error: format!("Failed to parse bridge options: {}", e),
                 }
             })?;
-            Ok(Some(bridge_options))
+            Ok(Some(bridge_options.set_include_dropped_records(false)))
         } else {
             Ok(None)
         }
@@ -138,7 +138,7 @@ impl RecordsetKqlProcessor {
             }
             Err(e) => {
                 let message = e.to_string();
-                otap_df_telemetry::otel_debug!(
+                otap_df_telemetry::otel_error!(
                     "processor.failure",
                     processor = "recordset_kql",
                     input_items = input_items,
@@ -161,13 +161,17 @@ impl RecordsetKqlProcessor {
         bytes: bytes::Bytes,
         signal: SignalType,
     ) -> Result<OtlpProtoBytes, Error> {
-        let (included_records, _) =
-            process_protobuf_otlp_export_logs_service_request_using_pipeline(
-                &self.pipeline,
-                RecordSetEngineDiagnosticLevel::Warn,
-                &bytes,
-            )
-            .map_err(|e| Self::map_bridge_error(e, signal))?;
+        let response = process_protobuf_otlp_export_logs_service_request_using_pipeline(
+            &self.pipeline,
+            RecordSetEngineDiagnosticLevel::Warn,
+            &bytes,
+        )
+        .map_err(|e| Self::map_bridge_error(e, signal))?;
+
+        let included_records = response
+            .into_otlp_bytes()
+            .map_err(|e| Self::map_bridge_error(e, signal))?
+            .0;
 
         Ok(OtlpProtoBytes::ExportLogsRequest(included_records.into()))
     }
