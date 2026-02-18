@@ -63,6 +63,7 @@ impl OtelDataflowSpec {
                         SYSTEM_PIPELINE_GROUP_ID
                     ),
                 });
+                continue;
             }
             if let Err(e) = pipeline_group.validate(pipeline_group_id) {
                 errors.push(e);
