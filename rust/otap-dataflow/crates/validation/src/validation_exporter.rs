@@ -4,7 +4,6 @@
 //! Exporter used in validation pipelines that compares control and
 //! system-under-validation outputs and records pass/fail metrics.
 
-
 use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;

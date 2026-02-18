@@ -122,7 +122,11 @@ pub(crate) fn validate_require_key_values(
 
 /// Validate that no attribute list contains duplicate keys.
 pub(crate) fn validate_no_duplicate_keys(message: &OtlpProtoMessage) -> bool {
-    let domains = vec![AttributeDomain::Resource, AttributeDomain::Scope, AttributeDomain::Signal]
+    let domains = vec![
+        AttributeDomain::Resource,
+        AttributeDomain::Scope,
+        AttributeDomain::Signal,
+    ];
     collect_attributes(message, &domains)
         .into_iter()
         .all(|attrs| {

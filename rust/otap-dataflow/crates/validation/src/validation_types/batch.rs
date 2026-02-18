@@ -34,7 +34,7 @@ pub(crate) fn validate_batch_bytes(
     max_bytes: Option<usize>,
 ) -> bool {
     let mut buf = Vec::new();
-    message.encode(buf);
+    let _ = message.encode(&mut buf);
     let byte_size = buf.len();
     if let Some(min) = min_bytes {
         if byte_size < min {

@@ -71,7 +71,28 @@ End-to-end harness for standing up a **system-under-validation (SUV)** pipeline,
        .expect("validation scenario failed");
    ```
 
+## Scenario
+- **Scenario example**
+  ```rust
+  use otap_df_validation::scenario::Scenario;
+  use std::time::Duration;
 
+  Scenario::new()
+      .pipeline(pipeline)               // required: rewired Pipeline
+      .input(generator)                 // required: Generator config
+      .observe(capture)                 // required: Capture config
+      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .run()
+      .expect("validation scenario failed");
+  ```
+
+- API surface:
+  - `Scenario::new()` – create a new Scenario
+  - `pipeline(Pipeline)` – provide the system-under-validation pipeline (required).
+  - `input(Generator)` – provide traffic generation config (required).
+  - `observe(Capture)` – provide capture/validation config (required).
+  - `expect_within(Duration)` – set total runtime budget (optional; default 140s).
+  - `run()` – renders template, launches pipelines, waits for readiness, enforces timeout, and returns `Result<(), ValidationError>`. 
 
 ## Pipeline
 - **Pipeline example**
@@ -90,7 +111,7 @@ End-to-end harness for standing up a **system-under-validation (SUV)** pipeline,
 
 > NOTE: The node names you pass to `wire_*` must match the keys under `nodes:` in your pipeline YAML.
 
-## Generator & Capture API reference (builder-style)
+## Generator
 - **Generator example**
   ```rust
   use otap_df_validation::traffic::Generator;
@@ -101,12 +122,12 @@ End-to-end harness for standing up a **system-under-validation (SUV)** pipeline,
       .otap_grpc();        // optional; default OTLP
   ```
 
-- `Generator::logs()`, `metrics()`, `traces()` – convenience constructors for weights (other fields keep defaults unless you override).
-- Chainable setters:
-  - `fixed_count(usize)` (default 2000)
-  - `max_batch_size(usize)` (default 100)
-  - `otlp_grpc()` / `otap_grpc()` (default OTLP)
+- `Generator::logs()`, `metrics()`, `traces()` – constructors for signal type
+- `fixed_count(usize)` (default 2000)
+- `max_batch_size(usize)` (default 100)
+- `otlp_grpc()` / `otap_grpc()` (default OTLP)
 
+## Capture
 - **Capture example (with validations)**
   ```rust
   use otap_df_validation::traffic::Capture;

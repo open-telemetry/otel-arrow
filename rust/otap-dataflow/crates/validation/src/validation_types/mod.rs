@@ -77,7 +77,7 @@ pub enum ValidationInstructions {
         pairs: Vec<KeyValue>,
     },
     /// Ensure no duplicate attribute keys within all attribute lists.
-    AttributeNoDuplicate
+    AttributeNoDuplicate,
 }
 impl ValidationInstructions {
     /// Evaluate this validation against control and system-under-validation messages.

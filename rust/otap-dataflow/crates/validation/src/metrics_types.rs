@@ -4,9 +4,7 @@
 //! Deserialization types for the admin telemetry metrics endpoint.
 
 use otap_df_telemetry::attributes::AttributeValue;
-use otap_df_telemetry::descriptor::{
-    Instrument, MetricValueType, Temporality,
-};
+use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
 pub use otap_df_telemetry::metrics::MetricValue;
 use serde::Deserialize;
 use std::collections::HashMap;
