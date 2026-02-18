@@ -1,15 +1,15 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
       main:
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
@@ -18,7 +18,7 @@ groups:
               listening_addr: "127.0.0.1:4327"
               response_stream_channel_size: 256
               compression_method: zstd
-        
+
           perf_noop:
             type: noop:exporter
             config:

@@ -1,5 +1,5 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
@@ -18,17 +18,17 @@ groups:
         
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
             type: otlp:receiver
             config:
               listening_addr: "127.0.0.1:4317"
-        
+
           durable_buffer:
             type: durable_buffer:processor
             config:
@@ -46,7 +46,7 @@ groups:
               # - pass_through (default): Store OTLP as opaque binary, very CPU efficient
               # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
               otlp_handling: pass_through
-        
+
           exporter:
             type: otlp:exporter
             config:

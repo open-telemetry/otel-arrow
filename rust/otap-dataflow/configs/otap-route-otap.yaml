@@ -18,18 +18,18 @@ groups:
               listening_addr: "127.0.0.1:4327"
               wait_for_result: true
               response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
-        
+
           otap_recv:
             type: otap:receiver
             config:
               listening_addr: "127.0.0.1:4329"
               response_stream_channel_size: 256
-        
+
           router:
             type: type_router:processor
             outputs: ["logs", "metrics", "traces"]
             config: {}
-        
+
         #  logs_filter:
         #    type: filter:processor
         #    config:
@@ -45,29 +45,29 @@ groups:
         # connections:
         #   - from: logs_filter
         #     to: logs_exporter
-        
+
           retry:
             type: retry:processor
             config:
               multiplier: 1.5
-        
+
           logs_exporter:
             type: otap:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4328"
-        
+
           metrics_exporter:
             type: noop:exporter
             config:
-        
+
           spans_exporter:
             type: noop:exporter
             config:
-        
+
           otap_exporter:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: otlp_recv
             to: router
