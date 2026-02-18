@@ -499,12 +499,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_receiver(
-                            &base_ctx,
-                            node_id.clone(),
-                            node_config.clone(),
-                            channel_capacity_policy.control.node,
-                            channel_capacity_policy.pdata,                        ),
+                        || {
+                            self.create_receiver(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     receivers.push(wrapper);
                 }
@@ -515,13 +518,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_processor(
-                            &base_ctx,
-                            node_id.clone(),
-                            node_config.clone(),
-                            channel_capacity_policy.control.node,
-                            channel_capacity_policy.pdata,
-                        ),
+                        || {
+                            self.create_processor(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     processors.push(wrapper);
                 }
@@ -532,12 +537,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id.clone(),
                         channel_metrics_enabled,
-                        || self.create_exporter(
-                            &base_ctx,
-                            node_id.clone(),
-                            node_config.clone(),
-                            channel_capacity_policy.control.node,
-                            channel_capacity_policy.pdata,                        ),
+                        || {
+                            self.create_exporter(
+                                &base_ctx,
+                                node_id.clone(),
+                                node_config.clone(),
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
+                            )
+                        },
                     )?;
                     exporters.push(wrapper);
                 }
