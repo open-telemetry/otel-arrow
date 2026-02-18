@@ -522,6 +522,9 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                     );
                 }
                 MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
                     for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
                         if !first {
                             fields.push(',');
@@ -623,6 +626,9 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                         }
                     }
                     MetricValue::Mmsc(s) => {
+                        if s.count == 0 {
+                            continue;
+                        }
                         let brief = escape_prom_help(field.brief);
                         for (suffix, prom_type, val) in [
                             ("_min", "gauge", s.min),
@@ -855,6 +861,9 @@ fn format_line_protocol(
                     );
                 }
                 MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
                     for (suffix, fval) in [("_min", s.min), ("_max", s.max), ("_sum", s.sum)] {
                         if !first {
                             fields.push(',');
@@ -966,6 +975,9 @@ fn format_prometheus_text(
                     }
                 }
                 MetricValue::Mmsc(s) => {
+                    if s.count == 0 {
+                        continue;
+                    }
                     let brief = escape_prom_help(field.brief);
                     for (suffix, prom_type, val) in [
                         ("_min", "gauge", s.min),
