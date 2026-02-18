@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
-//! Collection of validation checks and enums.
+//! Collection of validation instructions executed by the validation exporter.
+
 pub mod attributes;
 mod batch;
 mod signal_dropped;

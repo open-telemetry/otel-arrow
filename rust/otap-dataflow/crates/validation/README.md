@@ -56,6 +56,3 @@ fn no_processor() {
 The wired nodes (e.g., `receiver`, `exporter`) are automatically rewritten to
 free ports by the framework.
 
-## Future directions
-
-- Extend the validation exporter to support more complex validation procedure.

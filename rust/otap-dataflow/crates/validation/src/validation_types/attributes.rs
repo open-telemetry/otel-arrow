@@ -65,7 +65,7 @@ pub enum AttributeDomain {
 }
 
 /// Collect all attribute lists (as slices) from a message for the selected domains.
-pub fn collect_attributes<'a>(
+pub(crate) fn collect_attributes<'a>(
     message: &'a OtlpProtoMessage,
     domains: &[AttributeDomain],
 ) -> Vec<&'a [ProtoKeyValue]> {
@@ -77,7 +77,7 @@ pub fn collect_attributes<'a>(
 }
 
 /// Validate that none of the provided keys appear in the selected domains.
-pub fn validate_deny_keys(
+pub(crate) fn validate_deny_keys(
     message: &OtlpProtoMessage,
     domains: &[AttributeDomain],
     keys: &[String],
@@ -91,7 +91,7 @@ pub fn validate_deny_keys(
 }
 
 /// Validate that all provided keys are present in each attribute list for the selected domains.
-pub fn validate_require_keys(
+pub(crate) fn validate_require_keys(
     message: &OtlpProtoMessage,
     domains: &[AttributeDomain],
     keys: &[String],
@@ -102,7 +102,7 @@ pub fn validate_require_keys(
 }
 
 /// Validate that all provided key/value pairs are present in each attribute list for the selected domains.
-pub fn validate_require_key_values(
+pub(crate) fn validate_require_key_values(
     message: &OtlpProtoMessage,
     domains: &[AttributeDomain],
     pairs: &[KeyValue],
@@ -121,7 +121,7 @@ pub fn validate_require_key_values(
 }
 
 /// Validate that no attribute list in the selected domains contains duplicate keys.
-pub fn validate_no_duplicate_keys(message: &OtlpProtoMessage, domains: &[AttributeDomain]) -> bool {
+pub(crate) fn validate_no_duplicate_keys(message: &OtlpProtoMessage, domains: &[AttributeDomain]) -> bool {
     collect_attributes(message, domains)
         .into_iter()
         .all(|attrs| {
@@ -130,6 +130,7 @@ pub fn validate_no_duplicate_keys(message: &OtlpProtoMessage, domains: &[Attribu
         })
 }
 
+/// helper to extract attributes from logs
 fn collect_log_attrs<'a>(
     logs: &'a proto_logs::LogsData,
     domains: &[AttributeDomain],
@@ -161,6 +162,7 @@ fn collect_log_attrs<'a>(
     out
 }
 
+/// helper to extract attributes from spans
 fn collect_span_attrs<'a>(
     traces: &'a proto_trace::TracesData,
     domains: &[AttributeDomain],
@@ -192,6 +194,7 @@ fn collect_span_attrs<'a>(
     out
 }
 
+/// helper to extract attributes from metrics
 fn collect_metric_attrs<'a>(
     metrics: &'a proto_metrics::MetricsData,
     domains: &[AttributeDomain],
@@ -253,6 +256,7 @@ fn collect_metric_attrs<'a>(
     out
 }
 
+/// helper to convert KeyValue type to ProtoKeyValue
 #[allow(dead_code)]
 fn keyvalue_to_proto(kv: &KeyValue) -> Option<ProtoKeyValue> {
     anyvalue_to_proto(&kv.value).map(|val| ProtoKeyValue {
@@ -261,43 +265,7 @@ fn keyvalue_to_proto(kv: &KeyValue) -> Option<ProtoKeyValue> {
     })
 }
 
-fn proto_any_matches(value: &ProtoValue, expected: &AnyValue) -> bool {
-    match (value.value.as_ref(), expected) {
-        (Some(ProtoAnyValue::StringValue(v)), AnyValue::String(e)) => v == e,
-        (Some(ProtoAnyValue::IntValue(v)), AnyValue::Int(e)) => v == e,
-        (Some(ProtoAnyValue::DoubleValue(v)), AnyValue::Double(e)) => (v - e).abs() < f64::EPSILON,
-        (Some(ProtoAnyValue::BoolValue(v)), AnyValue::Boolean(e)) => v == e,
-        (Some(ProtoAnyValue::ArrayValue(arr)), AnyValue::Array(expected_vals)) => {
-            if arr.values.len() != expected_vals.len() {
-                return false;
-            }
-            arr.values
-                .iter()
-                .zip(expected_vals.iter())
-                .all(|(pv, ev)| proto_any_matches(pv, ev))
-        }
-        (Some(ProtoAnyValue::KvlistValue(list)), AnyValue::KeyValue(expected_kvs)) => {
-            expected_kvs.iter().all(|expected_kv| {
-                list.values
-                    .iter()
-                    .any(|kv| proto_kv_matches(kv, expected_kv))
-            })
-        }
-        _ => false,
-    }
-}
-
-/// Compare a proto KeyValue against an expected KeyValue.
-pub fn proto_kv_matches(proto: &ProtoKeyValue, expected: &KeyValue) -> bool {
-    if proto.key != expected.key {
-        return false;
-    }
-    match proto.value.as_ref() {
-        None => false,
-        Some(value) => proto_any_matches(value, &expected.value),
-    }
-}
-
+/// helper to convert AnyValue type to ProtoValue
 #[allow(dead_code)]
 fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
     let proto = match val {
@@ -324,18 +292,6 @@ mod tests {
     use super::*;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
-
-    #[test]
-    fn proto_kv_match_string() {
-        let kv = ProtoKeyValue {
-            key: "foo".into(),
-            value: Some(ProtoValue {
-                value: Some(ProtoAnyValue::StringValue("bar".into())),
-            }),
-        };
-        let expected = KeyValue::new("foo".into(), AnyValue::String("bar".into()));
-        assert!(proto_kv_matches(&kv, &expected));
-    }
 
     #[test]
     fn collect_log_attributes_includes_all_domains() {

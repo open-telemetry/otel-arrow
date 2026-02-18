@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module defines structs to describe the traffic being created and captured for validation
+//! Traffic configuration helpers for validation scenarios. `Generator` describes
+//! the synthetic signals to emit, and `Capture` describes how they are received
+//! and validated.
 
 use crate::ValidationInstructions;
 use serde::{Deserialize, Serialize};
@@ -17,13 +19,13 @@ const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
 const DEFAULT_WEIGHT_ZERO: u32 = 0;
 const DEFAULT_LOG_WEIGHT: u32 = 100;
 
-/// Helps distinguish between the message types
+/// Protocols supported by generators and receivers.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageType {
-    /// otlp type
+    /// OTLP type
     Otlp,
-    /// otap type
+    /// OTAP type
     Otap,
 }
 

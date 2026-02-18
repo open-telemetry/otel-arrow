@@ -6,10 +6,9 @@
 //! Validates that each message in a collection meets configured batch size bounds.
 
 use otap_df_pdata::proto::OtlpProtoMessage;
-use prost::Message;
+
 /// Ensure every message size is within `[min_items, max_items]` (if provided).
-/// Returns true for an empty slice (no violations).
-pub fn validate_batch_items(
+pub(crate) fn validate_batch_items(
     message: &OtlpProtoMessage,
     min_items: Option<usize>,
     max_items: Option<usize>,
@@ -29,37 +28,25 @@ pub fn validate_batch_items(
 }
 
 /// Ensure every message encoded size in bytes is within bounds.
-/// Returns true for an empty slice (no violations).
-pub fn validate_batch_bytes(
+pub(crate) fn validate_batch_bytes(
     message: &OtlpProtoMessage,
     min_bytes: Option<usize>,
     max_bytes: Option<usize>,
 ) -> bool {
-    let size = match encoded_size(message) {
-        Some(s) => s,
-        None => return false,
-    };
+    let mut buf = Vec::new();
+    message.encode(buf);
+    let byte_size = buf.len();
     if let Some(min) = min_bytes {
-        if size < min {
+        if byte_size < min {
             return false;
         }
     }
     if let Some(max) = max_bytes {
-        if size > max {
+        if byte_size > max {
             return false;
         }
     }
     true
-}
-
-fn encoded_size(msg: &OtlpProtoMessage) -> Option<usize> {
-    let mut buf = Vec::new();
-    match msg {
-        OtlpProtoMessage::Logs(l) => l.encode(&mut buf).ok()?,
-        OtlpProtoMessage::Metrics(m) => m.encode(&mut buf).ok()?,
-        OtlpProtoMessage::Traces(t) => t.encode(&mut buf).ok()?,
-    }
-    Some(buf.len())
 }
 
 #[cfg(test)]
