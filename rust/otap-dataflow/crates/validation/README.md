@@ -42,11 +42,11 @@ e.g. `receiver`, `exporter`.
 
    - `logs()`, `metrics()`, `traces()` - choose what signal type to emit
    - `fixed_count(usize)` - sets max signals to emit before completion
-        - optional; defaults to 2000
+     - optional; defaults to 2000
    - `max_batch_size(usize)` - controls batch size
-        - optional; defaults to 100
+     - optional; defaults to 100
    - `otlp_grpc()` / `otap_grpc()` - choose export protocol
-        - optional; OTLP by default
+     - optional; OTLP by default
 
 4) **Configure capture & validations**:
 
@@ -110,9 +110,9 @@ e.g. `receiver`, `exporter`.
 - `input(Generator)` - provide traffic generation config (required).
 - `observe(Capture)` - provide capture/validation config (required).
 - `expect_within(Duration)` - set max runtime
-    - optional; default: 140s
+  - optional; default: 140s
 - `run()` - renders template, launches pipelines, waits for readiness
-    - returns `Result<(), ValidationError>` if invalid or timeout
+  - returns `Result<(), ValidationError>` if invalid or timeout
 
 ## Pipeline
 
@@ -153,11 +153,11 @@ e.g. `receiver`, `exporter`.
 
 - `Generator::logs()`, `metrics()`, `traces()` - constructors for signal type
 - `fixed_count(usize)` - sets max signals to emit before completion
-    - default: 2000
+  - default: 2000
 - `max_batch_size(usize)` - controls batch size
-    - default: 100
-- `otlp_grpc()` / `otap_grpc()` - choose export protocol 
-    - default: OTLP
+  - default: 100
+- `otlp_grpc()` / `otap_grpc()` - choose export protocol
+  - default: OTLP
 
 ## Capture
 
@@ -181,22 +181,31 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Capture::otlp_grpc()`, `Capture::otap_grpc()` - switch protocols
-    - default: OTLP
+  - default: OTLP
 - `Capture::validate(Vec<ValidationInstructions>)` - define validation instructions
-    - default: [Equivalence]
+  - default: [Equivalence]
 
 ### Validation instructions (used with `Capture::validate`)
 
 - `Equivalence`: control and SUV outputs are semantically equal
-- `SignalDrop { min_drop_ratio, max_drop_ratio }`: asserts the SUV emitted fewer signals within optional ratio bounds.
-- `BatchItems { min_batch_size, max_batch_size, timeout }`: bounds the item count per message; `min/max` optional; `timeout` optional
-- `BatchBytes { min_bytes, max_bytes, timeout }`: bounds encoded message size; `min/max` optional; `timeout` optional
+- `SignalDrop { min_drop_ratio, max_drop_ratio }`: asserts the SUV emitted
+fewer signals within optional ratio bounds.
+- `BatchItems { min_batch_size, max_batch_size, timeout }`: bounds the item
+count per message; `min/max` optional; `timeout` optional
+- `BatchBytes { min_bytes, max_bytes, timeout }`: bounds encoded message size;
+`min/max` optional; `timeout` optional
 - `AttributeDeny { domains, keys }`: specified keys must not appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
 - `AttributeRequireKey { domains, keys }`: specified keys must appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
 - `AttributeRequireKeyValue { domains, pairs }`: specified key/value pairs must appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
+  - `pairs` accepts `Vec<KeyValue>`
 - `AttributeNoDuplicate`: check that there are no duplicate attributes
 
-`domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal` (see `validation_types::attributes`).
+(see `validation_types::attributes` and `validation_types`)
+
+
 
 ## Troubleshooting
 
