@@ -387,7 +387,10 @@ mod tests {
             }],
         };
 
-        assert!(validate_metrics_equivalent(&[request1.clone()], &[request2.clone()]));
+        assert!(validate_metrics_equivalent(
+            &[request1.clone()],
+            &[request2.clone()]
+        ));
         assert_metrics_equivalent(&[request1], &[request2]);
     }
 }
