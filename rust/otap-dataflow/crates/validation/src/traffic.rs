@@ -3,7 +3,7 @@
 
 //! This module defines structs to describe the traffic being created and captured for validation
 
-use crate::ValidationKind;
+use crate::ValidationInstructions;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 
@@ -60,7 +60,7 @@ pub struct Capture {
     /// Listening address for the control receiver.
     pub control_listening_addr: String,
     /// List of validations to make with the captured data
-    pub validate: Vec<ValidationKind>,
+    pub validate: Vec<ValidationInstructions>,
 }
 
 impl Generator {
@@ -159,7 +159,7 @@ impl Capture {
 
     /// Set the validations to perform on captured data.
     #[must_use]
-    pub fn validate(mut self, validations: Vec<ValidationKind>) -> Self {
+    pub fn validate(mut self, validations: Vec<ValidationInstructions>) -> Self {
         self.validate = validations;
         self
     }
@@ -177,7 +177,7 @@ impl Default for Capture {
             suv_receiver_type: MessageType::Otlp,
             suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
             control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
-            validate: vec![ValidationKind::Equivalence],
+            validate: vec![ValidationInstructions::Equivalence],
         }
     }
 }

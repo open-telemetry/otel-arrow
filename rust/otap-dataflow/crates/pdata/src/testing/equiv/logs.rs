@@ -6,7 +6,7 @@
 use crate::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
 use crate::testing::equiv::canonical::{
     assert_equivalent, canonicalize_any_value, canonicalize_resource, canonicalize_scope,
-    canonicalize_vec,
+    canonicalize_vec, validate_equivalent,
 };
 
 /// Split a LogsData into individual singleton LogsData messages (one per log record).
@@ -71,6 +71,16 @@ pub fn assert_logs_equivalent(left: &[LogsData], right: &[LogsData]) {
         logs_canonicalize_singleton_in_place,
         "LogsData",
     );
+}
+
+/// Validate that two collections of `LogsData` instances are equivalent.
+pub fn validate_logs_equivalent(left: &[LogsData], right: &[LogsData]) -> bool{
+    validate_equivalent(
+        left,
+        right,
+        logs_split_into_singletons,
+        logs_canonicalize_singleton_in_place,
+    )
 }
 
 #[cfg(test)]

@@ -24,17 +24,15 @@ pub mod validation_exporter;
 /// invariants/checks helpers (attribute diff, filtering detection, etc.)
 pub mod validation_types;
 
-pub use validation_types::ValidationKind;
+pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
 mod tests {
-    use crate::ValidationKind;
+    use crate::ValidationInstructions;
     use crate::pipeline::Pipeline;
     use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
-    use crate::validation_types::attributes::{
-        AnyValue, AttributeCheck, AttributeDomain, KeyValue,
-    };
+    use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
     use std::time::Duration;
 
     #[test]
@@ -71,12 +69,14 @@ mod tests {
 
     #[test]
     fn attribute_processor_pipeline() {
-        let attr_check = AttributeCheck {
+        let deny = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
-            forbid_keys: vec!["ios.app.state".into()],
-            ..Default::default()
+            keys: vec!["ios.app.state".into()],
         };
-
+        let require = ValidationInstructions::AttributeRequireKey {
+            domains: vec![AttributeDomain::Signal],
+            keys: vec!["ios.app.state2".into()],
+        };
         Scenario::new()
             .pipeline(
                 Pipeline::from_file("./validation_pipelines/attribute-processor.yaml")
@@ -85,11 +85,7 @@ mod tests {
                     .wire_otap_grpc_exporter("exporter"),
             )
             .input(Generator::logs().fixed_count(500).otlp_grpc())
-            .observe(
-                Capture::default()
-                    .otap_grpc()
-                    .validate(vec![ValidationKind::Attributes { config: attr_check }]),
-            )
+            .observe(Capture::default().otap_grpc().validate(vec![deny, require]))
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("attribute processor validation failed");
@@ -97,13 +93,12 @@ mod tests {
 
     #[test]
     fn filter_processor_pipeline() {
-        let attr_check = AttributeCheck {
+        let attr_check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
-            require: vec![KeyValue::new(
+            pairs: vec![KeyValue::new(
                 "ios.app.state".into(),
                 AnyValue::String("active".into()),
             )],
-            ..Default::default()
         };
 
         Scenario::new()
@@ -114,10 +109,11 @@ mod tests {
                     .wire_otap_grpc_exporter("exporter"),
             )
             .input(Generator::logs().fixed_count(500).otlp_grpc())
-            .observe(Capture::default().otap_grpc().validate(vec![
-                ValidationKind::SignalDrop,
-                ValidationKind::Attributes { config: attr_check },
-            ]))
+            .observe(
+                Capture::default()
+                    .otap_grpc()
+                    .validate(vec![ValidationInstructions::SignalDrop, attr_check]),
+            )
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("filter processor validation failed");

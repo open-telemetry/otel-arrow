@@ -9,11 +9,34 @@
 use otap_df_pdata::proto::OtlpProtoMessage;
 
 /// Validate that the `after` messages contain strictly fewer items than `before`.
-pub fn check_signal_drop(before: &[OtlpProtoMessage], after: &[OtlpProtoMessage]) -> bool {
+pub fn validate_signal_drop(
+    before: &[OtlpProtoMessage],
+    after: &[OtlpProtoMessage],
+    min_drop_ratio: Option<f64>,
+    max_drop_ratio: Option<f64>,
+) -> bool {
     let before_total: usize = before.iter().map(OtlpProtoMessage::num_items).sum();
     let after_total: usize = after.iter().map(OtlpProtoMessage::num_items).sum();
 
-    after_total < before_total
+    if after_total >= before_total {
+        return false;
+    }
+
+    let drop_ratio = (before_total as f64 - after_total as f64) / before_total as f64;
+
+    if let Some(min) = min_drop_ratio {
+        if drop_ratio < min {
+            return false;
+        }
+    }
+
+    if let Some(max) = max_drop_ratio {
+        if drop_ratio > max {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

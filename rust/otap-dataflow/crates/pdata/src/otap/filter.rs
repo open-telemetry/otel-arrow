@@ -14,7 +14,7 @@ use crate::otap::error::{Error, Result};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts;
 use arrow::buffer::BooleanBuffer;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 pub mod logs;
@@ -44,7 +44,7 @@ const fn default_match_type() -> MatchType {
 }
 
 /// enum that allows a field to have any type
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 pub enum AnyValue {
     /// string type
@@ -62,7 +62,7 @@ pub enum AnyValue {
 }
 
 /// struct that represents attributes and other key value pairs
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct KeyValue {
     /// Attribute key.
     pub key: String,

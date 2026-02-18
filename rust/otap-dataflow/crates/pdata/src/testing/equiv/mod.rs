@@ -25,9 +25,9 @@ use crate::proto::opentelemetry::logs::v1::LogsData;
 use crate::proto::opentelemetry::metrics::v1::MetricsData;
 use crate::proto::opentelemetry::trace::v1::TracesData;
 
-use logs::assert_logs_equivalent;
-use metrics::assert_metrics_equivalent;
-use traces::assert_traces_equivalent;
+use logs::{assert_logs_equivalent, validate_logs_equivalent};
+use metrics::{assert_metrics_equivalent, validate_metrics_equivalent};
+use traces::{assert_traces_equivalent, validate_traces_equivalent};
 
 fn otap_to_otlp_logs(msg: &OtlpProtoMessage) -> LogsData {
     match msg {
@@ -65,6 +65,27 @@ pub fn assert_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) 
             &right.iter().map(otap_to_otlp_metrics).collect::<Vec<_>>(),
         ),
         SignalType::Traces => assert_traces_equivalent(
+            &left.iter().map(otap_to_otlp_traces).collect::<Vec<_>>(),
+            &right.iter().map(otap_to_otlp_traces).collect::<Vec<_>>(),
+        ),
+    }
+}
+
+/// Validate that two OTLP protocol message slices contain equivalent data.
+/// Requires the inputs to have a single signal type.
+pub fn validate_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) -> bool{
+    let signal_type = left.first().expect("at least one input").signal_type();
+
+    match signal_type {
+        SignalType::Logs => validate_logs_equivalent(
+            &left.iter().map(otap_to_otlp_logs).collect::<Vec<_>>(),
+            &right.iter().map(otap_to_otlp_logs).collect::<Vec<_>>(),
+        ),
+        SignalType::Metrics => validate_metrics_equivalent(
+            &left.iter().map(otap_to_otlp_metrics).collect::<Vec<_>>(),
+            &right.iter().map(otap_to_otlp_metrics).collect::<Vec<_>>(),
+        ),
+        SignalType::Traces => validate_traces_equivalent(
             &left.iter().map(otap_to_otlp_traces).collect::<Vec<_>>(),
             &right.iter().map(otap_to_otlp_traces).collect::<Vec<_>>(),
         ),

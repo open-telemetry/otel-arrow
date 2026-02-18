@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::ValidationKind;
+use crate::ValidationInstructions;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::NodeId as NodeName;
@@ -36,12 +36,12 @@ struct ValidationExporterConfig {
     control_input: NodeName,
     /// Validation rules to run. Defaults to a single equivalence check.
     #[serde(default = "ValidationExporterConfig::default_validations")]
-    validations: Vec<ValidationKind>,
+    validations: Vec<ValidationInstructions>,
 }
 
 impl ValidationExporterConfig {
-    fn default_validations() -> Vec<ValidationKind> {
-        vec![ValidationKind::Equivalence]
+    fn default_validations() -> Vec<ValidationInstructions> {
+        vec![ValidationInstructions::Equivalence]
     }
 }
 
@@ -89,10 +89,10 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    fn evaluate_and_record(&mut self) {
+    fn evaluate_and_record(&mut self, received_suv_msg: OtlpProtoMessage) {
         let mut valid = true;
         for validate in &self.config.validations {
-            valid &= validate.evaluate(&self.control_msgs, &self.suv_msgs)
+            valid &= validate.evaluate(&self.control_msgs, &self.suv_msgs, &received_suv_msg);
         }
 
         if valid {
@@ -102,25 +102,6 @@ impl ValidationExporter {
         }
         self.metrics.valid.set(valid as u64);
     }
-
-    // /// Evaluate a single rule; always returns a pass/fail boolean.
-    // fn evaluate(&self, kind: &ValidationKind) -> bool {
-    //     match kind {
-    //         ValidationKind::Equivalence => {
-    //             let equiv = std::panic::catch_unwind(AssertUnwindSafe(|| {
-    //                 assert_equivalent(&self.control_msgs, &self.suv_msgs)
-    //             }))
-    //             .is_ok();
-    //             equiv
-    //         }
-    //         ValidationKind::SignalDrop => check_signal_drop(&self.control_msgs, &self.suv_msgs),
-    //         ValidationKind::Batch {
-    //             min_batch_size,
-    //             max_batch_size,
-    //         } => check_batch_size(&self.suv_msgs, *min_batch_size, *max_batch_size),
-    //         ValidationKind::Attributes { config } => config.check(&self.suv_msgs),
-    //     }
-    // }
 
     /// Build a new exporter instance from user configuration embedded in the pipeline.
     pub fn from_config(
@@ -176,12 +157,11 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         match node_name {
                             // match node name and update the vec of msgs and compare
                             name if name == self.config.suv_input => {
-                                self.suv_msgs.push(msg);
-                                self.evaluate_and_record();
+                                self.suv_msgs.push(msg.clone());
+                                self.evaluate_and_record(msg);
                             }
                             name if name == self.config.control_input => {
                                 self.control_msgs.push(msg);
-                                self.evaluate_and_record();
                             }
                             _ => {}
                         }
