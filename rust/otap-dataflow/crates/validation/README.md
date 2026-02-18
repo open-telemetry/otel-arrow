@@ -2,11 +2,10 @@
 
 End-to-end harness for standing up a **system-under-validation (SUV)** pipeline, driving OTLP/OTAP traffic into it, capturing the output, and asserting invariants. 
 
-## What's in the crate
+## Framework components
 - `Scenario`: orchestrates end-to-end runs (render → run → validate).
-- `Pipeline`: loads your SUV pipeline YAML and rewires endpoints.
+- `Pipeline`: loads your SUV pipeline YAML and overrides endpoints.
 - `Generator` / `Capture`: configure traffic emission and capture/validation.
-- `templates/validation_template.yaml.j2`: template used by `Scenario` (you don't have to modify it).
 
 ## Quick setup (end to end)
 1) **Author your SUV pipeline YAML** (the thing you want to validate). Use logical node names for the receiver/exporter you intend to rewire, e.g. `receiver`, `exporter`.
@@ -67,16 +66,15 @@ End-to-end harness for standing up a **system-under-validation (SUV)** pipeline,
        .pipeline(pipeline)
        .input(generator)
        .observe(capture)
-       .expect_within(Duration::from_secs(140)) // optional runtime budget
+       .expect_within(Duration::from_secs(200)) // optional timeout; default 140 
        .run()
        .expect("validation scenario failed");
    ```
-   What happens:
-   - Ports are auto-picked via `portpicker`.
-   - The Jinja template is rendered with those addresses plus generator/capture config.
+
+
 
 ## Pipeline
-- **Pipeline example (wiring)**
+- **Pipeline example**
   ```rust
   use otap_df_validation::pipeline::Pipeline;
 
@@ -141,18 +139,6 @@ End-to-end harness for standing up a **system-under-validation (SUV)** pipeline,
 - `AttributeNoDuplicate`: check that there are no duplicate attributes
 
 `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal` (see `validation_types::attributes`).
-
-## What the template does (high level)
-`templates/validation_template.yaml.j2` renders three pipelines:
-- `traffic_gen`: load generator that emits signals to both the SUV and control pipelines.
-- `suv`: your system-under-validation pipeline (rewired endpoints applied here).
-- `validate`: pipeline with OTLP control receiver, SUV receiver, and the `validation_exporter`.
-
-Admin/telemetry endpoints:
-- `/readyz` – readiness probe polled before running validations.
-- `/telemetry/metrics` – used to detect loadgen completion and validation pass/fail via metrics:
-  - `fake_data_generator.receiver.metrics/logs.produced`
-  - `validation.exporter.metrics/valid`
 
 ## Troubleshooting
 - **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are called before `Scenario::run()`.
