@@ -5,12 +5,27 @@ nodes:
     out_ports:
       out_port:
         destinations:
-          - debug
+          - filter
         dispatch_strategy: round_robin
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
+  filter:
+    kind: processor
+    plugin_urn: "urn:otel:filter:processor"
+    out_ports:
+      out_port:
+        destinations:
+          - debug
+        dispatch_strategy: round_robin
+    config:
+      logs:
+        include:
+          match_type: strict
+          record_attributes:
+            - key: ios.app.state
+              value: active
   debug:
     kind: processor
     plugin_urn: "urn:otel:attribute:processor"

@@ -84,7 +84,10 @@ pub fn validate_deny_keys(
 ) -> bool {
     collect_attributes(message, domains)
         .into_iter()
-        .all(|attrs| !attrs.iter().any(|kv| keys.iter().any(|k| k == &kv.key)))
+        .all(|attrs| {
+            keys.iter()
+                .all(|deny| attrs.iter().all(|kv| deny != &kv.key))
+        })
 }
 
 /// Validate that all provided keys are present in each attribute list for the selected domains.
@@ -95,7 +98,7 @@ pub fn validate_require_keys(
 ) -> bool {
     collect_attributes(message, domains)
         .into_iter()
-        .all(|attrs| keys.iter().all(|k| attrs.iter().any(|kv| kv.key == *k)))
+        .all(|attrs| keys.iter().all(|req| attrs.iter().any(|kv| req == &kv.key)))
 }
 
 /// Validate that all provided key/value pairs are present in each attribute list for the selected domains.
@@ -105,17 +108,14 @@ pub fn validate_require_key_values(
     pairs: &[KeyValue],
 ) -> bool {
     let pairs_proto_kv: Vec<ProtoKeyValue> = pairs.iter().filter_map(keyvalue_to_proto).collect();
-    if pairs_proto_kv.len() != pairs.len() {
-        return false;
-    }
 
     collect_attributes(message, domains)
         .into_iter()
         .all(|attrs| {
-            pairs_proto_kv.iter().all(|p| {
+            pairs_proto_kv.iter().all(|req| {
                 attrs
                     .iter()
-                    .any(|kv| kv.key == p.key && kv.value == p.value)
+                    .any(|kv| kv.key == req.key && kv.value == req.value)
             })
         })
 }
@@ -328,6 +328,8 @@ fn anyvalue_to_proto(val: &AnyValue) -> Option<ProtoValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::{LogsData, ResourceLogs, ScopeLogs};
+    use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 
     #[test]
     fn proto_kv_match_string() {

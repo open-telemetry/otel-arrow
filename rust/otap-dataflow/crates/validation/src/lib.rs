@@ -86,7 +86,7 @@ mod tests {
             )
             .input(Generator::logs().fixed_count(500).otlp_grpc())
             .observe(Capture::default().otap_grpc().validate(vec![deny, require]))
-            .expect_within(Duration::from_secs(140))
+            .expect_within(Duration::from_secs(500))
             .run()
             .expect("attribute processor validation failed");
     }

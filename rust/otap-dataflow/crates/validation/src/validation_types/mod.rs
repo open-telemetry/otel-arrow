@@ -13,7 +13,7 @@ use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::validate_equivalent;
 use serde::{Deserialize, Serialize};
 use signal_dropped::validate_signal_drop;
-/// Supported validation kinds executed by the validation exporter.
+/// Supported validation instructions executed by the validation exporter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ValidationInstructions {
@@ -85,7 +85,7 @@ pub enum ValidationInstructions {
 impl ValidationInstructions {
     /// Evaluate this validation against control and system-under-validation messages.
     #[must_use]
-    pub fn evaluate(
+    pub fn validate(
         &self,
         control: &[OtlpProtoMessage],
         suv: &[OtlpProtoMessage],
@@ -151,25 +151,21 @@ mod tests {
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
-        assert!(ValidationInstructions::Equivalence.evaluate(
-            &msgs,
-            &msgs,
-            msgs.last().unwrap()
-        ));
+        assert!(ValidationInstructions::Equivalence.validate(&msgs, &msgs, msgs.last().unwrap()));
     }
     #[test]
     fn batch_respects_bounds() {
         let msgs = vec![logs_with_records(3)];
-        let kind = ValidationInstructions::BatchItems {
+        let instruction = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
         };
-        assert!(kind.evaluate(&msgs, &msgs, msgs.last().unwrap()));
+        assert!(instruction.validate(&msgs, &msgs, msgs.last().unwrap()));
         let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
         };
-        assert!(!failing.evaluate(&msgs, &msgs, msgs.last().unwrap()));
+        assert!(!failing.validate(&msgs, &msgs, msgs.last().unwrap()));
     }
     #[test]
     fn attribute_require_key_value_passes() {
@@ -197,7 +193,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.evaluate(&[], &suv, suv.last().unwrap()));
+        assert!(check.validate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -225,7 +221,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.evaluate(&[], &suv, suv.last().unwrap()));
+        assert!(!check.validate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -260,7 +256,7 @@ mod tests {
         let check = ValidationInstructions::AttributeNoDuplicate {
             domains: vec![AttributeDomain::Signal],
         };
-        assert!(!check.evaluate(&[], &suv, suv.last().unwrap()));
+        assert!(!check.validate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
@@ -279,8 +275,8 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.evaluate(&before, &after, after.last().unwrap()));
-        assert!(!fail_min.evaluate(&before, &after, after.last().unwrap()));
-        assert!(!fail_max.evaluate(&before, &after, after.last().unwrap()));
+        assert!(pass.validate(&before, &after, after.last().unwrap()));
+        assert!(!fail_min.validate(&before, &after, after.last().unwrap()));
+        assert!(!fail_max.validate(&before, &after, after.last().unwrap()));
     }
 }

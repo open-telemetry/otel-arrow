@@ -89,10 +89,10 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    fn evaluate_and_record(&mut self, received_suv_msg: OtlpProtoMessage) {
+    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage) {
         let mut valid = true;
         for validate in &self.config.validations {
-            valid &= validate.evaluate(&self.control_msgs, &self.suv_msgs, &received_suv_msg);
+            valid &= validate.validate(&self.control_msgs, &self.suv_msgs, &received_suv_msg);
         }
 
         if valid {
@@ -158,7 +158,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             // match node name and update the vec of msgs and compare
                             name if name == self.config.suv_input => {
                                 self.suv_msgs.push(msg.clone());
-                                self.evaluate_and_record(msg);
+                                self.validate_and_record(msg);
                             }
                             name if name == self.config.control_input => {
                                 self.control_msgs.push(msg);
