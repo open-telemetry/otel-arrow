@@ -29,14 +29,14 @@ groups:
 {%- set engine_host = engine_hostname | default("localhost") %}
 {%- set exporter_port = exporter_port | default(4317) %}
 {%- if exporter_type == "otap" -%}
-  {% set type_urn = "urn:otel:otap:exporter" %}
-  {% set compression = compression_method | default("zstd") %}
+{% set type_urn = "urn:otel:otap:exporter" %}
+{% set compression = compression_method | default("zstd") %}
 {%- elif exporter_type == "otlp" -%}
-  {% set type_urn = "urn:otel:otlp:exporter" %}
-  {% set compression = compression_method | default("gzip") %}
+{% set type_urn = "urn:otel:otlp:exporter" %}
+{% set compression = compression_method | default("gzip") %}
 {%- else -%}
-  {% set type_urn = "urn:unknown:invalid:exporter" %}
-{%- endif -%}
+{% set type_urn = "urn:unknown:invalid:exporter" %}
+{%- endif %}
 
           exporter:
             type: "{{ type_urn }}"
