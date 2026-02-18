@@ -236,28 +236,33 @@ impl LogsIngestionClient {
             401 => {
                 otel_warn!(
                     "azure_monitor_exporter.export.unauthorized",
-                    status = status.as_u16()
+                    status = status.as_u16(),
+                    message = %body
                 );
                 Err(Error::unauthorized(body))
             }
             403 => {
                 otel_warn!(
                     "azure_monitor_exporter.export.forbidden",
-                    status = status.as_u16()
+                    status = status.as_u16(),
+                    message = %body
                 );
                 Err(Error::forbidden(body))
             }
             413 => Err(Error::PayloadTooLarge),
             429 => {
                 let retry_after_secs = retry_after.map(|d| d.as_secs());
-                otel_warn!("azure_monitor_exporter.export.rate_limited", retry_after_secs = ?retry_after_secs);
+                otel_warn!("azure_monitor_exporter.export.rate_limited", retry_after_secs = ?retry_after_secs, message = %body);
                 Err(Error::RateLimited { body, retry_after })
             }
-            500..=599 => Err(Error::ServerError {
-                status,
-                body,
-                retry_after,
-            }),
+            500..=599 => {
+                otel_warn!("azure_monitor_exporter.export.server_error", status = status.as_u16(), message = %body);
+                Err(Error::ServerError {
+                    status,
+                    body,
+                    retry_after,
+                })
+            }
             _ => Err(Error::UnexpectedStatus { status, body }),
         }
     }
