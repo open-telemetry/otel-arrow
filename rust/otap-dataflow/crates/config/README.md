@@ -16,7 +16,8 @@ This README focuses on crate-level model and API details.
 
 Main public model types:
 
-- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `engine`, `groups`)
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `engine`
+  , `groups`)
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
@@ -107,7 +108,8 @@ Observability note:
 
 Resolution semantics:
 
-- precedence applies per policy family (`channel_capacity`, `health`, `telemetry`, `resources`)
+- precedence applies per policy family (`channel_capacity`, `health`,
+  `telemetry`, `resources`)
 - no cross-scope deep merge of nested fields
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not

@@ -202,7 +202,8 @@ policies:
 Resolution order:
 
 - regular pipelines:
-  `groups.<group>.pipelines.<pipeline>.policies` -> `groups.<group>.policies` -> top-level `policies`
+  `groups.<group>.pipelines.<pipeline>.policies` -> `groups.<group>.policies` ->
+  top-level `policies`
 - observability pipeline:
   `engine.observability.pipeline.policies` -> top-level `policies`
 
@@ -218,7 +219,8 @@ Defaults at top-level:
 
 Resolution semantics:
 
-- precedence is applied at policy-family level (`channel_capacity`, `health`, `telemetry`, `resources`)
+- precedence is applied at policy-family level (`channel_capacity`, `health`,
+  `telemetry`, `resources`)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
 - policy objects are default-filled: if a lower-scope `policies` block exists,
@@ -313,7 +315,8 @@ Config loading validates:
 - Source output selector validity when node `outputs` is declared.
 - Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
 - Root schema version compatibility (`version: otel_dataflow/v1`).
-- Observability constraints (`engine.observability.pipeline.policies.resources` is rejected).
+- Observability constraints (`engine.observability.pipeline.policies.resources`
+  is rejected).
 
 ## Go Collector Users: Mapping and Differences
 

@@ -13,8 +13,8 @@ share-nothing hot paths, and predictable performance.
 ## Execution Model
 
 Each pipeline configuration declares its CPU requirements through
-`policies.resources.core_allocation`. Based on this policy, the controller allocates CPU cores and spawns
-one dedicated worker thread per assigned core.
+`policies.resources.core_allocation`. Based on this policy, the controller
+allocates CPU cores and spawns one dedicated worker thread per assigned core.
 
 Threads are pinned to distinct CPU cores, following a strict **thread-per-core**
 model. A pipeline deployed on `n` cores results in `n` worker threads, each
