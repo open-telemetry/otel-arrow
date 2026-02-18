@@ -40,5 +40,10 @@ otap-df-telemetry-macros = { path = "../telemetry-macros" }
 otap-df-otap = { path = "../otap" }
 otap-df-controller = { path = "../controller" }
 
+[features]
+experimental-tls = ["otap-df-otap/experimental-tls"]
+
 [dev-dependencies]
 tempfile = "3"
+otap-test-tls-certs = { workspace = true }
+rustls = { workspace = true }

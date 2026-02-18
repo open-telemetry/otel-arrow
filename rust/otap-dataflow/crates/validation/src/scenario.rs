@@ -6,7 +6,7 @@
 use crate::error::ValidationError;
 use crate::pipeline::Pipeline;
 use crate::simulate::run_pipelines_with_timeout;
-use crate::traffic::{Capture, Generator};
+use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::{Environment, context};
 use portpicker::pick_unused_port;
 use std::fs;
@@ -96,10 +96,11 @@ impl Scenario {
         let timeout = self.runtime;
 
         self.update_configs()?;
-        let traffic_generation_config = self
+        let max_signal_count = self
             .input
-            .clone()
-            .ok_or_else(|| ValidationError::Config("input missing after config update".into()))?;
+            .as_ref()
+            .ok_or_else(|| ValidationError::Config("input missing after config update".into()))?
+            .max_signal_count as u64;
         let admin_base = format!("http://{}", self.admin_addr);
 
         let rendered_group = self.render_template()?;
@@ -111,7 +112,7 @@ impl Scenario {
             run_pipelines_with_timeout(
                 rendered_group,
                 admin_base,
-                traffic_generation_config.max_signal_count as u64,
+                max_signal_count,
                 timeout,
                 ready_max_attempts,
                 ready_backoff,
@@ -148,6 +149,20 @@ impl Scenario {
         let tmpl = env
             .get_template("template")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
+        let tls = traffic_generation_config.tls.as_ref();
+        let tls_enabled = tls.is_some();
+        let tls_ca_cert = tls.map(TlsConfig::ca_cert_str).transpose()?.unwrap_or("");
+        let tls_client_cert = tls
+            .map(TlsConfig::client_cert_str)
+            .transpose()?
+            .unwrap_or("");
+        let tls_client_key = tls
+            .map(TlsConfig::client_key_str)
+            .transpose()?
+            .unwrap_or("");
+        let mtls_enabled = tls.is_some_and(TlsConfig::is_mtls);
+        let tls_server_name = tls.map_or("localhost", |t| t.server_name.as_str());
+
         let ctx = context! {
             suv_receiver_type => &traffic_capture_config.suv_receiver_type,
             suv_exporter_type => &traffic_generation_config.suv_exporter_type,
@@ -162,7 +177,13 @@ impl Scenario {
             control_addr => &traffic_capture_config.control_listening_addr,
             control_endpoint => &traffic_generation_config.control_endpoint,
             pipeline_config => pipeline_yaml,
-            admin_bind_address => &self.admin_addr
+            admin_bind_address => &self.admin_addr,
+            tls_enabled => tls_enabled,
+            tls_ca_cert => tls_ca_cert,
+            tls_client_cert => tls_client_cert,
+            tls_client_key => tls_client_key,
+            mtls_enabled => mtls_enabled,
+            tls_server_name => tls_server_name,
         };
         tmpl.render(ctx)
             .map_err(|e| ValidationError::Template(e.to_string()))
@@ -204,10 +225,15 @@ impl Scenario {
         let output_addr = format!("127.0.0.1:{output_port}");
         let control_addr = format!("127.0.0.1:{control_port}");
         let admin_addr = format!("127.0.0.1:{admin_port}");
+        let suv_scheme = if generator.tls.is_some() {
+            "https"
+        } else {
+            "http"
+        };
         pipeline.update_pipeline(&input_addr, &format!("http://{output_addr}"))?;
 
         let traffic_generation_config = Generator {
-            suv_endpoint: format!("http://{input_addr}"),
+            suv_endpoint: format!("{suv_scheme}://{input_addr}"),
             control_endpoint: format!("http://{control_addr}"),
             ..generator
         };

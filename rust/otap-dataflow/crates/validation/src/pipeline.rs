@@ -24,6 +24,25 @@ impl Pipeline {
         Ok(Self::from_yaml(&content))
     }
 
+    /// Load a pipeline from a YAML file with `${VAR}` placeholder substitution.
+    pub fn from_file_with_vars(path: &str, vars: &[(&str, &str)]) -> Result<Self, ValidationError> {
+        let mut content = fs::read_to_string(path)
+            .map_err(|e| ValidationError::Io(format!("failed to read pipeline yaml: {e}")))?;
+        for (key, value) in vars {
+            content = content.replace(&format!("${{{key}}}"), value);
+        }
+        if let Some(start) = content.find("${") {
+            let end = content[start..]
+                .find('}')
+                .map_or(content.len(), |i| start + i + 1);
+            let unresolved = &content[start..end];
+            return Err(ValidationError::Config(format!(
+                "unresolved placeholder {unresolved} in {path}"
+            )));
+        }
+        Ok(Self::from_yaml(&content))
+    }
+
     /// Load a pipeline from a YAML string slice.
     #[must_use]
     pub fn from_yaml(yaml: &str) -> Self {

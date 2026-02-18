@@ -124,6 +124,16 @@ pipeline_groups:
               arrow:
                 payload_compression: none
               {% endif %}
+              {% if tls_enabled -%}
+              tls:
+                ca_file: '{{ tls_ca_cert }}'
+                include_system_ca_certs_pool: false
+                server_name_override: '{{ tls_server_name }}'
+                {% if mtls_enabled -%}
+                cert_file: '{{ tls_client_cert }}'
+                key_file: '{{ tls_client_key }}'
+                {% endif -%}
+              {% endif %}
 
           control_exporter:
             type: "urn:otel:otlp:exporter"
