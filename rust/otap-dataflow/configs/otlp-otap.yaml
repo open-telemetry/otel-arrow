@@ -19,7 +19,7 @@ groups:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
                   # timeout: "30s"  # Optional: timeout for RPC requests
-        
+
               # TLS / mTLS (receiver-side)
               # tls:
               #   # Server identity (required for TLS)
@@ -40,7 +40,7 @@ groups:
               # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
               grpc_endpoint: "http://127.0.0.1:4319"
               # timeout: "15s"  # Optional: timeout for RPC requests
-        
+
               # TLS / mTLS (exporter-side)
               # - TLS is enabled when `grpc_endpoint` uses https:// (scheme default).
               # - Setting `tls` enables TLS/mTLS and provides additional configuration options.
@@ -52,7 +52,7 @@ groups:
               #   server_name_override: "collector.example.com"
               #   cert_file: "/path/to/client.crt"   # optional: mTLS
               #   key_file: "/path/to/client.key"
-        
+
         connections:
           - from: receiver
             to: exporter

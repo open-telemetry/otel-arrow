@@ -28,7 +28,7 @@ groups:
                 node: 100
                 pipeline: 100
               pdata: 128
-        
+
         nodes:
           receiver:
             type: traffic_generator:receiver
@@ -46,10 +46,9 @@ groups:
           noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: debug
           - from: debug
             to: noop
-        

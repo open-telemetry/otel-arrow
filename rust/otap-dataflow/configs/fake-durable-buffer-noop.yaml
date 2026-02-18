@@ -11,7 +11,7 @@ groups:
         #
         # Build with: cargo build --release
         # Run with:   ./target/release/df_engine --config configs/fake-durable-buffer-noop.yaml
-        
+
         policies:
           channel_capacity:
               control:
@@ -32,7 +32,7 @@ groups:
                 signals_per_second: 10000
                 # Only generate logs (100% weight to logs)
                 log_weight: 100
-        
+
           durable_buffer:
             type: durable_buffer:processor
             config:
@@ -42,11 +42,11 @@ groups:
               size_cap_policy: backpressure
               # Faster segment finalization for testing
               max_segment_open_duration: 500ms
-        
+
           noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: durable_buffer

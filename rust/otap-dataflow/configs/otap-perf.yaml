@@ -25,7 +25,7 @@ groups:
               memory_usage: false
               disk_usage: false
               io_usage: false
-        
+
         connections:
           - from: receiver
             to: perf

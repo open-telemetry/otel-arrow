@@ -52,7 +52,7 @@ groups:
               #   # Client identity for mTLS (optional)
               #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
               #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
-        
+
         connections:
           - from: receiver
             to: exporter

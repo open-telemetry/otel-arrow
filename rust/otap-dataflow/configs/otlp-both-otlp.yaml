@@ -9,7 +9,7 @@ groups:
         # This configuration demonstrates both protocols enabled with shared concurrency.
         # For gRPC-only, see otlp-otlp.yaml
         # For HTTP-only, see otlp-http-otlp.yaml
-        
+
         policies:
           channel_capacity:
             control:
@@ -99,7 +99,7 @@ groups:
               # Uses a different port than this receiver to avoid accidental loops.
               grpc_endpoint: "http://127.0.0.1:4319"
               # timeout: "15s"
-        
+
         connections:
           - from: receiver
             to: exporter

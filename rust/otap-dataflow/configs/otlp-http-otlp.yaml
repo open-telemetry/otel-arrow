@@ -9,7 +9,7 @@ groups:
         # This configuration demonstrates HTTP-only mode for the OTLP receiver.
         # For gRPC-only, see otlp-otlp.yaml
         # For both protocols enabled, see otlp-both-otlp.yaml
-        
+
         policies:
           channel_capacity:
               control:
@@ -25,16 +25,16 @@ groups:
                 # OTLP/HTTP receiver only (default port: 4318)
                 http:
                   listening_addr: "127.0.0.1:4318"
-        
+
                   # --- Request/Response behavior ---
                   # wait_for_result: false        # Wait for downstream ACK before responding
                   # timeout: "30s"                # Request processing timeout
                   # max_request_body_size: "4MiB" # Max body size (applies to compressed & decompressed)
                   # accept_compressed_requests: true  # Accept gzip/deflate/zstd bodies
-        
+
                   # --- Concurrency limits ---
                   # max_concurrent_requests: 0    # 0 = auto (matches downstream capacity)
-        
+
                   # --- TLS configuration ---
                   # tls:
                   #   cert_file: "/path/to/server.crt"
@@ -43,7 +43,7 @@ groups:
                   #   include_system_ca_certs_pool: false
                   #   handshake_timeout: "10s"
                   #   reload_interval: "5m"
-        
+
           exporter:
             type: otlp:exporter
             config:
@@ -51,7 +51,7 @@ groups:
               # Uses a different port than this receiver to avoid accidental loops.
               grpc_endpoint: "http://127.0.0.1:4319"
               # timeout: "15s"
-        
+
         connections:
           - from: receiver
             to: exporter
