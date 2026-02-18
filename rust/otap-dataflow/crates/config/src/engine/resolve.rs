@@ -9,8 +9,8 @@ use crate::pipeline::PipelineConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
 use crate::{PipelineGroupId, PipelineId};
 
-/// Synthetic pipeline-group id used by the engine observability pipeline.
-pub const OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID: &str = "internal";
+/// System pipeline-group id used by the engine to group internal telemetry pipelines.
+pub const SYSTEM_PIPELINE_GROUP_ID: &str = "system";
 /// Synthetic pipeline id used by the engine observability pipeline.
 pub const OBSERVABILITY_INTERNAL_PIPELINE_ID: &str = "internal";
 
@@ -139,7 +139,7 @@ impl OtelDataflowSpec {
             let health_policy = self.resolve_observability_health_policy();
             let telemetry_policy = self.resolve_observability_telemetry_policy();
             pipelines.push(ResolvedPipelineConfig {
-                pipeline_group_id: OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID.into(),
+                pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
                 pipeline_id: OBSERVABILITY_INTERNAL_PIPELINE_ID.into(),
                 pipeline: pipeline.into_pipeline_config(),
                 policies: Policies {
