@@ -272,7 +272,7 @@ config: {}
             "telemetry_attributes": {
                 "attr1": "value1",
                 "attr2": [1, 2, 3]
-            },
+            }
         }"#;
         let cfg: Result<NodeUserConfig, _> = serde_json::from_str(json);
         assert!(cfg.is_err());
