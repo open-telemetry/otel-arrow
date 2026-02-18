@@ -1240,7 +1240,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Decode the retry ticket
-        let Some(calldata) = retry_ticket.current_calldata() else {
+        let Some(calldata) = retry_ticket.source_calldata() else {
             otel_warn!("durable_buffer.retry.missing_calldata");
             return Ok(());
         };
@@ -1530,7 +1530,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 }
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
-                    if let Some(calldata) = data.current_calldata() {
+                    if let Some(calldata) = data.source_calldata() {
                         if decode_retry_ticket(&calldata).is_some() {
                             // This is a retry ticket - handle retry
                             return self.handle_delayed_retry(data, effect_handler).await;

@@ -1765,8 +1765,7 @@ mod test {
         exec_logs_pipeline, otap_to_logs_data, otap_to_metrics_data, otap_to_traces_data,
     };
 
-    #[tokio::test]
-    async fn test_simple_filter() {
+    async fn test_simple_filter<P: Parser>() {
         let ns_per_second: u64 = 1000 * 1000 * 1000;
         let log_records = vec![
             LogRecord::build()
@@ -1789,7 +1788,7 @@ mod test {
                 .finish(),
         ];
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_text == \"ERROR\"",
             to_logs_data(log_records.clone()),
         )
@@ -1800,7 +1799,7 @@ mod test {
         );
 
         // test same filter where the literal is on the left and column name on the right
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where \"ERROR\" == severity_text",
             to_logs_data(log_records.clone()),
         )
@@ -1811,7 +1810,7 @@ mod test {
         );
 
         // test filtering by some other field types (u32, int32, timestamp)
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1820,7 +1819,7 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[2].clone()]
         );
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where severity_number == 17",
             to_logs_data(log_records.clone()),
         )
@@ -1830,7 +1829,7 @@ mod test {
             &[log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where time_unix_nano > datetime(1970-01-01 00:00:01.1)",
             to_logs_data(log_records.clone()),
         )
@@ -1840,7 +1839,7 @@ mod test {
             &[log_records[1].clone(), log_records[2].clone()]
         );
 
-        let result = exec_logs_pipeline::<KqlParser>(
+        let result = exec_logs_pipeline::<P>(
             "logs | where datetime(1970-01-01 00:00:01.1) > time_unix_nano",
             to_logs_data(log_records.clone()),
         )
@@ -1849,6 +1848,16 @@ mod test {
             &result.resource_logs[0].scope_logs[0].log_records,
             &[log_records[0].clone()]
         );
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_kql_parser() {
+        test_simple_filter::<KqlParser>().await;
+    }
+
+    #[tokio::test]
+    async fn test_simple_filter_op_parser() {
+        test_simple_filter::<OplParser>().await
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
