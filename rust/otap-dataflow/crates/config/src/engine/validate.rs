@@ -3,7 +3,10 @@
 
 //! Validation phase for [`OtelDataflowSpec`].
 
-use crate::engine::{ENGINE_CONFIG_VERSION_V1, OtelDataflowSpec};
+use crate::engine::{
+    ENGINE_CONFIG_VERSION_V1, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID,
+    SYSTEM_PIPELINE_GROUP_ID,
+};
 use crate::error::Error;
 
 impl OtelDataflowSpec {
@@ -43,13 +46,24 @@ impl OtelDataflowSpec {
                 });
             } else {
                 let pipeline_cfg = observability_pipeline.into_pipeline_config();
-                if let Err(e) = pipeline_cfg.validate(&"engine".into(), &"observability".into()) {
+                if let Err(e) = pipeline_cfg.validate(
+                    &SYSTEM_PIPELINE_GROUP_ID.into(),
+                    &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+                ) {
                     errors.push(e);
                 }
             }
         }
 
         for (pipeline_group_id, pipeline_group) in &self.groups {
+            if pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "groups.{} is reserved for engine-managed pipelines and cannot be configured by users",
+                        SYSTEM_PIPELINE_GROUP_ID
+                    ),
+                });
+            }
             if let Err(e) = pipeline_group.validate(pipeline_group_id) {
                 errors.push(e);
             }

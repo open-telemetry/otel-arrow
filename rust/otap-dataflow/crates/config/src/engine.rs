@@ -294,6 +294,34 @@ groups:
     }
 
     #[test]
+    fn from_yaml_rejects_reserved_system_group() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  system:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml).expect_err("should reject reserved group");
+        assert!(err.to_string().contains(&format!(
+            "groups.{} is reserved for engine-managed pipelines and cannot be configured by users",
+            SYSTEM_PIPELINE_GROUP_ID
+        )));
+    }
+
+    #[test]
     fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
