@@ -33,14 +33,12 @@
     }
   },
   "policies": {
-    "flow": {
-      "channel_capacity": {
-        "control": {
-          "node": 100,
-          "pipeline": 100
-        },
-        "pdata": 128
-      }
+    "channel_capacity": {
+      "control": {
+        "node": 100,
+        "pipeline": 100
+      },
+      "pdata": 128
     }
   },
   "nodes": {
