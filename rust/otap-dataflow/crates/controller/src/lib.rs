@@ -46,8 +46,8 @@ use crate::error::Error;
 use crate::thread_task::spawn_thread_local_task;
 use core_affinity::CoreId;
 use otap_df_config::engine::{
-    OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID, OBSERVABILITY_INTERNAL_PIPELINE_ID, OtelDataflowSpec,
-    ResolvedPipelineConfig, ResolvedPipelineRole,
+    OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
@@ -555,8 +555,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
     fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
-            pipeline_group_id: OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID.into(),
-            pipeline_id: OBSERVABILITY_INTERNAL_PIPELINE_ID.into(),
+            pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
+            pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
             core_id: core_id.id,
         }
     }

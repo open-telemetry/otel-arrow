@@ -12,7 +12,7 @@ use crate::{PipelineGroupId, PipelineId};
 /// System pipeline-group id used by the engine to group internal telemetry pipelines.
 pub const SYSTEM_PIPELINE_GROUP_ID: &str = "system";
 /// Synthetic pipeline id used by the engine observability pipeline.
-pub const OBSERVABILITY_INTERNAL_PIPELINE_ID: &str = "internal";
+pub const SYSTEM_OBSERVABILITY_PIPELINE_ID: &str = "observability";
 
 /// Resolved policy snapshot for an engine configuration.
 ///
@@ -140,7 +140,7 @@ impl OtelDataflowSpec {
             let telemetry_policy = self.resolve_observability_telemetry_policy();
             pipelines.push(ResolvedPipelineConfig {
                 pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
-                pipeline_id: OBSERVABILITY_INTERNAL_PIPELINE_ID.into(),
+                pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
                 pipeline: pipeline.into_pipeline_config(),
                 policies: Policies {
                     channel_capacity: channel_capacity_policy,

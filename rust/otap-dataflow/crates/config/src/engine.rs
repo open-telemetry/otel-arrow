@@ -19,8 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub use self::resolve::{
-    OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID, OBSERVABILITY_INTERNAL_PIPELINE_ID,
     ResolvedOtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
+    SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 
 #[cfg(test)]
@@ -539,8 +539,8 @@ groups:
             .iter()
             .find(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
             .expect("observability pipeline should be resolved");
-        assert_eq!(obs.pipeline_group_id.as_ref(), "internal");
-        assert_eq!(obs.pipeline_id.as_ref(), "internal");
+        assert_eq!(obs.pipeline_group_id.as_ref(), "system");
+        assert_eq!(obs.pipeline_id.as_ref(), "observability");
         assert_eq!(obs.policies.channel_capacity.control.node, 10);
         assert_eq!(obs.policies.channel_capacity.control.pipeline, 11);
         assert_eq!(obs.policies.channel_capacity.pdata, 12);
