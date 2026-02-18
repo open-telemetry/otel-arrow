@@ -388,8 +388,8 @@ mod tests {
         };
 
         assert!(validate_metrics_equivalent(
-            &[request1.clone()],
-            &[request2.clone()]
+            std::slice::from_ref(&request1),
+            std::slice::from_ref(&request2)
         ));
         assert_metrics_equivalent(&[request1], &[request2]);
     }
