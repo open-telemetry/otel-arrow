@@ -2,82 +2,125 @@
 
 Configuration model crate for the OTAP Dataflow Engine.
 
-If you are authoring pipeline YAML for runtime use, start with:
+If you are authoring runtime YAML, start with:
 
 - [`docs/configuration-model.md`](../../docs/configuration-model.md)
 
-Design rationale and prior-art discussion are also captured in:
+Design rationale and prior-art discussion:
 
 - Issue [#1970](https://github.com/open-telemetry/otel-arrow/issues/1970)
 
-This README focuses on crate-level model details and implementer-oriented
-guidance.
+This README focuses on crate-level model and API details.
 
 ## What This Crate Defines
 
 Main public model types:
 
-- `engine::OtelDataflowSpec`: root multi-pipeline-group config
-- `engine::EngineConfig`: top-level engine section (`engine: ...`)
+- `engine::OtelDataflowSpec`: runtime root spec (`version`, `policies`, `engine`, `groups`)
+- `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
-- `policy::Policies`: hierarchical flow/health/telemetry/resources policies
+- `policy::Policies`: flow/health/telemetry/resources policy families
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 - `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
 
-The model is strict (`serde(deny_unknown_fields)` in key types) and validated on
+The model is strict (`serde(deny_unknown_fields)` on key types) and validated on
 load.
-This means fields discussed as future extensions (for example node/connection
-attributes or advanced edge policies) are currently rejected unless and until
-the schema is extended.
 
-## Parsing and Validation Entry Points
+## Runtime Config Format
 
-Typical loading APIs:
+The runtime root config is:
 
-- `OtelDataflowSpec::from_file`, `from_yaml`, `from_json`
-- `PipelineConfig::from_yaml`, `from_json` (in-memory parsing only; not a runtime root config format)
+- `engine::OtelDataflowSpec`
 
-These entry points perform:
-
-1. Deserialization (YAML/JSON)
-2. Node URN canonicalization
-3. Structural validation (connections, graph constraints, etc.)
-
-The root model requires a schema version:
+Required root field:
 
 - `version: otel_dataflow/v1`
 
+The engine binary loads this root spec via `--config`.
+
+`pipeline::PipelineConfig` parsing APIs remain available for in-memory parsing
+and tests, but are not a runtime root format for the engine process.
+
+## Parsing and Validation Entry Points
+
+Runtime/root APIs:
+
+- `OtelDataflowSpec::from_file`
+- `OtelDataflowSpec::from_yaml`
+- `OtelDataflowSpec::from_json`
+
+Loading performs:
+
+1. Deserialization (YAML/JSON)
+2. Node URN canonicalization
+3. Structural and policy validation
+
+## Resolution Phase
+
 For runtime consumption, resolve hierarchy once:
 
-- `OtelDataflowSpec::resolve()` -> `ResolvedOtelDataflowSpec`
+- `OtelDataflowSpec::resolve()` -> `engine::ResolvedOtelDataflowSpec`
+
+Resolved model highlights:
+
+- deterministic pipeline ordering for regular pipelines (`group_id`, `pipeline_id`)
+- role-tagged resolved pipelines:
+  - `ResolvedPipelineRole::Regular`
+  - `ResolvedPipelineRole::ObservabilityInternal`
+- helper split API:
+  - `ResolvedOtelDataflowSpec::into_parts()`
 
 ## Policy Hierarchy
 
-Flow channel sizing is configured via:
+Policy families:
 
 - `policies.flow.channel_capacity.control.node`
 - `policies.flow.channel_capacity.control.pipeline`
 - `policies.flow.channel_capacity.pdata`
-
-Health and runtime telemetry controls are configured via:
-
 - `policies.health`
 - `policies.telemetry.pipeline_metrics`
 - `policies.telemetry.tokio_metrics`
 - `policies.telemetry.channel_metrics`
-
-Resource controls are configured via:
-
 - `policies.resources.core_allocation`
 
-Resolution order:
+Defaults:
 
-- regular pipelines: pipeline -> group -> top-level
-- observability pipeline: `engine.observability.pipeline` -> top-level
+- `flow.channel_capacity.control.node = 256`
+- `flow.channel_capacity.control.pipeline = 256`
+- `flow.channel_capacity.pdata = 128`
+- telemetry policy booleans default to `true`
+- `resources.core_allocation = all_cores`
 
-Note: observability pipeline policies currently do not accept `resources`.
+Resolution precedence:
+
+- regular pipelines:
+  `pipeline.policies` -> `group.policies` -> top-level `policies`
+- observability pipeline:
+  `engine.observability.pipeline.policies` -> top-level `policies`
+
+Observability note:
+
+- `engine.observability.pipeline.policies.resources` is intentionally unsupported
+  and rejected.
+
+Resolution semantics:
+
+- precedence applies per policy family (`flow`, `health`, `telemetry`, `resources`)
+- no cross-scope deep merge of nested fields
+- policy objects are default-filled: if a lower-scope `policies` block exists,
+  omitted families are populated with defaults at that scope (they do not
+  inherit from upper scopes)
+
+## Engine Observability Pipeline
+
+The dedicated engine internal telemetry pipeline is configured at:
+
+- `engine.observability.pipeline.nodes`
+- `engine.observability.pipeline.connections`
+
+It is represented in resolved output as a role-tagged internal pipeline.
 
 ## Node Type (`NodeUrn`)
 
