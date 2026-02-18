@@ -205,6 +205,8 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         } else {
             all_cores
         };
+        let planned_core_assignments =
+            Self::preflight_pipeline_core_allocations(&pipelines, &available_core_ids)?;
 
         let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
             its_key.clone(),
@@ -280,17 +282,13 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             threads.push((thread_name, its_thread_id, its_key, handle));
         }
 
-        for pipeline_entry in pipelines {
+        for (pipeline_entry, requested_cores) in pipelines.into_iter().zip(planned_core_assignments)
+        {
             let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
-            let resources_policy = pipeline_entry.policies.resources;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
             let pipeline_id = pipeline_entry.pipeline_id;
             let pipeline = pipeline_entry.pipeline;
-            let requested_cores = Self::select_cores_for_allocation(
-                available_core_ids.clone(),
-                &resources_policy.core_allocation,
-            )?;
 
             let num_cores = requested_cores.len();
             for core_id in requested_cores {
@@ -553,6 +551,24 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
     }
 
+    /// Pre-resolves core assignments for all regular pipelines.
+    ///
+    /// This validates the full pipeline set before any pipeline thread is spawned.
+    fn preflight_pipeline_core_allocations(
+        pipelines: &[ResolvedPipelineConfig],
+        available_core_ids: &[CoreId],
+    ) -> Result<Vec<Vec<CoreId>>, Error> {
+        pipelines
+            .iter()
+            .map(|pipeline_entry| {
+                Self::select_cores_for_allocation(
+                    available_core_ids.to_vec(),
+                    &pipeline_entry.policies.resources.core_allocation,
+                )
+            })
+            .collect()
+    }
+
     fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
@@ -798,7 +814,8 @@ fn error_summary_from_gen(error: &Error) -> ErrorSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::CoreRange;
+    use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otap_df_config::policy::{CoreRange, Policies};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -815,6 +832,42 @@ mod tests {
 
     fn to_ids(v: &[CoreId]) -> Vec<usize> {
         v.iter().map(|c| c.id).collect()
+    }
+
+    fn minimal_pipeline_config() -> PipelineConfig {
+        PipelineConfig::from_yaml(
+            "g".into(),
+            "p".into(),
+            r#"
+nodes:
+  receiver:
+    type: "urn:test:example:receiver"
+    config: null
+  exporter:
+    type: "urn:test:example:exporter"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+        )
+        .expect("minimal test pipeline config should parse")
+    }
+
+    fn resolved_pipeline_with_core_allocation(
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        core_allocation: CoreAllocation,
+    ) -> ResolvedPipelineConfig {
+        let mut policies = Policies::default();
+        policies.resources.core_allocation = core_allocation;
+        ResolvedPipelineConfig {
+            pipeline_group_id: pipeline_group_id.to_string().into(),
+            pipeline_id: pipeline_id.to_string().into(),
+            pipeline: minimal_pipeline_config(),
+            policies,
+            role: ResolvedPipelineRole::Regular,
+        }
     }
 
     #[test]
@@ -1039,5 +1092,66 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn preflight_fails_fast_when_later_pipeline_allocation_is_invalid() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::CoreCount { count: 2 },
+            ),
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p2",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange {
+                        start: 999,
+                        end: 999,
+                    }],
+                },
+            ),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_core_allocations(
+            &pipelines,
+            &available_core_ids(),
+        )
+        .expect_err("preflight should fail");
+        match err {
+            Error::InvalidCoreAllocation { .. } => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preflight_succeeds_and_allows_cross_pipeline_core_overlap() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange { start: 1, end: 2 }],
+                },
+            ),
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p2",
+                CoreAllocation::CoreSet {
+                    set: vec![CoreRange { start: 2, end: 3 }],
+                },
+            ),
+        ];
+
+        let assignments = Controller::<()>::preflight_pipeline_core_allocations(
+            &pipelines,
+            &available_core_ids(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(assignments.len(), 2);
+        assert_eq!(to_ids(&assignments[0]), vec![1, 2]);
+        assert_eq!(to_ids(&assignments[1]), vec![2, 3]);
     }
 }
