@@ -32,7 +32,9 @@
 //! in parallel on different cores, each with its own processor instance.
 
 use crate::control::{AckMsg, NackMsg, PipelineCtrlMsgSender};
-use crate::effect_handler::{EffectHandlerCore, TelemetryTimerCancelHandle, TimerCancelHandle};
+use crate::effect_handler::{
+    EffectHandlerCore, SourceTagging, TelemetryTimerCancelHandle, TimerCancelHandle,
+};
 use crate::error::{Error, TypedError};
 use crate::message::Message;
 use crate::node::NodeId;
@@ -130,6 +132,18 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn processor_id(&self) -> NodeId {
         self.core.node_id()
+    }
+
+    /// Sets outgoing messages source tagging mode.
+    pub fn set_source_tagging(&mut self, value: SourceTagging) {
+        self.core.set_source_tagging(value);
+    }
+
+    /// Returns outgoing messages source tagging mode. Enabled when
+    /// the destination node has multiple input sources.
+    #[must_use]
+    pub const fn source_tagging(&self) -> SourceTagging {
+        self.core.source_tagging()
     }
 
     /// Returns the list of connected output ports for this processor.
