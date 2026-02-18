@@ -133,7 +133,7 @@ e.g. `receiver`, `exporter`.
 - `wire_otlp_grpc_exporter(node_name)` - mark the exporter whose
 `grpc_endpoint` will be rewritten.
 - `wire_otap_grpc_receiver(node_name)` / `wire_otap_grpc_exporter(node_name)`
-    - OTAP variants.
+  - OTAP variants.
 
 > NOTE: The node names you pass to `wire_*` must match the keys under
 `nodes:` in your pipeline YAML.
@@ -205,8 +205,7 @@ count per message; `min/max` optional; `timeout` optional
 
 (see `validation_types::attributes` and `validation_types`)
 
-
-
 ## Troubleshooting
 
-- **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are called before `Scenario::run()`.
+- **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are
+called before `Scenario::run()`.
