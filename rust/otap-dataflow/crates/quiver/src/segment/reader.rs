@@ -1073,7 +1073,7 @@ mod tests {
             let stream_count = open_segment.stream_count();
             let bundle_count = open_segment.bundle_count();
 
-            let writer = SegmentWriter::new(SegmentSeq::new(1));
+            let writer = SegmentWriter::new(SegmentSeq::new(1), true);
             let _ = writer
                 .write_segment(&path, open_segment)
                 .await
@@ -1315,7 +1315,7 @@ mod tests {
         let mut open_segment = OpenSegment::new();
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await
@@ -1419,7 +1419,7 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await
@@ -1526,7 +1526,7 @@ mod tests {
 
         let _ = open_segment.append(&bundle);
 
-        let writer = SegmentWriter::new(SegmentSeq::new(1));
+        let writer = SegmentWriter::new(SegmentSeq::new(1), true);
         let _ = writer
             .write_segment(&path, open_segment)
             .await
