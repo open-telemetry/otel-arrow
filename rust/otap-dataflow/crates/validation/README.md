@@ -17,6 +17,7 @@ logical node names for the receiver/exporter you intend to rewire,
 e.g. `receiver`, `exporter`.
 
 2) **Wire it dynamically** in the test:
+
    ```rust
    use otap_df_validation::pipeline::Pipeline;
 
@@ -27,6 +28,7 @@ e.g. `receiver`, `exporter`.
    ```
 
 3) **Configure traffic generation**:
+
    ```rust
    use otap_df_validation::traffic::Generator;
 
@@ -35,6 +37,7 @@ e.g. `receiver`, `exporter`.
        .max_batch_size(50)                         // optional
        .otlp_grpc();                               // or .otap_grpc()
    ```
+
    Available knobs on `Generator`:
 
    - `logs()`, `metrics()`, `traces()` - choose what signal type to emit
@@ -43,6 +46,7 @@ e.g. `receiver`, `exporter`.
    - `otlp_grpc()` / `otap_grpc()` - choose export protocol (optional; OTLP by default).
 
 4) **Configure capture & validations**:
+
    ```rust
    use otap_df_validation::traffic::Capture;
    use otap_df_validation::ValidationInstructions;
@@ -67,6 +71,7 @@ e.g. `receiver`, `exporter`.
    ```
 
 5) **Build and run the scenario**:
+
    ```rust
    use otap_df_validation::scenario::Scenario;
    use std::time::Duration;
@@ -83,6 +88,7 @@ e.g. `receiver`, `exporter`.
 ## Scenario
 
 - **Scenario example**
+
   ```rust
   use otap_df_validation::scenario::Scenario;
   use std::time::Duration;
@@ -106,6 +112,7 @@ e.g. `receiver`, `exporter`.
 ## Pipeline
 
 - **Pipeline example**
+
   ```rust
   use otap_df_validation::pipeline::Pipeline;
 
@@ -125,6 +132,7 @@ e.g. `receiver`, `exporter`.
 ## Generator
 
 - **Generator example**
+
   ```rust
   use otap_df_validation::traffic::Generator;
 
@@ -142,6 +150,7 @@ e.g. `receiver`, `exporter`.
 ## Capture
 
 - **Capture example (with validations)**
+
   ```rust
   use otap_df_validation::traffic::Capture;
   use otap_df_validation::ValidationInstructions;
