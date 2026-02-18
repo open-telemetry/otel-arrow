@@ -89,6 +89,7 @@ pub static DEBUG_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> 
                  proc_cfg: &ProcessorConfig| {
             create_debug_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
     };
 
 impl DebugProcessor {
@@ -186,8 +187,8 @@ impl local::Processor<OtapPdata> for DebugProcessor {
         let active_signals = self.config.signals();
         let output_mode = self.config.output();
 
-        // if the outputmode is via outports then we can have multiple outports configured
-        // so there is no clear default we need to determine which portnames are for the main port
+        // if the output mode is via output ports then we can have multiple output ports configured
+        // so there is no clear default; we need to determine which port names are for the main port
         let main_ports: Option<Vec<PortName>> = if let OutputMode::Outports(ref ports) = output_mode
         {
             let connected_ports = effect_handler.connected_ports();
@@ -307,7 +308,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         &mut pdata,
                     );
                 }
-                // ToDo: handle multiple out_ports differently here?
+                // ToDo: handle multiple outputs differently here?
                 if let Some(ports) = main_ports {
                     for port in ports {
                         // Note each clone has its own clone of the context.

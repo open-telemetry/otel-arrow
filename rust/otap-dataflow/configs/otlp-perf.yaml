@@ -5,23 +5,20 @@ settings:
 
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - perf
-        dispatch_strategy: round_robin
+    type: otlp:receiver
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4318"
   perf:
-    kind: exporter
-    plugin_urn: "urn:otel:perf:exporter"
+    type: perf:exporter
     config:
       frequency: 1000
       cpu_usage: false
       mem_usage: false
       disk_usage: false
       io_usage: false
+
+connections:
+  - from: receiver
+    to: perf

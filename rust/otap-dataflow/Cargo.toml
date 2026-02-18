@@ -73,10 +73,11 @@ async-unsync = "0.3.0"
 axum = "0.8.4"
 base64 = "0.22.1"
 bitflags = "2.10"
-bytes = "1.11"
+bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10" }
 ciborium = "0.2.2"
 clap = { version = "4.5.42", features = ["derive"] }
 core_affinity = "0.8.3"
@@ -180,7 +181,6 @@ http-body-util = "0.1"
 trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
-urn = "0.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
 weaver_common = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0"}
 weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", tag = "v0.17.0" }
@@ -196,8 +196,8 @@ data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engin
 data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
 
 # Azure Monitor Exporter
-azure_core = {version = "0.31.0", default-features = false }
-azure_identity = {version = "0.31.0", default-features = false }
+azure_core = {version = "0.32.0", default-features = false }
+azure_identity = {version = "0.32.0", default-features = false }
 flate2 = "1.1.5"
 reqwest = { version = "0.13.1", default-features = false }
 time = "0.3.44"

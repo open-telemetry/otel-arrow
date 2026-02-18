@@ -14,7 +14,6 @@
 //! This functionality is exposed through various traits implemented by effect handlers.
 
 use async_trait::async_trait;
-pub use otap_df_config::NodeId;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::error::{Error, TypedError};
@@ -28,7 +27,6 @@ use otap_df_pdata::OtapPayload;
 /// Context for OTAP requests
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
-    source_node: Option<NodeId>,
     stack: Vec<Frame>,
 }
 
@@ -38,7 +36,6 @@ impl Context {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            source_node: None,
             stack: Vec::with_capacity(capacity),
         }
     }
@@ -50,9 +47,12 @@ impl Context {
         calldata: CallData,
         node_id: usize,
     ) {
-        if let Some(last) = self.stack.last() {
+        if let Some(last) = self.stack.last_mut() {
             // Inherit the preceding frame's RETURN_DATA bit
             interests |= last.interests & Interests::RETURN_DATA;
+
+            // We should never subscribe twice.
+            debug_assert_ne!(node_id, last.node_id);
         }
         self.stack.push(Frame {
             interests,
@@ -111,27 +111,52 @@ impl Context {
             .unwrap_or(false)
     }
 
-    /// Return the current calldata.
+    /// Return the current source calldata. This is used with the
+    /// DelayedData message, in which a node delivers a message to
+    /// itself.
+    ///
+    /// This is also useful in testing, it indicates the data that was
+    /// sent by the source node.
     #[must_use]
-    pub fn current_calldata(&self) -> Option<CallData> {
+    pub fn source_calldata(&self) -> Option<CallData> {
         self.stack.last().map(|f| f.calldata.clone())
     }
 
-    /// Are there any subscribers?
+    /// Are there any subscribers with actual interests (ACKS or NACKS)?
     #[must_use]
-    pub const fn has_subscribers(&self) -> bool {
-        !self.stack.is_empty()
+    pub fn has_subscribers(&self) -> bool {
+        self.stack.iter().any(|f| !f.interests.is_empty())
     }
 
     /// Set the source node for this context.
-    pub fn set_source_node(&mut self, node: Option<NodeId>) {
-        self.source_node = node;
+    pub fn set_source_node(&mut self, node_id: usize) {
+        let mut interests = Interests::empty();
+        if let Some(last) = self.stack.last() {
+            if node_id == last.node_id {
+                // The node called subscribe_to() itself.
+                return;
+            }
+            // Inherit the preceding frame's RETURN_DATA bit.
+            interests = last.interests & Interests::RETURN_DATA;
+        }
+        self.stack.push(Frame {
+            interests,
+            node_id,
+            calldata: CallData::default(),
+        });
     }
 
     /// Get the source node for this context.
     #[must_use]
-    pub fn source_node(&self) -> Option<NodeId> {
-        self.source_node.clone()
+    pub fn source_node(&self) -> Option<usize> {
+        self.stack.last().map(|f| f.node_id)
+    }
+
+    /// Returns a reference to the context stack frames (test-only).
+    #[cfg(test)]
+    #[must_use]
+    pub fn frames(&self) -> &[Frame] {
+        &self.stack
     }
 }
 
@@ -253,25 +278,34 @@ impl OtapPdata {
     /// Returns Context::has_subscribers()
     #[cfg(test)]
     #[must_use]
-    pub const fn has_subscribers(&self) -> bool {
+    pub fn has_subscribers(&self) -> bool {
         self.context.has_subscribers()
     }
 
-    /// Return the current calldata.
+    /// Return the source's calldata. Note that after a subscribe_to()
+    /// has been called, the current node becomes the source.
+    ///
+    /// Return the current source calldata. This is used with the
+    /// DelayedData message, in which a node delivers a message to
+    /// itself.
+    ///
+    /// This is also useful in testing, it indicates the data that was
+    /// sent by the source node.
     #[must_use]
-    pub fn current_calldata(&self) -> Option<CallData> {
-        self.context.current_calldata()
+    pub fn source_calldata(&self) -> Option<CallData> {
+        self.context.source_calldata()
     }
 
-    /// update the source node
-    pub fn add_source_node(mut self, node_id: Option<NodeId>) -> Self {
+    /// Update the source node. See also subscribe_to() which supports
+    /// updating the source calldata.
+    pub fn add_source_node(mut self, node_id: usize) -> Self {
         self.context.set_source_node(node_id);
         self
     }
 
     /// return the source node field
     #[must_use]
-    pub fn get_source_node(&self) -> Option<NodeId> {
+    pub fn get_source_node(&self) -> Option<usize> {
         self.context.source_node()
     }
 }
@@ -382,7 +416,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -390,7 +428,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -402,7 +444,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -414,7 +460,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -427,7 +477,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -435,7 +489,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -447,7 +505,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -459,7 +521,11 @@ impl MessageSourceLocalEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -472,7 +538,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -480,7 +550,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -492,7 +566,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -504,7 +582,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.processor_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.processor_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -517,7 +599,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message(data).await
     }
 
@@ -525,7 +611,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
         &self,
         data: OtapPdata,
     ) -> Result<(), TypedError<OtapPdata>> {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message(data)
     }
 
@@ -537,7 +627,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.send_message_to(port, data).await
     }
 
@@ -549,7 +643,11 @@ impl MessageSourceSharedEffectHandlerExtension<OtapPdata>
     where
         P: Into<PortName> + Send + 'static,
     {
-        let data = data.add_source_node(Some(self.receiver_id().name));
+        let data = if self.source_tagging().enabled() {
+            data.add_source_node(self.receiver_id().index)
+        } else {
+            data
+        };
         self.try_send_message_to(port, data)
     }
 }
@@ -561,6 +659,7 @@ mod test {
     use crate::testing::{TestCallData, create_test_pdata};
     use otap_df_channel::mpsc::Channel as LocalChannel;
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::effect_handler::SourceTagging;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::local::processor::EffectHandler as LocalProcessorEffectHandler;
     use otap_df_engine::local::receiver::EffectHandler as LocalReceiverEffectHandler;
@@ -586,9 +685,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 10,
                 name: "recv_node".into(),
             },
             senders,
@@ -596,6 +695,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -604,7 +704,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(10));
     }
 
     #[tokio::test]
@@ -614,15 +714,16 @@ mod test {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 100,
                 name: "proc_node".into(),
             },
             senders,
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -631,7 +732,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(100));
     }
 
     #[tokio::test]
@@ -643,15 +744,16 @@ mod test {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 1000,
                 name: "proc_node".into(),
             },
             senders,
             None,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -661,7 +763,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(1000));
     }
 
     #[tokio::test]
@@ -674,9 +776,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 100,
                 name: "recv_node".into(),
             },
             senders,
@@ -684,6 +786,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -693,7 +796,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(100));
     }
 
     #[tokio::test]
@@ -703,15 +806,16 @@ mod test {
         let _ = senders.insert("out".into(), SharedSender::mpsc(tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 10,
                 name: "proc_node".into(),
             },
             senders,
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -719,7 +823,7 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(10));
     }
 
     #[tokio::test]
@@ -731,15 +835,16 @@ mod test {
         let _ = senders.insert("b".into(), SharedSender::mpsc(b_tx));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedProcessorEffectHandler::new(
+        let mut handler = SharedProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 100,
                 name: "proc_node".into(),
             },
             senders,
             None,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -748,7 +853,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_node".into()));
+        assert_eq!(sent.get_source_node(), Some(100));
     }
 
     #[tokio::test]
@@ -761,9 +866,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = SharedReceiverEffectHandler::new(
+        let mut handler = SharedReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 10,
                 name: "recv_node".into(),
             },
             senders,
@@ -771,6 +876,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -779,7 +885,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_node".into()));
+        assert_eq!(sent.get_source_node(), Some(10));
     }
 
     #[tokio::test]
@@ -789,15 +895,16 @@ mod test {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 20,
                 name: "proc_local".into(),
             },
             senders,
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -806,7 +913,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(20));
     }
 
     #[tokio::test]
@@ -818,15 +925,16 @@ mod test {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 30,
                 name: "proc_local".into(),
             },
             senders,
             None,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -836,7 +944,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(30));
     }
 
     #[tokio::test]
@@ -846,15 +954,16 @@ mod test {
         let _ = senders.insert("out".into(), Sender::Local(LocalSender::mpsc(tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 50,
                 name: "proc_local".into(),
             },
             senders,
             Some("out".into()),
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -862,7 +971,7 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(50));
     }
 
     #[tokio::test]
@@ -874,15 +983,16 @@ mod test {
         let _ = senders.insert("b".into(), Sender::Local(LocalSender::mpsc(b_tx)));
 
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalProcessorEffectHandler::new(
+        let mut handler = LocalProcessorEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 25,
                 name: "proc_local".into(),
             },
             senders,
             None,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -891,7 +1001,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("proc_local".into()));
+        assert_eq!(sent.get_source_node(), Some(25));
     }
 
     #[tokio::test]
@@ -904,9 +1014,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 1,
                 name: "recv_local".into(),
             },
             senders,
@@ -914,6 +1024,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -922,7 +1033,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(1));
     }
 
     #[tokio::test]
@@ -933,9 +1044,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 2,
                 name: "recv_local".into(),
             },
             senders,
@@ -943,6 +1054,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -951,7 +1063,7 @@ mod test {
             .expect("send ok");
 
         let sent = rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(2));
     }
 
     #[tokio::test]
@@ -964,9 +1076,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 3,
                 name: "recv_local".into(),
             },
             senders,
@@ -974,6 +1086,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -983,7 +1096,7 @@ mod test {
 
         assert!(a_rx.try_recv().is_err());
         let sent = b_rx.recv().await.expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(3));
     }
 
     #[tokio::test]
@@ -994,9 +1107,9 @@ mod test {
 
         let (ctrl_tx, _ctrl_rx) = pipeline_ctrl_msg_channel(4);
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let handler = LocalReceiverEffectHandler::new(
+        let mut handler = LocalReceiverEffectHandler::new(
             NodeId {
-                index: 0,
+                index: 13,
                 name: "recv_local".into(),
             },
             senders,
@@ -1004,6 +1117,7 @@ mod test {
             ctrl_tx,
             metrics_reporter,
         );
+        handler.set_source_tagging(SourceTagging::Enabled);
 
         let pdata = create_test_pdata();
         handler
@@ -1011,7 +1125,66 @@ mod test {
             .expect("try_send ok");
 
         let sent = rx.try_recv().expect("message received");
-        assert_eq!(sent.get_source_node(), Some("recv_local".into()));
+        assert_eq!(sent.get_source_node(), Some(13));
+    }
+
+    #[tokio::test]
+    async fn needs_source_tag_controls_source_frame() {
+        let (tx_off, mut rx_off) = mpsc::channel::<OtapPdata>(4);
+        let (tx_on, mut rx_on) = mpsc::channel::<OtapPdata>(4);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let handler_off = SharedProcessorEffectHandler::new(
+            NodeId {
+                index: 7,
+                name: "proc_off".into(),
+            },
+            HashMap::from([("out".into(), SharedSender::mpsc(tx_off))]),
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut handler_on = SharedProcessorEffectHandler::new(
+            NodeId {
+                index: 7,
+                name: "proc_on".into(),
+            },
+            HashMap::from([("out".into(), SharedSender::mpsc(tx_on))]),
+            Some("out".into()),
+            metrics_reporter,
+        );
+
+        // Default is false
+        assert!(!handler_off.source_tagging().enabled());
+        assert!(!handler_on.source_tagging().enabled());
+
+        // Enable on one handler
+        handler_on.set_source_tagging(SourceTagging::Enabled);
+        assert!(handler_on.source_tagging().enabled());
+
+        // Send through both
+        handler_off
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("send ok");
+        handler_on
+            .send_message_with_source_node(create_test_pdata())
+            .await
+            .expect("send ok");
+
+        // When disabled: no source frame pushed
+        let sent_off = rx_off.recv().await.expect("received");
+        assert_eq!(sent_off.get_source_node(), None);
+        assert_eq!(sent_off.context.frames().len(), 0);
+
+        // When enabled: source frame pushed with empty interests
+        let sent_on = rx_on.recv().await.expect("received");
+        assert_eq!(sent_on.get_source_node(), Some(7));
+        let frames = sent_on.context.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].node_id, 7);
+        assert_eq!(frames[0].interests, Interests::empty());
     }
 
     #[test]
@@ -1192,5 +1365,111 @@ mod test {
 
         let result = Context::next_nack(nack);
         assert!(result.is_none());
+    }
+
+    // ---- set_source_node and subscribe_to frame-reuse tests ----
+
+    #[test]
+    fn test_set_source_node_basics() {
+        let mut ctx = Context::default();
+        assert_eq!(ctx.source_node(), None);
+
+        // Push onto empty context.
+        ctx.set_source_node(42);
+        assert_eq!(ctx.source_node(), Some(42));
+        assert_eq!(ctx.stack.len(), 1);
+        // Source-node-only frames have empty interests — not subscribers.
+        assert!(!ctx.has_subscribers());
+
+        // Same node_id is a no-op (dedup).
+        ctx.set_source_node(42);
+        assert_eq!(ctx.stack.len(), 1);
+
+        // Different node_id pushes a new frame.
+        ctx.set_source_node(99);
+        assert_eq!(ctx.source_node(), Some(99));
+        assert_eq!(ctx.stack.len(), 2);
+        assert!(!ctx.has_subscribers());
+    }
+
+    #[test]
+    fn test_next_ack_nack_skip_source_node_frames() {
+        let (test_data, pdata) = create_test();
+
+        // Real subscriber, then a source-node-only frame on top.
+        let pdata = pdata.test_subscribe_to(
+            Interests::ACKS | Interests::NACKS,
+            test_data.clone().into(),
+            100,
+        );
+        let pdata = pdata.add_source_node(200);
+        assert!(pdata.has_subscribers());
+
+        // next_ack skips the empty-interests frame and finds node 100.
+        let ack = AckMsg::new(pdata);
+        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find subscriber");
+        assert_eq!(node_id, 100);
+        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv, test_data);
+    }
+
+    #[test]
+    fn test_source_node_frame_propagates_return_data() {
+        // Scenario: a retry processor (node 1) subscribes with ACKS | RETURN_DATA,
+        // then a multi-source source-tag frame is pushed (node 2), then a
+        // downstream processor (node 3) subscribes with ACKS only.
+        //
+        // Without RETURN_DATA propagation in set_source_node, the source frame
+        // breaks the chain and node 3's frame won't inherit RETURN_DATA.
+        // When next_ack finds node 3, it sees no RETURN_DATA and drops the
+        // payload — even though node 1 needs it for retry.
+        let (test_data, pdata) = create_test();
+
+        let pdata = pdata
+            // Node 1: retry processor wants payload back
+            .test_subscribe_to(
+                Interests::ACKS | Interests::RETURN_DATA,
+                test_data.clone().into(),
+                1,
+            )
+            // Node 2: source-tag from a multi-source edge
+            .add_source_node(2);
+
+        // Verify RETURN_DATA survived through the source frame.
+        assert!(
+            pdata.context.may_return_payload(),
+            "source-tag frame must propagate RETURN_DATA from preceding subscriber"
+        );
+
+        // Node 3: downstream processor subscribes with ACKS (no explicit RETURN_DATA)
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 3);
+
+        // Node 3's frame should have inherited RETURN_DATA through the source frame.
+        assert!(
+            pdata.context.may_return_payload(),
+            "subscribe_to must inherit RETURN_DATA through the source-tag frame"
+        );
+
+        // Ack path: next_ack finds node 3 first
+        let ack = AckMsg::new(pdata);
+        let (node_id, ack_msg) = Context::next_ack(ack).expect("should find node 3");
+        assert_eq!(node_id, 3);
+
+        // The payload must be preserved — node 1 needs it for retry.
+        assert_eq!(
+            ack_msg.accepted.num_items(),
+            1,
+            "payload must be preserved because an earlier subscriber requested RETURN_DATA"
+        );
+        assert!(!ack_msg.accepted.is_empty());
+
+        // Continue to node 1
+        let (node_id, ack_msg) = Context::next_ack(ack_msg).expect("should find node 1");
+        assert_eq!(node_id, 1);
+        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        assert_eq!(recv, test_data);
+
+        // Payload still intact for the retry processor
+        assert_eq!(ack_msg.accepted.num_items(), 1);
     }
 }

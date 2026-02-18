@@ -323,6 +323,7 @@ impl RetryProcessorMetrics {
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 /// A processor that handles message retries with exponential backoff
@@ -625,7 +626,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
-                    if let Some(calldata) = data.current_calldata() {
+                    if let Some(calldata) = data.source_calldata() {
                         let rstate: RetryState = calldata.try_into()?;
                         let _ = self
                             .handle_delayed(when, data, effect_handler, rstate.num_items)

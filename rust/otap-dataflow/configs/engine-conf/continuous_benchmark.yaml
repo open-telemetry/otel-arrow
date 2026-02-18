@@ -28,29 +28,27 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:traffic_generator:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - exporter
-                dispatch_strategy: round_robin
+            type: traffic_generator:receiver
             config:
               data_source: static
               generation_strategy: pre_generated
               traffic_config:
-                signals_per_second: 100000
+                signals_per_second: 150000
                 max_signal_count: null
                 metric_weight: 0
                 trace_weight: 0
                 log_weight: 30
           exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
       # Second group of traffic generators based on on-the-fly data generation
       # derived from semantic conventions
+
+        connections:
+          - from: receiver
+            to: exporter
+
       traffic_gen2:
         quota:
           core_allocation:
@@ -62,13 +60,7 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: "urn:otel:traffic_generator:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - exporter
-                dispatch_strategy: round_robin
+            type: traffic_generator:receiver
             config:
               traffic_config:
                 signals_per_second: 100000
@@ -78,14 +70,17 @@ pipeline_groups:
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4337"
 
       # ======================================================================
       # System Under Test pipeline
       # ======================================================================
+
+        connections:
+          - from: receiver
+            to: exporter
       sut:
         quota:
           core_allocation:
@@ -96,26 +91,14 @@ pipeline_groups:
                 end: 1
         nodes:
           otlp_recv1:
-            kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - router
-                dispatch_strategy: round_robin
+            type: otlp:receiver
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4327"
                   wait_for_result: true
           otlp_recv2:
-            kind: receiver
-            plugin_urn: "urn:otel:otlp:receiver"
-            out_ports:
-              out_port:
-                destinations:
-                  - router
-                dispatch_strategy: round_robin
+            type: otlp:receiver
             config:
               protocols:
                 grpc:
@@ -123,55 +106,48 @@ pipeline_groups:
                   wait_for_result: true
 
           router:
-            kind: processor
-            plugin_urn: "urn:otel:type_router:processor"
-            out_ports:
-              logs:
-                destinations:
-                  - retry
-                dispatch_strategy: round_robin
-              metrics:
-                destinations:
-                  - metrics_exporter
-                dispatch_strategy: round_robin
-              traces:
-                destinations:
-                  - spans_exporter
-                dispatch_strategy: round_robin
+            type: type_router:processor
+            outputs: ["logs", "metrics", "traces"]
             config: {}
 
           retry:
-            kind: processor
-            plugin_urn: "urn:otel:retry:processor"
-            out_ports:
-              out_port:
-                destinations:
-                  - logs_exporter
-                dispatch_strategy: round_robin
+            type: retry:processor
             config:
               multiplier: 1.5
 
           logs_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:otlp:exporter"
+            type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4328"
               max_in_flight: 6
 
           metrics_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
+            type: noop:exporter
             config:
 
           spans_exporter:
-            kind: exporter
-            plugin_urn: "urn:otel:noop:exporter"
+            type: noop:exporter
             config:
 
 
       # ======================================================================
       # Performance No-Op pipeline to measure receiver performance
       # ======================================================================
+
+        connections:
+          - from: otlp_recv1
+            to: router
+          - from: otlp_recv2
+            to: router
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_exporter
+
       backend:
         quota:
           core_allocation:
@@ -183,19 +159,16 @@ pipeline_groups:
 
         nodes:
           receiver:
-            kind: receiver
-            plugin_urn: urn:otel:otlp:receiver
-            out_ports:
-              out_port:
-                destinations:
-                  - perf_noop
-                dispatch_strategy: round_robin
+            type: otlp:receiver
             config:
               protocols:
                 grpc:
                   listening_addr: 127.0.0.1:4328
 
           perf_noop:
-            kind: exporter
-            plugin_urn: urn:otel:noop:exporter
+            type: noop:exporter
             config: null
+
+        connections:
+          - from: receiver
+            to: perf_noop

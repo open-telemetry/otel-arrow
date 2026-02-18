@@ -5,56 +5,25 @@ settings:
 
 nodes:
   otlp_recv:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - router
-        dispatch_strategy: round_robin
+    type: otap:receiver
     config:
       listening_addr: "127.0.0.1:4327"
       wait_for_result: true
       response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
 
   otap_recv:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - otap_exporter
-        dispatch_strategy: round_robin
+    type: otap:receiver
     config:
       listening_addr: "127.0.0.1:4329"
       response_stream_channel_size: 256
 
   router:
-    kind: processor
-    plugin_urn: "urn:otel:type_router:processor"
-    out_ports:
-      logs:
-        destinations:
-          - retry
-        dispatch_strategy: round_robin
-      metrics:
-        destinations:
-          - metrics_exporter
-        dispatch_strategy: round_robin
-      traces:
-        destinations:
-          - spans_exporter
-        dispatch_strategy: round_robin
+    type: type_router:processor
+    outputs: ["logs", "metrics", "traces"]
     config: {}
 
 #  logs_filter:
-#    kind: processor
-#    plugin_urn: "urn:otel:filter:processor"
-#    out_ports:
-#      out_port:
-#        destinations:
-#          - logs_exporter
-#        dispatch_strategy: round_robin
+#    type: filter:processor
 #    config:
 #      logs:
 #        include:
@@ -64,35 +33,43 @@ nodes:
 #              value: openai
 #            - key: ios.app.state
 #              value: active
+#
+# connections:
+#   - from: logs_filter
+#     to: logs_exporter
 
   retry:
-    kind: processor
-    plugin_urn: "urn:otel:retry:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - logs_exporter
-        dispatch_strategy: round_robin
+    type: retry:processor
     config:
       multiplier: 1.5
 
   logs_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: otap:exporter
     config:
       grpc_endpoint: "http://127.0.0.1:4328"
 
   metrics_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
 
   spans_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
 
   otap_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:noop:exporter"
+    type: noop:exporter
     config:
+
+connections:
+  - from: otlp_recv
+    to: router
+  - from: otap_recv
+    to: otap_exporter
+  - from: router["logs"]
+    to: retry
+  - from: router["metrics"]
+    to: metrics_exporter
+  - from: router["traces"]
+    to: spans_exporter
+  - from: retry
+    to: logs_exporter

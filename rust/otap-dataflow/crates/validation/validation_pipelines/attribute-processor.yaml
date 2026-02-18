@@ -1,24 +1,12 @@
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - filter
-        dispatch_strategy: round_robin
+    type: "urn:otel:otlp:receiver"
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
   filter:
-    kind: processor
-    plugin_urn: "urn:otel:filter:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - debug
-        dispatch_strategy: round_robin
+    type: "urn:otel:filter:processor"
     config:
       logs:
         include:
@@ -27,13 +15,7 @@ nodes:
             - key: ios.app.state
               value: active
   debug:
-    kind: processor
-    plugin_urn: "urn:otel:attribute:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: "urn:otel:attribute:processor"
     config:
       actions:
         - action: "rename"
@@ -41,10 +23,16 @@ nodes:
           destination_key: "ios.app.state2"
           apply_to: ["signal"]
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: "urn:otel:otap:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       compression_method: none
       arrow:
         payload_compression: none
+connections:
+  - from: receiver
+    to: filter
+  - from: filter
+    to: debug
+  - from: debug
+    to: exporter

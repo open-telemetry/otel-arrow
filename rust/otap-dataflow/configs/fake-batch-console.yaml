@@ -14,13 +14,7 @@ settings:
 
 nodes:
   generator:
-    kind: receiver
-    plugin_urn: "urn:otel:traffic_generator:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - batch
-        dispatch_strategy: round_robin
+    type: traffic_generator:receiver
     config:
       traffic_config:
         max_signal_count: 10000
@@ -29,13 +23,7 @@ nodes:
         log_weight: 100
       registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
   batch:
-    kind: processor
-    plugin_urn: "urn:otel:batch:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - console
-        dispatch_strategy: round_robin
+    type: batch:processor
     config:
       otap:
         min_size: 1000
@@ -43,6 +31,11 @@ nodes:
       format: preserve
       flush_timeout: 3s
   console:
-    kind: exporter
-    plugin_urn: "urn:otel:console:exporter"
+    type: console:exporter
     config: {}
+
+connections:
+  - from: generator
+    to: batch
+  - from: batch
+    to: console

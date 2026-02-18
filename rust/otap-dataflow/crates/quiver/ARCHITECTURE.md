@@ -1144,40 +1144,21 @@ a naive per-core cap. Preliminary goals:
 ```yaml
 nodes:
   otlp_receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otlp:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
+    type: "urn:otel:otlp:receiver"
     config:
       listening_addr: "127.0.0.1:4317"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   otap_receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - durable_buffer
-        dispatch_strategy: round_robin
+    type: "urn:otel:otap:receiver"
     config:
       listening_addr: "127.0.0.1:4318"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   durable_buffer:
-    kind: processor
-    plugin_urn: "urn:otel:durable_buffer:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - otap_exporter
-          - otlp_exporter
-        dispatch_strategy: round_robin
+    type: "urn:otel:durable_buffer:processor"
     config:
       # Platform-appropriate persistent storage location
       path: /var/lib/otap/buffer
@@ -1197,20 +1178,28 @@ nodes:
         size_cap_policy: drop_oldest
 
   otap_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otap:exporter"
+    type: "urn:otel:otap:exporter"
     config:
       grpc_endpoint: "http://{{backend_hostname}}:1235"
       compression_method: zstd
       arrow:
         payload_compression: none
   otlp_exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: "urn:otel:otlp:exporter"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # Optional: timeout for RPC requests
       # timeout: "15s"
+
+connections:
+  - from: otlp_receiver
+    to: durable_buffer
+  - from: otap_receiver
+    to: durable_buffer
+  - from: durable_buffer
+    to: otap_exporter
+  - from: durable_buffer
+    to: otlp_exporter
 ```
 
 ### Example: Dual Exporters with Completion Tracking

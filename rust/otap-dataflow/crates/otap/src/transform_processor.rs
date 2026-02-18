@@ -146,7 +146,7 @@ impl TransformProcessor {
         }
     }
 
-    /// sends any result batches that were produced by the pipeline to the appropriate outports
+    /// sends any result batches that were produced by the pipeline to the appropriate output ports
     /// while managing subscriptions and context
     async fn handle_exec_result(
         &mut self,
@@ -166,7 +166,7 @@ impl TransformProcessor {
             })?;
 
         // access the batch that was the output of the call to pipeline.execute. This should
-        // eventually be sent on the default out_port
+        // eventually be sent on the default output port
         let default_otap_batch = match pipeline_result {
             Ok(otap_batch) => otap_batch,
             Err(e) => {
@@ -201,7 +201,7 @@ impl TransformProcessor {
                 source_detail: "".into(),
             })?;
 
-        // send the output of the pipeline to the default outport while juggling the context for
+        // send the output of the pipeline to the default output port while juggling the context for
         // the output of the pipeline. We need to do this b/c we'll be emitting this batch, plus
         // any routed batches, and we don't want to Ack the inbound context until we receive Acks
         // from all downstream batches (including this result)
@@ -235,7 +235,7 @@ impl TransformProcessor {
         }
         effect_handler.send_message_with_source_node(pdata).await?;
 
-        // handle any batches that need to be forwarded to a specific out_port thanks to invocation
+        // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
         for (route_name, otap_batch) in router_impl.routed.drain(..) {
             // Find the port name that matches the route name.
@@ -247,7 +247,7 @@ impl TransformProcessor {
                     processor: effect_handler.processor_id(),
                     kind: ProcessorErrorKind::Transport,
                     error: "Routing error: ".into(),
-                    source_detail: format!("out_port name {} not configured", route_name),
+                    source_detail: format!("output port name {} not configured", route_name),
                 })?
                 .clone();
 
@@ -337,6 +337,7 @@ fn create_transform_processor(
 pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: TRANSFORM_PROCESSOR_URN,
     create: create_transform_processor,
+    wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
 };
 
 #[async_trait(?Send)]
@@ -425,12 +426,13 @@ mod test {
     use otap_df_engine::{
         context::ControllerContext,
         control::{PipelineControlMsg, pipeline_ctrl_msg_channel},
+        effect_handler::SourceTagging,
         local::message::LocalSender,
         message::Sender,
         node::NodeWithPDataSender,
         testing::{
             processor::{TEST_OUT_PORT_NAME, TestContext, TestRuntime},
-            test_node,
+            test_node, test_nodes,
         },
     };
     use otap_df_pdata::{
@@ -510,7 +512,7 @@ mod test {
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
         node_config.config = config;
-        node_config.default_out_port = Some(TEST_OUT_PORT_NAME.into());
+        node_config.default_output = Some(TEST_OUT_PORT_NAME.into());
 
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
@@ -766,7 +768,7 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
-    /// test helper function to set a pdata sender on the processor wrapper for the named out_port
+    /// test helper function to set a pdata sender on the processor wrapper for the named output port
     /// returns the receiver for the channel
     fn set_pdata_sender(
         port_name: &'static str,
@@ -949,6 +951,9 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(|mut ctx| async move {
+                // Enable source node tagging to simulate multi-source wiring
+                ctx.set_source_tagging(SourceTagging::Enabled);
+
                 // Create a log record
                 let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
 
@@ -987,15 +992,104 @@ mod test {
                 let (outbound_context, _payload) = outbound_pdata.clone().into_parts();
 
                 // assert that since the pipeline did no routing, the outbound context should be
-                // same as the inbound
-                assert_eq!(inbound_context.source_node(), None);
-                assert_eq!(
-                    outbound_context.source_node(),
-                    Some("transform-processor".into())
-                );
-                inbound_context.set_source_node(Some("transform-processor".into()));
+                // same as the inbound (after adding the processor's source node)
+                assert_eq!(inbound_context.source_node(), Some(999));
+                assert_eq!(outbound_context.source_node(), Some(0));
+                inbound_context.set_source_node(0);
                 assert_eq!(inbound_context, outbound_context);
                 assert!(outbound_context.has_subscribers());
+            })
+            .validate(|_ctx| async move {})
+    }
+
+    #[test]
+    fn test_multi_source_tags_nonzero_node_id() {
+        // When needs_source_tag is enabled (simulating multi-source wiring), the
+        // processor should push a source-node frame with its own (non-zero) node ID
+        // and empty interests onto the context stack.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let query = "logs | where severity_text == \"INFO\"";
+
+        // Build the processor with node index 5 (non-zero) by allocating 6 node IDs.
+        let nodes = test_nodes(vec!["n0", "n1", "n2", "n3", "n4", "transform-processor"]);
+        let node_id = nodes[5].clone();
+        assert_eq!(node_id.index, 5);
+
+        let mut node_config = NodeUserConfig::new_processor_config(TRANSFORM_PROCESSOR_URN);
+        node_config.config = json!({ "kql_query": query });
+        node_config.default_output = Some(TEST_OUT_PORT_NAME.into());
+
+        let telemetry_registry_handle = runtime.metrics_registry();
+        let controller_context = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
+        let processor = create_transform_processor(
+            pipeline_context,
+            node_id,
+            Arc::new(node_config),
+            runtime.config(),
+        )
+        .expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                // Enable source node tagging to simulate multi-source wiring
+                ctx.set_source_tagging(SourceTagging::Enabled);
+
+                let log_records = vec![LogRecord::build().severity_text("INFO").finish()];
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                // Subscribe at node 999 with ACK interest
+                let pdata = OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+                    Interests::ACKS,
+                    TestCallData::new_with(1, 0).into(),
+                    999,
+                );
+
+                let (inbound_context, payload) = pdata.into_parts();
+                assert_eq!(inbound_context.source_node(), Some(999));
+
+                let pdata = OtapPdata::new(inbound_context, payload);
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let mut output = ctx.drain_pdata().await;
+                assert_eq!(output.len(), 1, "Should emit one transformed message");
+
+                let outbound_pdata = output.pop().unwrap();
+                let (outbound_context, _payload) = outbound_pdata.into_parts();
+
+                // The processor at node 5 should have tagged its source with empty interests
+                assert_eq!(outbound_context.source_node(), Some(5));
+                // The subscriber at node 999 is still present (the source-node frame
+                // has empty interests and does not count as a subscriber)
+                assert!(outbound_context.has_subscribers());
+
+                // Verify the stack structure: frame[0] is the subscriber,
+                // frame[1] is the source-node tag.
+                let frames = outbound_context.frames();
+                assert_eq!(frames.len(), 2);
+                // Bottom frame: the ACK subscriber at node 999
+                assert_eq!(frames[0].node_id, 999);
+                assert_eq!(frames[0].interests, Interests::ACKS);
+                // Top frame: the source-node tag at node 5 with empty interests
+                assert_eq!(frames[1].node_id, 5);
+                assert_eq!(frames[1].interests, Interests::empty());
             })
             .validate(|_ctx| async move {})
     }
@@ -1115,17 +1209,17 @@ mod test {
                     .await
                     .expect("no process error");
 
-                // get the outbound context from the default outport
+                // get the outbound context from the default output port
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 assert_ne!(inbound_context, outbound_ctx_default);
 
-                // get the outbound context from the routed outport
+                // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
                 let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
-                // simulate an Ack coming from the message that got sent on the default out port
+                // simulate an Ack coming from the message that got sent on the default output port
                 send_ack(&mut ctx, outbound_ctx_default, SignalType::Logs)
                     .await
                     .unwrap();
@@ -1161,7 +1255,7 @@ mod test {
     #[test]
     fn test_nack_with_subscribers_with_routing_downstream_default_error() {
         // Test that we correctly Nack the inbound message when the batch that gets sent
-        // via the default outport is Nack'd by something downstream of this processor
+        // via the default output port is Nack'd by something downstream of this processor
         let runtime = TestRuntime::<OtapPdata>::new();
         let query = r#"logs
             | if (severity_text == "ERROR") {
@@ -1193,17 +1287,17 @@ mod test {
                     .await
                     .expect("no process error");
 
-                // get the outbound context from the default outport
+                // get the outbound context from the default output port
                 let (outbound_ctx_default, _) = ctx.drain_pdata().await.pop().unwrap().into_parts();
                 assert_ne!(inbound_context, outbound_ctx_default);
 
-                // get the outbound context from the routed outport
+                // get the outbound context from the routed output port
                 let (outbound_ctx_routed, _) = error_port_rx.recv().await.unwrap().into_parts();
 
                 let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
                 ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
 
-                // simulate an Nack coming from the message that got sent on the default out port
+                // simulate an Nack coming from the message that got sent on the default output port
                 send_nack(
                     &mut ctx,
                     outbound_ctx_default,
@@ -1221,7 +1315,7 @@ mod test {
                     .unwrap();
 
                 // now ensure that we receive a Nack for the inbound b/c one of the downstream
-                // messages that was sent out default out port was Nack'd
+                // messages sent on the default output port were Nack'd
                 let nack_msg = pipeline_ctrl_rx.recv().await.unwrap();
                 match nack_msg {
                     PipelineControlMsg::DeliverNack { node_id, nack } => {

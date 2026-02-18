@@ -2,45 +2,34 @@ settings:
   default_pipeline_ctrl_msg_channel_size: 100
   default_node_ctrl_msg_channel_size: 100
   default_pdata_channel_size: 100
-
 nodes:
   receiver:
-    kind: receiver
-    plugin_urn: "urn:otel:otap:receiver"
-    out_ports:
-      out_port:
-        destinations:
-          - attr
-        dispatch_strategy: round_robin
+    type: urn:otel:otap:receiver
     config:
-      listening_addr: "0.0.0.0:4317"
+      listening_addr: 0.0.0.0:4317
       response_stream_channel_size: 100
       compression_method: zstd
       wait_for_result: true
-
   attr:
-    kind: processor
-    plugin_urn: "urn:otel:attribute:processor"
-    out_ports:
-      out_port:
-        destinations:
-          - exporter
-        dispatch_strategy: round_robin
+    type: urn:otel:attribute:processor
     config:
       actions:
-        - action: "rename"
-          source_key: "ios.app.state"
-          destination_key: "ios.app.state2"
-          apply_to: ["signal"]
-
+      - action: rename
+        source_key: ios.app.state
+        destination_key: ios.app.state2
+        apply_to:
+        - signal
   exporter:
-    kind: exporter
-    plugin_urn: "urn:otel:otlp:exporter"
+    type: urn:otel:otlp:exporter
     config:
-      grpc_endpoint: "http://{{backend_hostname}}:1235"
+      grpc_endpoint: http://{{backend_hostname}}:1235
       compression_method: gzip
-
+connections:
+- from: receiver
+  to: attr
+- from: attr
+  to: exporter
 service:
   telemetry:
     logs:
-      level: "info"
+      level: info

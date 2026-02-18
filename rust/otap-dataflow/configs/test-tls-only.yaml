@@ -5,13 +5,7 @@
 
   nodes:
     receiver:
-      kind: receiver
-      plugin_urn: "urn:otel:otlp:receiver"
-      out_ports:
-        out_port:
-          destinations:
-            - exporter
-          dispatch_strategy: round_robin
+      type: otlp:receiver
       config:
         protocols:
           grpc:
@@ -21,10 +15,13 @@
               key_file: "./test-certs/server.key"
 
     exporter:
-      kind: exporter
-      plugin_urn: "urn:otel:otlp:exporter"
+      type: otlp:exporter
       config:
         grpc_endpoint: "https://127.0.0.1:4319"
         tls:
           ca_file: "./test-certs/ca.crt"
           include_system_ca_certs_pool: false
+
+  connections:
+    - from: receiver
+      to: exporter

@@ -360,9 +360,7 @@ mod tests {
             }],
         };
         let suv = vec![OtlpProtoMessage::Logs(logs)];
-        let check = ValidationInstructions::AttributeNoDuplicate {
-            domains: vec![AttributeDomain::Signal],
-        };
+        let check = ValidationInstructions::AttributeNoDuplicate;
         assert!(!check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
     }
     #[test]
