@@ -19,7 +19,7 @@ groups:
                 metric_weight: 0
                 trace_weight: 0
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-        
+
           kql:
             type: urn:microsoft:recordset_kql:processor
             config:
@@ -30,17 +30,17 @@ groups:
                     strcat(Body, "\n\nTroubleshooting resource errors: https://docs.example.com/exporter-errors#kql-processor"),
                     Body
                 )
-        
+
           debug:
             type: debug:processor
             config:
               verbosity: detailed
               mode: signal
-        
+
           noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: kql

@@ -13,7 +13,7 @@ groups:
         # Run with:   ./target/release/df_engine --config configs/otlp-durable-buffer-debug.yaml
         # Send data:  telemetrygen logs --otlp-endpoint localhost:4317 --otlp-insecure --logs 10
         # Verify:     cat /tmp/durable_buffer_debug.log
-        
+
         policies:
           channel_capacity:
               control:
@@ -26,7 +26,7 @@ groups:
             type: otlp:receiver
             config:
               listening_addr: "127.0.0.1:4317"
-        
+
           durable_buffer:
             type: durable_buffer:processor
             config:
@@ -36,16 +36,16 @@ groups:
               size_cap_policy: backpressure
               # Convert to Arrow so debug processor can display the data
               otlp_handling: convert_to_arrow
-        
+
           debug:
             type: debug:processor
             config:
               verbosity: detailed
               output: /tmp/durable_buffer_debug.log
-        
+
           noop:
             type: noop:exporter
-        
+
         connections:
           - from: receiver
             to: durable_buffer

@@ -45,10 +45,9 @@ groups:
           noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: debug
           - from: debug
             to: noop
-        

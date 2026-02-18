@@ -26,7 +26,7 @@ groups:
             type: otap:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
-        
+
         connections:
           - from: receiver
             to: exporter

@@ -11,7 +11,7 @@ groups:
                   pipeline: 100
                 pdata: 128
 
-        
+
           nodes:
             receiver:
               type: otlp:receiver
@@ -22,7 +22,7 @@ groups:
                     tls:
                       cert_file: "./test-certs/server.crt"
                       key_file: "./test-certs/server.key"
-        
+
             exporter:
               type: otlp:exporter
               config:
@@ -30,7 +30,7 @@ groups:
                 tls:
                   ca_file: "./test-certs/ca.crt"
                   include_system_ca_certs_pool: false
-        
+
           connections:
             - from: receiver
               to: exporter

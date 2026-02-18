@@ -1,5 +1,5 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
@@ -13,13 +13,13 @@ groups:
         # Run with:   ./target/release/df_engine --config configs/otap-durable-buffer-otap.yaml
         #
         # To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
-        
+
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
@@ -27,7 +27,7 @@ groups:
             config:
               listening_addr: "127.0.0.1:4317"
               response_stream_channel_size: 256
-        
+
           durable_buffer:
             type: durable_buffer:processor
             config:
@@ -41,12 +41,12 @@ groups:
               retention_size_cap: "10GB"
               # What to do when size cap is exceeded: backpressure or drop_oldest
               size_cap_policy: backpressure
-        
+
           exporter:
             type: otap:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:1235"
-        
+
         connections:
           - from: receiver
             to: durable_buffer

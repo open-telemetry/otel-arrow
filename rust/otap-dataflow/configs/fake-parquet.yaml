@@ -1,15 +1,15 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
       main:
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
@@ -27,10 +27,10 @@ groups:
                 file:
                   base_uri: /tmp
               partitioning_strategies:
-              - schema_metadata: ["_part_id"]
+                - schema_metadata: [ "_part_id" ]
               writer_options:
                 flush_when_older_than: 10s
-        
+
         connections:
           - from: receiver
             to: exporter

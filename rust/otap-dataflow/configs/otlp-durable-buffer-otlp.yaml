@@ -15,7 +15,7 @@ groups:
         # Run with:   ./target/release/df_engine --config configs/otlp-durable-buffer-otlp.yaml
         #
         # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
-        
+
         policies:
           channel_capacity:
             control:
@@ -51,7 +51,7 @@ groups:
             type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
-        
+
         connections:
           - from: receiver
             to: durable_buffer

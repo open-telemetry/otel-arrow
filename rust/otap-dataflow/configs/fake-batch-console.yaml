@@ -19,7 +19,7 @@ groups:
                 node: 100
                 pipeline: 100
               pdata: 128
-        
+
         nodes:
           generator:
             type: traffic_generator:receiver
@@ -41,7 +41,7 @@ groups:
           console:
             type: console:exporter
             config: {}
-        
+
         connections:
           - from: generator
             to: batch

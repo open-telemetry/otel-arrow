@@ -9,7 +9,7 @@ groups:
         # This configuration demonstrates gRPC-only mode for the OTLP receiver.
         # For HTTP-only, see otlp-http-otlp.yaml
         # For both protocols enabled, see otlp-both-otlp.yaml
-        
+
         policies:
           channel_capacity:
             control:
@@ -68,7 +68,7 @@ groups:
               #   # Client identity for mTLS (optional)
               #   cert_file: "/path/to/client.crt"   # or `cert_pem: | ...`
               #   key_file: "/path/to/client.key"    # or `key_pem: | ...`
-        
+
         connections:
           - from: receiver
             to: exporter

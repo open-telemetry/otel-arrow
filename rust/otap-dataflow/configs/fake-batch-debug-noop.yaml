@@ -1,5 +1,5 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
@@ -7,10 +7,10 @@ groups:
         # Shows the batch processor.
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
@@ -40,7 +40,7 @@ groups:
           noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: batch

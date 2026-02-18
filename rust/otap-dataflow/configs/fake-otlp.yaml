@@ -27,7 +27,7 @@ groups:
             type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4317"
-        
+
         connections:
           - from: receiver
             to: exporter

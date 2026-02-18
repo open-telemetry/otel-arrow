@@ -22,7 +22,7 @@ groups:
           perf_noop:
             type: noop:exporter
             config:
-        
+
         connections:
           - from: receiver
             to: perf_noop

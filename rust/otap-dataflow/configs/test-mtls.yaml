@@ -1,5 +1,5 @@
 version: otel_dataflow/v1
-engine: {}
+engine: { }
 groups:
   default:
     pipelines:
@@ -14,10 +14,10 @@ groups:
         
         policies:
           channel_capacity:
-              control:
-                node: 100
-                pipeline: 100
-              pdata: 128
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
         nodes:
           receiver:
@@ -31,24 +31,24 @@ groups:
                     # Server identity (required for TLS)
                     cert_file: "./test-certs/server.crt"
                     key_file: "./test-certs/server.key"
-        
+
                     # Client certificate verification for mTLS
                     client_ca_file: "./test-certs/ca.crt"
                     include_system_ca_certs_pool: false
-        
+
           exporter:
             type: otlp:exporter
             config:
               # Send to another OTLP receiver with mTLS enabled
               # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)
               grpc_endpoint: "https://127.0.0.1:4319"
-        
+
               # Exporter mTLS configuration (client-side)
               tls:
                 # Trust settings for verifying the server certificate
                 ca_file: "./test-certs/ca.crt"
                 include_system_ca_certs_pool: false
-        
+
                 # Client identity for mTLS (these make it mTLS instead of just TLS)
                 cert_file: "./test-certs/client.crt"
                 key_file: "./test-certs/client.key"
