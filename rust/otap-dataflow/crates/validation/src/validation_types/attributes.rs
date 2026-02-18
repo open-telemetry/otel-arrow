@@ -120,9 +120,10 @@ pub(crate) fn validate_require_key_values(
         })
 }
 
-/// Validate that no attribute list in the selected domains contains duplicate keys.
-pub(crate) fn validate_no_duplicate_keys(message: &OtlpProtoMessage, domains: &[AttributeDomain]) -> bool {
-    collect_attributes(message, domains)
+/// Validate that no attribute list contains duplicate keys.
+pub(crate) fn validate_no_duplicate_keys(message: &OtlpProtoMessage) -> bool {
+    let domains = vec![AttributeDomain::Resource, AttributeDomain::Scope, AttributeDomain::Signal]
+    collect_attributes(message, &domains)
         .into_iter()
         .all(|attrs| {
             let mut seen = std::collections::HashSet::new();

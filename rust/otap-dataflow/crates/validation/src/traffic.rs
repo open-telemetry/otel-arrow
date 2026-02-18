@@ -33,36 +33,36 @@ pub enum MessageType {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Generator {
     /// Type to use for the system-under-validation exporter.
-    pub suv_exporter_type: MessageType,
+    pub(crate) suv_exporter_type: MessageType,
     /// Endpoint the system-under-validation exporter should target.
-    pub suv_endpoint: String,
+    pub(crate) suv_endpoint: String,
     /// Endpoint the control exporter should target.
-    pub control_endpoint: String,
+    pub(crate) control_endpoint: String,
     /// Maximum number of signals the load generator should emit.
-    pub max_signal_count: usize,
+    pub(crate) max_signal_count: usize,
     /// Maximum batch size emitted by the load generator.
-    pub max_batch_size: usize,
+    pub(crate) max_batch_size: usize,
     /// Signal emission rate (per second) for the load generator.
-    pub signals_per_second: usize,
+    pub(crate) signals_per_second: usize,
     /// Weight for metrics generation (0-100).
-    pub metric_weight: u32,
+    pub(crate) metric_weight: u32,
     /// Weight for trace generation (0-100).
-    pub trace_weight: u32,
+    pub(crate) trace_weight: u32,
     /// Weight for log generation (0-100).
-    pub log_weight: u32,
+    pub(crate) log_weight: u32,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
-    pub suv_receiver_type: MessageType,
+    pub(crate) suv_receiver_type: MessageType,
     /// Listening address for the system-under-validation receiver.
-    pub suv_listening_addr: String,
+    pub(crate) suv_listening_addr: String,
     /// Listening address for the control receiver.
-    pub control_listening_addr: String,
+    pub(crate) control_listening_addr: String,
     /// List of validations to make with the captured data
-    pub validate: Vec<ValidationInstructions>,
+    pub(crate) validate: Vec<ValidationInstructions>,
 }
 
 impl Generator {

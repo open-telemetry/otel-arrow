@@ -77,10 +77,7 @@ pub enum ValidationInstructions {
         pairs: Vec<KeyValue>,
     },
     /// Ensure no duplicate attribute keys within all attribute lists.
-    AttributeNoDuplicate {
-        /// Domains to inspect.
-        domains: Vec<AttributeDomain>,
-    },
+    AttributeNoDuplicate
 }
 impl ValidationInstructions {
     /// Evaluate this validation against control and system-under-validation messages.
@@ -131,8 +128,8 @@ impl ValidationInstructions {
             ValidationInstructions::AttributeRequireKeyValue { domains, pairs } => {
                 validate_require_key_values(received_suv_message, domains, pairs)
             }
-            ValidationInstructions::AttributeNoDuplicate { domains } => {
-                validate_no_duplicate_keys(received_suv_message, domains)
+            ValidationInstructions::AttributeNoDuplicate => {
+                validate_no_duplicate_keys(received_suv_message)
             }
         }
     }
