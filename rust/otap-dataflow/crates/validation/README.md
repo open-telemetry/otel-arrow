@@ -41,9 +41,12 @@ e.g. `receiver`, `exporter`.
    Available knobs on `Generator`:
 
    - `logs()`, `metrics()`, `traces()` - choose what signal type to emit
-   - `fixed_count(usize)` - sets max signals to emit before completion (optional; defaults to 2000).
-   - `max_batch_size(usize)` - controls batch size (optional; defaults to 100).
-   - `otlp_grpc()` / `otap_grpc()` - choose export protocol (optional; OTLP by default).
+   - `fixed_count(usize)` - sets max signals to emit before completion
+        - optional; defaults to 2000
+   - `max_batch_size(usize)` - controls batch size
+        - optional; defaults to 100
+   - `otlp_grpc()` / `otap_grpc()` - choose export protocol
+        - optional; OTLP by default
 
 4) **Configure capture & validations**:
 
@@ -106,8 +109,10 @@ e.g. `receiver`, `exporter`.
 - `pipeline(Pipeline)` - provide the system-under-validation pipeline (required).
 - `input(Generator)` - provide traffic generation config (required).
 - `observe(Capture)` - provide capture/validation config (required).
-- `expect_within(Duration)` - set total runtime budget (optional; default 140s).
-- `run()` - renders template, launches pipelines, waits for readiness, enforces timeout, and returns `Result<(), ValidationError>`.
+- `expect_within(Duration)` - set max runtime
+    - optional; default: 140s
+- `run()` - renders template, launches pipelines, waits for readiness
+    - returns `Result<(), ValidationError>` if invalid or timeout
 
 ## Pipeline
 
@@ -123,11 +128,15 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Pipeline::from_file(path)` / `from_yaml(str)` - load the SUV pipeline YAML.
-- `wire_otlp_grpc_receiver(node_name)` - mark the node whose `protocols.grpc.listening_addr` will be rewritten.
-- `wire_otlp_grpc_exporter(node_name)` - mark the exporter whose `grpc_endpoint` will be rewritten.
-- `wire_otap_grpc_receiver(node_name)` / `wire_otap_grpc_exporter(node_name)` - OTAP variants.
+- `wire_otlp_grpc_receiver(node_name)` - mark the node whose
+`protocols.grpc.listening_addr` will be rewritten.
+- `wire_otlp_grpc_exporter(node_name)` - mark the exporter whose
+`grpc_endpoint` will be rewritten.
+- `wire_otap_grpc_receiver(node_name)` / `wire_otap_grpc_exporter(node_name)`
+    - OTAP variants.
 
-> NOTE: The node names you pass to `wire_*` must match the keys under `nodes:` in your pipeline YAML.
+> NOTE: The node names you pass to `wire_*` must match the keys under
+`nodes:` in your pipeline YAML.
 
 ## Generator
 
@@ -143,9 +152,12 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Generator::logs()`, `metrics()`, `traces()` - constructors for signal type
-- `fixed_count(usize)` - sets max signals to emit before completion (default 2000)
-- `max_batch_size(usize)` - controls batch size(default 100)
-- `otlp_grpc()` / `otap_grpc()` - choose export protocol (default OTLP)
+- `fixed_count(usize)` - sets max signals to emit before completion
+    - default: 2000
+- `max_batch_size(usize)` - controls batch size
+    - default: 100
+- `otlp_grpc()` / `otap_grpc()` - choose export protocol 
+    - default: OTLP
 
 ## Capture
 
@@ -168,12 +180,14 @@ e.g. `receiver`, `exporter`.
       ]);
   ```
 
-- `Capture::otlp_grpc()`, `Capture::otap_grpc()` - optional protocol switch. (default OTLP)
-- `Capture::validate(Vec<ValidationInstructions>)` - optional override of validations. (default [Equivalence])
+- `Capture::otlp_grpc()`, `Capture::otap_grpc()` - switch protocols
+    - default: OTLP
+- `Capture::validate(Vec<ValidationInstructions>)` - define validation instructions
+    - default: [Equivalence]
 
 ### Validation instructions (used with `Capture::validate`)
 
-- `Equivalence`: control and SUV outputs are semantically equal (uses pdata equivalence).
+- `Equivalence`: control and SUV outputs are semantically equal
 - `SignalDrop { min_drop_ratio, max_drop_ratio }`: asserts the SUV emitted fewer signals within optional ratio bounds.
 - `BatchItems { min_batch_size, max_batch_size, timeout }`: bounds the item count per message; `min/max` optional; `timeout` optional
 - `BatchBytes { min_bytes, max_bytes, timeout }`: bounds encoded message size; `min/max` optional; `timeout` optional
