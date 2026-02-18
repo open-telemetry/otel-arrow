@@ -1,6 +1,6 @@
 # Validation Framework
 
-End-to-end harness for standing up a **system-under-validation (SUV)** 
+End-to-end harness for standing up a **system-under-validation (SUV)**
 pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
 asserting invariants.
 
@@ -11,9 +11,11 @@ asserting invariants.
 - `Generator` / `Capture`: configure traffic emission and capture/validation.
 
 ## Quick setup (end to end)
+
 1) **Author your SUV pipeline YAML** (the thing you want to validate). Use
 logical node names for the receiver/exporter you intend to rewire,
 e.g. `receiver`, `exporter`.
+
 2) **Wire it dynamically** in the test:
    ```rust
    use otap_df_validation::pipeline::Pipeline;
@@ -23,6 +25,7 @@ e.g. `receiver`, `exporter`.
        .wire_otlp_grpc_receiver("receiver")   // node name in your YAML
        .wire_otlp_grpc_exporter("exporter");  // node name in your YAML
    ```
+
 3) **Configure traffic generation**:
    ```rust
    use otap_df_validation::traffic::Generator;
@@ -78,6 +81,7 @@ e.g. `receiver`, `exporter`.
    ```
 
 ## Scenario
+
 - **Scenario example**
   ```rust
   use otap_df_validation::scenario::Scenario;
@@ -100,6 +104,7 @@ e.g. `receiver`, `exporter`.
 - `run()` - renders template, launches pipelines, waits for readiness, enforces timeout, and returns `Result<(), ValidationError>`.
 
 ## Pipeline
+
 - **Pipeline example**
   ```rust
   use otap_df_validation::pipeline::Pipeline;
@@ -118,6 +123,7 @@ e.g. `receiver`, `exporter`.
 > NOTE: The node names you pass to `wire_*` must match the keys under `nodes:` in your pipeline YAML.
 
 ## Generator
+
 - **Generator example**
   ```rust
   use otap_df_validation::traffic::Generator;
@@ -134,6 +140,7 @@ e.g. `receiver`, `exporter`.
 - `otlp_grpc()` / `otap_grpc()` - choose export protocol (default OTLP)
 
 ## Capture
+
 - **Capture example (with validations)**
   ```rust
   use otap_df_validation::traffic::Capture;
@@ -169,4 +176,5 @@ e.g. `receiver`, `exporter`.
 `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal` (see `validation_types::attributes`).
 
 ## Troubleshooting
+
 - **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are called before `Scenario::run()`.
