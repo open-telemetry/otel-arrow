@@ -20,7 +20,7 @@ Main public model types:
 - `engine::EngineConfig`: engine-wide section (`engine: ...`)
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
-- `policy::Policies`: flow/health/telemetry/resources policy families
+- `policy::Policies`: channel-capacity/health/telemetry/resources policy families
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 - `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
@@ -76,9 +76,9 @@ Resolved model highlights:
 
 Policy families:
 
-- `policies.flow.channel_capacity.control.node`
-- `policies.flow.channel_capacity.control.pipeline`
-- `policies.flow.channel_capacity.pdata`
+- `policies.channel_capacity.control.node`
+- `policies.channel_capacity.control.pipeline`
+- `policies.channel_capacity.pdata`
 - `policies.health`
 - `policies.telemetry.pipeline_metrics`
 - `policies.telemetry.tokio_metrics`
@@ -87,9 +87,9 @@ Policy families:
 
 Defaults:
 
-- `flow.channel_capacity.control.node = 256`
-- `flow.channel_capacity.control.pipeline = 256`
-- `flow.channel_capacity.pdata = 128`
+- `channel_capacity.control.node = 256`
+- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.pdata = 128`
 - telemetry policy booleans default to `true`
 - `resources.core_allocation = all_cores`
 
@@ -107,7 +107,7 @@ Observability note:
 
 Resolution semantics:
 
-- precedence applies per policy family (`flow`, `health`, `telemetry`, `resources`)
+- precedence applies per policy family (`channel_capacity`, `health`, `telemetry`, `resources`)
 - no cross-scope deep merge of nested fields
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not

@@ -29,7 +29,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{FlowPolicy, TelemetryPolicy},
+    policy::{ChannelCapacityPolicy, TelemetryPolicy},
 };
 use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
@@ -373,7 +373,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         self: &PipelineFactory<PData>,
         pipeline_ctx: PipelineContext,
         mut config: PipelineConfig,
-        flow_policy: FlowPolicy,
+        channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
@@ -465,8 +465,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 &base_ctx,
                                 node_id_for_create,
                                 node_config.clone(),
-                                flow_policy.channel_capacity.control.node,
-                                flow_policy.channel_capacity.pdata,
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
                             )
                         },
                     )?;
@@ -490,8 +490,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 &base_ctx,
                                 node_id_for_create,
                                 node_config.clone(),
-                                flow_policy.channel_capacity.control.node,
-                                flow_policy.channel_capacity.pdata,
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
                             )
                         },
                     )?;
@@ -515,8 +515,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 &base_ctx,
                                 node_id_for_create,
                                 node_config.clone(),
-                                flow_policy.channel_capacity.control.node,
-                                flow_policy.channel_capacity.pdata,
+                                channel_capacity_policy.control.node,
+                                channel_capacity_policy.pdata,
                             )
                         },
                     )?;
@@ -534,8 +534,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let edges = collect_hyper_edges_runtime_from_connections(&config, &build_state)?;
 
         // First pass: plan hyper-edge wiring to avoid multiple mutable borrows
-        let buffer_size = NonZeroUsize::new(flow_policy.channel_capacity.pdata)
-            .expect("flow.channel_capacity.pdata must be non-zero");
+        let buffer_size = NonZeroUsize::new(channel_capacity_policy.pdata)
+            .expect("channel_capacity.pdata must be non-zero");
         let nodes = std::mem::take(&mut build_state.nodes);
         let mut pipeline = RuntimePipeline::new(
             config,

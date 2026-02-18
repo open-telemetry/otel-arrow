@@ -49,7 +49,7 @@ use otap_df_config::engine::{
     OBSERVABILITY_INTERNAL_PIPELINE_GROUP_ID, OBSERVABILITY_INTERNAL_PIPELINE_ID, OtelDataflowSpec,
     ResolvedPipelineConfig, ResolvedPipelineRole,
 };
-use otap_df_config::policy::{CoreAllocation, FlowPolicy, TelemetryPolicy};
+use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
@@ -281,7 +281,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         }
 
         for pipeline_entry in pipelines {
-            let flow_policy = pipeline_entry.policies.flow;
+            let channel_capacity_policy = pipeline_entry.policies.channel_capacity;
             let telemetry_policy = pipeline_entry.policies.telemetry;
             let resources_policy = pipeline_entry.policies.resources;
             let pipeline_group_id = pipeline_entry.pipeline_group_id;
@@ -300,7 +300,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     core_id: core_id.id,
                 };
                 let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) =
-                    pipeline_ctrl_msg_channel(flow_policy.channel_capacity.control.pipeline);
+                    pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
                 ctrl_msg_senders.push(pipeline_ctrl_msg_tx.clone());
 
                 let pipeline_config = pipeline.clone();
@@ -326,7 +326,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 let run_key = pipeline_key.clone();
                 let engine_tracing_setup = telemetry_system.engine_tracing_setup();
                 let engine_evt_reporter = engine_evt_reporter.clone();
-                let effective_flow_policy = flow_policy.clone();
+                let effective_channel_capacity_policy = channel_capacity_policy.clone();
                 let effective_telemetry_policy = telemetry_policy.clone();
                 let handle = thread::Builder::new()
                     .name(thread_name.clone())
@@ -335,7 +335,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                             run_key,
                             core_id,
                             pipeline_config,
-                            effective_flow_policy,
+                            effective_channel_capacity_policy,
                             effective_telemetry_policy,
                             pipeline_factory,
                             pipeline_handle,
@@ -577,15 +577,15 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         metrics_reporter: &MetricsReporter,
         tracing_setup: TracingSetup,
     ) -> Result<Option<(String, thread::JoinHandle<Result<Vec<()>, Error>>)>, Error> {
-        let (internal_config, flow_policy, telemetry_policy): (
+        let (internal_config, channel_capacity_policy, telemetry_policy): (
             PipelineConfig,
-            FlowPolicy,
+            ChannelCapacityPolicy,
             TelemetryPolicy,
         ) = match observability_pipeline {
             Some(config) if config.role == ResolvedPipelineRole::ObservabilityInternal => {
-                let flow_policy = config.policies.flow;
+                let channel_capacity_policy = config.policies.channel_capacity;
                 let telemetry_policy = config.policies.telemetry;
-                (config.pipeline, flow_policy, telemetry_policy)
+                (config.pipeline, channel_capacity_policy, telemetry_policy)
             }
             Some(_) => {
                 // Note: This path is internal-only and should be filtered by caller.
@@ -618,7 +618,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         // Create control message channel for internal pipeline
         let (internal_ctrl_tx, internal_ctrl_rx) =
-            pipeline_ctrl_msg_channel(flow_policy.channel_capacity.control.pipeline);
+            pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
@@ -626,7 +626,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         let thread_name = "internal-pipeline".to_string();
         let internal_evt_reporter = engine_evt_reporter.clone();
         let internal_metrics_reporter = metrics_reporter.clone();
-        let internal_flow_policy = flow_policy;
+        let internal_channel_capacity_policy = channel_capacity_policy;
         let internal_telemetry_policy = telemetry_policy;
 
         let handle = thread::Builder::new()
@@ -636,7 +636,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                     its_key,
                     its_core,
                     internal_config,
-                    internal_flow_policy,
+                    internal_channel_capacity_policy,
                     internal_telemetry_policy,
                     pipeline_factory,
                     internal_pipeline_ctx,
@@ -683,7 +683,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
         pipeline_config: PipelineConfig,
-        flow_policy: FlowPolicy,
+        channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -733,7 +733,7 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
                 .build(
                     pipeline_context.clone(),
                     pipeline_config.clone(),
-                    flow_policy,
+                    channel_capacity_policy,
                     telemetry_policy,
                     its_settings,
                 )

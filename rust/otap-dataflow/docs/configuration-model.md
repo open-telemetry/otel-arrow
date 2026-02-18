@@ -82,8 +82,7 @@ version: otel_dataflow/v1
 groups:
   ingest:
     policies:
-      flow:
-        channel_capacity:
+      channel_capacity:
           control:
             node: 256
             pipeline: 256
@@ -172,7 +171,7 @@ engine:
 Optional observability policies are supported at:
 `engine.observability.pipeline.policies` for:
 
-- `flow`
+- `channel_capacity`
 - `health`
 - `telemetry`
 
@@ -180,12 +179,11 @@ Optional observability policies are supported at:
 
 ## Policy Hierarchy
 
-Policies include flow, health, runtime telemetry, and resources controls:
+Policies include channel capacity, health, runtime telemetry, and resources controls:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 256
         pipeline: 256
@@ -210,9 +208,9 @@ Resolution order:
 
 Defaults at top-level:
 
-- `flow.channel_capacity.control.node = 256`
-- `flow.channel_capacity.control.pipeline = 256`
-- `flow.channel_capacity.pdata = 128`
+- `channel_capacity.control.node = 256`
+- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.pdata = 128`
 - `telemetry.pipeline_metrics = true`
 - `telemetry.tokio_metrics = true`
 - `telemetry.channel_metrics = true`
@@ -220,7 +218,7 @@ Defaults at top-level:
 
 Resolution semantics:
 
-- precedence is applied at policy-family level (`flow`, `health`, `telemetry`, `resources`)
+- precedence is applied at policy-family level (`channel_capacity`, `health`, `telemetry`, `resources`)
 - selected lower scope replaces upper scope for that family
 - no cross-scope deep merge of nested fields
 - policy objects are default-filled: if a lower-scope `policies` block exists,
@@ -313,7 +311,7 @@ Config loading validates:
 - Missing source/destination nodes in connections.
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
-- Non-zero flow channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
 - Root schema version compatibility (`version: otel_dataflow/v1`).
 - Observability constraints (`engine.observability.pipeline.policies.resources` is rejected).
 

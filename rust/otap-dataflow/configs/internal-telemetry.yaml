@@ -1,7 +1,6 @@
 version: otel_dataflow/v1
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 256
         pipeline: 256
@@ -21,8 +20,7 @@ engine:
   observability:
     pipeline:
       policies:
-        flow:
-          channel_capacity:
+        channel_capacity:
             control:
               node: 64
               pipeline: 64

@@ -13,8 +13,7 @@ groups:
         # Run with:   ./target/release/df_engine --config configs/fake-durable-buffer-noop.yaml
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

@@ -6,8 +6,7 @@ groups:
       main:
         # Shows the batch processor.
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

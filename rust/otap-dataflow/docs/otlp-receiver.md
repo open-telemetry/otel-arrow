@@ -134,15 +134,14 @@ regardless of which protocol clients use.
 #### Tuning Examples
 
 The `max_concurrent_requests` setting interacts with downstream pipeline capacity
-(configured via `policies.flow.channel_capacity.pdata`). Here are
+(configured via `policies.channel_capacity.pdata`). Here are
 common scenarios:
 
 ##### Scenario 1: Full Auto-Tuning (Recommended Default)
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100  # Downstream capacity
 
 config:
@@ -165,8 +164,7 @@ Result:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100
 
 config:
@@ -188,8 +186,7 @@ Result:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100
 
 config:
@@ -211,8 +208,7 @@ Result:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100
 
 config:
@@ -236,8 +232,7 @@ Result:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100
 
 config:
@@ -256,8 +251,7 @@ Result:
 
 ```yaml
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       pdata: 100
 
 config:

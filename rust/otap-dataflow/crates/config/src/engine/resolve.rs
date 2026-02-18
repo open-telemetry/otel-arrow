@@ -6,7 +6,7 @@
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::health::HealthPolicy;
 use crate::pipeline::PipelineConfig;
-use crate::policy::{FlowPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
 use crate::{PipelineGroupId, PipelineId};
 
 /// Synthetic pipeline-group id used by the engine observability pipeline.
@@ -107,9 +107,9 @@ impl OtelDataflowSpec {
                     .get(&pipeline_id)
                     .expect("pipeline collected during resolve must still exist in group map")
                     .clone();
-                let flow_policy = self
-                    .resolve_flow_policy(&pipeline_group_id, &pipeline_id)
-                    .expect("effective flow policy must resolve for existing pipeline");
+                let channel_capacity_policy = self
+                    .resolve_channel_capacity_policy(&pipeline_group_id, &pipeline_id)
+                    .expect("effective channel capacity policy must resolve for existing pipeline");
                 let health_policy = self
                     .resolve_health_policy(&pipeline_group_id, &pipeline_id)
                     .expect("effective health policy must resolve for existing pipeline");
@@ -124,7 +124,7 @@ impl OtelDataflowSpec {
                     pipeline_id,
                     pipeline,
                     policies: Policies {
-                        flow: flow_policy,
+                        channel_capacity: channel_capacity_policy,
                         health: health_policy,
                         telemetry: telemetry_policy,
                         resources: resources_policy,
@@ -135,7 +135,7 @@ impl OtelDataflowSpec {
             .collect();
 
         if let Some(pipeline) = self.engine.observability.pipeline.clone() {
-            let flow_policy = self.resolve_observability_flow_policy();
+            let channel_capacity_policy = self.resolve_observability_channel_capacity_policy();
             let health_policy = self.resolve_observability_health_policy();
             let telemetry_policy = self.resolve_observability_telemetry_policy();
             pipelines.push(ResolvedPipelineConfig {
@@ -143,7 +143,7 @@ impl OtelDataflowSpec {
                 pipeline_id: OBSERVABILITY_INTERNAL_PIPELINE_ID.into(),
                 pipeline: pipeline.into_pipeline_config(),
                 policies: Policies {
-                    flow: flow_policy,
+                    channel_capacity: channel_capacity_policy,
                     health: health_policy,
                     telemetry: telemetry_policy,
                     resources: ResourcesPolicy::default(),
@@ -158,26 +158,31 @@ impl OtelDataflowSpec {
         }
     }
 
-    /// Resolves the effective flow policy for a pipeline.
+    /// Resolves the effective channel capacity policy for a pipeline.
     ///
     /// Precedence:
     /// 1. pipeline-level policies
     /// 2. group-level policies
     /// 3. top-level policies
     #[must_use]
-    fn resolve_flow_policy(
+    fn resolve_channel_capacity_policy(
         &self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
-    ) -> Option<FlowPolicy> {
+    ) -> Option<ChannelCapacityPolicy> {
         let pipeline_group = self.groups.get(pipeline_group_id)?;
         let pipeline = pipeline_group.pipelines.get(pipeline_id)?;
 
         pipeline
             .policies()
-            .map(|p| p.flow.clone())
-            .or_else(|| pipeline_group.policies.as_ref().map(|p| p.flow.clone()))
-            .or_else(|| Some(self.policies.flow.clone()))
+            .map(|p| p.channel_capacity.clone())
+            .or_else(|| {
+                pipeline_group
+                    .policies
+                    .as_ref()
+                    .map(|p| p.channel_capacity.clone())
+            })
+            .or_else(|| Some(self.policies.channel_capacity.clone()))
     }
 
     /// Resolves the effective health policy for a pipeline.
@@ -256,19 +261,22 @@ impl OtelDataflowSpec {
             .or_else(|| Some(self.policies.resources.clone()))
     }
 
-    /// Resolves the effective flow policy for the engine observability pipeline.
+    /// Resolves the effective channel capacity policy for the engine observability pipeline.
     ///
     /// Precedence:
     /// 1. `engine.observability.pipeline.policies`
     /// 2. top-level policies
     #[must_use]
-    fn resolve_observability_flow_policy(&self) -> FlowPolicy {
+    fn resolve_observability_channel_capacity_policy(&self) -> ChannelCapacityPolicy {
         self.engine
             .observability
             .pipeline
             .as_ref()
             .and_then(|p| p.policies.as_ref())
-            .map_or_else(|| self.policies.flow.clone(), |p| p.flow.clone())
+            .map_or_else(
+                || self.policies.channel_capacity.clone(),
+                |p| p.channel_capacity.clone(),
+            )
     }
 
     /// Resolves the effective health policy for the engine observability pipeline.

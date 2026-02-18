@@ -18,8 +18,7 @@ engine:
       instance.id: 10
 
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 100
         pipeline: 100

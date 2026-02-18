@@ -11,8 +11,7 @@ groups:
         # For HTTP-only, see otlp-http-otlp.yaml
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

@@ -15,8 +15,7 @@ groups:
         # Verify:     cat /tmp/durable_buffer_debug.log
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

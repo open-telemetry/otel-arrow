@@ -23,8 +23,7 @@
 # 3. For Kubernetes: Use a ConfigMap with values injected from Secrets
 
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 100
         pipeline: 100

@@ -13,8 +13,7 @@ groups:
         # 3. Send test data to the receiver on https://127.0.0.1:4317 with client cert
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

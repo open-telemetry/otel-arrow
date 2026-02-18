@@ -13,7 +13,7 @@ use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
-use crate::policy::{FlowPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -116,9 +116,9 @@ impl EngineObservabilityPipelineConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPolicies {
-    /// Flow-related policies.
+    /// Channel capacity policy.
     #[serde(default)]
-    pub flow: FlowPolicy,
+    pub channel_capacity: ChannelCapacityPolicy,
     /// Health policy used by observed-state liveness/readiness evaluation.
     #[serde(default)]
     pub health: HealthPolicy,
@@ -131,7 +131,7 @@ impl EngineObservabilityPolicies {
     #[must_use]
     fn into_policies(self) -> Policies {
         Policies {
-            flow: self.flow,
+            channel_capacity: self.channel_capacity,
             health: self.health,
             telemetry: self.telemetry,
             resources: ResourcesPolicy::default(),
@@ -294,12 +294,12 @@ groups:
     }
 
     #[test]
-    fn from_yaml_uses_default_top_level_flow_policy() {
+    fn from_yaml_uses_default_top_level_channel_capacity_policy() {
         let yaml = valid_engine_yaml(ENGINE_CONFIG_VERSION_V1);
         let config = OtelDataflowSpec::from_yaml(&yaml).expect("should parse");
-        assert_eq!(config.policies.flow.channel_capacity.control.node, 256);
-        assert_eq!(config.policies.flow.channel_capacity.control.pipeline, 256);
-        assert_eq!(config.policies.flow.channel_capacity.pdata, 128);
+        assert_eq!(config.policies.channel_capacity.control.node, 256);
+        assert_eq!(config.policies.channel_capacity.control.pipeline, 256);
+        assert_eq!(config.policies.channel_capacity.pdata, 128);
         assert_eq!(config.policies.health, HealthPolicy::default());
         assert!(config.policies.telemetry.pipeline_metrics);
         assert!(config.policies.telemetry.tokio_metrics);
@@ -311,12 +311,11 @@ groups:
     }
 
     #[test]
-    fn resolve_flow_policy_respects_scope_precedence() {
+    fn resolve_channel_capacity_policy_respects_scope_precedence() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 200
         pipeline: 201
@@ -333,8 +332,7 @@ engine: {}
 groups:
   g1:
     policies:
-      flow:
-        channel_capacity:
+      channel_capacity:
           control:
             node: 150
             pipeline: 151
@@ -350,8 +348,7 @@ groups:
     pipelines:
       p1:
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 50
                 pipeline: 51
@@ -429,12 +426,9 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p1")
             .expect("g1/p1 should be resolved");
-        assert_eq!(p1_resolved.policies.flow.channel_capacity.control.node, 50);
-        assert_eq!(
-            p1_resolved.policies.flow.channel_capacity.control.pipeline,
-            51
-        );
-        assert_eq!(p1_resolved.policies.flow.channel_capacity.pdata, 52);
+        assert_eq!(p1_resolved.policies.channel_capacity.control.node, 50);
+        assert_eq!(p1_resolved.policies.channel_capacity.control.pipeline, 51);
+        assert_eq!(p1_resolved.policies.channel_capacity.pdata, 52);
         assert_eq!(
             p1_resolved.policies.resources.core_allocation,
             crate::policy::CoreAllocation::CoreCount { count: 2 }
@@ -450,12 +444,9 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g1" && p.pipeline_id.as_ref() == "p2")
             .expect("g1/p2 should be resolved");
-        assert_eq!(p2_resolved.policies.flow.channel_capacity.control.node, 150);
-        assert_eq!(
-            p2_resolved.policies.flow.channel_capacity.control.pipeline,
-            151
-        );
-        assert_eq!(p2_resolved.policies.flow.channel_capacity.pdata, 152);
+        assert_eq!(p2_resolved.policies.channel_capacity.control.node, 150);
+        assert_eq!(p2_resolved.policies.channel_capacity.control.pipeline, 151);
+        assert_eq!(p2_resolved.policies.channel_capacity.pdata, 152);
         assert_eq!(
             p2_resolved.policies.health.ready_if,
             vec![
@@ -474,12 +465,9 @@ groups:
             .iter()
             .find(|p| p.pipeline_group_id.as_ref() == "g2" && p.pipeline_id.as_ref() == "p3")
             .expect("g2/p3 should be resolved");
-        assert_eq!(p3_resolved.policies.flow.channel_capacity.control.node, 200);
-        assert_eq!(
-            p3_resolved.policies.flow.channel_capacity.control.pipeline,
-            201
-        );
-        assert_eq!(p3_resolved.policies.flow.channel_capacity.pdata, 202);
+        assert_eq!(p3_resolved.policies.channel_capacity.control.node, 200);
+        assert_eq!(p3_resolved.policies.channel_capacity.control.pipeline, 201);
+        assert_eq!(p3_resolved.policies.channel_capacity.pdata, 202);
         assert_eq!(
             p3_resolved.policies.health.ready_if,
             vec![crate::health::PhaseKind::Running]
@@ -492,12 +480,11 @@ groups:
     }
 
     #[test]
-    fn resolve_observability_flow_policy_overrides_top_level() {
+    fn resolve_observability_channel_capacity_policy_overrides_top_level() {
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 200
         pipeline: 201
@@ -510,8 +497,7 @@ engine:
   observability:
     pipeline:
       policies:
-        flow:
-          channel_capacity:
+        channel_capacity:
             control:
               node: 10
               pipeline: 11
@@ -555,9 +541,9 @@ groups:
             .expect("observability pipeline should be resolved");
         assert_eq!(obs.pipeline_group_id.as_ref(), "internal");
         assert_eq!(obs.pipeline_id.as_ref(), "internal");
-        assert_eq!(obs.policies.flow.channel_capacity.control.node, 10);
-        assert_eq!(obs.policies.flow.channel_capacity.control.pipeline, 11);
-        assert_eq!(obs.policies.flow.channel_capacity.pdata, 12);
+        assert_eq!(obs.policies.channel_capacity.control.node, 10);
+        assert_eq!(obs.policies.channel_capacity.control.pipeline, 11);
+        assert_eq!(obs.policies.channel_capacity.pdata, 12);
         assert_eq!(
             obs.policies.health.ready_if,
             vec![crate::health::PhaseKind::Failed]
@@ -636,8 +622,7 @@ groups:
         let yaml = r#"
 version: otel_dataflow/v1
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 0
         pipeline: 0
@@ -661,9 +646,9 @@ groups:
 
         let err = OtelDataflowSpec::from_yaml(yaml).expect_err("zero capacities should fail");
         let rendered = err.to_string();
-        assert!(rendered.contains("flow.channel_capacity.control.node"));
-        assert!(rendered.contains("flow.channel_capacity.control.pipeline"));
-        assert!(rendered.contains("flow.channel_capacity.pdata"));
+        assert!(rendered.contains("channel_capacity.control.node"));
+        assert!(rendered.contains("channel_capacity.control.pipeline"));
+        assert!(rendered.contains("channel_capacity.pdata"));
     }
 
     #[test]

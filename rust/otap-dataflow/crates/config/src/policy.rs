@@ -12,9 +12,9 @@ use std::fmt::Display;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Policies {
-    /// Flow-related policies.
+    /// Channel capacity policy.
     #[serde(default)]
-    pub flow: FlowPolicy,
+    pub channel_capacity: ChannelCapacityPolicy,
     /// Health policy used by observed-state liveness/readiness evaluation.
     #[serde(default)]
     pub health: HealthPolicy,
@@ -31,20 +31,20 @@ impl Policies {
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        let channel_capacity = &self.flow.channel_capacity;
+        let channel_capacity = &self.channel_capacity;
         if channel_capacity.control.node == 0 {
             errors.push(format!(
-                "{path_prefix}.flow.channel_capacity.control.node must be greater than 0"
+                "{path_prefix}.channel_capacity.control.node must be greater than 0"
             ));
         }
         if channel_capacity.control.pipeline == 0 {
             errors.push(format!(
-                "{path_prefix}.flow.channel_capacity.control.pipeline must be greater than 0"
+                "{path_prefix}.channel_capacity.control.pipeline must be greater than 0"
             ));
         }
         if channel_capacity.pdata == 0 {
             errors.push(format!(
-                "{path_prefix}.flow.channel_capacity.pdata must be greater than 0"
+                "{path_prefix}.channel_capacity.pdata must be greater than 0"
             ));
         }
         errors
@@ -149,15 +149,6 @@ impl Display for CoreRange {
     }
 }
 
-/// Flow-related policy declarations.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-#[serde(deny_unknown_fields)]
-pub struct FlowPolicy {
-    /// Channel capacity policy.
-    #[serde(default)]
-    pub channel_capacity: ChannelCapacityPolicy,
-}
-
 /// Channel capacities used by control and pdata channels.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -219,9 +210,9 @@ mod tests {
     #[test]
     fn defaults_match_expected_values() {
         let policies = Policies::default();
-        assert_eq!(policies.flow.channel_capacity.control.node, 256);
-        assert_eq!(policies.flow.channel_capacity.control.pipeline, 256);
-        assert_eq!(policies.flow.channel_capacity.pdata, 128);
+        assert_eq!(policies.channel_capacity.control.node, 256);
+        assert_eq!(policies.channel_capacity.control.pipeline, 256);
+        assert_eq!(policies.channel_capacity.pdata, 128);
         assert!(policies.telemetry.pipeline_metrics);
         assert!(policies.telemetry.tokio_metrics);
         assert!(policies.telemetry.channel_metrics);
@@ -234,9 +225,9 @@ mod tests {
     #[test]
     fn validates_non_zero_capacities() {
         let mut policies = Policies::default();
-        policies.flow.channel_capacity.control.node = 0;
-        policies.flow.channel_capacity.control.pipeline = 0;
-        policies.flow.channel_capacity.pdata = 0;
+        policies.channel_capacity.control.node = 0;
+        policies.channel_capacity.control.pipeline = 0;
+        policies.channel_capacity.pdata = 0;
 
         let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 3);

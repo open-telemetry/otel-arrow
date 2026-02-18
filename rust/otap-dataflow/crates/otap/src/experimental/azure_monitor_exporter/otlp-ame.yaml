@@ -10,8 +10,7 @@
 # 3. Deploy this configuration to your AKS cluster
 
 policies:
-  flow:
-    channel_capacity:
+  channel_capacity:
       control:
         node: 100
         pipeline: 100

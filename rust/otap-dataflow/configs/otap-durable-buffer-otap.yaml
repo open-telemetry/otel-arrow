@@ -15,8 +15,7 @@ groups:
         # To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100

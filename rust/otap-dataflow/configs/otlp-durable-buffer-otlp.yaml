@@ -17,8 +17,7 @@ groups:
         # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
         
         policies:
-          flow:
-            channel_capacity:
+          channel_capacity:
               control:
                 node: 100
                 pipeline: 100
