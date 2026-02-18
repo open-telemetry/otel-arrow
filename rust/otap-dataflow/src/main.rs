@@ -4,7 +4,8 @@
 //! Create and run a multi-core pipeline
 
 use clap::Parser;
-use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otap_df_config::policy::{CoreAllocation, CoreRange};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
@@ -52,6 +53,75 @@ struct Args {
     /// Path to the engine configuration file (.json, .yaml, or .yml)
     #[arg(short = 'c', long, value_name = "FILE")]
     config: PathBuf,
+
+    /// Number of cores to use (0 for all available cores)
+    #[arg(long, conflicts_with = "core_id_range")]
+    num_cores: Option<usize>,
+
+    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3,5", "0..=3,6-7")
+    #[arg(long, value_name = "START..END", value_parser = parse_core_id_allocation, conflicts_with = "num_cores")]
+    core_id_range: Option<CoreAllocation>,
+
+    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
+    #[arg(long)]
+    http_admin_bind: Option<String>,
+}
+
+fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
+    // Accept format (EBNF):
+    //  S -> digit | CoreRange | S,",",S
+    //  CoreRange -> digit,"..",digit | digit,"..=",digit | digit,"-",digit
+    //  digit -> [0-9]+
+    Ok(CoreAllocation::CoreSet {
+        set: s
+            .split(',')
+            .map(|part| {
+                part.trim()
+                    .parse::<usize>()
+                    // A single ID is a range with the same start and end.
+                    .map(|n| CoreRange { start: n, end: n })
+                    .or_else(|_| parse_core_id_range(part))
+            })
+            .collect::<Result<Vec<CoreRange>, String>>()?,
+    })
+}
+
+fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
+    // Accept formats: "a..=b", "a..b", "a-b"
+    let normalized = s.replace("..=", "-").replace("..", "-");
+    let mut parts = normalized.split('-');
+    let start = parts
+        .next()
+        .ok_or_else(|| "missing start of core id range".to_string())?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| "invalid start (expected unsigned integer)".to_string())?;
+    let end = parts
+        .next()
+        .ok_or_else(|| "missing end of core id range".to_string())?
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| "invalid end (expected unsigned integer)".to_string())?;
+    if parts.next().is_some() {
+        return Err("unexpected extra data after end of range".to_string());
+    }
+    Ok(CoreRange { start, end })
+}
+
+fn core_allocation_override(
+    num_cores: Option<usize>,
+    core_id_range: Option<CoreAllocation>,
+) -> Option<CoreAllocation> {
+    match (core_id_range, num_cores) {
+        (Some(range), _) => Some(range),
+        (None, Some(0)) => Some(CoreAllocation::AllCores),
+        (None, Some(count)) => Some(CoreAllocation::CoreCount { count }),
+        (None, None) => None,
+    }
+}
+
+fn http_admin_bind_override(http_admin_bind: Option<String>) -> Option<HttpAdminSettings> {
+    http_admin_bind.map(|bind_address| HttpAdminSettings { bind_address })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,12 +132,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .install_default()
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 
-    let Args { config } = Args::parse();
+    let Args {
+        config,
+        num_cores,
+        core_id_range,
+        http_admin_bind,
+    } = Args::parse();
 
     println!("{}", system_info());
 
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-    let engine_cfg = OtelDataflowSpec::from_file(config)?;
+    let mut engine_cfg = OtelDataflowSpec::from_file(config)?;
+    if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
+        engine_cfg.policies.resources.core_allocation = core_allocation;
+    }
+    if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
+        engine_cfg.engine.http_admin = Some(http_admin);
+    }
     let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {
@@ -161,4 +242,109 @@ Configuration files can be found in the configs/ directory.{}",
         exporters_sorted.join(", "),
         debug_warning
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_core_range_ok() {
+        assert_eq!(
+            parse_core_id_range("0..=4"),
+            Ok(CoreRange { start: 0, end: 4 })
+        );
+        assert_eq!(
+            parse_core_id_range("0..4"),
+            Ok(CoreRange { start: 0, end: 4 })
+        );
+        assert_eq!(
+            parse_core_id_range("0-4"),
+            Ok(CoreRange { start: 0, end: 4 })
+        );
+    }
+
+    #[test]
+    fn parse_core_allocation_ok() {
+        assert_eq!(
+            parse_core_id_allocation("0..=4,5,6-7"),
+            Ok(CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 0, end: 4 },
+                    CoreRange { start: 5, end: 5 },
+                    CoreRange { start: 6, end: 7 }
+                ]
+            })
+        );
+        assert_eq!(
+            parse_core_id_allocation("0..4"),
+            Ok(CoreAllocation::CoreSet {
+                set: vec![CoreRange { start: 0, end: 4 }]
+            })
+        );
+    }
+
+    #[test]
+    fn parse_core_range_errors() {
+        assert_eq!(
+            parse_core_id_range(""),
+            Err("invalid start (expected unsigned integer)".to_string())
+        );
+        assert_eq!(
+            parse_core_id_range("a..4"),
+            Err("invalid start (expected unsigned integer)".to_string())
+        );
+        assert_eq!(
+            parse_core_id_range("-1..4"),
+            Err("invalid start (expected unsigned integer)".to_string())
+        );
+        assert_eq!(
+            parse_core_id_range("1.."),
+            Err("invalid end (expected unsigned integer)".to_string())
+        );
+        assert_eq!(
+            parse_core_id_range("1..a"),
+            Err("invalid end (expected unsigned integer)".to_string())
+        );
+        assert_eq!(
+            parse_core_id_range("1..2a"),
+            Err("invalid end (expected unsigned integer)".to_string())
+        );
+    }
+
+    #[test]
+    fn core_allocation_override_prefers_range() {
+        let range = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 2, end: 4 }],
+        };
+        let resolved = core_allocation_override(Some(3), Some(range.clone()));
+        assert_eq!(resolved, Some(range));
+    }
+
+    #[test]
+    fn core_allocation_override_maps_num_cores() {
+        assert_eq!(
+            core_allocation_override(Some(5), None),
+            Some(CoreAllocation::CoreCount { count: 5 })
+        );
+        assert_eq!(
+            core_allocation_override(Some(0), None),
+            Some(CoreAllocation::AllCores)
+        );
+        assert_eq!(core_allocation_override(None, None), None);
+    }
+
+    #[test]
+    fn http_admin_bind_override_sets_custom_bind() {
+        let settings = http_admin_bind_override(Some("0.0.0.0:18080".to_string()));
+        assert_eq!(
+            settings.map(|s| s.bind_address),
+            Some("0.0.0.0:18080".to_string())
+        );
+    }
+
+    #[test]
+    fn http_admin_bind_override_none_keeps_config_value() {
+        assert!(http_admin_bind_override(None).is_none());
+    }
 }

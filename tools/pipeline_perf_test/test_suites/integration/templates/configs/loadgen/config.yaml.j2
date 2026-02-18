@@ -1,20 +1,29 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
-  default_node_ctrl_msg_channel_size: {{ default_node_ctrl_msg_channel_size | default(100) }}
-  default_pdata_channel_size: {{ default_pdata_channel_size | default(100) }}
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
 
-nodes:
-  receiver:
-    type: "urn:otel:traffic_generator:receiver"
-    config:
-      data_source: semantic_conventions
-      generation_strategy: pre_generated
-      traffic_config:
-        max_batch_size: {{ max_batch_size | default(1000) }}
-        signals_per_second: {% if signals_per_second is none %}null{% else %}{{ signals_per_second | default(100000) }}{% endif %}
-        metric_weight: {{ metric_weight | default(0) }}
-        trace_weight: {{ trace_weight | default(0) }}
-        log_weight: {{ log_weight | default(100) }}
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:otel:traffic_generator:receiver"
+            config:
+              data_source: semantic_conventions
+              generation_strategy: pre_generated
+              traffic_config:
+                max_batch_size: {{ max_batch_size | default(1000) }}
+                signals_per_second: {% if signals_per_second is none %}null{% else %}{{ signals_per_second | default(100000) }}{% endif %}
+                metric_weight: {{ metric_weight | default(0) }}
+                trace_weight: {{ trace_weight | default(0) }}
+                log_weight: {{ log_weight | default(100) }}
 
 {%- set exporter_type = loadgen_exporter_type | default("otap") %}
 {%- set engine_host = engine_hostname | default("localhost") %}
@@ -29,20 +38,20 @@ nodes:
   {% set type_urn = "urn:unknown:invalid:exporter" %}
 {%- endif -%}
 
-  exporter:
-    type: "{{ type_urn }}"
-    config:
-      {%- if exporter_type in ["otap", "otlp"] %}
-      grpc_endpoint: "http://{{ engine_host }}:{{ exporter_port }}"
-      compression_method: {{ compression }}
-      {% else %}
-      error: "Unknown loadgen_exporter_type: {{ exporter_type }}"
-      {% endif %}
-      {% if loadgen_exporter_type == "otap" %}
-      arrow:
-        payload_compression: none
-      {% endif %}
+          exporter:
+            type: "{{ type_urn }}"
+            config:
+              {%- if exporter_type in ["otap", "otlp"] %}
+              grpc_endpoint: "http://{{ engine_host }}:{{ exporter_port }}"
+              compression_method: {{ compression }}
+              {% else %}
+              error: "Unknown loadgen_exporter_type: {{ exporter_type }}"
+              {% endif %}
+              {% if loadgen_exporter_type == "otap" %}
+              arrow:
+                payload_compression: none
+              {% endif %}
 
-connections:
-  - from: receiver
-    to: exporter
+        connections:
+          - from: receiver
+            to: exporter
