@@ -607,7 +607,7 @@ fn agg_prometheus_text(groups: &[AggregateGroup], timestamp_millis: Option<i64>)
                                 Instrument::Counter => "counter",
                                 Instrument::UpDownCounter => "gauge",
                                 Instrument::Gauge => "gauge",
-                                Instrument::Histogram => "histogram",
+                                Instrument::Histogram => "gauge",
                                 Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
                             };
                             let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
@@ -950,7 +950,7 @@ fn format_prometheus_text(
                             Instrument::Counter => "counter",
                             Instrument::UpDownCounter => "gauge",
                             Instrument::Gauge => "gauge",
-                            Instrument::Histogram => "histogram",
+                            Instrument::Histogram => "gauge",
                             Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
                         };
                         let _ = writeln!(&mut out, "# TYPE {metric_name} {prom_type}");
