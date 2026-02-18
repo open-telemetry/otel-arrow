@@ -288,6 +288,7 @@ mod tests {
             }],
         };
 
+        assert!(validate_traces_equivalent(&[request1.clone()], &[request2.clone()]));
         assert_traces_equivalent(&[request1], &[request2]);
     }
 }

@@ -28,27 +28,6 @@ pub fn validate_batch_items(
     true
 }
 
-/// Ensure every message request count (always 1 per message) is within bounds.
-/// Returns true for an empty slice (no violations).
-pub fn validate_batch_requests(
-    _message: &OtlpProtoMessage,
-    min_reqs: Option<usize>,
-    max_reqs: Option<usize>,
-) -> bool {
-    let val = 1usize; // one OTLP message = one request
-    if let Some(min) = min_reqs {
-        if val < min {
-            return false;
-        }
-    }
-    if let Some(max) = max_reqs {
-        if val > max {
-            return false;
-        }
-    }
-    true
-}
-
 /// Ensure every message encoded size in bytes is within bounds.
 /// Returns true for an empty slice (no violations).
 pub fn validate_batch_bytes(
@@ -111,13 +90,5 @@ mod tests {
         assert!(validate_batch_items(&msg, Some(1), Some(3)));
         assert!(!validate_batch_items(&msg, Some(4), None));
         assert!(!validate_batch_items(&msg, None, Some(2)));
-    }
-
-    #[test]
-    fn request_bounds() {
-        let msg = logs_with_records(1);
-        assert!(validate_batch_requests(&msg, Some(1), Some(1)));
-        assert!(!validate_batch_requests(&msg, Some(2), None));
-        assert!(!validate_batch_requests(&msg, None, Some(0)));
     }
 }

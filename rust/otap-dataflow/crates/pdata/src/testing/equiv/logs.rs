@@ -264,6 +264,7 @@ mod tests {
             }],
         };
 
+        assert!(validate_logs_equivalent(&[request1.clone()], &[request2.clone()]));
         assert_logs_equivalent(&[request1], &[request2]);
     }
 }

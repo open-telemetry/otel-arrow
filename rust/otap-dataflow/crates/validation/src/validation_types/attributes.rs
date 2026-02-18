@@ -185,12 +185,6 @@ fn collect_span_attrs<'a>(
             if include_signal {
                 for span in &scope_spans.spans {
                     out.push(span.attributes.as_slice());
-                    for event in &span.events {
-                        out.push(event.attributes.as_slice());
-                    }
-                    for link in &span.links {
-                        out.push(link.attributes.as_slice());
-                    }
                 }
             }
         }
@@ -341,5 +335,166 @@ mod tests {
         };
         let expected = KeyValue::new("foo".into(), AnyValue::String("bar".into()));
         assert!(proto_kv_matches(&kv, &expected));
+    }
+
+    #[test]
+    fn collect_log_attributes_includes_all_domains() {
+        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+
+        fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
+            ProtoKeyValue {
+                key: key.into(),
+                value: Some(ProtoValue {
+                    value: Some(ProtoAnyValue::StringValue(val.into())),
+                }),
+            }
+        }
+
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![proto_kv("res", "r")],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        attributes: vec![proto_kv("scope", "s")],
+                        ..Default::default()
+                    }),
+                    log_records: vec![LogRecord {
+                        attributes: vec![proto_kv("sig", "l")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let msg = OtlpProtoMessage::Logs(logs);
+
+        let attrs = collect_attributes(&msg, &[AttributeDomain::Resource]);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0][0].key, "res");
+
+        let attrs = collect_attributes(&msg, &[AttributeDomain::Scope]);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0][0].key, "scope");
+
+        let attrs = collect_attributes(&msg, &[AttributeDomain::Signal]);
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0][0].key, "sig");
+
+        let attrs = collect_attributes(
+            &msg,
+            &[
+                AttributeDomain::Resource,
+                AttributeDomain::Scope,
+                AttributeDomain::Signal,
+            ],
+        );
+        let keys: Vec<_> = attrs
+            .iter()
+            .flat_map(|slice| slice.iter().map(|kv| kv.key.as_str()))
+            .collect();
+        assert!(keys.contains(&"res"));
+        assert!(keys.contains(&"scope"));
+        assert!(keys.contains(&"sig"));
+    }
+
+    #[test]
+    fn require_keys_must_be_present_in_each_domain() {
+        use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
+            ProtoKeyValue {
+                key: key.into(),
+                value: Some(ProtoValue {
+                    value: Some(ProtoAnyValue::StringValue(val.into())),
+                }),
+            }
+        }
+
+        let mut logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![proto_kv("shared", "r")],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        attributes: vec![proto_kv("shared", "s")],
+                        ..Default::default()
+                    }),
+                    log_records: vec![LogRecord {
+                        attributes: vec![proto_kv("shared", "l")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let msg = OtlpProtoMessage::Logs(logs.clone());
+        assert!(validate_require_keys(
+            &msg,
+            &[
+                AttributeDomain::Resource,
+                AttributeDomain::Scope,
+                AttributeDomain::Signal
+            ],
+            &[String::from("shared")]
+        ));
+
+        // Remove the attribute from the scope to force a failure.
+        logs.resource_logs[0].scope_logs[0]
+            .scope
+            .as_mut()
+            .unwrap()
+            .attributes
+            .clear();
+        let missing_scope = OtlpProtoMessage::Logs(logs);
+        assert!(!validate_require_keys(
+            &missing_scope,
+            &[
+                AttributeDomain::Resource,
+                AttributeDomain::Scope,
+                AttributeDomain::Signal
+            ],
+            &[String::from("shared")]
+        ));
+    }
+
+    #[test]
+    fn deny_keys_blocks_presence() {
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        fn proto_kv(key: &str, val: &str) -> ProtoKeyValue {
+            ProtoKeyValue {
+                key: key.into(),
+                value: Some(ProtoValue {
+                    value: Some(ProtoAnyValue::StringValue(val.into())),
+                }),
+            }
+        }
+        let logs = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![proto_kv("forbidden", "v")],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let msg = OtlpProtoMessage::Logs(logs);
+        assert!(!validate_deny_keys(
+            &msg,
+            &[AttributeDomain::Signal],
+            &[String::from("forbidden")]
+        ));
     }
 }

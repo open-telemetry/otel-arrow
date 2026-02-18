@@ -25,7 +25,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 /// URN that identifies the validation exporter within OTAP pipelines.
 pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
@@ -89,10 +89,15 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage) {
+    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage, time_elapsed: Duration) {
         let mut valid = true;
         for validate in &self.config.validations {
-            valid &= validate.validate(&self.control_msgs, &self.suv_msgs, &received_suv_msg);
+            valid &= validate.validate(
+                &self.control_msgs,
+                &self.suv_msgs,
+                &received_suv_msg,
+                &time_elapsed,
+            );
         }
 
         if valid {
@@ -134,6 +139,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
         let _ = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
+        let mut time = Instant::now();
         loop {
             match msg_chan.recv().await? {
                 Message::Control(NodeControlMsg::CollectTelemetry {
@@ -145,6 +151,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     return Ok(TerminalState::new(deadline, [self.metrics]));
                 }
                 Message::PData(pdata) => {
+                    let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
                     let msg = OtlpProtoBytes::try_from(payload)
@@ -158,7 +165,8 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             // match node name and update the vec of msgs and compare
                             name if name == self.config.suv_input => {
                                 self.suv_msgs.push(msg.clone());
-                                self.validate_and_record(msg);
+                                self.validate_and_record(msg, time_elapsed);
+                                time = Instant::now();
                             }
                             name if name == self.config.control_input => {
                                 self.control_msgs.push(msg);

@@ -4,15 +4,17 @@
 pub mod attributes;
 mod batch;
 mod signal_dropped;
+
 use attributes::{
     AttributeDomain, KeyValue, validate_deny_keys, validate_no_duplicate_keys,
     validate_require_key_values, validate_require_keys,
 };
-use batch::{validate_batch_bytes, validate_batch_items, validate_batch_requests};
+use batch::{validate_batch_bytes, validate_batch_items};
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::validate_equivalent;
 use serde::{Deserialize, Serialize};
 use signal_dropped::validate_signal_drop;
+use std::time::Duration;
 /// Supported validation instructions executed by the validation exporter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -36,6 +38,9 @@ pub enum ValidationInstructions {
         /// Optional maximum items allowed in each message.
         #[serde(default)]
         max_batch_size: Option<usize>,
+        /// allow messages to get released after a certain time
+        #[serde(with = "humantime_serde::option")]
+        timeout: Option<Duration>,
     },
     /// Check that encoded byte size of each message is within bounds.
     BatchBytes {
@@ -45,15 +50,9 @@ pub enum ValidationInstructions {
         /// Optional maximum encoded bytes allowed in each message.
         #[serde(default)]
         max_bytes: Option<usize>,
-    },
-    /// Check that request count (always 1 per message) is within bounds.
-    BatchRequests {
-        /// Minimum requests required in each message (if set).
-        #[serde(default)]
-        min_requests: Option<usize>,
-        /// Optional maximum requests allowed in each message.
-        #[serde(default)]
-        max_requests: Option<usize>,
+        /// allow messages to get released after a certain time
+        #[serde(with = "humantime_serde::option")]
+        timeout: Option<Duration>,
     },
     /// Forbid specific attribute keys in selected domains.
     AttributeDeny {
@@ -90,6 +89,7 @@ impl ValidationInstructions {
         control: &[OtlpProtoMessage],
         suv: &[OtlpProtoMessage],
         received_suv_message: &OtlpProtoMessage,
+        time_elapsed: &Duration,
     ) -> bool {
         match self {
             ValidationInstructions::Equivalence => validate_equivalent(control, suv),
@@ -100,15 +100,27 @@ impl ValidationInstructions {
             ValidationInstructions::BatchItems {
                 min_batch_size,
                 max_batch_size,
-            } => validate_batch_items(received_suv_message, *min_batch_size, *max_batch_size),
+                timeout,
+            } => {
+                if let Some(time) = timeout {
+                    if time_elapsed >= time {
+                        return true;
+                    }
+                }
+                validate_batch_items(received_suv_message, *min_batch_size, *max_batch_size)
+            }
             ValidationInstructions::BatchBytes {
                 min_bytes,
                 max_bytes,
-            } => validate_batch_bytes(received_suv_message, *min_bytes, *max_bytes),
-            ValidationInstructions::BatchRequests {
-                min_requests,
-                max_requests,
-            } => validate_batch_requests(received_suv_message, *min_requests, *max_requests),
+                timeout,
+            } => {
+                if let Some(time) = timeout {
+                    if time_elapsed >= time {
+                        return true;
+                    }
+                }
+                validate_batch_bytes(received_suv_message, *min_bytes, *max_bytes)
+            }
             ValidationInstructions::AttributeDeny { domains, keys } => {
                 validate_deny_keys(received_suv_message, domains, keys)
             }
@@ -134,6 +146,8 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+    use prost::Message;
+    use std::time::Duration;
     fn logs_with_records(count: usize) -> OtlpProtoMessage {
         let logs = LogsData {
             resource_logs: vec![ResourceLogs {
@@ -151,7 +165,67 @@ mod tests {
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
-        assert!(ValidationInstructions::Equivalence.validate(&msgs, &msgs, msgs.last().unwrap()));
+        assert!(ValidationInstructions::Equivalence.validate(
+            &msgs,
+            &msgs,
+            msgs.last().unwrap(),
+            &Duration::from_secs(0)
+        ));
+    }
+
+    #[test]
+    fn equivalence_false_on_mismatch() {
+        use otap_df_pdata::proto::opentelemetry::common::v1::AnyValue as AV;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+        // left: single log with body "only"
+        let left = vec![OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AV {
+                            value: Some(ProtoVal::StringValue("only".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })];
+
+        // right: includes an extra distinct log record
+        let right = vec![OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        LogRecord {
+                            body: Some(AV {
+                                value: Some(ProtoVal::StringValue("only".into())),
+                            }),
+                            ..Default::default()
+                        },
+                        LogRecord {
+                            body: Some(AV {
+                                value: Some(ProtoVal::StringValue("extra".into())),
+                            }),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        })];
+        assert!(!ValidationInstructions::Equivalence.validate(
+            &left,
+            &right,
+            right.last().unwrap(),
+            &Duration::from_secs(0)
+        ));
     }
     #[test]
     fn batch_respects_bounds() {
@@ -159,14 +233,49 @@ mod tests {
         let instruction = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
+            timeout: None,
         };
-        assert!(instruction.validate(&msgs, &msgs, msgs.last().unwrap()));
+        assert!(instruction.validate(&msgs, &msgs, msgs.last().unwrap(), &Duration::from_secs(0)));
         let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
+            timeout: None,
         };
-        assert!(!failing.validate(&msgs, &msgs, msgs.last().unwrap()));
+        assert!(!failing.validate(&msgs, &msgs, msgs.last().unwrap(), &Duration::from_secs(0)));
     }
+
+    #[test]
+    fn batch_bytes_respects_bounds() {
+        let msgs = vec![logs_with_records(1)];
+        let mut buf = Vec::new();
+        // compute encoded size of the latest SUV message
+        let latest = msgs.last().unwrap();
+        if let OtlpProtoMessage::Logs(l) = latest {
+            l.encode(&mut buf).unwrap();
+        }
+        let sz = buf.len();
+
+        let pass = ValidationInstructions::BatchBytes {
+            min_bytes: Some(sz.saturating_sub(1)),
+            max_bytes: Some(sz + 10),
+            timeout: None,
+        };
+        let fail_small = ValidationInstructions::BatchBytes {
+            min_bytes: Some(sz + 1),
+            max_bytes: None,
+            timeout: None,
+        };
+        let fail_large = ValidationInstructions::BatchBytes {
+            min_bytes: None,
+            max_bytes: Some(sz - 1),
+            timeout: None,
+        };
+
+        assert!(pass.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
+        assert!(!fail_small.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
+        assert!(!fail_large.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
+    }
+
     #[test]
     fn attribute_require_key_value_passes() {
         let logs = LogsData {
@@ -193,7 +302,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.validate(&[], &suv, suv.last().unwrap()));
+        assert!(check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -221,7 +330,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.validate(&[], &suv, suv.last().unwrap()));
+        assert!(!check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -256,7 +365,7 @@ mod tests {
         let check = ValidationInstructions::AttributeNoDuplicate {
             domains: vec![AttributeDomain::Signal],
         };
-        assert!(!check.validate(&[], &suv, suv.last().unwrap()));
+        assert!(!check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
@@ -275,8 +384,23 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.validate(&before, &after, after.last().unwrap()));
-        assert!(!fail_min.validate(&before, &after, after.last().unwrap()));
-        assert!(!fail_max.validate(&before, &after, after.last().unwrap()));
+        assert!(pass.validate(
+            &before,
+            &after,
+            after.last().unwrap(),
+            &Duration::from_secs(0)
+        ));
+        assert!(!fail_min.validate(
+            &before,
+            &after,
+            after.last().unwrap(),
+            &Duration::from_secs(0)
+        ));
+        assert!(!fail_max.validate(
+            &before,
+            &after,
+            after.last().unwrap(),
+            &Duration::from_secs(0)
+        ));
     }
 }
