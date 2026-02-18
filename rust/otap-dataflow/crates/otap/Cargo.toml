@@ -67,6 +67,7 @@ weaver_semconv.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
+reqwest = { workspace = true, features = ["rustls", "deflate", "zstd", "gzip"] }
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }
@@ -86,7 +87,6 @@ data_engine_recordset = { workspace = true, optional = true }
 
 # Azure Monitor Exporter dependencies
 azure_identity = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true, features = ["rustls"] }
 azure_core = { workspace = true, optional = true,  features = ["reqwest"] }
 ahash = { workspace = true, optional = true }
 sysinfo = { workspace = true, optional = true }
@@ -115,7 +115,6 @@ azure-monitor-exporter = [
     "experimental-exporters",
     "dep:opentelemetry-proto",
     "dep:azure_identity",
-    "dep:reqwest",
     "dep:azure_core",
     "dep:ahash",
     "dep:sysinfo",

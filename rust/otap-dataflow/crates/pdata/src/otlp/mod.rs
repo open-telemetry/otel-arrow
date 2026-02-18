@@ -79,6 +79,19 @@ impl OtlpProtoBytes {
         }
     }
 
+    /// TODO docs
+    pub fn replace_bytes<B>(&mut self, b: B) -> Bytes
+    where
+        B: Into<Vec<u8>>,
+    {
+        let new_bytes: Bytes = b.into().into();
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes) => std::mem::replace(bytes, new_bytes),
+            OtlpProtoBytes::ExportMetricsRequest(bytes) => std::mem::replace(bytes, new_bytes),
+            OtlpProtoBytes::ExportTracesRequest(bytes) => std::mem::replace(bytes, new_bytes),
+        }
+    }
+
     /// Return the byte-size of this message.
     #[must_use]
     pub fn num_bytes(&self) -> usize {

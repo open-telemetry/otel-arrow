@@ -21,6 +21,8 @@ pub mod otlp_receiver;
 /// Implementation of OTLP exporter that implements the exporter trait
 pub mod otlp_exporter;
 
+pub mod otlp_http_exporter;
+
 /// Batch processor
 pub mod batch_processor;
 
