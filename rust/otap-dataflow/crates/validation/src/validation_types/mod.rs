@@ -92,9 +92,7 @@ impl ValidationInstructions {
         received_suv_message: &OtlpProtoMessage,
     ) -> bool {
         match self {
-            ValidationInstructions::Equivalence => {
-                validate_equivalent(control, suv)
-            }
+            ValidationInstructions::Equivalence => validate_equivalent(control, suv),
             ValidationInstructions::SignalDrop {
                 min_drop_ratio,
                 max_drop_ratio,
@@ -153,21 +151,25 @@ mod tests {
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
-        assert!(ValidationInstructions::Equivalence.evaluate(&msgs, &msgs));
+        assert!(ValidationInstructions::Equivalence.evaluate(
+            &msgs,
+            &msgs,
+            msgs.last().unwrap()
+        ));
     }
     #[test]
     fn batch_respects_bounds() {
         let msgs = vec![logs_with_records(3)];
-        let kind = ValidationInstructions::Batch {
+        let kind = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
         };
-        assert!(kind.evaluate(&msgs, &msgs));
-        let failing = ValidationInstructions::Batch {
+        assert!(kind.evaluate(&msgs, &msgs, msgs.last().unwrap()));
+        let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
         };
-        assert!(!failing.evaluate(&msgs, &msgs));
+        assert!(!failing.evaluate(&msgs, &msgs, msgs.last().unwrap()));
     }
     #[test]
     fn attribute_require_key_value_passes() {
@@ -195,7 +197,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.evaluate(&[], &suv));
+        assert!(check.evaluate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -223,7 +225,7 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.evaluate(&[], &suv));
+        assert!(!check.evaluate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -258,7 +260,7 @@ mod tests {
         let check = ValidationInstructions::AttributeNoDuplicate {
             domains: vec![AttributeDomain::Signal],
         };
-        assert!(!check.evaluate(&[], &suv));
+        assert!(!check.evaluate(&[], &suv, suv.last().unwrap()));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
@@ -277,8 +279,8 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.evaluate(&before, &after));
-        assert!(!fail_min.evaluate(&before, &after));
-        assert!(!fail_max.evaluate(&before, &after));
+        assert!(pass.evaluate(&before, &after, after.last().unwrap()));
+        assert!(!fail_min.evaluate(&before, &after, after.last().unwrap()));
+        assert!(!fail_max.evaluate(&before, &after, after.last().unwrap()));
     }
 }

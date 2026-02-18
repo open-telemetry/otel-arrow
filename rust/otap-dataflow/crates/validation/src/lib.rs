@@ -109,11 +109,13 @@ mod tests {
                     .wire_otap_grpc_exporter("exporter"),
             )
             .input(Generator::logs().fixed_count(500).otlp_grpc())
-            .observe(
-                Capture::default()
-                    .otap_grpc()
-                    .validate(vec![ValidationInstructions::SignalDrop, attr_check]),
-            )
+            .observe(Capture::default().otap_grpc().validate(vec![
+                ValidationInstructions::SignalDrop {
+                    min_drop_ratio: None,
+                    max_drop_ratio: None,
+                },
+                attr_check,
+            ]))
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("filter processor validation failed");

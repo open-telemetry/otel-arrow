@@ -73,7 +73,7 @@ pub fn assert_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) 
 
 /// Validate that two OTLP protocol message slices contain equivalent data.
 /// Requires the inputs to have a single signal type.
-pub fn validate_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) -> bool{
+pub fn validate_equivalent(left: &[OtlpProtoMessage], right: &[OtlpProtoMessage]) -> bool {
     let signal_type = left.first().expect("at least one input").signal_type();
 
     match signal_type {

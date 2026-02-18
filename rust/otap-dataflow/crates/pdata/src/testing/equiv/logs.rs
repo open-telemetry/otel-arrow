@@ -74,7 +74,7 @@ pub fn assert_logs_equivalent(left: &[LogsData], right: &[LogsData]) {
 }
 
 /// Validate that two collections of `LogsData` instances are equivalent.
-pub fn validate_logs_equivalent(left: &[LogsData], right: &[LogsData]) -> bool{
+pub fn validate_logs_equivalent(left: &[LogsData], right: &[LogsData]) -> bool {
     validate_equivalent(
         left,
         right,

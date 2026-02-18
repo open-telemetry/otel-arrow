@@ -106,28 +106,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_slice_fails() {
-        assert!(!validate_batch_items(&[], Some(1), None));
+    fn single_message_items_bounds() {
+        let msg = logs_with_records(3);
+        assert!(validate_batch_items(&msg, Some(1), Some(3)));
+        assert!(!validate_batch_items(&msg, Some(4), None));
+        assert!(!validate_batch_items(&msg, None, Some(2)));
     }
 
     #[test]
-    fn min_only_passes_within_bounds() {
-        let msgs = [logs_with_records(3), logs_with_records(2)];
-        assert!(validate_batch_items(&msgs, Some(2), None));
-        assert!(!validate_batch_items(&msgs, Some(4), None));
-    }
-
-    #[test]
-    fn max_only_passes_within_bounds() {
-        let msgs = [logs_with_records(3), logs_with_records(2)];
-        assert!(validate_batch_items(&msgs, None, Some(3)));
-        assert!(!validate_batch_items(&msgs, None, Some(2)));
-    }
-
-    #[test]
-    fn min_and_max_bounds() {
-        let msgs = [logs_with_records(3), logs_with_records(2)];
-        assert!(validate_batch_items(&msgs, Some(2), Some(3)));
-        assert!(!validate_batch_items(&msgs, Some(2), Some(2)));
+    fn request_bounds() {
+        let msg = logs_with_records(1);
+        assert!(validate_batch_requests(&msg, Some(1), Some(1)));
+        assert!(!validate_batch_requests(&msg, Some(2), None));
+        assert!(!validate_batch_requests(&msg, None, Some(0)));
     }
 }

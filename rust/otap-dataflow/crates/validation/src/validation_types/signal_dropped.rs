@@ -65,13 +65,13 @@ mod tests {
     fn detects_drop() {
         let before = [logs_with_records(5)];
         let after = [logs_with_records(3)];
-        assert!(check_signal_drop(&before, &after));
+        assert!(validate_signal_drop(&before, &after, None, None));
     }
 
     #[test]
     fn no_drop_returns_false() {
         let before = [logs_with_records(4)];
         let after = [logs_with_records(4)];
-        assert!(!check_signal_drop(&before, &after));
+        assert!(!validate_signal_drop(&before, &after, None, None));
     }
 }
