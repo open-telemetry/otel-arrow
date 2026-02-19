@@ -35,6 +35,30 @@ impl RecordSetEngineDiagnosticLevel {
     }
 }
 
+impl From<RecordSetEngineDiagnosticLevel> for tracing::Level {
+    fn from(level: RecordSetEngineDiagnosticLevel) -> Self {
+        match level {
+            RecordSetEngineDiagnosticLevel::Verbose => tracing::Level::DEBUG,
+            RecordSetEngineDiagnosticLevel::Info => tracing::Level::INFO,
+            RecordSetEngineDiagnosticLevel::Warn => tracing::Level::WARN,
+            RecordSetEngineDiagnosticLevel::Error => tracing::Level::ERROR,
+        }
+    }
+}
+
+impl From<tracing::Level> for RecordSetEngineDiagnosticLevel {
+    fn from(level: tracing::Level) -> Self {
+        match level {
+            tracing::Level::TRACE | tracing::Level::DEBUG => {
+                RecordSetEngineDiagnosticLevel::Verbose
+            }
+            tracing::Level::INFO => RecordSetEngineDiagnosticLevel::Info,
+            tracing::Level::WARN => RecordSetEngineDiagnosticLevel::Warn,
+            tracing::Level::ERROR => RecordSetEngineDiagnosticLevel::Error,
+        }
+    }
+}
+
 impl FromStr for RecordSetEngineDiagnosticLevel {
     type Err = ();
 
