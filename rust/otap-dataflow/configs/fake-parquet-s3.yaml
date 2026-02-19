@@ -27,6 +27,9 @@ groups:
                 s3:
                   base_uri: s3://otel-test-bucket/telemetry
                   region: us-east-1
+
+                  # Optional config options available for development against S3
+                  # compatible store like LocalStack:
                   endpoint: http://localhost:4566
                   allow_http: true
                   virtual_hosted_style_request: false
