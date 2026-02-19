@@ -107,6 +107,13 @@ pub mod cloud_auth;
 /// Internal telemetry receiver
 pub mod internal_telemetry_receiver;
 
+/// Shared topic configuration value objects.
+pub mod topic_config;
+
+pub mod topic_receiver;
+
+pub mod topic_exporter;
+
 /// Object storage utilities including integrations for different cloud
 /// providers
 pub mod object_store;

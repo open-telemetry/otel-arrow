@@ -7,7 +7,8 @@ use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::health::HealthPolicy;
 use crate::pipeline::PipelineConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
-use crate::{PipelineGroupId, PipelineId};
+use crate::topic::TopicSpec;
+use crate::{PipelineGroupId, PipelineId, TopicName};
 
 /// System pipeline-group id used by the engine to group internal telemetry pipelines.
 pub const SYSTEM_PIPELINE_GROUP_ID: &str = "system";
@@ -156,6 +157,27 @@ impl OtelDataflowSpec {
             engine: self.engine.clone(),
             pipelines,
         }
+    }
+
+    /// Resolves a topic specification visible from a pipeline group.
+    ///
+    /// Precedence:
+    /// 1. `groups.<group>.topics.<name>`
+    /// 2. top-level `topics.<name>`
+    #[must_use]
+    pub fn resolve_topic_spec(
+        &self,
+        pipeline_group_id: &PipelineGroupId,
+        topic_name: &TopicName,
+    ) -> Option<TopicSpec> {
+        if let Some(group_topic) = self
+            .groups
+            .get(pipeline_group_id)
+            .and_then(|group| group.topics.get(topic_name))
+        {
+            return Some(group_topic.clone());
+        }
+        self.topics.get(topic_name).cloned()
     }
 
     /// Resolves the effective channel capacity policy for a pipeline.

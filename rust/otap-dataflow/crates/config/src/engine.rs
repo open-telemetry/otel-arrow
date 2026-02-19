@@ -8,12 +8,14 @@ mod resolve;
 mod validate;
 
 use crate::PipelineGroupId;
+use crate::TopicName;
 use crate::health::HealthPolicy;
 use crate::observed_state::ObservedStateSettings;
 use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, ResourcesPolicy, TelemetryPolicy};
+use crate::topic::TopicSpec;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -40,6 +42,10 @@ pub struct OtelDataflowSpec {
     /// Top-level policy set.
     #[serde(default)]
     pub policies: Policies,
+
+    /// Global topic declarations visible to all pipeline groups.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub topics: HashMap<TopicName, TopicSpec>,
 
     /// Engine-wide runtime declarations.
     #[serde(default)]
@@ -508,6 +514,152 @@ groups:
     }
 
     #[test]
+    fn from_yaml_parses_topic_declarations_with_queue_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_default:
+    description: "global topic"
+  global_queue:
+    policies:
+      queue_capacity: 42
+      queue_on_full: drop_newest
+groups:
+  g1:
+    topics:
+      local_queue:
+        policies:
+          queue_capacity: 7
+          queue_on_full: drop_newest
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+
+        let global_default = config
+            .topics
+            .get("global_default")
+            .expect("global_default topic should exist");
+        assert_eq!(global_default.policies.queue_capacity, 128);
+        assert_eq!(
+            global_default.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::Block
+        );
+
+        let global_queue = config
+            .topics
+            .get("global_queue")
+            .expect("global_queue topic should exist");
+        assert_eq!(global_queue.policies.queue_capacity, 42);
+        assert_eq!(
+            global_queue.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+
+        let group = config.groups.get("g1").expect("group g1 should exist");
+        let local_queue = group
+            .topics
+            .get("local_queue")
+            .expect("local_queue topic should exist");
+        assert_eq!(local_queue.policies.queue_capacity, 7);
+        assert_eq!(
+            local_queue.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+    }
+
+    #[test]
+    fn resolve_topic_spec_respects_scope_precedence() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  shared:
+    policies:
+      queue_capacity: 100
+      queue_on_full: block
+  global_only:
+    policies:
+      queue_capacity: 101
+      queue_on_full: drop_newest
+groups:
+  g1:
+    topics:
+      shared:
+        policies:
+          queue_capacity: 10
+          queue_on_full: drop_newest
+      group_only:
+        policies:
+          queue_capacity: 11
+          queue_on_full: drop_newest
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+  g2:
+    pipelines:
+      p2:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
+
+        let g1_shared = config
+            .resolve_topic_spec(&"g1".into(), &"shared".into())
+            .expect("g1 shared topic should resolve");
+        assert_eq!(g1_shared.policies.queue_capacity, 10);
+        assert_eq!(
+            g1_shared.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::DropNewest
+        );
+
+        let g2_shared = config
+            .resolve_topic_spec(&"g2".into(), &"shared".into())
+            .expect("g2 shared topic should resolve from global");
+        assert_eq!(g2_shared.policies.queue_capacity, 100);
+        assert_eq!(
+            g2_shared.policies.queue_on_full,
+            crate::topic::TopicQueueOnFullPolicy::Block
+        );
+
+        let g1_group_only = config
+            .resolve_topic_spec(&"g1".into(), &"group_only".into())
+            .expect("g1 group_only topic should resolve");
+        assert_eq!(g1_group_only.policies.queue_capacity, 11);
+
+        let g2_group_only = config.resolve_topic_spec(&"g2".into(), &"group_only".into());
+        assert!(g2_group_only.is_none(), "g2 should not see g1-local topics");
+    }
+
+    #[test]
     fn resolve_observability_channel_capacity_policy_overrides_top_level() {
         let yaml = r#"
 version: otel_dataflow/v1
@@ -677,6 +829,41 @@ groups:
         assert!(rendered.contains("channel_capacity.control.node"));
         assert!(rendered.contains("channel_capacity.control.pipeline"));
         assert!(rendered.contains("channel_capacity.pdata"));
+    }
+
+    #[test]
+    fn from_yaml_rejects_zero_topic_queue_capacity() {
+        let yaml = r#"
+version: otel_dataflow/v1
+topics:
+  global_topic:
+    policies:
+      queue_capacity: 0
+groups:
+  g1:
+    topics:
+      group_topic:
+        policies:
+          queue_capacity: 0
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+
+        let err =
+            OtelDataflowSpec::from_yaml(yaml).expect_err("zero topic queue capacity should fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("topics.global_topic.policies.queue_capacity"));
+        assert!(rendered.contains("groups.g1.topics.group_topic.policies.queue_capacity"));
     }
 
     #[test]

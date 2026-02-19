@@ -31,6 +31,16 @@ impl OtelDataflowSpec {
                 .map(|error| Error::InvalidUserConfig { error }),
         );
 
+        for (topic_name, topic) in &self.topics {
+            let path = format!("topics.{topic_name}");
+            errors.extend(
+                topic
+                    .validation_errors(&path)
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
             if let Some(policies) = &observability_pipeline.policies {
                 errors.extend(

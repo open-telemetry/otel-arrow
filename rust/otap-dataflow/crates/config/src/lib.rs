@@ -31,6 +31,7 @@ pub mod policy;
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
+pub mod topic;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +72,9 @@ pub type PortName = Cow<'static, str>;
 
 /// The description of a pipeline or a node.
 pub type Description = Cow<'static, str>;
+
+/// The name of a topic declaration.
+pub type TopicName = Cow<'static, str>;
 
 /// Type alias for CPU core identifier.
 /// Note: Not using core_affinity::CoreId directly to avoid dependency leakage in this public API

@@ -97,6 +97,7 @@ impl OtelDataflowSpec {
         let config = OtelDataflowSpec {
             version: ENGINE_CONFIG_VERSION_V1.to_string(),
             policies: Policies::default(),
+            topics: HashMap::new(),
             engine,
             groups,
         };
