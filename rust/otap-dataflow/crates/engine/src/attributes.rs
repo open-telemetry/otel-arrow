@@ -33,10 +33,7 @@ pub fn config_to_telemetry_attr(
 /// Convert a map of config `AttributeValue`s to a telemetry `BTreeMap`.
 #[must_use]
 pub fn config_map_to_telemetry(
-    map: &std::collections::HashMap<
-        String,
-        otap_df_config::pipeline::telemetry::AttributeValue,
-    >,
+    map: &std::collections::HashMap<String, otap_df_config::pipeline::telemetry::AttributeValue>,
 ) -> BTreeMap<String, AttributeValue> {
     map.iter()
         .map(|(k, v)| (k.clone(), config_to_telemetry_attr(v)))
