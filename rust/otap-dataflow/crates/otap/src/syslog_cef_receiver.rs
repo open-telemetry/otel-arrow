@@ -1292,6 +1292,27 @@ mod config_tests {
         }
     }
 
+    #[test]
+    fn both_protocols_rejected() {
+        // The Protocol enum is externally tagged, so specifying both tcp and udp
+        // in the same config must be rejected — only one protocol per instance.
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                },
+                "udp": {
+                    "listening_addr": "127.0.0.1:5145"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with both tcp and udp should be rejected"
+        );
+    }
+
     #[cfg(feature = "experimental-tls")]
     #[test]
     fn valid_tcp_with_tls() {
