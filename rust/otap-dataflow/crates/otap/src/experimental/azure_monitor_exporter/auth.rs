@@ -6,6 +6,7 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
+use otap_df_telemetry::{otel_info, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
@@ -20,14 +21,11 @@ const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
 
 #[derive(Clone, Debug)]
 // TODO - Consolidate with crates/otap/src/{cloud_auth,object_store)/azure.rs
-#[allow(clippy::print_stdout)]
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,
     scope: String,
 }
 
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 impl Auth {
     pub fn new(auth_config: &AuthConfig) -> Result<Self, Error> {
         let credential = Self::create_credential(auth_config)?;
@@ -63,17 +61,11 @@ impl Auth {
 
             match self.get_token_internal().await {
                 Ok(token) => {
-                    println!(
-                        "[AzureMonitorExporter] Obtained access token, expires on {}",
-                        token.expires_on
-                    );
+                    otel_info!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
                     return Ok(token);
                 }
                 Err(e) => {
-                    println!(
-                        "[AzureMonitorExporter] Failed to obtain access token (attempt {}): {e}",
-                        attempt
-                    );
+                    otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
                 }
             }
 
@@ -93,7 +85,10 @@ impl Auth {
             let delay_secs = (capped_delay_secs + jitter).max(1.0);
             let delay = tokio::time::Duration::from_secs_f64(delay_secs);
 
-            println!("[AzureMonitorExporter] Retrying in {:.1}s...", delay_secs);
+            otel_warn!(
+                "azure_monitor_exporter.auth.retry_scheduled",
+                delay_secs = %delay_secs
+            );
             tokio::time::sleep(delay).await;
         }
     }
@@ -104,17 +99,23 @@ impl Auth {
                 let mut options = ManagedIdentityCredentialOptions::default();
 
                 if let Some(client_id) = &auth_config.client_id {
-                    println!("Using user-assigned managed identity with client_id: {client_id}");
+                    otel_info!("azure_monitor_exporter.auth.credential_type", method = "user_assigned_managed_identity", client_id = %client_id);
                     options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
                 } else {
-                    println!("Using system-assigned managed identity");
+                    otel_info!(
+                        "azure_monitor_exporter.auth.credential_type",
+                        method = "system_assigned_managed_identity"
+                    );
                 }
 
                 Ok(ManagedIdentityCredential::new(Some(options))
                     .map_err(|e| Error::create_credential(AuthMethod::ManagedIdentity, e))?)
             }
             AuthMethod::Development => {
-                println!("Using developer tools credential (Azure CLI / Azure Developer CLI)");
+                otel_info!(
+                    "azure_monitor_exporter.auth.credential_type",
+                    method = "developer_tools"
+                );
                 Ok(
                     DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
                         .map_err(|e| Error::create_credential(AuthMethod::Development, e))?,
