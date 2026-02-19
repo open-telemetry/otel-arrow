@@ -21,7 +21,7 @@ cargo build --release --features geneva-exporter
 ./target/release/df_engine --help
 ```
 
-You should see `urn:otel:geneva:exporter` in the Exporters list.
+You should see `urn:microsoft:geneva:exporter` in the Exporters list.
 
 ## Usage
 
