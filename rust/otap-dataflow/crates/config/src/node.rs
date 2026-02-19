@@ -8,7 +8,7 @@
 //!
 //! A node can expose multiple named output ports.
 
-use crate::pipeline::service::telemetry::AttributeValue;
+use crate::pipeline::telemetry::AttributeValue;
 use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

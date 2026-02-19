@@ -10,7 +10,7 @@ use crate::attributes::{
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
-use otap_df_config::pipeline::service::telemetry::AttributeValue;
+use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};

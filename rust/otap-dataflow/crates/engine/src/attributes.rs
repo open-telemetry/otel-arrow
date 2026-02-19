@@ -15,9 +15,9 @@ use std::hash::Hash;
 /// Convert from config `AttributeValue` to telemetry `AttributeValue`.
 #[must_use]
 pub fn config_to_telemetry_attr(
-    value: &otap_df_config::pipeline::service::telemetry::AttributeValue,
+    value: &otap_df_config::pipeline::telemetry::AttributeValue,
 ) -> AttributeValue {
-    use otap_df_config::pipeline::service::telemetry::AttributeValue as ConfigValue;
+    use otap_df_config::pipeline::telemetry::AttributeValue as ConfigValue;
     match value {
         ConfigValue::String(s) => AttributeValue::String(s.clone()),
         ConfigValue::Bool(b) => AttributeValue::Boolean(*b),
@@ -35,7 +35,7 @@ pub fn config_to_telemetry_attr(
 pub fn config_map_to_telemetry(
     map: &std::collections::HashMap<
         String,
-        otap_df_config::pipeline::service::telemetry::AttributeValue,
+        otap_df_config::pipeline::telemetry::AttributeValue,
     >,
 ) -> BTreeMap<String, AttributeValue> {
     map.iter()
