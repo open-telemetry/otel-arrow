@@ -237,7 +237,7 @@ macro_rules! otel_log {
             tracing::Level::WARN => {
                 tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
-            _ => {
+            tracing::Level::ERROR => {
                 tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
         }
@@ -256,7 +256,7 @@ macro_rules! otel_log {
             tracing::Level::WARN => {
                 tracing::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
-            _ => {
+            tracing::Level::ERROR => {
                 tracing::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
         }

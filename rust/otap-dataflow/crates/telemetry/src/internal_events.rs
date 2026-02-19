@@ -149,7 +149,7 @@ macro_rules! otel_log {
             $crate::_private::Level::WARN => {
                 $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
-            _ => {
+            $crate::_private::Level::ERROR => {
                 $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
             }
         }
@@ -168,7 +168,7 @@ macro_rules! otel_log {
             $crate::_private::Level::WARN => {
                 $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
-            _ => {
+            $crate::_private::Level::ERROR => {
                 $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
             }
         }
