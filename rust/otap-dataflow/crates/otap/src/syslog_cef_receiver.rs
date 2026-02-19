@@ -1411,10 +1411,8 @@ mod telemetry_tests {
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
             // Receiver with metrics enabled via pipeline
-            let receiver = SyslogCefReceiver::with_pipeline(
-                pipeline,
-                Config::new_udp(listening_addr),
-            );
+            let receiver =
+                SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(listening_addr));
 
             // Keep downstream open to avoid refused
             let (out_tx, mut _out_rx) = otap_df_channel::mpsc::Channel::new(8);
@@ -1505,8 +1503,7 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             // Receiver with pipeline metrics
-            let receiver =
-                SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(addr));
+            let receiver = SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(addr));
 
             // Wire a closed downstream to force refused
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(1);
