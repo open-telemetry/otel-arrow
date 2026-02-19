@@ -164,3 +164,68 @@ fn loadgen_reached_limit(snapshot: &MetricsSnapshot, max_signals: u64) -> bool {
 fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
     metric_value(snapshot, VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME).is_some_and(|v| v >= 1)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
+    use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
+    use otap_df_telemetry::metrics::MetricValue;
+    use std::collections::HashMap;
+
+    fn snapshot(set: &str, metric: &str, value: u64) -> MetricsSnapshot {
+        MetricsSnapshot {
+            timestamp: "now".into(),
+            metric_sets: vec![MetricSetSnapshot {
+                name: set.into(),
+                brief: "test".into(),
+                attributes: HashMap::new(),
+                metrics: vec![MetricDataPoint {
+                    name: metric.into(),
+                    unit: "".into(),
+                    brief: "".into(),
+                    instrument: Instrument::Counter,
+                    temporality: Some(Temporality::Cumulative),
+                    value_type: MetricValueType::U64,
+                    value: MetricValue::U64(value),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn metric_value_extracts_matching_metric() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![
+                snapshot("other.set", "other", 1).metric_sets.pop().unwrap(),
+                snapshot(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 7)
+                    .metric_sets
+                    .pop()
+                    .unwrap(),
+            ],
+        };
+
+        assert_eq!(
+            metric_value(&snap, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME),
+            Some(7)
+        );
+        assert_eq!(metric_value(&snap, "missing", "metric"), None);
+    }
+
+    #[test]
+    fn loadgen_reached_limit_checks_threshold() {
+        let snap = snapshot(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 10);
+        assert!(loadgen_reached_limit(&snap, 5));
+        assert!(!loadgen_reached_limit(&snap, 15));
+    }
+
+    #[test]
+    fn validation_from_metrics_requires_positive_value() {
+        let success = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 1);
+        let failure = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 0);
+
+        assert!(validation_from_metrics(&success));
+        assert!(!validation_from_metrics(&failure));
+    }
+}

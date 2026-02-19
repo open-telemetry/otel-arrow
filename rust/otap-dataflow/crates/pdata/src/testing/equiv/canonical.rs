@@ -161,3 +161,38 @@ pub(crate) fn assert_equivalent<T, F, G>(
         message_name
     );
 }
+
+/// Generic equivalence assertion for any OTLP signal type.
+pub(crate) fn validate_equivalent<T, F, G>(
+    left: &[T],
+    right: &[T],
+    split_fn: F,
+    canonicalize_fn: G,
+) -> bool
+where
+    T: Message + Clone + std::fmt::Debug + PartialEq,
+    F: Fn(&T) -> Vec<T>,
+    G: Fn(&mut T),
+{
+    // Split into singletons from all messages in the slices
+    let mut left_singletons: Vec<T> = left.iter().flat_map(&split_fn).collect();
+    let mut right_singletons: Vec<T> = right.iter().flat_map(&split_fn).collect();
+
+    // Canonicalize each singleton
+    for singleton in &mut left_singletons {
+        canonicalize_fn(singleton);
+    }
+    for singleton in &mut right_singletons {
+        canonicalize_fn(singleton);
+    }
+
+    // Encode to bytes and collect into BTreeSets
+    let left_set: BTreeSet<Vec<u8>> = left_singletons.iter().map(canonicalize_message).collect();
+    let right_set: BTreeSet<Vec<u8>> = right_singletons.iter().map(canonicalize_message).collect();
+
+    // Use pretty_assertions for nice diff output
+    if left_set == right_set {
+        return true;
+    }
+    false
+}
