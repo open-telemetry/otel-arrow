@@ -121,6 +121,7 @@ azure-monitor-exporter = [
     "dep:sysinfo",
 ]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
+aws = ["object_store/aws", "object_store/cloud"]
 # Experimental processors
 experimental-processors = []
 condense-attributes-processor = ["experimental-processors"]
