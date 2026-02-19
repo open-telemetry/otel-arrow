@@ -23,6 +23,26 @@
 //! - **`is_over_soft_cap()`** — returns `true` when ingest should be
 //!   gated.
 //!
+//! # Soft Cap as a Best-Effort Gate
+//!
+//! The `is_over_soft_cap()` check in the engine's ingest path is a
+//! best-effort gate, **not** a serialized barrier. Multiple concurrent
+//! callers may observe `used <= soft_cap` and proceed before any of
+//! them records new bytes. This is safe because:
+//!
+//! - WAL appends are serialized (`TokioMutex`), so WAL entries are
+//!   added one at a time.
+//! - Segment finalization is serialized (`Mutex<OpenSegment>`), so at
+//!   most one segment is written to disk at a time.
+//! - Individual WAL entries are typically a few KB — far smaller than
+//!   `segment_target_size` — so the transient overshoot from racing
+//!   callers is well within the `hard_cap - soft_cap` headroom.
+//!
+//! The `hard_cap` may therefore be *temporarily* exceeded by a small
+//! amount (the sum of in-flight WAL entries that raced past the gate).
+//! This is bounded and self-correcting: once `used > soft_cap`,
+//! subsequent callers are rejected until cleanup brings usage down.
+//!
 //! # Hard Cap Guarantee
 //!
 //! The minimum configuration requirement is:
@@ -92,7 +112,12 @@ impl std::error::Error for BudgetConfigError {}
 /// Thread-safe for sharing between WAL writer, segment store,
 /// and engine components via `Arc`.
 pub struct DiskBudget {
-    /// Hard ceiling: `used` must never exceed this.
+    /// Hard ceiling for disk usage.
+    ///
+    /// Under normal operation `used` stays at or below `hard_cap`.
+    /// Transient overshoot by the sum of in-flight WAL entries is
+    /// possible because the soft-cap gate is not serialized (see
+    /// module-level "Soft Cap as a Best-Effort Gate" docs).
     hard_cap: u64,
     /// Soft threshold: ingest is gated when `used > soft_cap`.
     /// Equals `hard_cap - segment_headroom`.

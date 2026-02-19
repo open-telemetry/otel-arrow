@@ -490,6 +490,24 @@ impl QuiverEngine {
     /// into the current open segment. If the segment exceeds the configured
     /// size or time threshold, it is finalized and written to disk.
     ///
+    /// # Budget gating
+    ///
+    /// The soft-cap check is a best-effort gate, not a serialized barrier.
+    /// Multiple concurrent callers may pass the check before any of them
+    /// records bytes via the WAL or segment path. This is safe because:
+    ///
+    /// - WAL appends are serialized (`TokioMutex`), so entries are added
+    ///   one at a time.
+    /// - Finalization is serialized (`Mutex<OpenSegment>`), so at most one
+    ///   segment writes to disk at a time.
+    /// - The `hard_cap - soft_cap = segment_target_size` headroom absorbs
+    ///   the overshoot from racing callers, since individual WAL entries
+    ///   are much smaller than a full segment.
+    ///
+    /// The hard cap may be temporarily exceeded by a small amount (sum of
+    /// in-flight WAL entries), but this is bounded and self-correcting:
+    /// once the soft cap is exceeded, subsequent callers are rejected.
+    ///
     /// # Errors
     ///
     /// Returns an error if:
@@ -500,6 +518,7 @@ impl QuiverEngine {
         self.metrics.record_ingest_attempt();
 
         // Step 0: Check budget watermark before doing any work.
+        // This is a best-effort gate — see "Budget gating" in the doc comment.
         // If usage exceeds the soft cap, attempt cleanup before rejecting.
         if self.budget.is_over_soft_cap() {
             // Try cleaning up fully-consumed segments first (no data loss)
