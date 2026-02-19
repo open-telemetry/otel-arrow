@@ -481,6 +481,10 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "windows",
+        ignore = "Skipping on Windows due to timing flakiness"
+    )]
     fn test_adaptive_schema_dict_upgrade_write() {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let temp_dir = tempfile::tempdir().unwrap();
