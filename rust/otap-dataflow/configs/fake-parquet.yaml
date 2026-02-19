@@ -34,3 +34,16 @@ groups:
         connections:
           - from: receiver
             to: exporter
+
+# S3 storage example:
+# storage:
+#   s3:
+#     base_uri: s3://my-bucket/otel-parquet
+#     region: us-east-1
+#     endpoint: http://localhost:4566
+#     allow_http: true
+#     virtual_hosted_style_request: false
+#     auth:
+#       type: static_credentials
+#       access_key_id: test
+#       secret_access_key: test

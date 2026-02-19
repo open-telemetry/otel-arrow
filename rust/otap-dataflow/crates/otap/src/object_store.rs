@@ -7,7 +7,7 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use serde::Deserialize;
 
-#[cfg(feature = "azure")]
+#[cfg(any(feature = "azure", feature = "aws"))]
 use crate::cloud_auth;
 
 /// Azure object storage
@@ -41,6 +41,31 @@ pub enum StorageType {
 
         /// The auth settings, see [cloud_auth::azure::AuthMethod]
         auth: cloud_auth::azure::AuthMethod,
+    },
+
+    /// AWS S3 storage
+    #[cfg(feature = "aws")]
+    S3 {
+        /// The S3 bucket URI, e.g. `s3://my-bucket/prefix`
+        base_uri: String,
+
+        /// AWS region, e.g. `us-east-1`. If not provided, falls back to
+        /// environment and default AWS provider chain behavior.
+        region: Option<String>,
+
+        /// Optional custom endpoint URL (for S3-compatible stores like
+        /// LocalStack).
+        endpoint: Option<String>,
+
+        /// Whether to allow HTTP (non-TLS) connections.
+        allow_http: Option<bool>,
+
+        /// Whether to use virtual hosted-style requests.
+        /// Set to false for S3-compatible stores that require path-style.
+        virtual_hosted_style_request: Option<bool>,
+
+        /// The auth settings, see [cloud_auth::aws::AuthMethod]
+        auth: cloud_auth::aws::AuthMethod,
     },
 }
 
@@ -87,6 +112,36 @@ pub fn from_storage_type(
                     .with_credentials(Arc::new(credential_provider))
                     .build()?,
             ))
+        }
+
+        #[cfg(feature = "aws")]
+        StorageType::S3 {
+            base_uri,
+            region,
+            endpoint,
+            allow_http,
+            virtual_hosted_style_request,
+            auth,
+        } => {
+            use object_store::aws::AmazonS3Builder;
+
+            let mut builder = AmazonS3Builder::new().with_url(base_uri);
+
+            if let Some(region) = region {
+                builder = builder.with_region(region);
+            }
+            if let Some(endpoint) = endpoint {
+                builder = builder.with_endpoint(endpoint);
+            }
+            if let Some(true) = allow_http {
+                builder = builder.with_allow_http(true);
+            }
+            if let Some(vhost) = virtual_hosted_style_request {
+                builder = builder.with_virtual_hosted_style_request(*vhost);
+            }
+
+            builder = cloud_auth::aws::configure_builder(builder, auth);
+            Ok(Arc::new(builder.build()?))
         }
     }
 }
@@ -244,6 +299,24 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "aws")]
+    fn test_get_s3_storage() {
+        let storage = StorageType::S3 {
+            base_uri: "s3://my-bucket/test".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:4566".to_string()),
+            allow_http: Some(true),
+            virtual_hosted_style_request: Some(false),
+            auth: cloud_auth::aws::AuthMethod::StaticCredentials {
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                session_token: None,
+            },
+        };
+        assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
     fn test_file_config() {
         let json = json!({
             "file": {
@@ -334,6 +407,127 @@ mod test {
                 client_id: Some("test-client-id".to_string()),
                 tenant_id: Some("test-tenant-id".to_string()),
                 token_file_path: Some("/var/run/secrets/token".into()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_default_auth() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "auth": {
+                    "type": "default"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: None,
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::Default,
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_static_credentials() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "endpoint": "http://localhost:4566",
+                "allow_http": true,
+                "virtual_hosted_style_request": false,
+                "auth": {
+                    "type": "static_credentials",
+                    "access_key_id": "test",
+                    "secret_access_key": "test",
+                    "session_token": "token"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:4566".to_string()),
+            allow_http: Some(true),
+            virtual_hosted_style_request: Some(false),
+            auth: cloud_auth::aws::AuthMethod::StaticCredentials {
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                session_token: Some("token".to_string()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_web_identity() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "auth": {
+                    "type": "web_identity",
+                    "role_arn": "arn:aws:iam::123456789012:role/TestRole",
+                    "token_file_path": "/var/run/secrets/token"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::WebIdentity {
+                role_arn: Some("arn:aws:iam::123456789012:role/TestRole".to_string()),
+                token_file_path: Some("/var/run/secrets/token".to_string()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_assume_role() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "auth": {
+                    "type": "assume_role",
+                    "role_arn": "arn:aws:iam::123456789012:role/CrossAccountRole",
+                    "external_id": "my-external-id",
+                    "session_name": "otap-session"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::AssumeRole {
+                role_arn: "arn:aws:iam::123456789012:role/CrossAccountRole".to_string(),
+                external_id: Some("my-external-id".to_string()),
+                session_name: Some("otap-session".to_string()),
             },
         };
         test_deserialize(&json, expected);
