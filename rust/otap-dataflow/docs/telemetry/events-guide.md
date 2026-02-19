@@ -120,6 +120,52 @@ otel_info!("node.connect",
 );
 ```
 
+## Consolidating events
+
+Every `otel_*!` callsite adds to the binary's static metadata. Avoid
+proliferating near-identical events that differ only by one attribute -- use a
+single event with a distinguishing **attribute** instead.
+
+### Use attributes for variation, not separate event names
+
+When several code paths represent the same *kind* of occurrence and differ only
+in a categorical dimension (status code, credential type, error class, etc.),
+emit **one event** with that dimension as an attribute rather than creating a
+separate event for each value.
+
+```rust
+// BAD -- four callsites for the same conceptual event:
+otel_warn!("receiver.grpc.unauthenticated", code = 16, message = %msg);
+otel_warn!("receiver.grpc.permission_denied", code = 7, message = %msg);
+otel_warn!("receiver.grpc.unavailable",       code = 14, message = %msg);
+otel_warn!("receiver.grpc.resource_exhausted", code = 8, message = %msg);
+
+// GOOD -- one callsite, status_code as an attribute:
+otel_warn!("receiver.grpc.error",
+    status_code = code,
+    message = %msg,
+);
+```
+
+### Consolidate one-time startup information
+
+Informational events emitted once during initialization (e.g. credential type,
+listening address, feature flags) SHOULD be folded into a single startup event
+rather than emitted as dedicated events per field.
+
+```rust
+// BAD -- separate events for each piece of startup info:
+otel_info!("exporter.start");
+otel_info!("exporter.endpoint", endpoint = %endpoint);
+otel_info!("exporter.auth_type", auth_type = %auth_type);
+
+// GOOD -- single startup event with all relevant attributes:
+otel_info!("exporter.start",
+    endpoint = %endpoint,
+    auth_type = %auth_type,
+);
+```
+
 ## Event naming
 
 Event names MUST be low-cardinality and stable. Follow the semantic conventions
@@ -244,3 +290,8 @@ termination verb `cancel`, and one internal safety verb `abort`.
 - Error events use standard exception attributes; stacktraces only at debug or
   lower.
 - Severity is appropriate and consistent with the event meaning.
+- No `format!` calls in attribute values; use `%`/`?` formatting or raw values.
+- Near-identical events have been consolidated into a single event with a
+  distinguishing attribute (see [Consolidating events](#consolidating-events)).
+- The number of new callsites is minimized; each callsite adds static memory
+  overhead.
