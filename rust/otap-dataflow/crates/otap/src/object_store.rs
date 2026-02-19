@@ -10,6 +10,11 @@ use serde::Deserialize;
 #[cfg(any(feature = "azure", feature = "aws"))]
 use crate::cloud_auth;
 
+#[cfg(any(feature = "azure", feature = "aws"))]
+use object_store::path::Path;
+#[cfg(any(feature = "azure", feature = "aws"))]
+use object_store::prefix::PrefixStore;
+
 /// Azure object storage
 #[cfg(feature = "azure")]
 pub mod azure;
@@ -69,6 +74,77 @@ pub enum StorageType {
     },
 }
 
+/// Extract the path prefix from a cloud storage URI that builders discard.
+///
+/// Cloud storage builders (`AmazonS3Builder::with_url`, `MicrosoftAzureBuilder::with_url`)
+/// parse the bucket/container from the URL but discard any path after it. This function
+/// extracts that discarded path so it can be used with `PrefixStore`.
+///
+/// Examples:
+/// - `s3://bucket/telemetry` → `Some(Path::from("telemetry"))`
+/// - `s3://bucket` → `None`
+/// - `az://container/prefix` → `Some(Path::from("prefix"))`
+/// - `https://account.blob.core.windows.net/container/prefix` → `Some(Path::from("prefix"))`
+#[cfg(any(feature = "azure", feature = "aws"))]
+fn extract_path_prefix(base_uri: &str) -> Result<Option<Path>, object_store::Error> {
+    let url = url::Url::parse(base_uri).map_err(|e| object_store::Error::Generic {
+        store: "cloud",
+        source: Box::new(e),
+    })?;
+
+    let path = url.path();
+
+    // For scheme-based URIs (s3://, az://, abfs://), the path starts with /
+    // and the first segment after the leading slash is the prefix.
+    // For HTTPS Azure URIs, the first path segment is the container name,
+    // so the prefix starts from the second segment.
+    let is_https = url.scheme() == "https" || url.scheme() == "http";
+
+    let trimmed = path.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let prefix = if is_https {
+        // For HTTPS URLs like https://account.blob.core.windows.net/container/prefix/sub
+        // Skip the first segment (container) and use the rest
+        match trimmed.find('/') {
+            Some(idx) => {
+                let after_container = &trimmed[idx + 1..];
+                let after_container = after_container.trim_end_matches('/');
+                if after_container.is_empty() {
+                    return Ok(None);
+                }
+                after_container
+            }
+            None => return Ok(None), // Only container, no prefix
+        }
+    } else {
+        // For scheme-based URIs (s3://bucket/prefix, az://container/prefix)
+        // the host is the bucket/container, path is the prefix
+        trimmed.trim_end_matches('/')
+    };
+
+    if prefix.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Path::from(prefix)))
+    }
+}
+
+/// Wrap an object store with a `PrefixStore` if the URI contains a path prefix.
+#[cfg(any(feature = "azure", feature = "aws"))]
+fn wrap_with_prefix(
+    store: impl ObjectStore,
+    base_uri: &str,
+) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    if let Some(prefix) = extract_path_prefix(base_uri)? {
+        Ok(Arc::new(PrefixStore::new(store, prefix)))
+    } else {
+        Ok(Arc::new(store))
+    }
+}
+
 /// Fetch an object store based on the provide storage
 pub fn from_storage_type(
     storage: &StorageType,
@@ -106,12 +182,11 @@ pub fn from_storage_type(
             let credential_provider =
                 azure::AzureTokenCredentialProvider::new(token_credential, storage_scope.clone());
 
-            Ok(Arc::new(
-                MicrosoftAzureBuilder::new()
-                    .with_url(base_uri)
-                    .with_credentials(Arc::new(credential_provider))
-                    .build()?,
-            ))
+            let store = MicrosoftAzureBuilder::new()
+                .with_url(base_uri)
+                .with_credentials(Arc::new(credential_provider))
+                .build()?;
+            wrap_with_prefix(store, base_uri)
         }
 
         #[cfg(feature = "aws")]
@@ -125,7 +200,7 @@ pub fn from_storage_type(
         } => {
             use object_store::aws::AmazonS3Builder;
 
-            let mut builder = AmazonS3Builder::new().with_url(base_uri);
+            let mut builder = AmazonS3Builder::from_env().with_url(base_uri);
 
             if let Some(region) = region {
                 builder = builder.with_region(region);
@@ -141,7 +216,8 @@ pub fn from_storage_type(
             }
 
             builder = cloud_auth::aws::configure_builder(builder, auth);
-            Ok(Arc::new(builder.build()?))
+            let store = builder.build()?;
+            wrap_with_prefix(store, base_uri)
         }
     }
 }
@@ -531,6 +607,82 @@ mod test {
             },
         };
         test_deserialize(&json, expected);
+    }
+
+    // --- extract_path_prefix tests ---
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_with_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket/telemetry").unwrap();
+        assert_eq!(prefix, Some(Path::from("telemetry")));
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_nested_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket/a/b/c").unwrap();
+        assert_eq!(prefix, Some(Path::from("a/b/c")));
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_no_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_trailing_slash() {
+        let prefix = extract_path_prefix("s3://my-bucket/telemetry/").unwrap();
+        assert_eq!(prefix, Some(Path::from("telemetry")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_az_with_prefix() {
+        let prefix = extract_path_prefix("az://container/prefix").unwrap();
+        assert_eq!(prefix, Some(Path::from("prefix")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_az_no_prefix() {
+        let prefix = extract_path_prefix("az://container").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_with_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/prefix").unwrap();
+        assert_eq!(prefix, Some(Path::from("prefix")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_nested_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/a/b/c").unwrap();
+        assert_eq!(prefix, Some(Path::from("a/b/c")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_no_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_container_trailing_slash() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/").unwrap();
+        assert_eq!(prefix, None);
     }
 
     fn test_deserialize(json: &str, expected: StorageType) {
