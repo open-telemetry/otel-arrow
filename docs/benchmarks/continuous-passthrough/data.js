@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771463162186,
+  "lastUpdate": 1771467612222,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "cijo.thomas@gmail.com",
-            "name": "Cijo Thomas",
-            "username": "cijothomas"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c68e70eda406b6341cbd0ae73cf4521a56639d47",
-          "message": "Update batch size variation perf tests (#1809)\n\nModified to use 10, 100, 512, 1024, 4096, 8192 as sizes.\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-01-16T23:41:49Z",
-          "tree_id": "2ebd0b963e9f0a0c3a4e59c7f3429710cd874ea8",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/c68e70eda406b6341cbd0ae73cf4521a56639d47"
-        },
-        "date": 1768609059170,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 96.16226525157725,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 96.8441080331295,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 45.4703125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 47.8359375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 570846.5889158417,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 570846.5889158417,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.000821,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10353526.431908403,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10311706.708369318,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11238683.11994492,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "l.querel@f5.com",
+            "name": "Laurent Quérel",
+            "username": "lquerel"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "023d33a58414ed39e724d6892d3ceb68994b906c",
+          "message": "[config] Move to `otel_dataflow/v1` config file structure, centralize ITS, and normalize policy resolution (#2056)\n\n# Change Summary\n\nThis PR completes the config model consolidation and policy refactor for\nthe dataflow engine.\n\n- Simplified configuration loading to a single root format:\nOtelDataflowSpec (version: otel_dataflow/v1).\n- Removed support for loading standalone PipelineConfig files as engine\nruntime input.\n  - Renamed top-level pipeline_groups to groups.\n- Moved internal telemetry pipeline (ITS) declaration from\npipeline-level fields (internal, internal_connections) to:\n      - engine.observability.pipeline.nodes\n      - engine.observability.pipeline.connections\n  - Consolidated engine settings into EngineConfig.\n- Removed pipeline ServiceConfig / duplicated telemetry config path;\ntelemetry is now configured centrally and via policy resolution.\n- Introduced/expanded hierarchical policy resolution (top-level -> group\n-> pipeline, with observability-specific override where applicable):\n      - policies.channel_capacity.control.node\n      - policies.channel_capacity.control.pipeline\n      - policies.channel_capacity.pdata (default set to 128)\n      - policies.health\n      - policies.telemetry\n- policies.resources.core_allocation (default top-level behavior: all\ncores)\n- Explicitly rejected resources policy on observability pipeline for\nnow.\n  - Unified resolved config handling:\n- OtelDataflowSpec::resolve() produces a deterministic resolved\nsnapshot.\n- Observability pipeline is represented in resolved pipelines with role\ntagging.\n  - Controller cleanup:\n- deduplicated run paths (run_forever / run_till_shutdown) through a\nshared execution path\n- consumes resolved config once and uses config-owned observability\ninternal IDs.\n- Updated docs/tests/config fixtures accordingly (including README.md\nand files under configs/).\n\n## What issue does this PR close?\n\n  - Closes #1833 \n  - Closes #1871 \n  - Partially #1830 \n  \n  ## How are these changes tested?\n\nChecked with `cargo xtask check` \n  \n## Are there any user-facing changes?\n\nYes (breaking config changes):\n\n- Runtime config must be OtelDataflowSpec with version:\notel_dataflow/v1.\n  - pipeline_groups is now groups.\n  - ITS config moved to engine.observability.pipeline.\n  - Pipeline-level service / telemetry path removed.\n- Policy fields moved/standardized under hierarchical policies sections.\n  \n## Example configuration file\n\n```yaml\nversion: otel_dataflow/v1\n\n# This configuration file reproduces the continuous benchmarking setup used\n# in our CI pipelines. The traffic generators, system under test, and backend\n# are all included in a single configuration for easier local testing/debugging.\n#\n# Runtime CLI overrides:\n# - --num-cores / --core-id-range override top-level\n#   `policies.resources.core_allocation`.\n# - Pipeline/group-level `policies.resources` still take precedence over that\n#   top-level value.\n# - --http-admin-bind overrides `engine.http_admin.bind_address`.\n#\n# If you want --num-cores / --core-id-range to drive all pipelines uniformly,\n# remove the pipeline-level `policies.resources` sections below.\n\n# Top-level policy.\n# Values below match the engine defaults (explicit to showcase the v1 policy model).\npolicies:\n  channel_capacity:\n    control:\n      node: 256\n      pipeline: 256\n    pdata: 128\n  health: {}\n  telemetry:\n    pipeline_metrics: true\n    tokio_metrics: true\n    channel_metrics: true\n  resources:\n    core_allocation:\n      type: all_cores\n\n# Engine-wide settings.\nengine:\n  http_admin:\n    bind_address: 127.0.0.1:8085\n  telemetry:\n    logs:\n      level: info\n\n  # Internal telemetry system (ITS) declaration.\n  observability:\n    pipeline:\n      nodes:\n        itr:\n          type: internal_telemetry:receiver\n          config: {}\n        sink:\n          type: noop:exporter\n          config: null\n      connections:\n        - from: itr\n          to: sink\n\n# Pipeline groups are used to logically separate sets of pipelines.\n# Resolution order for regular pipelines is:\n# pipeline.policies -> group.policies -> top-level policies\n# (replacement is per policy family, not deep-merge).\ngroups:\n  continuous_benchmark:\n    # Group-level policies are optional. This one is explicit and matches\n    # defaults, to demonstrate the hierarchy without changing behavior.\n    policies:\n      channel_capacity:\n        control:\n          node: 256\n          pipeline: 256\n        pdata: 128\n\n    pipelines:\n      # ======================================================================\n      # Traffic generation pipelines\n      # ======================================================================\n\n      # First traffic generator: static pre-generated dataset.\n      # Pipeline-level resources override group/top-level resources.\n      traffic_gen1:\n        policies:\n          resources:\n            core_allocation:\n              type: core_count\n              count: 15\n\n        nodes:\n          receiver:\n            type: traffic_generator:receiver\n            config:\n              data_source: static\n              generation_strategy: pre_generated\n              traffic_config:\n                signals_per_second: 150000\n                max_signal_count: null\n                metric_weight: 0\n                trace_weight: 0\n                log_weight: 30\n          exporter:\n            type: otlp:exporter\n            config:\n              grpc_endpoint: \"http://127.0.0.1:4327\"\n\n        connections:\n          - from: receiver\n            to: exporter\n\n      # Second traffic generator: dynamic generation from semantic conventions.\n      traffic_gen2:\n        policies:\n          resources:\n            core_allocation:\n              type: core_set\n              set:\n                - start: 21\n                  end: 35\n\n        nodes:\n          receiver:\n            type: traffic_generator:receiver\n            config:\n              traffic_config:\n                signals_per_second: 100000\n                max_signal_count: null\n                metric_weight: 0\n                trace_weight: 0\n                log_weight: 30\n              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]\n          exporter:\n            type: otlp:exporter\n            config:\n              grpc_endpoint: \"http://127.0.0.1:4337\"\n\n        connections:\n          - from: receiver\n            to: exporter\n\n      # ======================================================================\n      # System Under Test pipeline\n      # ======================================================================\n      sut:\n        policies:\n          resources:\n            core_allocation:\n              type: core_set\n              set:\n                - start: 0\n                  end: 1\n\n        nodes:\n          otlp_recv1:\n            type: otlp:receiver\n            config:\n              protocols:\n                grpc:\n                  listening_addr: \"127.0.0.1:4327\"\n                  wait_for_result: true\n          otlp_recv2:\n            type: otlp:receiver\n            config:\n              protocols:\n                grpc:\n                  listening_addr: \"127.0.0.1:4337\"\n                  wait_for_result: true\n\n          router:\n            type: type_router:processor\n            outputs: [\"logs\", \"metrics\", \"traces\"]\n            config: {}\n\n          retry:\n            type: retry:processor\n            config:\n              multiplier: 1.5\n\n          logs_exporter:\n            type: otlp:exporter\n            config:\n              grpc_endpoint: \"http://127.0.0.1:4328\"\n              max_in_flight: 6\n\n          metrics_exporter:\n            type: noop:exporter\n            config: null\n\n          spans_exporter:\n            type: noop:exporter\n            config: null\n\n        connections:\n          - from: otlp_recv1\n            to: router\n          - from: otlp_recv2\n            to: router\n          - from: router[\"logs\"]\n            to: retry\n          - from: router[\"metrics\"]\n            to: metrics_exporter\n          - from: router[\"traces\"]\n            to: spans_exporter\n          - from: retry\n            to: logs_exporter\n\n      # ======================================================================\n      # Backend pipeline\n      # ======================================================================\n      backend:\n        policies:\n          resources:\n            core_allocation:\n              type: core_set\n              set:\n                - start: 1\n                  end: 1\n\n        nodes:\n          receiver:\n            type: otlp:receiver\n            config:\n              protocols:\n                grpc:\n                  listening_addr: 127.0.0.1:4328\n\n          perf_noop:\n            type: noop:exporter\n            config: null\n\n        connections:\n          - from: receiver\n            to: perf_noop\n```\n\n---------\n\nCo-authored-by: Utkarsh Umesan Pillai <66651184+utpilla@users.noreply.github.com>",
+          "timestamp": "2026-02-19T01:25:02Z",
+          "tree_id": "08afe52645e15b58bb873a09034cdacc269c367b",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/023d33a58414ed39e724d6892d3ceb68994b906c"
+        },
+        "date": 1771467611681,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.162644624710083,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.18407811736745,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.67547783675047,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 46.6640625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 48.67578125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 497152.3292049168,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 507903.9672331031,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.00202,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11264200.59786135,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11200847.387737624,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
