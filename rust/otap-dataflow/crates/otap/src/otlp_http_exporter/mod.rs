@@ -450,12 +450,12 @@ async fn finalize_completed_export(
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
-/// 
+///
 /// Then intention here is to force requests to be distributed across multiple TCP connections to
 /// the OTLP server. In the case of our OTLP Receiver, there may be many instances each running on
 /// different threads, but all listening on the same port (using SO_REUSEPORT). Having multiple
 /// connections helps to balance requests across any receiver instances.
-/// 
+///
 /// Note that internally, reqwest's Client already manages a pool of connections, so the number of
 /// connections is not guaranteed to be equal to the number of clients.
 struct HttpClientPool {
@@ -1339,7 +1339,7 @@ mod test {
                                     OtapPayload::OtapArrowRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
                                         assert!(
-                                            logs_batch.num_rows() > 0, 
+                                            logs_batch.num_rows() > 0,
                                             "expected record batches to be returned in Nack, but it was empty"
                                         );
                                     }
@@ -1435,7 +1435,7 @@ mod test {
                                 match nack.refused.payload() {
                                     OtapPayload::OtlpBytes(proto_bytes) => {
                                         assert!(
-                                            !proto_bytes.as_bytes().is_empty(), 
+                                            !proto_bytes.as_bytes().is_empty(),
                                             "expected payload bytes to be returned in Nack, but it was empty"
                                         );
                                     }
