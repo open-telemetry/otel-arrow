@@ -3,11 +3,9 @@
 
 //! Create and run a multi-core pipeline
 
-use clap::error::ErrorKind;
-use clap::{ArgGroup, Parser};
-use otap_df_config::engine::{EngineConfig, EngineSettings, HttpAdminSettings};
-use otap_df_config::pipeline::{CoreAllocation, CoreRange, PipelineConfig, Quota};
-use otap_df_config::{PipelineGroupId, PipelineId};
+use clap::Parser;
+use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
+use otap_df_config::policy::{CoreAllocation, CoreRange};
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::path::PathBuf;
@@ -39,7 +37,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(
     author,
     version,
@@ -48,33 +46,23 @@ static GLOBAL: Jemalloc = Jemalloc;
     after_help = system_info(),
     after_long_help = concat!(
         "EXAMPLES:\n",
-        "  ", env!("CARGO_BIN_NAME"), " --pipeline pipeline.yaml\n",
         "  ", env!("CARGO_BIN_NAME"), " --config  config.yaml\n",
-    ),
-    group = ArgGroup::new("config_source")
-        .required(true)
-        .multiple(false)
-        .args(["pipeline", "config"])
+    )
 )]
 struct Args {
-    /// Path to the pipeline configuration file (.json, .yaml, or .yml)
-    #[arg(short, long, value_name = "FILE", group = "config_source")]
-    pipeline: Option<PathBuf>,
-
     /// Path to the engine configuration file (.json, .yaml, or .yml)
-    #[arg(short = 'c', long, value_name = "FILE", group = "config_source")]
-    config: Option<PathBuf>,
+    #[arg(short = 'c', long, value_name = "FILE")]
+    config: PathBuf,
 
-    /// Number of cores to use (0 for default)
+    /// Number of cores to use (0 for all available cores)
     #[arg(long, conflicts_with = "core_id_range")]
     num_cores: Option<usize>,
 
-    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3,5", "0..=3,6-7").
+    /// Inclusive range of CPU core IDs to pin threads to (e.g. "0-3", "0..3,5", "0..=3,6-7")
     #[arg(long, value_name = "START..END", value_parser = parse_core_id_allocation, conflicts_with = "num_cores")]
     core_id_range: Option<CoreAllocation>,
 
-    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080").
-    /// Defaults to 127.0.0.1:8080 when unset.
+    /// Address to bind the HTTP admin server to (e.g., "127.0.0.1:8080", "0.0.0.0:8080")
     #[arg(long)]
     http_admin_bind: Option<String>,
 }
@@ -84,14 +72,13 @@ fn parse_core_id_allocation(s: &str) -> Result<CoreAllocation, String> {
     //  S -> digit | CoreRange | S,",",S
     //  CoreRange -> digit,"..",digit | digit,"..=",digit | digit,"-",digit
     //  digit -> [0-9]+
-
     Ok(CoreAllocation::CoreSet {
         set: s
             .split(',')
             .map(|part| {
                 part.trim()
                     .parse::<usize>()
-                    // A single ID is a range with the same start and end
+                    // A single ID is a range with the same start and end.
                     .map(|n| CoreRange { start: n, end: n })
                     .or_else(|_| parse_core_id_range(part))
             })
@@ -121,6 +108,36 @@ fn parse_core_id_range(s: &str) -> Result<CoreRange, String> {
     Ok(CoreRange { start, end })
 }
 
+fn core_allocation_override(
+    num_cores: Option<usize>,
+    core_id_range: Option<CoreAllocation>,
+) -> Option<CoreAllocation> {
+    match (core_id_range, num_cores) {
+        (Some(range), _) => Some(range),
+        (None, Some(0)) => Some(CoreAllocation::AllCores),
+        (None, Some(count)) => Some(CoreAllocation::CoreCount { count }),
+        (None, None) => None,
+    }
+}
+
+fn http_admin_bind_override(http_admin_bind: Option<String>) -> Option<HttpAdminSettings> {
+    http_admin_bind.map(|bind_address| HttpAdminSettings { bind_address })
+}
+
+fn apply_cli_overrides(
+    engine_cfg: &mut OtelDataflowSpec,
+    num_cores: Option<usize>,
+    core_id_range: Option<CoreAllocation>,
+    http_admin_bind: Option<String>,
+) {
+    if let Some(core_allocation) = core_allocation_override(num_cores, core_id_range) {
+        engine_cfg.policies.resources.core_allocation = core_allocation;
+    }
+    if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
+        engine_cfg.engine.http_admin = Some(http_admin);
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize rustls crypto provider (required for rustls 0.23+)
     // We use ring as the default provider
@@ -130,107 +147,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to install rustls crypto provider: {e:?}"))?;
 
     let Args {
-        pipeline,
         config,
         num_cores,
         core_id_range,
         http_admin_bind,
-    } = Args::try_parse().unwrap_or_else(|e| {
-        // Replace the confusing ArgGroup syntax with a human-readable message.
-        if e.kind() == ErrorKind::MissingRequiredArgument {
-            let bin = std::env::args()
-                .next()
-                .unwrap_or_else(|| env!("CARGO_BIN_NAME").to_string());
-            eprintln!(
-                "error: missing required option\n\n\
-                 Provide exactly one of:\n  \
-                 --pipeline <FILE>  Path to a single pipeline definition\n  \
-                 --config   <FILE>  Path to a full engine configuration\n\n\
-                 Examples:\n  \
-                 {bin} --pipeline pipeline.yaml\n  \
-                 {bin} --config   config.yaml\n\n\
-                 For more information, try '--help'."
-            );
-            std::process::exit(2);
-        }
-        e.exit();
-    });
+    } = Args::parse();
 
     println!("{}", system_info());
 
-    // For now, we ignore command line core settings when using --config
-    // and warn the user about it. We need to decide how to handle this properly.
-    // This may change in the future.
-    let mut ignored_flags = Vec::new();
-    if num_cores.is_some() {
-        ignored_flags.push("--num-cores");
-    }
-    if core_id_range.is_some() {
-        ignored_flags.push("--core-id-range");
-    }
-    if http_admin_bind.is_some() {
-        ignored_flags.push("--http-admin-bind");
-    }
-    if config.is_some() && !ignored_flags.is_empty() {
-        eprintln!(
-            "Warning: {} ignored when using --config (for now).",
-            ignored_flags.join(", ")
-        );
-    }
-
     let controller = Controller::new(&OTAP_PIPELINE_FACTORY);
-
-    let result = if let Some(config_path) = config {
-        let engine_cfg = EngineConfig::from_file(config_path)?;
-        controller.run_forever(engine_cfg)
-    } else {
-        let core_allocation_override = match (core_id_range, num_cores) {
-            (Some(range), _) => Some(range),
-            (None, Some(num_cores)) => Some(if num_cores == 0 {
-                CoreAllocation::AllCores
-            } else {
-                CoreAllocation::CoreCount { count: num_cores }
-            }),
-            (None, None) => None,
-        };
-        // For now, we predefine pipeline group and pipeline IDs.
-        // That will be replaced with a more dynamic approach in the future.
-        let pipeline_group_id: PipelineGroupId = "default_pipeline_group".into();
-        let pipeline_id: PipelineId = "default_pipeline".into();
-        let pipeline_path = match pipeline {
-            Some(path) => path,
-            None => {
-                return Err("Missing --pipeline argument".into());
-            }
-        };
-
-        // Load pipeline configuration from file
-        let mut pipeline_cfg = PipelineConfig::from_file(
-            pipeline_group_id.clone(),
-            pipeline_id.clone(),
-            &pipeline_path,
-        )?;
-        if let Some(core_allocation) = core_allocation_override {
-            pipeline_cfg.set_quota(Quota { core_allocation });
-        }
-        let admin_settings = HttpAdminSettings {
-            bind_address: http_admin_bind
-                .unwrap_or_else(|| HttpAdminSettings::default().bind_address),
-        };
-        let engine_settings = EngineSettings {
-            http_admin: Some(admin_settings),
-            telemetry: pipeline_cfg.service().telemetry.clone(),
-            observed_state: Default::default(),
-        };
-
-        let engine_cfg = EngineConfig::from_pipeline(
-            pipeline_group_id,
-            pipeline_id,
-            pipeline_cfg,
-            engine_settings,
-        )?;
-        controller.run_forever(engine_cfg)
-    };
+    let mut engine_cfg = OtelDataflowSpec::from_file(config)?;
+    apply_cli_overrides(&mut engine_cfg, num_cores, core_id_range, http_admin_bind);
+    let result = controller.run_forever(engine_cfg);
     match result {
         Ok(_) => {
             println!("Pipeline run successfully");
@@ -329,6 +257,29 @@ Configuration files can be found in the configs/ directory.{}",
 mod tests {
     use super::*;
 
+    fn minimal_engine_yaml() -> &'static str {
+        r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:18080"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#
+    }
+
     #[test]
     fn parse_core_range_ok() {
         assert_eq!(
@@ -366,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_core_range_missing_start() {
+    fn parse_core_range_errors() {
         assert_eq!(
             parse_core_id_range(""),
             Err("invalid start (expected unsigned integer)".to_string())
@@ -390,6 +341,180 @@ mod tests {
         assert_eq!(
             parse_core_id_range("1..2a"),
             Err("invalid end (expected unsigned integer)".to_string())
+        );
+    }
+
+    #[test]
+    fn core_allocation_override_prefers_range() {
+        let range = CoreAllocation::CoreSet {
+            set: vec![CoreRange { start: 2, end: 4 }],
+        };
+        let resolved = core_allocation_override(Some(3), Some(range.clone()));
+        assert_eq!(resolved, Some(range));
+    }
+
+    #[test]
+    fn core_allocation_override_maps_num_cores() {
+        assert_eq!(
+            core_allocation_override(Some(5), None),
+            Some(CoreAllocation::CoreCount { count: 5 })
+        );
+        assert_eq!(
+            core_allocation_override(Some(0), None),
+            Some(CoreAllocation::AllCores)
+        );
+        assert_eq!(core_allocation_override(None, None), None);
+    }
+
+    #[test]
+    fn http_admin_bind_override_sets_custom_bind() {
+        let settings = http_admin_bind_override(Some("0.0.0.0:18080".to_string()));
+        assert_eq!(
+            settings.map(|s| s.bind_address),
+            Some("0.0.0.0:18080".to_string())
+        );
+    }
+
+    #[test]
+    fn http_admin_bind_override_none_keeps_config_value() {
+        assert!(http_admin_bind_override(None).is_none());
+    }
+
+    #[test]
+    fn args_reject_conflicting_core_allocation_flags() {
+        let err = Args::try_parse_from([
+            "df_engine",
+            "--config",
+            "config.yaml",
+            "--num-cores",
+            "2",
+            "--core-id-range",
+            "0-3",
+        ])
+        .expect_err("clap should reject conflicting options");
+        let msg = err.to_string();
+        assert!(msg.contains("--num-cores"));
+        assert!(msg.contains("--core-id-range"));
+    }
+
+    #[test]
+    fn args_accept_num_cores_and_http_admin_bind() {
+        let args = Args::try_parse_from([
+            "df_engine",
+            "--config",
+            "config.yaml",
+            "--num-cores",
+            "2",
+            "--http-admin-bind",
+            "0.0.0.0:28080",
+        ])
+        .expect("args should parse");
+        assert_eq!(args.num_cores, Some(2));
+        assert!(args.core_id_range.is_none());
+        assert_eq!(args.http_admin_bind.as_deref(), Some("0.0.0.0:28080"));
+    }
+
+    #[test]
+    fn args_accept_core_id_range() {
+        let args = Args::try_parse_from([
+            "df_engine",
+            "--config",
+            "config.yaml",
+            "--core-id-range",
+            "1..=3,7",
+        ])
+        .expect("args should parse");
+        assert_eq!(
+            args.core_id_range,
+            Some(CoreAllocation::CoreSet {
+                set: vec![
+                    CoreRange { start: 1, end: 3 },
+                    CoreRange { start: 7, end: 7 }
+                ]
+            })
+        );
+        assert_eq!(args.num_cores, None);
+    }
+
+    #[test]
+    fn apply_cli_overrides_updates_top_level_resources_and_http_admin() {
+        let mut cfg =
+            OtelDataflowSpec::from_yaml(minimal_engine_yaml()).expect("base config should parse");
+        apply_cli_overrides(&mut cfg, Some(3), None, Some("0.0.0.0:28080".to_string()));
+
+        assert_eq!(
+            cfg.policies.resources.core_allocation,
+            CoreAllocation::CoreCount { count: 3 }
+        );
+        assert_eq!(
+            cfg.engine
+                .http_admin
+                .as_ref()
+                .map(|s| s.bind_address.as_str()),
+            Some("0.0.0.0:28080")
+        );
+
+        let resolved = cfg.resolve();
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
+            .expect("default/main should exist");
+        assert_eq!(
+            main.policies.resources.core_allocation,
+            CoreAllocation::CoreCount { count: 3 }
+        );
+    }
+
+    #[test]
+    fn apply_cli_overrides_only_changes_global_resources_policy() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 9
+engine: {}
+groups:
+  default:
+    policies:
+      resources:
+        core_allocation:
+          type: core_count
+          count: 5
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:example:receiver"
+            config: null
+          exporter:
+            type: "urn:test:example:exporter"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let mut cfg = OtelDataflowSpec::from_yaml(yaml).expect("config should parse");
+        apply_cli_overrides(&mut cfg, Some(2), None, None);
+
+        // CLI updates top-level/global policy.
+        assert_eq!(
+            cfg.policies.resources.core_allocation,
+            CoreAllocation::CoreCount { count: 2 }
+        );
+
+        // Pipeline resolution keeps precedence (group-level over top-level).
+        let resolved = cfg.resolve();
+        let main = resolved
+            .pipelines
+            .iter()
+            .find(|p| p.pipeline_group_id.as_ref() == "default" && p.pipeline_id.as_ref() == "main")
+            .expect("default/main should exist");
+        assert_eq!(
+            main.policies.resources.core_allocation,
+            CoreAllocation::CoreCount { count: 5 }
         );
     }
 }

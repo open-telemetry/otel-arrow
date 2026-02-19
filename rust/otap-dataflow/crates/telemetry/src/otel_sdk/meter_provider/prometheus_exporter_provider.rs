@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use axum::{Router, extract::State, http::StatusCode, response::Response, routing::get};
 use opentelemetry_sdk::metrics::MeterProviderBuilder;
-use otap_df_config::pipeline::service::telemetry::metrics::readers::pull::PrometheusExporterConfig;
+use otap_df_config::pipeline::telemetry::metrics::readers::pull::PrometheusExporterConfig;
 use prometheus::{Encoder, Registry, TextEncoder};
 
 use crate::error::Error;

@@ -1,41 +1,49 @@
-# Shows the batch processor.
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: debug
       providers:
         engine: console_async
         global: console_async
-        admin:    console_direct
+        admin: console_direct
         internal: console_direct
+groups:
+  default:
+    pipelines:
+      main:
+        # Shows the batch processor.
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
 
-nodes:
-  generator:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        max_signal_count: 10000
-        max_batch_size: 10
-        signals_per_second: 10
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  batch:
-    type: batch:processor
-    config:
-      otap:
-        min_size: 1000
-        sizer: items
-      format: preserve
-      flush_timeout: 3s
-  console:
-    type: console:exporter
-    config: {}
+        nodes:
+          generator:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                max_signal_count: 10000
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          batch:
+            type: batch:processor
+            config:
+              otap:
+                min_size: 1000
+                sizer: items
+              format: preserve
+              flush_timeout: 3s
+          console:
+            type: console:exporter
+            config: {}
 
-connections:
-  - from: generator
-    to: batch
-  - from: batch
-    to: console
+        connections:
+          - from: generator
+            to: batch
+          - from: batch
+            to: console

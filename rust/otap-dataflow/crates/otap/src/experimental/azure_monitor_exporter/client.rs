@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 
+use otap_df_telemetry::otel_warn;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
     Client,
@@ -23,8 +24,6 @@ const MAX_IDLE_CONNECTIONS_PER_HOST: usize = 2;
 /// Handles authentication, compression, and HTTP communication with the
 /// Azure Monitor Logs Ingestion API.
 #[derive(Clone)]
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 pub struct LogsIngestionClient {
     http_client: Client,
     endpoint: String,
@@ -91,8 +90,6 @@ impl LogsIngestionClientPool {
     }
 }
 
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 impl LogsIngestionClient {
     /// Creates a new Azure Monitor logs ingestion client instance from provided components.
     ///
@@ -144,8 +141,6 @@ impl LogsIngestionClient {
         self.auth_header = header;
     }
 
-    // TODO: Remove print_stdout after logging is set up
-    #[allow(clippy::print_stdout)]
     /// Export compressed data to Log Analytics ingestion API with automatic retry.
     ///
     /// Retries on:
@@ -199,11 +194,7 @@ impl LogsIngestionClient {
                         base_delay.mul_f64(jitter_factor)
                     };
 
-                    println!(
-                        "[AzureMonitorExporter] Retry after {}ms: {:?}",
-                        delay.as_millis(),
-                        e
-                    );
+                    otel_warn!("azure_monitor_exporter.export.retry_delay", delay_ms = delay.as_millis() as u64, error = ?e);
 
                     tokio::time::sleep(delay).await;
                 }
@@ -240,6 +231,12 @@ impl LogsIngestionClient {
 
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+
+        otel_warn!(
+            "azure_monitor_exporter.client.error",
+            status = status.as_u16(),
+            message = %body
+        );
 
         match status.as_u16() {
             401 => Err(Error::unauthorized(body)),

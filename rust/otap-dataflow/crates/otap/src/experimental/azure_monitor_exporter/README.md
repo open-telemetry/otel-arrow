@@ -75,7 +75,7 @@ The exporter uses Azure SDK authentication with the following options:
 ### Running
 
 ```bash
-./target/release/df_engine --pipeline config.yaml --num-cores 4
+./target/release/df_engine --config config.yaml --num-cores 4
 ```
 
 ### Testing with OTLP Receiver
@@ -85,7 +85,7 @@ To test using the provided configuration file:
 ```bash
 # Start the collector
 ./target/release/df_engine \
-  --pipeline crates/otap/src/experimental/azure_monitor_exporter/otlp-ame.yaml \
+  --config crates/otap/src/experimental/azure_monitor_exporter/otlp-ame.yaml \
   --num-cores 1
 
 # In another terminal, send test data:

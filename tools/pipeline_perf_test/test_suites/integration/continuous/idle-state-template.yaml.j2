@@ -12,7 +12,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/engine/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
 {% if core_range is defined %}
           - "--core-id-range"
