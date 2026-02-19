@@ -6,8 +6,12 @@
 //! This exporter sends telemetry data to an OTLP server using the HTTP Protocol.
 //!
 //! ToDo:
-//! - support for TLS/mTLS
-//! - support JSON encoding payloads (currently only proto is supported and it's not configurable)
+//! - TLS/mTLS
+//! - Proxy settings
+//! - Compression (payloads and accepting compressed responses)
+//! - JSON encoding payloads (currently only proto is supported and it's not configurable)
+//! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
+//! - Unit test metrics
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -25,7 +29,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
-use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::error::{Error as EngineError, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{Message, MessageChannel};
@@ -51,13 +55,12 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info};
 use prost::Message as _;
 use reqwest::{Client, Response};
-use tower::limit::{ConcurrencyLimit, ConcurrencyLimitLayer, GlobalConcurrencyLimitLayer};
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otlp_exporter::InFlightExports;
-use crate::otlp_http::PROTOBUF_CONTENT_TYPE;
 use crate::otlp_http::client_settings::HttpClientSettings;
+use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use crate::otlp_http_exporter::config::Config;
 use crate::pdata::{Context, OtapPdata};
 
@@ -133,19 +136,23 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
     ) -> Result<TerminalState, EngineError> {
         otel_info!(
             "otlp.exporter.http.start",
-            http_endpoint = self.config.http.endpoint.as_str()
+            http_endpoint = self.config.endpoint.as_str()
         );
 
-        self.config.http.log_proxy_info();
-
-        let telemetery_timer_cancel = effect_handler
+        let telemetry_timer_cancel = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
         let max_in_flight = self.config.max_in_flight.max(1);
-        // TODO no unwrap
         let mut client_pool =
-            HttpClientPool::try_new(&self.config.http, self.config.client_pool_size).unwrap();
+            HttpClientPool::try_new(&self.config.http, self.config.client_pool_size).map_err(
+                |e| EngineError::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Configuration,
+                    error: "unable to initialize HTTP client pool".into(),
+                    source_detail: e.to_string(),
+                },
+            )?;
 
         let mut inflight_exports = InFlightExports::new();
 
@@ -154,10 +161,9 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
-        // TODO these could be consts
-        let logs_endpoint = Rc::new(format!("{}/v1/logs", self.config.http.endpoint));
-        let metrics_endpoint = Rc::new(format!("{}/v1/metrics", self.config.http.endpoint));
-        let traces_endpoint = Rc::new(format!("{}/v1/traces", self.config.http.endpoint));
+        let logs_endpoint = Rc::new(format!("{}{}", self.config.endpoint, LOGS_PATH));
+        let metrics_endpoint = Rc::new(format!("{}{}", self.config.endpoint, METRICS_PATH));
+        let traces_endpoint = Rc::new(format!("{}{}", self.config.endpoint, TRACES_PATH));
 
         loop {
             // Opportunistically drain completions before we park on a recv.
@@ -208,8 +214,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
-                    otel_info!("otlp.exporter.http.shutdown");
+                    otel_info!("otlp.exporter.http.shutdown", reason = reason);
+
+                    println!(
+                        "received shutdown, draining inflight exports, count: {}",
+                        inflight_exports.len()
+                    );
                     while !inflight_exports.is_empty() {
+                        println!("there are {} inflight exports", inflight_exports.len());
                         if let Some(completed) = inflight_exports.next_completion().await {
                             finalize_completed_export(
                                 completed,
@@ -218,15 +230,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             )
                             .await;
                         }
-                        _ = telemetery_timer_cancel.cancel().await;
-                        return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                     }
+                    _ = telemetry_timer_cancel.cancel().await;
+                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                }) => {
-                    todo!("handle collect telemetry")
-                }
+                }) => _ = metrics_reporter.report(&mut self.pdata_metrics),
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
@@ -391,8 +401,6 @@ async fn finalize_completed_export(
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
 ) {
-    println!("ici 1: {:?}", completed);
-
     let CompletedExport {
         result,
         context,
@@ -415,6 +423,7 @@ async fn finalize_completed_export(
 
     // TODO - should we peek and log the errors here?
 
+    println!("sending Ack/Nack!");
     let export_and_notify_success = match err_msg {
         // TODO should we peek and log error if we couldn't Ack/NAck here?
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
@@ -425,6 +434,8 @@ async fn finalize_completed_export(
             false
         }
     };
+
+    println!("Ack/Nack sent, success: {export_and_notify_success}");
 
     if export_and_notify_success {
         pdata_metrics.add_exported(signal_type, 1)
@@ -481,10 +492,11 @@ impl HttpClientPool {
 #[cfg(test)]
 mod test {
     use std::collections::HashMap;
-    use std::net::SocketAddr;
     use std::time::{Duration, Instant};
 
+    use hyper_util::rt::TokioIo;
     use otap_df_config::PortName;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::shared::message::SharedSender;
@@ -500,13 +512,14 @@ mod test {
     };
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_telemetry::reporter::MetricsReporter;
     use parking_lot::lock_api::Mutex;
     use portpicker::pick_unused_port;
     use prost::Message;
     use tokio::runtime::Runtime;
     use tokio_util::sync::CancellationToken;
+    use tokio_util::task::TaskTracker;
 
     use super::*;
 
@@ -514,65 +527,21 @@ mod test {
     use crate::otlp_http::client_settings::HttpClientSettings;
     use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use crate::otlp_receiver::OtlpReceiverMetrics;
+    use crate::testing::TestCallData;
 
-    #[test]
-    fn test_exports_otlp_signals() {
-        let port = pick_unused_port().unwrap();
-        let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("http://{endpoint_addr}");
-
-        // TODO - can we make this easier to init?
-        // TODO - just a bunch of random values selected?
-        let config = Config {
-            http: HttpClientSettings {
-                endpoint: endpoint.clone(),
-                compression: None,
-                concurrency_limit: 1,
-                connect_timeout: Duration::from_millis(100),
-                tcp_nodelay: false,
-                tcp_keepalive: None,
-                tcp_keepalive_interval: None,
-                timeout: None,
-                proxy: None,
-            },
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_in_flight: 10,
-        };
-
-        let tokio_rt = Runtime::new().unwrap();
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
-        // let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let telemetry_registry_handle = test_runtime.metrics_registry();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
-        let test_runtime_name = test_runtime.config().name.clone();
-        let node_id = test_node(test_runtime_name.clone());
-        let pipeline_ctx = controller_ctx.pipeline_context_with(
-            "test_group".into(),
-            "test_pipeline".into(),
-            0,
-            1,
-            0,
-        );
-
-        let mut exporter = ExporterWrapper::local(
-            OtlpHttpExporter {
-                config: config,
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
-            },
-            node_id.clone(),
-            node_config,
-            test_runtime.config(),
-        );
-
-        // server setup stuff (TODO move to func?)
-        let server_node_id = test_node(format!("{test_runtime_name}-server"));
+    /// run test HTTP server serving OTLP HTTP API
+    fn run_server(
+        tokio_rt: &Runtime,
+        pipeline_ctx: &PipelineContext,
+        endpoint_addr: &str,
+    ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
+        let server_node_id = test_node(format!("test-server"));
         let port_name = PortName::from("server_out");
         let mut msg_senders = HashMap::new();
-        let (pdata_tx, mut pdata_rx) = tokio::sync::mpsc::channel(10);
+        let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
         _ = msg_senders.insert(port_name.clone(), SharedSender::mpsc(pdata_tx));
 
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
         let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
         let server_effect_handler =
             otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
@@ -606,7 +575,87 @@ mod test {
             .await
         });
 
-        // TODO need a way to detect if server is ready?
+        (pdata_rx, server_cancellation_token2)
+    }
+
+    fn run_error_server(tokio_rt: &Runtime, endpoint_addr: &str) -> CancellationToken {
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move { serve_errors(endpoint_addr, server_cancellation_token) });
+
+        server_cancellation_token2
+    }
+
+    async fn serve_errors(endpoint_addr: String, shutdown_token: CancellationToken) {
+        let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+        let tracker = TaskTracker::new();
+        loop {
+            tokio::select! {
+                _ = shutdown_token.cancelled() => break,
+                accept_result = listener.accept() => {
+                    let (stream, peer_addr) = accept_result.unwrap();
+                    let shutdown_token = shutdown_token.clone();
+                    drop(tracker.spawn(async move {
+                        let io = TokioIo::new(stream);
+                        let conn = hyper::server::conn::http1::Builder::new().serve_connection(io, hyper::service::service_fn(|_req| async {
+                            Ok::<_, hyper::Error>(hyper::Response::builder()
+                                .status(500)
+                                .body("body".to_string())
+                                .unwrap())
+                        }));
+                        let mut conn = std::pin::pin!(conn);
+
+                        tokio::select!{
+                            _ = shutdown_token.cancelled() => {
+                                conn.as_mut().graceful_shutdown();
+                                let _ = conn.await;
+                            },
+                            conn_result = &mut conn => {
+                                if let Err(e) = conn_result {
+                                    eprintln!("Error serving connection from {peer_addr}: {e}");
+                                }
+                            }
+                         }
+                    }));
+                }
+            }
+        }
+
+        let _ = tracker.close();
+    }
+
+    fn setup_exporter(
+        test_runtime: &TestRuntime<OtapPdata>,
+        config: Config,
+    ) -> (PipelineContext, ExporterWrapper<OtapPdata>) {
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
+        let telemetry_registry_handle = test_runtime.metrics_registry();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let test_runtime_name = test_runtime.config().name.clone();
+        let node_id = test_node(test_runtime_name.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_group".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+
+        let exporter = ExporterWrapper::local(
+            OtlpHttpExporter {
+                config: config,
+                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+            },
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        (pipeline_ctx, exporter)
+    }
+
+    fn gen_batches_for_each_signal_type() -> (LogsData, MetricsData, TracesData) {
         let logs_batch = LogsData {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -639,6 +688,30 @@ mod test {
             ..Default::default()
         }]);
 
+        (logs_batch, metrics_batch, traces_batch)
+    }
+
+    #[test]
+    fn test_exports_otlp_signals() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+        let (mut pdata_rx, server_cancellation_token) =
+            run_server(&tokio_rt, &pipeline_ctx, &endpoint_addr);
+
+        let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
+
         let mut pdatas = vec![];
 
         let mut bytes = Vec::new();
@@ -649,14 +722,237 @@ mod test {
 
         let mut bytes = Vec::new();
         metrics_batch.encode(&mut bytes).unwrap();
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
-            OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
-        )));
+        pdatas.push(
+            OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            ),
+        );
 
         let mut bytes = Vec::new();
         traces_batch.encode(&mut bytes).unwrap();
         pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
+        )));
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap(); // take receiver to ensure all messages have been received before we start validating
+                let is_empty = pipeline_ctrl_rx.is_empty();
+                println!("channel empty: {is_empty}");
+
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    let num_expected_pdatas = 3;
+                    // let mut pdatas_received = Vec::new();
+                    // loop {
+                    //     match pdata_rx.recv().await {
+                    //         Some(pdata) => {
+                    //             pdatas_received.push(pdata);
+                    //             if pdatas_received.len() >= num_expected_pdatas {
+                    //                 // server_cancellation_token.cancel();
+                    //                 break;
+                    //             }
+                    //         }
+                    //         None => break,
+                    //     }
+                    // }
+
+                    // for mut pdata in pdatas_received {
+                    //     match pdata.signal_type() {
+                    //         SignalType::Logs => {
+                    //             let pdata: OtlpProtoBytes =
+                    //                 pdata.take_payload().try_into().unwrap();
+                    //             let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
+                    //             assert_equivalent(
+                    //                 &[OtlpProtoMessage::Logs(pdata_decoded)],
+                    //                 &[OtlpProtoMessage::Logs(logs_batch.clone())],
+                    //             );
+                    //         }
+                    //         SignalType::Metrics => {
+                    //             let pdata: OtlpProtoBytes =
+                    //                 pdata.take_payload().try_into().unwrap();
+                    //             let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
+                    //             assert_equivalent(
+                    //                 &[OtlpProtoMessage::Metrics(pdata_decoded)],
+                    //                 &[OtlpProtoMessage::Metrics(metrics_batch.clone())],
+                    //             );
+                    //         }
+                    //         SignalType::Traces => {
+                    //             let pdata: OtlpProtoBytes =
+                    //                 pdata.take_payload().try_into().unwrap();
+                    //             let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
+                    //             assert_equivalent(
+                    //                 &[OtlpProtoMessage::Traces(pdata_decoded)],
+                    //                 &[OtlpProtoMessage::Traces(traces_batch.clone())],
+                    //             );
+                    //         }
+                    //     }
+                    // }
+
+                    // validate we received three Acks
+                    let mut ack_count = 0;
+                    // let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        if pipeline_ctrl_rx.is_empty() {
+                            println!("no more control messages in channel, breaking loop");
+                        }
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        println!("here is a control message: {msg:?}");
+
+                        match msg {
+                            PipelineControlMsg::DeliverAck { node_id, .. } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+                                if ack_count >= num_expected_pdatas {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverNack { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_pdatas);
+
+                    server_cancellation_token.cancel();
+                })
+            })
+    }
+
+    #[test]
+    fn test_handles_http_status_errors() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        )));
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    server_cancellation_token.cancel();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+
+                                println!("NACK REASON = {}", nack.reason);
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                })
+            })
+    }
+
+    #[test]
+    fn test_export_otap_signals() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+        let (mut pdata_rx, server_cancellation_token) =
+            run_server(&tokio_rt, &pipeline_ctx, &endpoint_addr);
+
+        let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        )));
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_batch.clone())),
+        )));
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Traces(traces_batch.clone())),
         )));
 
         test_runtime
@@ -684,7 +980,7 @@ mod test {
                             Some(pdata) => {
                                 pdatas_received.push(pdata);
                                 if pdatas_received.len() >= num_expected_pdatas {
-                                    server_cancellation_token2.cancel();
+                                    server_cancellation_token.cancel();
                                 }
                             }
                             None => break,
@@ -748,14 +1044,6 @@ mod test {
                             }
                         }
                     }
-
-                    // validate we updated our metrics
-                    // TODO - this doesn't seem to be working be
-                    // telemetry_registry_handle.visit_current_metrics(|metric_desc, _attrs, iter| {
-                    //     for (field, value) in iter {
-                    //         println!("field = {:?}, value = {:?}", field, value);
-                    //     }
-                    // });
                 })
             })
     }

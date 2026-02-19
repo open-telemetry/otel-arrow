@@ -15,6 +15,8 @@ pub struct Config {
     /// Configuration for the HTTP client that will be used by this exporter
     pub http: HttpClientSettings,
 
+    pub endpoint: String,
+
     // TODO comments
     // TODO default
     pub client_pool_size: NonZeroUsize,

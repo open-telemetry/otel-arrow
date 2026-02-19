@@ -1021,6 +1021,8 @@ mod tests {
                         ack_count += 1;
                     }
 
+                    println!("here");
+
                     assert_eq!(ack_count, 3, "Expected 3 Acks for 3 successful exports");
                     validation_procedure(receiver)(ctx, result).await;
                 })
