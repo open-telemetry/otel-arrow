@@ -8,7 +8,7 @@ use opentelemetry_otlp::{
     tonic_types::transport::{Certificate, ClientTlsConfig},
 };
 use opentelemetry_sdk::metrics::{MeterProviderBuilder, PeriodicReader};
-use otap_df_config::pipeline::service::telemetry::metrics::readers::{
+use otap_df_config::pipeline::telemetry::metrics::readers::{
     Temporality,
     periodic::otlp::{OtlpExporterConfig, OtlpProtocol},
 };

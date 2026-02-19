@@ -8,17 +8,11 @@ From the workspace root directory:
 # Build the engine
 cargo build --release
 
-# Run with default configuration
-cargo run --release
-
 # Run with custom configuration file
-cargo run --release -- -p configs/otlp-otlp.yaml
+cargo run --release -- --config configs/otlp-otlp.yaml
 
-# Run with custom core count
-cargo run --release -- --num-cores 4
-
-# Run with both custom config and cores
-cargo run --release -- -p configs/otlp-otlp.yaml --num-cores 8
+# Short form
+cargo run --release -- -c configs/otlp-otlp.yaml
 
 # Get help
 cargo run --release -- --help

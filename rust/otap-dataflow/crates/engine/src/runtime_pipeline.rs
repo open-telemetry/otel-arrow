@@ -16,6 +16,7 @@ use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
+use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::fmt::Debug;
@@ -41,6 +42,8 @@ pub struct RuntimePipeline<PData: Debug> {
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
     channel_metrics: Vec<ChannelMetricsHandle>,
+    /// Flags controlling pipeline-internal metrics collection/reporting.
+    telemetry_policy: TelemetryPolicy,
 }
 
 fn report_terminal_metrics(metrics_reporter: &MetricsReporter, terminal_state: TerminalState) {
@@ -71,6 +74,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         processors: Vec<ProcessorWrapper<PData>>,
         exporters: Vec<ExporterWrapper<PData>>,
         nodes: NodeDefs<PData, PipeNode>,
+        telemetry_policy: TelemetryPolicy,
     ) -> Self {
         Self {
             config,
@@ -79,6 +83,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             exporters,
             nodes,
             channel_metrics: Default::default(),
+            telemetry_policy,
         }
     }
 
@@ -112,12 +117,13 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let RuntimePipeline {
-            config,
+            config: _config,
             receivers,
             processors,
             exporters,
             nodes: _nodes,
             channel_metrics,
+            telemetry_policy,
         } = self;
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
@@ -240,7 +246,6 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
         }
 
         // Spawn the control-plane task that routes node control messages to the pipeline engine.
-        let internal_telemetry = config.pipeline_settings().telemetry.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = PipelineCtrlMsgManager::new(
                 pipeline_key,
@@ -249,7 +254,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 control_senders,
                 event_reporter,
                 metrics_reporter,
-                internal_telemetry,
+                telemetry_policy,
                 channel_metrics,
             );
             manager.run().await

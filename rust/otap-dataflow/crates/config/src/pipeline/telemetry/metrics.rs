@@ -9,7 +9,7 @@ pub mod views;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::service::telemetry::metrics::views::ViewConfig;
+use crate::pipeline::telemetry::metrics::views::ViewConfig;
 
 /// OpenTelemetry Metrics configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
