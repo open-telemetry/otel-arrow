@@ -525,8 +525,7 @@ impl SegmentStore {
                     if let Some(entry) = pending.get_mut(&seq) {
                         entry.attempts += 1;
                         entry.next_retry_at = now + entry.backoff;
-                        entry.backoff =
-                            (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
+                        entry.backoff = (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
                     }
                     otel_debug!(
                         "quiver.segment.drop",
@@ -542,8 +541,7 @@ impl SegmentStore {
                     if let Some(entry) = pending.get_mut(&seq) {
                         entry.attempts += 1;
                         entry.next_retry_at = now + entry.backoff;
-                        entry.backoff =
-                            (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
+                        entry.backoff = (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
                     }
                     otel_warn!(
                         "quiver.segment.drop",
@@ -894,7 +892,12 @@ mod tests {
             let mut pending = store.pending_deletes.lock();
             let _ = pending.insert(
                 SegmentSeq::new(1),
-                PendingDelete { file_size: 0, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+                PendingDelete {
+                    file_size: 0,
+                    attempts: 0,
+                    backoff: BASE_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
             );
         }
         assert_eq!(store.pending_delete_count(), 1);
@@ -923,7 +926,12 @@ mod tests {
             let mut pending = store.pending_deletes.lock();
             let _ = pending.insert(
                 seq,
-                PendingDelete { file_size: 0, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+                PendingDelete {
+                    file_size: 0,
+                    attempts: 0,
+                    backoff: BASE_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
             );
         }
         assert_eq!(store.pending_delete_count(), 1);
@@ -1207,7 +1215,12 @@ mod tests {
             let mut pending = store.pending_deletes.lock();
             let _ = pending.insert(
                 seq,
-                PendingDelete { file_size: tracked_size, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+                PendingDelete {
+                    file_size: tracked_size,
+                    attempts: 0,
+                    backoff: BASE_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
             );
         }
 
@@ -1245,7 +1258,12 @@ mod tests {
             let mut pending = store.pending_deletes.lock();
             let _ = pending.insert(
                 seq,
-                PendingDelete { file_size: tracked_size, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+                PendingDelete {
+                    file_size: tracked_size,
+                    attempts: 0,
+                    backoff: BASE_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
             );
         }
 
@@ -1429,10 +1447,16 @@ mod tests {
 
         // Retry should skip this entry because the backoff timer hasn't elapsed.
         let cleared = store.retry_pending_deletes();
-        assert_eq!(cleared, 0, "should skip entries whose backoff has not elapsed");
-        assert_eq!(store.pending_delete_count(), 1, "entry should remain pending");
+        assert_eq!(
+            cleared, 0,
+            "should skip entries whose backoff has not elapsed"
+        );
+        assert_eq!(
+            store.pending_delete_count(),
+            1,
+            "entry should remain pending"
+        );
         assert!(path.exists(), "file should still exist");
         assert_eq!(budget.used(), tracked_size, "budget should remain charged");
     }
-
 }
