@@ -25,8 +25,8 @@ use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
+use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
 use super::state::AzureMonitorExporterState;
-use super::stats::AzureMonitorExporterStats;
 use super::transformer::Transformer;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
@@ -50,10 +50,10 @@ pub struct AzureMonitorExporter {
     transformer: Transformer,
     gzip_batcher: GzipBatcher,
     state: AzureMonitorExporterState,
+    metrics: AzureMonitorExporterMetricsTracker,
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
-    stats: AzureMonitorExporterStats,
     heartbeat: Heartbeat,
 }
 
@@ -61,7 +61,7 @@ pub struct AzureMonitorExporter {
 #[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
-    pub fn new(config: Config) -> Result<Self, Error> {
+    pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, Error> {
         // Validate configuration
         config
             .validate()
@@ -76,15 +76,19 @@ impl AzureMonitorExporter {
         // Create heartbeat handler
         let heartbeat = Heartbeat::new(&config.api)?;
 
+        // Register metrics with the telemetry system
+        let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
+        let metrics = AzureMonitorExporterMetricsTracker::new(metric_set);
+
         Ok(Self {
             config,
             transformer,
             gzip_batcher,
             state: AzureMonitorExporterState::new(),
+            metrics,
             client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1),
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
-            stats: AzureMonitorExporterStats::new(),
             heartbeat,
         })
     }
@@ -125,10 +129,10 @@ impl AzureMonitorExporter {
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
-        self.stats.add_messages(completed_messages.len() as f64);
-        self.stats.add_rows(row_count);
-        self.stats.add_batch();
-        self.stats.add_client_latency(duration.as_secs_f64());
+        self.metrics.add_messages(completed_messages.len() as u64);
+        self.metrics.add_rows(row_count as u64);
+        self.metrics.add_batch();
+        self.metrics.add_client_latency(duration.as_millis() as f64);
 
         otel_debug!(
             "azure_monitor_exporter.export.success",
@@ -154,9 +158,9 @@ impl AzureMonitorExporter {
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
-        self.stats.add_failed_messages(failed_messages.len() as f64);
-        self.stats.add_failed_rows(row_count);
-        self.stats.add_failed_batch();
+        self.metrics.add_failed_messages(failed_messages.len() as u64);
+        self.metrics.add_failed_rows(row_count as u64);
+        self.metrics.add_failed_batch();
 
         otel_error!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
@@ -525,14 +529,15 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
 
                 msg = msg_chan.recv(), if !at_capacity => {
-                    self.stats.message_received(self.in_flight_exports.len());
-
                     match msg {
+                        Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
+                            let _ = self.metrics.report(&mut metrics_reporter);
+                        }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                             self.handle_shutdown(&effect_handler).await?;
                             return Ok(TerminalState::new(
                                 deadline,
-                                std::iter::empty::<otap_df_telemetry::metrics::MetricSetSnapshot>(),
+                                [self.metrics.metrics().snapshot()],
                             ));
                         }
                         other => {
@@ -544,71 +549,26 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_stats_print) => {
                     next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
 
-                    let stats_start = std::time::Instant::now();
-
-                    // Get memory stats (this is the slow part - file I/O)
-                    let status = tokio::fs::read_to_string("/proc/self/status").await.unwrap_or_default();
-                    let get_kb = |name: &str| -> u64 {
-                        status.lines()
-                            .find(|line| line.starts_with(name))
-                            .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
-                            .unwrap_or(0)
-                    };
-
-                    let smaps = tokio::fs::read_to_string("/proc/self/smaps_rollup").await.unwrap_or_default();
-                    let get_smaps_kb = |name: &str| -> u64 {
-                        smaps.lines()
-                            .find(|line| line.starts_with(name))
-                            .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
-                            .unwrap_or(0)
-                    };
-
-                    let rss_mb = get_kb("VmRSS:") / 1024;
-                    let anon_mb = get_smaps_kb("Anonymous:") / 1024;
-                    let file_mb = get_smaps_kb("Private_Clean:") / 1024;
-                    let data_mb = get_kb("VmData:") / 1024;
-
-                    let stats_duration = stats_start.elapsed();
-
-                    let elapsed = self.stats.started_at().elapsed().as_secs_f64();
-                    let active = self.stats.get_active_duration_secs(self.in_flight_exports.len());
-                    let throughput = if active > 0.0 {
-                        self.stats.successful_row_count() / active
-                    } else {
-                        0.0
-                    };
-
                     println!(
                         "\n\
 ─────────────── AzureMonitorExporter ──────────────────────────
-memory  │ rss={}MB  anon={}MB  file={}MB  data={}MB
-perf    │ th/s={:.2}  avg_lat={:.2}ms
-success │ rows={:.0}  batches={:.0}  msgs={:.0}         
-fail    │ rows={:.0}  batches={:.0}  msgs={:.0}       
-time    │ elapsed={:.1}s  active={:.1}s  idle={:.1}s
+perf    │ avg_lat={:.2}ms
+success │ rows={}  batches={}  msgs={}
+fail    │ rows={}  batches={}  msgs={}
 state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
-exports | in_flight={} stats_time={:?}
+exports | in_flight={}
 ───────────────────────────────────────────────────────────────\n",
-                        rss_mb,
-                        anon_mb,
-                        file_mb,
-                        data_mb,
-                        throughput,
-                        self.stats.average_client_latency_secs() * 1000.0,
-                        self.stats.successful_row_count(),
-                        self.stats.successful_batch_count(),
-                        self.stats.successful_msg_count(),
-                        self.stats.failed_row_count(),
-                        self.stats.failed_batch_count(),
-                        self.stats.failed_msg_count(),
-                        elapsed,
-                        active,
-                        self.stats.get_idle_duration_secs(),
+                        self.metrics.client_avg_latency_ms(),
+                        self.metrics.successful_row_count(),
+                        self.metrics.successful_batch_count(),
+                        self.metrics.successful_msg_count(),
+                        self.metrics.failed_row_count(),
+                        self.metrics.failed_batch_count(),
+                        self.metrics.failed_msg_count(),
                         self.state.batch_to_msg.len(),
                         self.state.msg_to_batch.len(),
                         self.state.msg_to_data.len(),
                         self.in_flight_exports.len(),
-                        stats_duration,
                     );
                 }
             }
@@ -623,11 +583,18 @@ mod tests {
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;
+    use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
+
+    fn create_test_pipeline_ctx() -> PipelineContext {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+    }
 
     fn create_test_config() -> Config {
         Config {
@@ -648,7 +615,8 @@ mod tests {
     #[test]
     fn test_new_validates_config() {
         let config = create_test_config();
-        let _ = AzureMonitorExporter::new(config).unwrap();
+        let pipeline_ctx = create_test_pipeline_ctx();
+        let _ = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
     }
 
     #[test]
@@ -679,7 +647,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_export_success() {
         let config = create_test_config();
-        let mut exporter = AzureMonitorExporter::new(config).unwrap();
+        let pipeline_ctx = create_test_pipeline_ctx();
+        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {
@@ -710,9 +679,9 @@ mod tests {
             .await;
 
         // Verify stats
-        assert_eq!(exporter.stats.successful_batch_count(), 1.0);
-        assert_eq!(exporter.stats.successful_msg_count(), 1.0);
-        assert_eq!(exporter.stats.successful_row_count(), 10.0);
+        assert_eq!(exporter.metrics.successful_batch_count(), 1);
+        assert_eq!(exporter.metrics.successful_msg_count(), 1);
+        assert_eq!(exporter.metrics.successful_row_count(), 10);
 
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
@@ -722,7 +691,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_export_failure() {
         let config = create_test_config();
-        let mut exporter = AzureMonitorExporter::new(config).unwrap();
+        let pipeline_ctx = create_test_pipeline_ctx();
+        let mut exporter = AzureMonitorExporter::new(pipeline_ctx, config).unwrap();
 
         let (_, reporter) = MetricsReporter::create_new_and_receiver(10);
         let node_id = NodeId {
@@ -753,9 +723,9 @@ mod tests {
             .await;
 
         // Verify stats
-        assert_eq!(exporter.stats.failed_batch_count(), 1.0);
-        assert_eq!(exporter.stats.failed_msg_count(), 1.0);
-        assert_eq!(exporter.stats.failed_row_count(), 10.0);
+        assert_eq!(exporter.metrics.failed_batch_count(), 1);
+        assert_eq!(exporter.metrics.failed_msg_count(), 1);
+        assert_eq!(exporter.metrics.failed_row_count(), 10);
 
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
