@@ -1,0 +1,57 @@
+{% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
+{% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% if suv_receiver_type == "otap" -%}
+  {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
+{% endif -%}
+{% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
+{% set validate = validate | default("- equivalence") -%}
+{% set control_ports = control_ports | default([]) -%}
+{% set capture_index = capture_index | default(1) -%}
+{% set capture_core = capture_core | default(1) -%}
+
+validate{{capture_index}}:
+  quota:
+    core_allocation:
+      type: core_set
+      set:
+        - type: CoreRange
+          start: {{ capture_core }}
+          end: {{ capture_core }}
+  nodes:
+    suv_receiver:
+      type: "{{ suv_receiver_plugin_urn }}"
+      config:
+        {% if suv_receiver_type == "otlp" -%}
+        protocols:                                                                                                                                                                        
+          grpc:                                                                                                                                                                           
+            listening_addr: "{{ suv_addr }}"
+        {% endif %}
+        {% if suv_receiver_type == "otap" -%}
+        listening_addr: "{{ suv_addr }}"
+        response_stream_channel_size: 256
+        {% endif %}
+    {% for control_port in control_ports -%}
+    control_receiver{{ loop.index }}:
+      type: "urn:otel:otlp:receiver"
+      config:
+        protocols:                                                                                                                                                                        
+          grpc:                                                                                                                                                                           
+            listening_addr: "127.0.0.1:{{ control_port }}"
+    {% endfor %}
+    validation_exporter:
+      type: "urn:otel:validation:exporter"
+      config:
+        control_inputs: 
+        {% for _ in control_ports -%}
+          - control_receiver{{loop.index}}
+        {% endfor %}
+        suv_input: suv_receiver
+        validations:
+{{ validate | indent(10, true)}}
+  connections:
+    - from: suv_receiver
+      to: validation_exporter
+    {% for _ in control_ports -%}
+    - from: control_receiver{{ loop.index }}
+      to: validation_exporter
+    {% endfor %}

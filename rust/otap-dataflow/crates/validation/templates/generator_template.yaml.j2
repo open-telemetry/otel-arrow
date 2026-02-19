@@ -1,0 +1,75 @@
+
+{% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
+{% set suv_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
+{% if suv_exporter_type == "otap" -%}
+  {% set suv_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
+{% endif -%}
+{% set control_ports = control_ports | default([]) -%}
+{% set max_signal_count = max_signal_count | default(2000) -%}
+{% set max_batch_size = max_batch_size | default(100) -%}
+{% set signals_per_second = signals_per_second | default(100) -%}
+{% set metric_weight = metric_weight | default(0) -%}
+{% set trace_weight = trace_weight | default(0) -%}
+{% set log_weight = log_weight | default(100) -%}
+{% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
+{% set generator_index = generator_index | default(1) -%}
+{% set generator_core = geneerator_core | default(2) -%}
+
+
+traffic_gen{{ generator_index }}:
+  quota:
+    core_allocation:
+      type: core_set
+      set:
+        - type: CoreRange
+          start: {{ generator_core }}
+          end: {{ generator_core }}
+
+  nodes:
+    receiver:
+      type: "urn:otel:traffic_generator:receiver"
+      config:
+        traffic_config:
+          max_signal_count: {{ max_signal_count }}
+          max_batch_size: {{ max_batch_size }}
+          signals_per_second: {{ signals_per_second }}
+          metric_weight: {{ metric_weight }}
+          trace_weight: {{ trace_weight }}
+          log_weight: {{ log_weight }}
+        registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+    fanout:
+      type: "urn:otel:fanout_temp:processor"
+      outputs: 
+        - "suv_port"
+        {% for _ in control_ports -%}
+        - "control_port{{ loop.index }}"
+        {% endfor %}
+      config:
+    suv_exporter:
+      type: "{{ suv_exporter_plugin_urn }}"
+      config:
+        grpc_endpoint: "{{ suv_endpoint }}"
+        {% if suv_exporter_type == "otap" -%}
+        compression_method: none
+        arrow:
+          payload_compression: none
+        {% endif %}
+
+    {% for control_port in control_ports -%}
+    control_exporter{{ loop.index }}:
+      type: "urn:otel:otlp:exporter"
+      config:
+        grpc_endpoint: "http://127.0.0.1:{{ control_port }}"
+    {% endfor %}
+
+
+  connections:
+    - from: receiver
+      to: fanout
+    - from: fanout["suv_port"]
+      to: suv_exporter
+    {% for _ in control_ports -%}
+    - from: fanout["control_port{{ loop.index }}"]
+      to: control_exporter{{ loop.index }}
+    {% endfor %}
