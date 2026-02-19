@@ -63,7 +63,7 @@ struct TcpConfig {
     ///
     /// When configured, TCP connections will require TLS.
     #[cfg(feature = "experimental-tls")]
-    pub tls: Option<TlsServerConfig>,
+    tls: Option<TlsServerConfig>,
 }
 
 /// UDP-specific settings for the syslog CEF receiver.
