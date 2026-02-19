@@ -6,7 +6,6 @@
 use reqwest::ClientBuilder;
 use serde::Deserialize;
 use std::time::Duration;
-use tonic::codec::CompressionEncoding;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::otap_grpc::client_settings::{

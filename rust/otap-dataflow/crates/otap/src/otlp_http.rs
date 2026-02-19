@@ -510,19 +510,15 @@ struct HttpHandler {
 
 impl HttpHandler {
     async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-        println!("server handle start");
         let Some(signal) = map_path_to_signal(req.uri().path()) else {
-            println!("err return 1");
             return Ok(not_found());
         };
 
         if req.method() != Method::POST {
-            println!("err return 2");
             return Ok(method_not_allowed());
         }
 
         if !content_type_is_protobuf(req.headers()) {
-            println!("err return 3");
             return Ok(unsupported_media_type());
         }
 
@@ -697,14 +693,12 @@ impl HttpHandler {
                 None
             };
 
-            println!("sending pdata in server");
             if self
                 .effect_handler
                 .send_message_with_source_node(pdata)
                 .await
                 .is_err()
             {
-                println!("error sending pdata in server");
                 otap_df_telemetry::otel_warn!(
                     "HttpPipelineSendFailed",
                     path = parts.uri.path().to_string(),
@@ -738,8 +732,6 @@ impl HttpHandler {
             self.metrics.lock().requests_completed.inc();
             Ok(ok_response(signal))
         };
-
-        println!("here handler 2");
 
         let result = if let Some(timeout_duration) = timeout {
             match tokio::time::timeout(timeout_duration, fut).await {

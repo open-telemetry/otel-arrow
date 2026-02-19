@@ -543,7 +543,6 @@ mod test {
     use crate::otlp_http::client_settings::HttpClientSettings;
     use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use crate::otlp_receiver::OtlpReceiverMetrics;
-    use crate::pdata;
     use crate::testing::TestCallData;
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
@@ -767,16 +766,15 @@ mod test {
         (logs_batch, metrics_batch, traces_batch)
     }
 
-    fn subscribe_pdatas(pdatas: Vec<OtapPdata>) -> Vec<OtapPdata> {
+    fn subscribe_pdatas(pdatas: Vec<OtapPdata>, return_payload: bool) -> Vec<OtapPdata> {
+        let interests = if return_payload {
+            Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA
+        } else {
+            Interests::ACKS | Interests::NACKS
+        };
         pdatas
             .into_iter()
-            .map(|pdata| {
-                pdata.test_subscribe_to(
-                    Interests::ACKS | Interests::NACKS,
-                    TestCallData::default().into(),
-                    123,
-                )
-            })
+            .map(|pdata| pdata.test_subscribe_to(interests, TestCallData::default().into(), 123))
             .collect()
     }
 
@@ -821,7 +819,7 @@ mod test {
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
@@ -945,7 +943,7 @@ mod test {
         pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
         )));
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
@@ -1029,7 +1027,7 @@ mod test {
         pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
         )));
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
@@ -1127,7 +1125,7 @@ mod test {
             OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
         )));
 
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
@@ -1222,7 +1220,7 @@ mod test {
             otap_batch,
         )));
 
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
@@ -1282,12 +1280,187 @@ mod test {
 
     #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
-        todo!()
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, true);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        )));
+
+        let pdatas = subscribe_pdatas(pdatas, true);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    server_cancellation_token.cancel();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+
+                                match nack.refused.payload() {
+                                    OtapPayload::OtapArrowRecords(otap_batch) => {
+                                        let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+                                        assert!(logs_batch.num_rows() > 0, "expected payload bytes to be returned in Nack, but it was empty");
+                                    }
+                                    other_payload => {
+                                        panic!(
+                                            "received unexpected payload type in Nack: {:?}",
+                                            other_payload
+                                        );
+                                    }
+                                }
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
+                })
+            })
     }
 
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
-        todo!()
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, true);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+        )));
+
+        let pdatas = subscribe_pdatas(pdatas, true);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    server_cancellation_token.cancel();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+
+                                match nack.refused.payload() {
+                                    OtapPayload::OtlpBytes(proto_bytes) => {
+                                        assert!(proto_bytes.as_bytes().len() > 0, "expected payload bytes to be returned in Nack, but it was empty");
+                                    }
+                                    other_payload => {
+                                        panic!(
+                                            "received unexpected payload type in Nack: {:?}",
+                                            other_payload
+                                        );
+                                    }
+                                }
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
+                })
+            })
     }
 
     #[test]
@@ -1322,7 +1495,7 @@ mod test {
         pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Traces(traces_batch.clone())),
         )));
-        let pdatas = subscribe_pdatas(pdatas);
+        let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
             .set_exporter(exporter)
