@@ -19,7 +19,7 @@
 //!    advanced to allow cleanup of consumed entries.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -112,6 +112,15 @@ pub struct QuiverEngine {
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
     registry: Arc<SubscriberRegistry<SegmentStore>>,
+    /// Whether the filesystem supports chmod/set_permissions.
+    ///
+    /// Probed once at startup by creating a temp file and attempting to change
+    /// its permissions. When `false`, immutability enforcement via `set_readonly`
+    /// is skipped for both segment files and rotated WAL files. This allows
+    /// quiver to operate on filesystems that don't support POSIX permission
+    /// changes (e.g., Azure Files SMB/CIFS mounts, certain Kubernetes
+    /// volumeMounts).
+    set_permissions_supported: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,16 +293,24 @@ impl QuiverEngine {
             SegmentError::io(segment_dir.clone(), e)
         })?;
 
+        // Probe whether the filesystem supports chmod/set_permissions.
+        // Some filesystems (e.g., Azure Files SMB mounts, certain k8s
+        // volumeMounts) return EPERM on permission changes. When unsupported,
+        // we skip read-only enforcement for segments and WAL files.
+        let set_permissions_supported = probe_set_permissions_support(&config.data_dir);
+
         // Use async WAL initialization
-        let wal_writer = initialize_wal_writer(&config, &budget).await.map_err(|e| {
-            otel_error!(
-                "quiver.engine.init",
-                error = %e,
-                error_type = "io",
-                reason = "wal_init_failed",
-            );
-            e
-        })?;
+        let wal_writer = initialize_wal_writer(&config, &budget, set_permissions_supported)
+            .await
+            .map_err(|e| {
+                otel_error!(
+                    "quiver.engine.init",
+                    error = %e,
+                    error_type = "io",
+                    reason = "wal_init_failed",
+                );
+                e
+            })?;
 
         // Create segment store with configured read mode and budget
         let segment_store = Arc::new(SegmentStore::with_budget(
@@ -381,6 +398,7 @@ impl QuiverEngine {
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
+            set_permissions_supported,
         });
 
         // Wire segment store callback to notify registry of new segments
@@ -1008,7 +1026,7 @@ impl QuiverEngine {
 
         // Write the segment file (streaming serialization - no intermediate buffer)
         let segment_path = self.segment_path(seq);
-        let writer = SegmentWriter::new(seq);
+        let writer = SegmentWriter::new(seq, self.set_permissions_supported);
         let (bytes_written, _checksum) = writer
             .write_segment(&segment_path, segment)
             .await
@@ -1431,6 +1449,7 @@ fn segment_dir(config: &QuiverConfig) -> PathBuf {
 async fn initialize_wal_writer(
     config: &QuiverConfig,
     budget: &Arc<crate::budget::DiskBudget>,
+    set_permissions_supported: bool,
 ) -> Result<WalWriter> {
     use crate::wal::FlushPolicy;
 
@@ -1444,12 +1463,129 @@ async fn initialize_wal_writer(
         .with_max_wal_size(config.wal.max_size_bytes.get())
         .with_max_rotated_files(config.wal.max_rotated_files as usize)
         .with_rotation_target(config.wal.rotation_target_bytes.get())
-        .with_budget(budget.clone());
+        .with_budget(budget.clone())
+        .with_enforce_file_readonly(set_permissions_supported);
     Ok(WalWriter::open(options).await?)
 }
 
 fn wal_path(config: &QuiverConfig) -> PathBuf {
     config.data_dir.join("wal").join("quiver.wal")
+}
+
+/// Prefix for the temporary probe file created by [`probe_set_permissions_support`].
+const PERMS_PROBE_PREFIX: &str = ".quiver_perms_probe.";
+
+/// Probes whether the filesystem at `dir` supports `chmod`/`set_permissions`.
+///
+/// Creates a temporary probe file with a unique name (using PID and timestamp),
+/// attempts to change its permissions, and returns `true` if the operation
+/// succeeds. This detects filesystems (e.g., Azure Files SMB/CIFS mounts,
+/// certain Kubernetes volumeMounts) that return `EPERM` on permission changes.
+///
+/// The probe file is always cleaned up, regardless of outcome. The randomized
+/// name avoids conflicts if a previous probe file was not properly deleted.
+fn probe_set_permissions_support(dir: &Path) -> bool {
+    let probe_name = format!(
+        "{}{}.{}",
+        PERMS_PROBE_PREFIX,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos(),
+    );
+    let probe_path = dir.join(&probe_name);
+
+    // Create a temporary probe file. If this fails (disk full, quota exceeded,
+    // directory missing, etc.) we cannot probe permissions at all. Treat this as
+    // a setup error rather than evidence that permissions are unsupported —
+    // default to `true` so we don't silently disable readonly enforcement.
+    let file_created = match fs::File::create(&probe_path) {
+        Ok(_file) => true,
+        Err(e) => {
+            otel_warn!(
+                "quiver.engine.init",
+                error = %e,
+                path = %dir.display(),
+                reason = "permissions_probe_create_failed",
+                message = "could not create probe file to test permission support; \
+                    assuming permissions are supported",
+            );
+            return true;
+        }
+    };
+    debug_assert!(file_created);
+
+    // Attempt to set permissions and verify they took effect.
+    let result = (|| -> std::io::Result<()> {
+        // Some filesystems (e.g., FAT32/vfat) silently accept chmod but
+        // don't actually change the permission bits. We must read back
+        // and compare to detect this.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let target_mode = 0o440;
+            let permissions = fs::Permissions::from_mode(target_mode);
+            fs::set_permissions(&probe_path, permissions)?;
+
+            // Read back and verify the mode actually changed
+            let actual_mode = fs::metadata(&probe_path)?.permissions().mode() & 0o777;
+            if actual_mode != target_mode {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    format!(
+                        "chmod succeeded but permissions were not applied \
+                         (requested {target_mode:#o}, got {actual_mode:#o}); \
+                         filesystem likely does not support permission changes"
+                    ),
+                ));
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut permissions = fs::metadata(&probe_path)?.permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&probe_path, permissions)?;
+
+            // Read back and verify readonly actually took effect
+            if !fs::metadata(&probe_path)?.permissions().readonly() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "set_readonly succeeded but file is still writable; \
+                     filesystem likely does not support permission changes",
+                ));
+            }
+        }
+
+        Ok(())
+    })();
+
+    // Always clean up the probe file
+    let _ = fs::remove_file(&probe_path);
+
+    match result {
+        Ok(()) => {
+            otel_debug!(
+                "quiver.engine.init",
+                path = %dir.display(),
+                set_permissions_supported = true,
+            );
+            true
+        }
+        Err(e) => {
+            otel_warn!(
+                "quiver.engine.init",
+                error = %e,
+                path = %dir.display(),
+                reason = "set_permissions_unsupported",
+                message = "filesystem does not support permission changes; \
+                    immutability enforcement via read-only file permissions \
+                    will be skipped for segment and WAL files",
+            );
+            false
+        }
+    }
 }
 
 const fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
@@ -3502,10 +3638,7 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Helper to create an engine and ingest data asynchronously.
-    async fn setup_engine_with_data(
-        dir: &std::path::Path,
-        bundle_count: usize,
-    ) -> Arc<QuiverEngine> {
+    async fn setup_engine_with_data(dir: &Path, bundle_count: usize) -> Arc<QuiverEngine> {
         let config = QuiverConfig::builder()
             .data_dir(dir)
             .build()
@@ -5483,6 +5616,43 @@ mod tests {
                 "expired_bundles should be 0 — cursor was persisted, no re-processing"
             );
         }
+    }
+
+    #[test]
+    fn probe_set_permissions_support_returns_true_on_normal_filesystem() {
+        let dir = tempdir().unwrap();
+        assert!(
+            probe_set_permissions_support(dir.path()),
+            "set_permissions should succeed on a normal tmpdir filesystem"
+        );
+        // Probe file should be cleaned up — no leftover files with the probe prefix
+        let leftover: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(PERMS_PROBE_PREFIX))
+            })
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "probe file should be removed after probing, found: {leftover:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_stores_chmod_supported_flag() {
+        let dir = tempdir().unwrap();
+        let config = QuiverConfig::default().with_data_dir(dir.path());
+        let engine = QuiverEngine::open(config, test_budget())
+            .await
+            .expect("engine opens");
+        // On a normal test filesystem, chmod should be supported
+        assert!(
+            engine.set_permissions_supported,
+            "set_permissions_supported should be true on a normal filesystem"
+        );
     }
 
     /// Regression test: WAL replay must not deadlock under Backpressure policy

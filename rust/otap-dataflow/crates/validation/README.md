@@ -1,61 +1,211 @@
-# Validation
+# Validation Framework
 
-The validation test validates a OTLP or OTAP messages after
-experiencing various processes such as encoding/decoding
-or going through a pipeline.
+End-to-end harness for standing up a **system-under-validation (SUV)**
+pipeline, driving OTLP/OTAP traffic into it, capturing the output, and
+asserting invariants.
 
-## Encoding/Decoding Validation
+## Framework components
 
-To validate whether encoding/decoding is working properly
-we comparing the input and output to check that they are equivalent.
+- `Scenario`: orchestrates end-to-end runs (render -> run -> validate).
+- `Pipeline`: loads your SUV pipeline YAML and overrides endpoints.
+- `Generator` / `Capture`: configure traffic emission and capture/validation.
 
-## Pipeline Validation
+## Quick setup (end to end)
 
-To validate pipelines we create a pipeline group that has three pipelines:
+1) **Author your SUV pipeline YAML** (the thing you want to validate). Use
+logical node names for the receiver/exporter you intend to rewire,
+e.g. `receiver`, `exporter`.
 
-- `traffic-gen` generates traffic for the validation.
-- `suv` is the system under validation (the pipeline being tested).
-- `validate` compares control vs. suv outputs using the validation exporter.
+2) **Wire it dynamically** in the test:
 
-The framework now prefers programmatic scenarios defined in tests; it handles
-wiring ports and running the group end-to-end.
+   ```rust
+   use otap_df_validation::pipeline::Pipeline;
 
-### How to validate your pipelines
+   let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml")
+       .expect("load pipeline")
+       .wire_otlp_grpc_receiver("receiver")   // node name in your YAML
+       .wire_otlp_grpc_exporter("exporter");  // node name in your YAML
+   ```
 
-You can define scenarios directly inside your Rust tests by utilizing the
-validation framework.
+3) **Configure traffic generation**:
 
-- `Pipeline`: loads a pipeline YAML and lets you wire logical endpoints
-(receiver/exporter) that will be rewritten to free ports for each test run.
-- `Scenario`: orchestrates the end-to-end run: rewires the pipeline, spins up
-the validation group, drives traffic, waits for metrics, and returns Ok on success
+   ```rust
+   use otap_df_validation::traffic::Generator;
 
-Example:
+   let generator = Generator::logs()                // logs(), metrics(), traces()
+       .fixed_count(500)                           // total signals to emit
+       .max_batch_size(50)                         // optional
+       .otlp_grpc();                               // or .otap_grpc()
+   ```
 
-```rust
-use otap_df_validation::{pipeline::Pipeline, scenario::Scenario, traffic};
-use std::time::Duration;
+   Available knobs on `Generator`:
 
-#[test]
-fn no_processor() {
-    Scenario::new()
-        .pipeline(
-            Pipeline::from_file("./validation_pipelines/no-processor.yaml")
-                .expect("failed to read in pipeline yaml")
-                .wire_otlp_grpc_receiver("receiver")
-                .wire_otlp_grpc_exporter("exporter"),
-        )
-        .input(traffic::Generator::logs().fixed_count(500).otlp_grpc())
-        .observe(traffic::Capture::default().otlp_grpc())
-        .expect_within(Duration::from_secs(140))
-        .run()
-        .expect("validation scenario failed");
-}
-```
+   - `logs()`, `metrics()`, `traces()` - choose what signal type to emit
+   - `fixed_count(usize)` - sets max signals to emit before completion
+     - optional; defaults to 2000
+   - `max_batch_size(usize)` - controls batch size
+     - optional; defaults to 100
+   - `otlp_grpc()` / `otap_grpc()` - choose export protocol
+     - optional; OTLP by default
 
-The wired nodes (e.g., `receiver`, `exporter`) are automatically rewritten to
-free ports by the framework.
+4) **Configure capture & validations**:
 
-## Future directions
+   ```rust
+   use otap_df_validation::traffic::Capture;
+   use otap_df_validation::ValidationInstructions;
+   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
-- Extend the validation exporter to support more complex validation procedure.
+   let capture = Capture::default()
+       .otlp_grpc() // or .otap_grpc()
+       .validate(vec![
+           ValidationInstructions::Equivalence, // control vs SUV outputs match
+           ValidationInstructions::SignalDrop {
+               min_drop_ratio: Some(0.2),
+               max_drop_ratio: Some(0.8),
+           },
+           ValidationInstructions::AttributeRequireKeyValue {
+               domains: vec![AttributeDomain::Signal],
+               pairs: vec![KeyValue::new(
+                   "ios.app.state".into(),
+                   AnyValue::String("active".into()),
+               )],
+           },
+       ]);
+   ```
+
+5) **Build and run the scenario**:
+
+   ```rust
+   use otap_df_validation::scenario::Scenario;
+   use std::time::Duration;
+
+   Scenario::new()
+       .pipeline(pipeline)
+       .input(generator)
+       .observe(capture)
+       .expect_within(Duration::from_secs(200)) // optional timeout; default 140
+       .run()
+       .expect("validation scenario failed");
+   ```
+
+## Scenario
+
+- **Scenario example**
+
+  ```rust
+  use otap_df_validation::scenario::Scenario;
+  use std::time::Duration;
+
+  Scenario::new()
+      .pipeline(pipeline)               // required: rewired Pipeline
+      .input(generator)                 // required: Generator config
+      .observe(capture)                 // required: Capture config
+      .expect_within(Duration::from_secs(180)) // optional; default 140s
+      .run()
+      .expect("validation scenario failed");
+  ```
+
+- `Scenario::new()` - create a new Scenario
+- `pipeline(Pipeline)` - provide the system-under-validation pipeline (required).
+- `input(Generator)` - provide traffic generation config (required).
+- `observe(Capture)` - provide capture/validation config (required).
+- `expect_within(Duration)` - set max runtime
+  - optional; default: 140s
+- `run()` - renders template, launches pipelines, waits for readiness
+  - returns `Result<(), ValidationError>` if invalid or timeout
+
+## Pipeline
+
+- **Pipeline example**
+
+  ```rust
+  use otap_df_validation::pipeline::Pipeline;
+
+  let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml")
+      .expect("load pipeline")
+      .wire_otlp_grpc_receiver("receiver")   // rewires protocols.grpc.listening_addr
+      .wire_otlp_grpc_exporter("exporter");  // rewires grpc_endpoint
+  ```
+
+- `Pipeline::from_file(path)` / `from_yaml(str)` - load the SUV pipeline YAML.
+- `wire_otlp_grpc_receiver(node_name)` - mark the node whose
+`protocols.grpc.listening_addr` will be rewritten.
+- `wire_otlp_grpc_exporter(node_name)` - mark the exporter whose
+`grpc_endpoint` will be rewritten.
+- `wire_otap_grpc_receiver(node_name)` / `wire_otap_grpc_exporter(node_name)`
+  - OTAP variants.
+
+> NOTE: The node names you pass to `wire_*` must match the keys under
+`nodes:` in your pipeline YAML.
+
+## Generator
+
+- **Generator example**
+
+  ```rust
+  use otap_df_validation::traffic::Generator;
+
+  let generator = Generator::logs()
+      .fixed_count(1000)   // optional; default 2000
+      .max_batch_size(64)  // optional; default 100
+      .otap_grpc();        // optional; default OTLP
+  ```
+
+- `Generator::logs()`, `metrics()`, `traces()` - constructors for signal type
+- `fixed_count(usize)` - sets max signals to emit before completion
+  - default: 2000
+- `max_batch_size(usize)` - controls batch size
+  - default: 100
+- `otlp_grpc()` / `otap_grpc()` - choose export protocol
+  - default: OTLP
+
+## Capture
+
+- **Capture example (with validations)**
+
+  ```rust
+  use otap_df_validation::traffic::Capture;
+  use otap_df_validation::ValidationInstructions;
+  use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
+
+  let capture = Capture::default()
+      .otlp_grpc()
+      .validate(vec![
+          ValidationInstructions::Equivalence,
+          ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
+          ValidationInstructions::AttributeRequireKeyValue {
+              domains: vec![AttributeDomain::Signal],
+              pairs: vec![KeyValue::new("env".into(), AnyValue::String("prod".into()))],
+          },
+      ]);
+  ```
+
+- `Capture::otlp_grpc()`, `Capture::otap_grpc()` - switch protocols
+  - default: OTLP
+- `Capture::validate(Vec<ValidationInstructions>)` - define validation instructions
+  - default: [Equivalence]
+
+### Validation instructions (used with `Capture::validate`)
+
+- `Equivalence`: control and SUV outputs are semantically equal
+- `SignalDrop { min_drop_ratio, max_drop_ratio }`: asserts the SUV emitted
+fewer signals within optional ratio bounds.
+- `BatchItems { min_batch_size, max_batch_size, timeout }`: bounds the item
+count per message; `min/max` optional; `timeout` optional
+- `BatchBytes { min_bytes, max_bytes, timeout }`: bounds encoded message size;
+`min/max` optional; `timeout` optional
+- `AttributeDeny { domains, keys }`: specified keys must not appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
+- `AttributeRequireKey { domains, keys }`: specified keys must appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
+- `AttributeRequireKeyValue { domains, pairs }`: specified key/value pairs must appear.
+  - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
+  - `pairs` accepts `Vec<KeyValue>`
+- `AttributeNoDuplicate`: check that there are no duplicate attributes
+
+(see `validation_types::attributes` and `validation_types`)
+
+## Troubleshooting
+
+- **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are
+called before `Scenario::run()`.

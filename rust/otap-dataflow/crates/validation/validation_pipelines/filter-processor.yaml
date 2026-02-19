@@ -1,0 +1,28 @@
+nodes:
+  receiver:
+    type: "urn:otel:otlp:receiver"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+  filter:
+    type: "urn:otel:filter:processor"
+    config:
+      logs:
+        include:
+          match_type: strict
+          record_attributes:
+            - key: ios.app.state
+              value: active
+  exporter:
+    type: "urn:otel:otap:exporter"
+    config:
+      grpc_endpoint: "http://127.0.0.1:4318"
+      compression_method: none
+      arrow:
+        payload_compression: none
+connections:
+  - from: receiver
+    to: filter
+  - from: filter
+    to: exporter
