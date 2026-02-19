@@ -79,6 +79,7 @@ struct UdpConfig {
 /// Exactly one protocol variant must be specified.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // This enum is only used for configuration, so the size is not a concern.
 enum Protocol {
     /// TCP protocol settings.
     Tcp(TcpConfig),
