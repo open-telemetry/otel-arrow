@@ -93,7 +93,7 @@ pub struct ReceiverFactory<PData> {
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the plugin.
     ///
-    /// Use [`otap_df_config::validation::validate_json_config`] for plugins with a
+    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
     /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
@@ -132,7 +132,7 @@ pub struct ProcessorFactory<PData> {
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the plugin.
     ///
-    /// Use [`otap_df_config::validation::validate_json_config`] for plugins with a
+    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
     /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
@@ -171,7 +171,7 @@ pub struct ExporterFactory<PData> {
     pub wiring_contract: wiring_contract::WiringContract,
     /// Validates the node-specific config statically, without creating the plugin.
     ///
-    /// Use [`otap_df_config::validation::validate_json_config`] for plugins with a
+    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
     /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,

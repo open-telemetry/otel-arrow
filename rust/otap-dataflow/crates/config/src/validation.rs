@@ -23,9 +23,9 @@ use crate::error::Error;
 ///
 /// # Example
 /// ```ignore
-/// validate_config: validate_json_config::<MyPluginConfig>,
+/// validate_config: validate_typed_config::<MyPluginConfig>,
 /// ```
-pub fn validate_json_config<T: serde::de::DeserializeOwned>(
+pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
 ) -> Result<(), Error> {
     let _: T = serde_json::from_value(config.clone()).map_err(|e| Error::InvalidUserConfig {
