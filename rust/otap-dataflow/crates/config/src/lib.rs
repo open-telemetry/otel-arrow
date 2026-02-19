@@ -33,6 +33,8 @@ pub mod settings;
 pub mod tls;
 pub mod topic;
 pub use topic::{SubscriptionGroupName, TopicName};
+/// Validation helpers for node configuration.
+pub mod validation;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

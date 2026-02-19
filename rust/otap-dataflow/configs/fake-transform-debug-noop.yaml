@@ -29,7 +29,7 @@ groups:
           transform:
             type: transform:processor
             config:
-              query: logs | where event_name == "gen_ai.system.message"
+              kql_query: logs | where event_name == "gen_ai.system.message"
           debug2:
             type: debug:processor
             config:
