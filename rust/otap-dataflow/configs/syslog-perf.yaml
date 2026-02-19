@@ -15,8 +15,9 @@ groups:
           receiver:
             type: syslog_cef:receiver
             config:
-              listening_addr: "0.0.0.0:5140"
-              protocol: udp
+              protocol:
+                udp:
+                  listening_addr: "0.0.0.0:5140"
           exporter:
             type: perf:exporter
             config:
