@@ -1,7 +1,12 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
-  default_node_ctrl_msg_channel_size: {{ default_node_ctrl_msg_channel_size | default(100) }}
-  default_pdata_channel_size: {{ default_pdata_channel_size | default(100) }}
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      pipeline: {{ default_pipeline_ctrl_msg_channel_size | default(100) }}
+      node: {{ default_node_ctrl_msg_channel_size | default(100) }}
+    pdata: {{ default_pdata_channel_size | default(100) }}
+
+engine: {}
 
 {%- set receiver_type = backend_receiver_type | default("otap") -%}
 {%- set listen_addr = listening_addr | default("0.0.0.0:1235") -%}
@@ -25,38 +30,42 @@ settings:
   {% set error_msg = "Unknown backend_receiver_type: " ~ receiver_type %}
 {%- endif %}
 
-nodes:
-  receiver:
-    type: "{{ type_urn }}"
-    {%- if receiver_type in ["otap", "otlp"] %}
-    config:
-      {%- if receiver_type == "otlp" %}
-      protocols:
-        grpc:
-          listening_addr: "{{ listen_addr }}"
-          {%- for k, v in extra_config.items() %}
-          {{ k }}: {{ v }}
-          {%- endfor %}
-      {%- else %}
-      listening_addr: "{{ listen_addr }}"
-      {%- for k, v in extra_config.items() %}
-      {{ k }}: {{ v }}
-      {%- endfor %}
-      {%- endif %}
-    {%- else %}
-    config:
-      error: "{{ error_msg }}"
-    {%- endif %}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "{{ type_urn }}"
+            {%- if receiver_type in ["otap", "otlp"] %}
+            config:
+              {%- if receiver_type == "otlp" %}
+              protocols:
+                grpc:
+                  listening_addr: "{{ listen_addr }}"
+                  {%- for k, v in extra_config.items() %}
+                  {{ k }}: {{ v }}
+                  {%- endfor %}
+              {%- else %}
+              listening_addr: "{{ listen_addr }}"
+              {%- for k, v in extra_config.items() %}
+              {{ k }}: {{ v }}
+              {%- endfor %}
+              {%- endif %}
+            {%- else %}
+            config:
+              error: "{{ error_msg }}"
+            {%- endif %}
 
-  perf:
-    type: "urn:otel:perf:exporter"
-    config:
-      frequency: 500
-      cpu_usage: false
-      mem_usage: false
-      disk_usage: false
-      io_usage: false
+          perf:
+            type: "urn:otel:perf:exporter"
+            config:
+              frequency: 500
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
 
-connections:
-  - from: receiver
-    to: perf
+        connections:
+          - from: receiver
+            to: perf

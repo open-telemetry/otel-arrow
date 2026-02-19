@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Pipeline wiring helpers for validation scenarios.
+//! Pipeline wiring helpers for validation scenarios. Allows loading YAML
+//! pipelines and rewriting receiver/exporter endpoints at runtime so tests
+//! can bind to ephemeral ports.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -76,7 +78,7 @@ impl Pipeline {
     }
 
     /// Serialize the current pipeline configuration into a YAML string.
-    pub fn to_yaml_string(&self) -> Result<String, ValidationError> {
+    pub(crate) fn to_yaml_string(&self) -> Result<String, ValidationError> {
         serde_yaml::to_string(&self.suv_yaml)
             .map_err(|e| ValidationError::Config(format!("failed to serialize pipeline yaml: {e}")))
     }

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -82,7 +82,7 @@ impl InternalCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::service::telemetry::metrics::MetricsConfig;
+    use otap_df_config::pipeline::telemetry::metrics::MetricsConfig;
     use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;

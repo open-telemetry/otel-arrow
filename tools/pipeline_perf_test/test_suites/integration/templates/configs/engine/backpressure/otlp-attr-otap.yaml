@@ -1,38 +1,45 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
-nodes:
-  receiver:
-    type: urn:otel:otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: 0.0.0.0:4317
-          request_compression: gzip
-          wait_for_result: true
-  attr:
-    type: urn:otel:attribute:processor
-    config:
-      actions:
-      - action: rename
-        source_key: ios.app.state
-        destination_key: ios.app.state2
-        apply_to:
-        - signal
-  exporter:
-    type: urn:otel:otap:exporter
-    config:
-      grpc_endpoint: http://{{backend_hostname}}:1235
-      compression_method: zstd
-      arrow:
-        payload_compression: none
-connections:
-- from: receiver
-  to: attr
-- from: attr
-  to: exporter
-service:
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+engine:
   telemetry:
     logs:
       level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 0.0.0.0:4317
+                  request_compression: gzip
+                  wait_for_result: true
+          attr:
+            type: urn:otel:attribute:processor
+            config:
+              actions:
+              - action: rename
+                source_key: ios.app.state
+                destination_key: ios.app.state2
+                apply_to:
+                - signal
+          exporter:
+            type: urn:otel:otap:exporter
+            config:
+              grpc_endpoint: http://{{backend_hostname}}:1235
+              compression_method: zstd
+              arrow:
+                payload_compression: none
+        connections:
+        - from: receiver
+          to: attr
+        - from: attr
+          to: exporter
