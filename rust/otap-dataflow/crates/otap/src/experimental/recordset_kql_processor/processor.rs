@@ -98,36 +98,12 @@ impl RecordsetKqlProcessor {
                     .max()
                     .unwrap_or_default();
 
-                match max {
-                    RecordSetEngineDiagnosticLevel::Verbose => {
-                        otap_df_telemetry::otel_debug!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Info => {
-                        otap_df_telemetry::otel_info!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Warn => {
-                        otap_df_telemetry::otel_warn!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Error => {
-                        otap_df_telemetry::otel_error!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                }
+                otap_df_telemetry::otel_event!(
+                    max.into(),
+                    "processor.query_output",
+                    processor = "recordset_kql",
+                    formatted_diagnostics = %d
+                );
             }))
     }
 
