@@ -8,7 +8,7 @@
 //!
 //! A node can expose multiple named output ports.
 
-use crate::pipeline::telemetry::AttributeValue;
+use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
 use crate::{Description, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -46,12 +46,21 @@ pub struct NodeUserConfig {
     pub default_output: Option<PortName>,
 
     /// Node specific attributes to be added to internal telemetry.
+    ///
+    /// Supports both bare values and extended form with optional brief descriptions:
+    /// ```yaml
+    /// telemetry_attributes:
+    ///   region: "us-west"                          # bare value
+    ///   team:
+    ///     value: "platform"                        # extended form
+    ///     brief: "Owning team name"                # optional description
+    /// ```
     #[serde(
         default,
         skip_serializing_if = "HashMap::is_empty",
         deserialize_with = "deserialize_telemetry_attributes"
     )]
-    pub telemetry_attributes: HashMap<String, AttributeValue>,
+    pub telemetry_attributes: HashMap<String, TelemetryAttribute>,
 
     /// Node-specific configuration.
     ///
@@ -183,13 +192,13 @@ impl NodeUserConfig {
 /// which is not supported for log record attributes.
 fn deserialize_telemetry_attributes<'de, D>(
     deserializer: D,
-) -> Result<HashMap<String, AttributeValue>, D::Error>
+) -> Result<HashMap<String, TelemetryAttribute>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let attrs: HashMap<String, AttributeValue> = HashMap::deserialize(deserializer)?;
-    for (key, value) in &attrs {
-        if matches!(value, AttributeValue::Array(_)) {
+    let attrs: HashMap<String, TelemetryAttribute> = HashMap::deserialize(deserializer)?;
+    for (key, attr) in &attrs {
+        if matches!(attr.value(), AttributeValue::Array(_)) {
             return Err(serde::de::Error::custom(format!(
                 "unsupported telemetry attribute type for `{key}`: array attributes are not supported"
             )));
@@ -263,6 +272,44 @@ config: {}
                 "attr3".to_string(),
             ])
         );
+        // Bare values have no brief
+        assert!(
+            cfg.telemetry_attributes
+                .get("attr1")
+                .unwrap()
+                .brief()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn node_user_config_with_telemetry_attributes_extended_form() {
+        let json = r#"{
+            "type": "urn:example:demo:receiver",
+            "telemetry_attributes": {
+                "region": {"value": "us-west", "brief": "Deployment region"},
+                "count": 42,
+                "team": {"value": "platform"}
+            }
+        }"#;
+        let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
+        let region = cfg.telemetry_attributes.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), Some("Deployment region"));
+
+        let count = cfg.telemetry_attributes.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert!(count.brief().is_none());
+
+        let team = cfg.telemetry_attributes.get("team").unwrap();
+        assert_eq!(
+            *team.value(),
+            AttributeValue::String("platform".to_string())
+        );
+        assert!(team.brief().is_none());
     }
 
     #[test]

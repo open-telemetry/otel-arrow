@@ -10,7 +10,7 @@ use crate::attributes::{
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
-use otap_df_config::pipeline::telemetry::AttributeValue;
+use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
@@ -112,11 +112,11 @@ pub struct PipelineContext {
     thread_id: usize,
     pipeline_group_id: PipelineGroupId,
     pipeline_id: PipelineId,
-    pipeline_telemetry_attrs: HashMap<String, AttributeValue>,
+    pipeline_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     node_id: ConfigNodeId,
     node_urn: NodeUrn,
     node_kind: NodeKind,
-    node_telemetry_attrs: HashMap<String, AttributeValue>,
+    node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
 
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
@@ -436,7 +436,7 @@ impl PipelineContext {
         node_id: ConfigNodeId,
         node_urn: NodeUrn,
         node_kind: NodeKind,
-        node_telemetry_attrs: HashMap<String, AttributeValue>,
+        node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
     ) -> Self {
         Self {
             controller_context: self.controller_context.clone(),
