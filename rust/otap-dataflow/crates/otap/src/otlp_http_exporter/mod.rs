@@ -21,7 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::FutureExt;
-use http::{HeaderMap, HeaderValue, StatusCode};
+use http::{HeaderMap, HeaderValue};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -553,7 +553,7 @@ mod test {
         pipeline_ctx: &PipelineContext,
         endpoint_addr: &str,
     ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
-        let server_node_id = test_node(format!("test-server"));
+        let server_node_id = test_node("test-server");
         let port_name = PortName::from("server_out");
         let mut msg_senders = HashMap::new();
         let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
@@ -674,7 +674,7 @@ mod test {
                                     }
                                 }
                                 Ok(Response::builder()
-                                    .status(StatusCode::OK)
+                                    .status(200)
                                     .body(Full::new(Bytes::from(body)))
                                     .unwrap())
                             }
@@ -719,7 +719,7 @@ mod test {
 
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
-                config: config,
+                config,
                 pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
             },
             node_id.clone(),
@@ -842,16 +842,10 @@ mod test {
                     // ensure we got back all the signals we expected ...
                     let num_expected_pdatas = 3;
                     let mut pdatas_received = Vec::new();
-                    loop {
-                        match pdata_rx.recv().await {
-                            Some(pdata) => {
-                                pdatas_received.push(pdata);
-                                if pdatas_received.len() >= num_expected_pdatas {
-                                    // server_cancellation_token.cancel();
-                                    break;
-                                }
-                            }
-                            None => break,
+                    while let Some(pdata) = pdata_rx.recv().await {
+                        pdatas_received.push(pdata);
+                        if pdatas_received.len() >= num_expected_pdatas {
+                            break;
                         }
                     }
 
@@ -939,10 +933,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let mut pdatas = vec![];
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        )));
+        ))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -1023,10 +1016,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let mut pdatas = vec![];
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        )));
+        ))];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -1215,10 +1207,9 @@ mod test {
         let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
         otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
 
-        let mut pdatas = vec![];
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otap_batch,
-        )));
+        ))];
 
         let pdatas = subscribe_pdatas(pdatas, false);
 
@@ -1298,10 +1289,9 @@ mod test {
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
-        let mut pdatas = vec![];
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
             otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        )));
+        ))];
 
         let pdatas = subscribe_pdatas(pdatas, true);
 
@@ -1436,7 +1426,7 @@ mod test {
 
                                 match nack.refused.payload() {
                                     OtapPayload::OtlpBytes(proto_bytes) => {
-                                        assert!(proto_bytes.as_bytes().len() > 0, "expected payload bytes to be returned in Nack, but it was empty");
+                                        assert!(!proto_bytes.as_bytes().is_empty(), "expected payload bytes to be returned in Nack, but it was empty");
                                     }
                                     other_payload => {
                                         panic!(
@@ -1484,17 +1474,17 @@ mod test {
 
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
-        let mut pdatas = vec![];
-
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        )));
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Metrics(metrics_batch.clone())),
-        )));
-        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Traces(traces_batch.clone())),
-        )));
+        let pdatas = vec![
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Logs(logs_batch.clone()),
+            ))),
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
+            ))),
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Traces(traces_batch.clone()),
+            ))),
+        ];
         let pdatas = subscribe_pdatas(pdatas, false);
 
         test_runtime
@@ -1517,17 +1507,13 @@ mod test {
 
                     let num_expected_pdatas = 3;
                     let mut pdatas_received = Vec::new();
-                    loop {
-                        match pdata_rx.recv().await {
-                            Some(pdata) => {
-                                pdatas_received.push(pdata);
-                                if pdatas_received.len() >= num_expected_pdatas {
-                                    server_cancellation_token.cancel();
-                                }
-                            }
-                            None => break,
+                    while let Some(pdata) = pdata_rx.recv().await {
+                        pdatas_received.push(pdata);
+                        if pdatas_received.len() >= num_expected_pdatas {
+                            break;
                         }
                     }
+                    server_cancellation_token.cancel();
 
                     for mut pdata in pdatas_received {
                         match pdata.signal_type() {
