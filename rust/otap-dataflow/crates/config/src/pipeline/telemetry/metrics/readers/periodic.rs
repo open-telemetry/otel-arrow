@@ -8,7 +8,7 @@ pub mod otlp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 
-use crate::pipeline::service::telemetry::metrics::readers::periodic::otlp::OtlpExporterConfig;
+use crate::pipeline::telemetry::metrics::readers::periodic::otlp::OtlpExporterConfig;
 
 /// OpenTelemetry Metrics Periodic Exporter configuration.
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
@@ -66,9 +66,7 @@ impl<'de> Deserialize<'de> for MetricsPeriodicExporterConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::pipeline::service::telemetry::metrics::readers::{
-        Temporality, periodic::otlp::OtlpProtocol,
-    };
+    use crate::pipeline::telemetry::metrics::readers::{Temporality, periodic::otlp::OtlpProtocol};
 
     use super::*;
 

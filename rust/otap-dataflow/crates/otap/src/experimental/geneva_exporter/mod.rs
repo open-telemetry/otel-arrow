@@ -15,7 +15,7 @@
 //! ```yaml
 //! nodes:
 //!   - id: geneva-exporter
-//!     urn: "urn:otel:geneva:exporter"
+//!     urn: "urn:microsoft:geneva:exporter"
 //!     config:
 //!       endpoint: "https://geneva.microsoft.com"
 //!       environment: "production"
@@ -67,7 +67,7 @@ use crate::metrics::ExporterPDataMetrics;
 use crate::pdata::OtapPdata;
 
 /// The URN for the Geneva exporter
-pub const GENEVA_EXPORTER_URN: &str = "urn:otel:geneva:exporter";
+pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:geneva:exporter";
 
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
@@ -883,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_urn_constant() {
-        assert_eq!(GENEVA_EXPORTER_URN, "urn:otel:geneva:exporter");
+        assert_eq!(GENEVA_EXPORTER_URN, "urn:microsoft:geneva:exporter");
     }
 
     // TODO: Add integration tests when we can mock GenevaClient:

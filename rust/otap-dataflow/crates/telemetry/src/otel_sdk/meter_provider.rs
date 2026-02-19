@@ -12,7 +12,7 @@ use opentelemetry_sdk::{
     Resource,
     metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider},
 };
-use otap_df_config::pipeline::service::telemetry::metrics::{
+use otap_df_config::pipeline::telemetry::metrics::{
     MetricsConfig,
     readers::{
         MetricsReaderConfig, periodic::MetricsPeriodicExporterConfig,
@@ -126,7 +126,7 @@ impl MeterProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::metrics::readers::{
+    use otap_df_config::pipeline::telemetry::metrics::readers::{
         MetricsReaderPeriodicConfig, MetricsReaderPullConfig, Temporality,
         periodic::otlp::{OtlpExporterConfig, OtlpProtocol},
         pull::PrometheusExporterConfig,
