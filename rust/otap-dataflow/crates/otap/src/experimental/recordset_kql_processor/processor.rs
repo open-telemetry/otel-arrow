@@ -34,6 +34,7 @@ pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = Proces
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_json_config::<RecordsetKqlProcessorConfig>,
 };
 
 /// KQL processor that applies KQL queries to telemetry data

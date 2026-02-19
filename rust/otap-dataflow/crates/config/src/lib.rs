@@ -31,6 +31,8 @@ pub mod policy;
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
+/// Validation helpers for node configuration.
+pub mod validation;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
