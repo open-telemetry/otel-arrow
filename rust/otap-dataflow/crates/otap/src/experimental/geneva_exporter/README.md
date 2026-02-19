@@ -28,7 +28,7 @@ You should see `urn:otel:geneva:exporter` in the Exporters list.
 ### Running
 
 ```bash
-./target/release/df_engine --pipeline config.yaml --num-cores 4
+./target/release/df_engine --config config.yaml --num-cores 4
 ```
 
 ### Notes on throughput knobs
@@ -45,7 +45,7 @@ in this directory:
 ```bash
 # Start the collector
 ./target/release/df_engine \
-  --pipeline crates/otap/src/experimental/geneva_exporter/\
+  --config crates/otap/src/experimental/geneva_exporter/\
 otlp-geneva.yaml \
   --num-cores 1
 

@@ -11,7 +11,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::service::telemetry::metrics::readers::{
+use crate::pipeline::telemetry::metrics::readers::{
     periodic::MetricsPeriodicExporterConfig, pull::MetricsPullExporterConfig,
 };
 

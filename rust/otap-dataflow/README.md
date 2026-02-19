@@ -15,12 +15,12 @@ to produce an OpenTelemetry pipeline support, for use as an embedded
 software component, providing a framework for collecting OpenTelemetry
 data.
 
-> [!NOTE] These Rust libraries are the main deliverable of Phase 2 of
-> the OTel-Arrow project, as defined in the [project
-> phases](../../docs/project-phases.md).  The `df_engine` main
-> program built through `cargo` in [`src/main.rs`](./src/main.rs) is
-> provided as a means to test and validate OTAP pipelines built using
-> the dataflow engine.
+> [!NOTE]
+> These Rust libraries are the main deliverable of Phase 2 of the OTel-Arrow
+> project, as defined in the [project phases](../../docs/project-phases.md).
+> The `df_engine` main program built through `cargo` in
+> [`src/main.rs`](./src/main.rs) is provided as a means to test and validate
+> OTAP pipelines built using the dataflow engine.
 
 ## Architecture
 
@@ -271,7 +271,7 @@ pipeline, the engine, and the pipeline components.
 
 A number of example configurations are listed in
 [`./configs`](./configs). These are deserialized into the
-`otap_df_config::engine::EngineConfig` structs, defined in this crate.
+`otap_df_config::engine::OtelDataflowSpec` structs, defined in this crate.
 
 ### Channel
 

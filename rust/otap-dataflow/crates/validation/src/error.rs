@@ -1,24 +1,25 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Error types for pipeline validation helpers.
+//! Error types surfaced by validation helpers, wrapping IO, template, config,
+//! HTTP, readiness, and validation failures.
 
 use std::fmt;
 
-/// Error
+/// High-level error categories returned by validation helpers.
 #[derive(Debug)]
 pub enum ValidationError {
-    /// Error with reading in configs
+    /// Errors while reading files or talking to the filesystem.
     Io(String),
-    /// Error with rendering the template
+    /// Template rendering errors when producing pipeline YAML.
     Template(String),
-    /// Error with config when trying to run pipeline
+    /// Malformed or incomplete configuration detected before execution.
     Config(String),
-    /// Error with admin endpoints
+    /// HTTP request/response failures against the admin API.
     Http(String),
-    /// Error if pipeline is not ready
+    /// Validation pipelines failed to report readiness within the budget.
     Ready(String),
-    /// Error if validation failed to pass
+    /// Validation checks did not succeed.
     Validation(String),
 }
 

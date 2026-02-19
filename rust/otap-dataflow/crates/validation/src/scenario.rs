@@ -1,7 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Programmatic scenario builder for validation tests.
+//! Programmatic scenario builder that renders a full pipeline group, runs it,
+//! waits for readiness, and checks validation metrics.
 
 use crate::error::ValidationError;
 use crate::pipeline::Pipeline;
@@ -122,6 +123,7 @@ impl Scenario {
         })
     }
 
+    /// convert the template to a finalized yaml string to run
     fn render_template(&self) -> Result<String, ValidationError> {
         let pipeline_yaml = self
             .pipeline
@@ -161,6 +163,7 @@ impl Scenario {
             suv_endpoint => &traffic_generation_config.suv_endpoint,
             control_addr => &traffic_capture_config.control_listening_addr,
             control_endpoint => &traffic_generation_config.control_endpoint,
+            validate => &traffic_capture_config.validations_config(),
             pipeline_config => pipeline_yaml,
             admin_bind_address => &self.admin_addr
         };
@@ -168,6 +171,7 @@ impl Scenario {
             .map_err(|e| ValidationError::Template(e.to_string()))
     }
 
+    /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
         let pipeline = self
             .pipeline
