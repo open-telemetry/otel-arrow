@@ -5,7 +5,7 @@
 
 use crate::attributes::{
     ChannelAttributeSet, CustomAttributeSet, EngineAttributeSet, NodeAttributeSet,
-    PipelineAttributeSet, config_map_to_telemetry,
+    NodeWithCustomAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::node::NodeId as EngineNodeId;
@@ -284,9 +284,15 @@ impl PipelineContext {
             // following code path is only enabled for test builds.
             #[cfg(feature = "test-utils")]
             {
-                self.controller_context
-                    .telemetry_registry_handle
-                    .register_metric_set::<T>(self.node_attribute_set())
+                if self.node_telemetry_attrs.is_empty() {
+                    self.controller_context
+                        .telemetry_registry_handle
+                        .register_metric_set::<T>(self.node_attribute_set())
+                } else {
+                    self.controller_context
+                        .telemetry_registry_handle
+                        .register_metric_set::<T>(self.node_with_custom_attribute_set())
+                }
             }
             #[cfg(not(feature = "test-utils"))]
             {
@@ -306,11 +312,21 @@ impl PipelineContext {
     }
 
     /// Registers the node entity for this context.
+    ///
+    /// If the node has custom telemetry attributes configured, they are included
+    /// in the entity registration. Otherwise, only the base node attributes are used,
+    /// keeping telemetry output clean for nodes without custom attributes.
     #[must_use]
     pub fn register_node_entity(&self) -> EntityKey {
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(self.node_attribute_set())
+        if self.node_telemetry_attrs.is_empty() {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(self.node_attribute_set())
+        } else {
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(self.node_with_custom_attribute_set())
+        }
     }
 
     fn engine_attribute_set(&self) -> EngineAttributeSet {
@@ -345,7 +361,17 @@ impl PipelineContext {
             node_id: self.node_id.clone(),
             node_urn: self.node_urn.clone().into(),
             node_type: self.node_kind.into(),
-            node_telemetry_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+        }
+    }
+
+    /// Returns the node attribute set extended with custom telemetry attributes.
+    ///
+    /// Only used when the node has non-empty `telemetry_attributes` configured.
+    #[must_use]
+    pub fn node_with_custom_attribute_set(&self) -> NodeWithCustomAttributeSet {
+        NodeWithCustomAttributeSet {
+            node_attrs: self.node_attribute_set(),
+            custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
                 &self.node_telemetry_attrs,
             )),
         }

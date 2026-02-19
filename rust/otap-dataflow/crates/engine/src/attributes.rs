@@ -107,10 +107,23 @@ pub struct NodeAttributeSet {
     /// Node type (e.g., "receiver", "processor", "exporter").
     #[attribute]
     pub node_type: Cow<'static, str>,
+}
 
-    /// Custom node telemetry attributes
+/// Node attributes extended with user-configured custom telemetry attributes.
+///
+/// This is only used when a node has non-empty `telemetry_attributes` in its config.
+/// Nodes without custom attributes use [`NodeAttributeSet`] directly, avoiding
+/// empty `custom={}` noise in telemetry output.
+#[attribute_set(name = "node.custom.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeWithCustomAttributeSet {
+    /// Base node attributes.
     #[compose]
-    pub node_telemetry_attrs: CustomAttributeSet,
+    pub node_attrs: NodeAttributeSet,
+
+    /// Custom user-defined telemetry attributes.
+    #[compose]
+    pub custom_attrs: CustomAttributeSet,
 }
 
 /// A custom attribute set that holds arbitrary key-value pairs as a single
