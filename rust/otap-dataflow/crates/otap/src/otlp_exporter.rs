@@ -750,7 +750,6 @@ mod tests {
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use crate::testing::TestCallData;
-
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
@@ -1021,8 +1020,6 @@ mod tests {
                         .expect("Failed to receive Ack");
                         ack_count += 1;
                     }
-
-                    println!("here");
 
                     assert_eq!(ack_count, 3, "Expected 3 Acks for 3 successful exports");
                     validation_procedure(receiver)(ctx, result).await;

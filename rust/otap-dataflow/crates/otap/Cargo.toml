@@ -67,7 +67,7 @@ weaver_semconv.workspace = true
 weaver_resolved_schema.workspace = true
 weaver_resolver.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["rustls", "deflate", "zstd", "gzip"] }
+reqwest = { workspace = true, features = ["rustls"] }
 zip.workspace = true
 tower = { workspace = true }
 hyper-util = { workspace = true }

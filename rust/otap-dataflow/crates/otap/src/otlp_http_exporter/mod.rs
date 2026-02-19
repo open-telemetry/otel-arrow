@@ -11,7 +11,7 @@
 //! - Compression (payloads and accepting compressed responses)
 //! - JSON encoding payloads (currently only proto is supported and it's not configurable)
 //! - Allow endpoint overrides for each signal type (similar to Go collector implementation)
-//! - Unit test metrics
+//! - Unit test metrics reporting
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -432,10 +432,7 @@ async fn finalize_completed_export(
         Err(e) => Some(e.to_string()),
     };
 
-    // TODO - should we peek and log the errors here?
-
     let export_and_notify_success = match err_msg {
-        // TODO should we peek and log error if we couldn't Ack/NAck here?
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
         Some(err_msg) => {
             _ = effect_handler
@@ -452,7 +449,15 @@ async fn finalize_completed_export(
     }
 }
 
-// TODO comments on this
+/// A simple pool of HTTP clients to allow for concurrent exports.
+/// 
+/// Then intention here is to force requests to be distributed across multiple TCP connections to
+/// the OTLP server. In the case of our OTLP Receiver, there may be many instances each running on
+/// different threads, but all listening on the same port (using SO_REUSEPORT). Having multiple
+/// connections helps to balance requests across any receiver instances.
+/// 
+/// Note that internally, reqwest's Client already manages a pool of connections, so the number of
+/// connections is not guaranteed to be equal to the number of clients.
 struct HttpClientPool {
     next_client: usize,
     pool: Vec<Client>,
@@ -465,7 +470,7 @@ impl HttpClientPool {
     ) -> Result<Self, reqwest::Error> {
         let mut default_headers = HeaderMap::new();
 
-        // TODO - this value should be dynamic once we support JSON OTLP payloads
+        // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
         _ = default_headers.insert(
             http::header::CONTENT_TYPE,
             HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
@@ -1333,7 +1338,10 @@ mod test {
                                 match nack.refused.payload() {
                                     OtapPayload::OtapArrowRecords(otap_batch) => {
                                         let logs_batch = otap_batch.get(ArrowPayloadType::Logs).unwrap();
-                                        assert!(logs_batch.num_rows() > 0, "expected payload bytes to be returned in Nack, but it was empty");
+                                        assert!(
+                                            logs_batch.num_rows() > 0, 
+                                            "expected record batches to be returned in Nack, but it was empty"
+                                        );
                                     }
                                     other_payload => {
                                         panic!(
@@ -1426,7 +1434,10 @@ mod test {
 
                                 match nack.refused.payload() {
                                     OtapPayload::OtlpBytes(proto_bytes) => {
-                                        assert!(!proto_bytes.as_bytes().is_empty(), "expected payload bytes to be returned in Nack, but it was empty");
+                                        assert!(
+                                            !proto_bytes.as_bytes().is_empty(), 
+                                            "expected payload bytes to be returned in Nack, but it was empty"
+                                        );
                                     }
                                     other_payload => {
                                         panic!(
