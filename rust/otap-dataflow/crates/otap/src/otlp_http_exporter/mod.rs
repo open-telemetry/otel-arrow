@@ -215,13 +215,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
-
-                    println!(
-                        "received shutdown, draining inflight exports, count: {}",
-                        inflight_exports.len()
-                    );
                     while !inflight_exports.is_empty() {
-                        println!("there are {} inflight exports", inflight_exports.len());
                         if let Some(completed) = inflight_exports.next_completion().await {
                             finalize_completed_export(
                                 completed,
@@ -268,7 +262,15 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                         .encode(&mut otap_batch, &mut proto_buffer),
                                 };
                             let body = if let Err(e) = encode_result {
-                                todo!("handle encode error")
+                                // encoding error, we must have received an invalid structured batch
+                                _ = effect_handler
+                                    .notify_nack(NackMsg::new(
+                                        e.to_string(),
+                                        OtapPdata::new(context, otap_batch.into()),
+                                    ))
+                                    .await;
+                                self.pdata_metrics.add_failed(signal_type, 1);
+                                continue;
                             } else {
                                 Bytes::copy_from_slice(proto_buffer.as_ref())
                             };
@@ -427,10 +429,7 @@ async fn finalize_completed_export(
                 partial_success.error_message, partial_success.rejected
             )
         }),
-        Err(e) => {
-            println!("error sending export request: {e:?}");
-            Some(e.to_string())
-        }
+        Err(e) => Some(e.to_string()),
     };
 
     // TODO - should we peek and log the errors here?
@@ -445,8 +444,6 @@ async fn finalize_completed_export(
             false
         }
     };
-
-    println!("Ack/Nack sent, success: {export_and_notify_success}");
 
     if export_and_notify_success {
         pdata_metrics.add_exported(signal_type, 1)
@@ -505,6 +502,8 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
+    use arrow::array::{Int32Array, RecordBatch};
+    use arrow::datatypes::{DataType, Field, Schema};
     use http_body_util::Full;
     use hyper::Response;
     use hyper::server::conn::http1;
@@ -517,8 +516,9 @@ mod test {
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
-    use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::OtlpProtoMessage;
+    use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
@@ -528,6 +528,7 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
     use parking_lot::lock_api::Mutex;
     use portpicker::pick_unused_port;
@@ -1188,7 +1189,95 @@ mod test {
 
     #[test]
     fn test_handles_invalid_otap_payloads() {
-        todo!()
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        // this is something we won't be able to serialize into a valid OTLP payload.
+        // it would expect "resource" to be a struct column
+        let invalid_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "resource",
+                DataType::Int32,
+                false,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch.set(ArrowPayloadType::Logs, invalid_record_batch);
+
+        let mut pdatas = vec![];
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otap_batch,
+        )));
+
+        let pdatas = subscribe_pdatas(pdatas);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+
+                                assert!(
+                                    nack.reason.contains("Column `resource` data type mismatch"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
+                })
+            })
     }
 
     #[test]
