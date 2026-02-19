@@ -87,7 +87,7 @@ impl Auth {
 
             otel_warn!(
                 "azure_monitor_exporter.auth.retry_scheduled",
-                delay_secs = format!("{:.1}", delay_secs)
+                delay_secs = %delay_secs
             );
             tokio::time::sleep(delay).await;
         }
