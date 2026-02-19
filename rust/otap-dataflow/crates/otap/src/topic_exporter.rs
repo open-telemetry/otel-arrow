@@ -7,9 +7,9 @@
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::pdata::OtapPdata;
-use crate::topic_config::TopicName;
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_config::topic::TopicQueueOnFullPolicy;

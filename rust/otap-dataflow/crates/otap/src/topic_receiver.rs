@@ -7,11 +7,12 @@
 
 use crate::OTAP_RECEIVER_FACTORIES;
 use crate::pdata::OtapPdata;
-use crate::topic_config::{GroupName, TopicName};
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::TopicName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::topic::SubscriptionGroupName;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -48,7 +49,7 @@ pub enum TopicSubscriptionConfig {
     /// Subscribers in the same consumer group share the stream.
     Balanced {
         /// Balanced consumer-group identifier.
-        group: GroupName,
+        group: SubscriptionGroupName,
     },
 }
 

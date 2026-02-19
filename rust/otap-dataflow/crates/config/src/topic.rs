@@ -6,6 +6,139 @@
 use crate::Description;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+
+/// Name of a topic declaration/reference.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct TopicName(String);
+
+impl TopicName {
+    /// Parses and validates a topic name.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        if raw.trim().is_empty() {
+            return Err("topic name must be non-empty".to_owned());
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// Returns the topic name as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns the owned topic name.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for TopicName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for TopicName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for TopicName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for TopicName {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value.as_str())
+    }
+}
+
+impl From<TopicName> for String {
+    fn from(value: TopicName) -> Self {
+        value.0
+    }
+}
+
+impl From<TopicName> for Cow<'static, str> {
+    fn from(value: TopicName) -> Self {
+        Cow::Owned(value.0)
+    }
+}
+
+impl From<&TopicName> for Cow<'static, str> {
+    fn from(value: &TopicName) -> Self {
+        Cow::Owned(value.0.clone())
+    }
+}
+
+impl From<&'static str> for TopicName {
+    fn from(value: &'static str) -> Self {
+        Self::parse(value).expect("invalid static topic name literal")
+    }
+}
+
+/// Name of a balanced-subscription consumer group.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct SubscriptionGroupName(String);
+
+impl SubscriptionGroupName {
+    /// Parses and validates a subscription group name.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        if raw.trim().is_empty() {
+            return Err("subscription group name must be non-empty".to_owned());
+        }
+        Ok(Self(raw.to_owned()))
+    }
+
+    /// Returns the group name as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Returns the owned group name.
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for SubscriptionGroupName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::fmt::Display for SubscriptionGroupName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl TryFrom<String> for SubscriptionGroupName {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value.as_str())
+    }
+}
+
+impl From<SubscriptionGroupName> for String {
+    fn from(value: SubscriptionGroupName) -> Self {
+        value.0
+    }
+}
 
 /// A named topic specification.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
@@ -80,7 +213,9 @@ const fn default_topic_queue_capacity() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{TopicQueueOnFullPolicy, TopicSpec};
+    use super::{SubscriptionGroupName, TopicName, TopicQueueOnFullPolicy, TopicSpec};
+    use serde::Deserialize;
+    use std::collections::HashMap;
 
     #[test]
     fn defaults_match_expected_values() {
@@ -112,5 +247,35 @@ policies:
             topic.policies.queue_on_full,
             TopicQueueOnFullPolicy::DropNewest
         );
+    }
+
+    #[test]
+    fn topic_name_rejects_empty_values() {
+        let err = TopicName::parse("   ").expect_err("empty topic names should fail");
+        assert!(err.contains("non-empty"));
+    }
+
+    #[test]
+    fn subscription_group_name_rejects_empty_values() {
+        let err = SubscriptionGroupName::parse("   ").expect_err("empty group names should fail");
+        assert!(err.contains("non-empty"));
+    }
+
+    #[test]
+    fn topic_name_supports_hash_map_lookup_by_str() {
+        #[derive(Debug, Deserialize)]
+        struct TopicsDoc {
+            topics: HashMap<TopicName, TopicSpec>,
+        }
+
+        let yaml = r#"
+topics:
+  raw:
+    policies:
+      queue_capacity: 1
+"#;
+
+        let doc: TopicsDoc = serde_yaml::from_str(yaml).expect("topics should parse");
+        assert!(doc.topics.contains_key("raw"));
     }
 }
