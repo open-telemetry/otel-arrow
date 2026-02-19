@@ -49,7 +49,7 @@ groups:
 
           # Geneva exporter configuration
           geneva-exporter:
-            type: "urn:otel:geneva:exporter"
+            type: "urn:microsoft:geneva:exporter"
             config:
               # ============================================================
               # REQUIRED FIELDS - Replace with your Geneva deployment values
