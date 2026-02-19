@@ -4,7 +4,7 @@
 //! Internal logging macros for the OTAP Dataflow Engine.
 //!
 //! This module provides logging macros (`otel_info!`, `otel_warn!`, `otel_debug!`, `otel_error!`,
-//! and `otel_log!`) for internal use within the OTAP engine codebase. These macros wrap the
+//! and `otel_event!`) for internal use within the OTAP engine codebase. These macros wrap the
 //! `tracing` crate's logging functionality and are intended for instrumenting engine internals,
 //! receivers, processors, exporters, and other pipeline components.
 
@@ -125,16 +125,16 @@ macro_rules! otel_error {
 ///
 /// # Example:
 /// ```ignore
-/// use otap_df_telemetry::otel_log;
+/// use otap_df_telemetry::otel_event;
 /// use tracing::Level;
 ///
 /// let level = Level::DEBUG;
-/// otel_log!(level, "processor.query_output", component = "my_processor");
+/// otel_event!(level, "processor.query_output", component = "my_processor");
 ///
-/// otel_log!(Level::WARN, "channel.full", dropped_count = 10);
+/// otel_event!(Level::WARN, "channel.full", dropped_count = 10);
 /// ```
 #[macro_export]
-macro_rules! otel_log {
+macro_rules! otel_event {
     ($level:expr, $name:expr, $($fields:tt)+) => {
         match $level {
             $crate::_private::Level::TRACE => {
@@ -235,28 +235,28 @@ mod tests {
     }
 
     #[test]
-    fn test_otel_log_with_fields() {
+    fn test_otel_event_with_fields() {
         use tracing::Level;
 
-        // Verify otel_log! compiles and runs with various runtime levels.
+        // Verify otel_event! compiles and runs with various runtime levels.
         for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
-            otel_log!(level, "test.otel_log.fields", key = 42, reason = "test");
+            otel_event!(level, "test.otel_event.fields", key = 42, reason = "test");
         }
     }
 
     #[test]
-    fn test_otel_log_without_fields() {
+    fn test_otel_event_without_fields() {
         use tracing::Level;
 
         for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
-            otel_log!(level, "test.otel_log.no_fields");
+            otel_event!(level, "test.otel_event.no_fields");
         }
     }
 
     #[test]
-    fn test_otel_log_with_const_level() {
-        // Verify otel_log! works with compile-time constant levels.
-        otel_log!(tracing::Level::DEBUG, "test.otel_log.const_level", key = 1);
-        otel_log!(tracing::Level::INFO, "test.otel_log.const_level");
+    fn test_otel_event_with_const_level() {
+        // Verify otel_event! works with compile-time constant levels.
+        otel_event!(tracing::Level::DEBUG, "test.otel_event.const_level", key = 1);
+        otel_event!(tracing::Level::INFO, "test.otel_event.const_level");
     }
 }

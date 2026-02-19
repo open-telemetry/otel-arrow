@@ -215,14 +215,14 @@ macro_rules! otel_debug {
 /// # Example
 /// ```ignore
 /// let level = tracing::Level::WARN;
-/// otel_log!(level, "quiver.wal.replay", status = "stopped_incomplete");
+/// otel_event!(level, "quiver.wal.replay", status = "stopped_incomplete");
 ///
-/// otel_log!(tracing::Level::INFO, "quiver.segment.drop", segment = 5, reason = "expired");
+/// otel_event!(tracing::Level::INFO, "quiver.segment.drop", segment = 5, reason = "expired");
 /// ```
 #[allow(unused_macro_rules)]
-// otel_log! may not be used yet in production code within this crate; suppress the lint.
+// otel_event! may not be used yet in production code within this crate; suppress the lint.
 #[allow(unused_macros)]
-macro_rules! otel_log {
+macro_rules! otel_event {
     ($level:expr, $name:expr, $($fields:tt)+) => {
         match $level {
             tracing::Level::TRACE => {
@@ -268,7 +268,7 @@ pub(crate) use otel_debug;
 pub(crate) use otel_error;
 pub(crate) use otel_info;
 #[allow(unused_imports)]
-pub(crate) use otel_log;
+pub(crate) use otel_event;
 pub(crate) use otel_warn;
 
 #[cfg(test)]
@@ -310,8 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn test_otel_log_runtime_level() {
-        // Verify otel_log! compiles and dispatches correctly with runtime levels.
+    fn test_otel_event_runtime_level() {
+        // Verify otel_event! compiles and dispatches correctly with runtime levels.
         for level in [
             tracing::Level::TRACE,
             tracing::Level::DEBUG,
@@ -319,14 +319,14 @@ mod tests {
             tracing::Level::WARN,
             tracing::Level::ERROR,
         ] {
-            otel_log!(level, "quiver.test.log_fields", key = 42);
-            otel_log!(level, "quiver.test.log_only");
+            otel_event!(level, "quiver.test.log_fields", key = 42);
+            otel_event!(level, "quiver.test.log_only");
         }
     }
 
     #[test]
-    fn test_otel_log_const_level() {
-        otel_log!(tracing::Level::DEBUG, "quiver.test.log_const", key = 1);
-        otel_log!(tracing::Level::INFO, "quiver.test.log_const");
+    fn test_otel_event_const_level() {
+        otel_event!(tracing::Level::DEBUG, "quiver.test.log_const", key = 1);
+        otel_event!(tracing::Level::INFO, "quiver.test.log_const");
     }
 }

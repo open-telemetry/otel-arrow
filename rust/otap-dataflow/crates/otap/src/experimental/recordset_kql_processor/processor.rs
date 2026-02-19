@@ -104,7 +104,7 @@ impl RecordsetKqlProcessor {
                     RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
                     RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
                 };
-                otap_df_telemetry::otel_log!(
+                otap_df_telemetry::otel_event!(
                     level,
                     "processor.query_output",
                     processor = "recordset_kql",
