@@ -750,6 +750,7 @@ mod tests {
     use crate::otlp_grpc::OTLPData;
     use crate::otlp_mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
     use crate::testing::TestCallData;
+
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;

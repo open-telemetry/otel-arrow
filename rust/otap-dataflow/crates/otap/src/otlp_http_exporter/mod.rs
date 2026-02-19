@@ -422,11 +422,10 @@ async fn finalize_completed_export(
 
     let err_msg = match result {
         Ok(service_resp) => service_resp.partial_success.map(|partial_success| {
-            // TODO - should use count rejected to populate an error here if error_message
-            // is empty string? spec says it SHOULD be populated, but I guess that doesn't
-            // mean it always will be:
-            // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
-            partial_success.error_message
+            format!(
+                "{} ({} rejected)",
+                partial_success.error_message, partial_success.rejected
+            )
         }),
         Err(e) => {
             println!("error sending export request: {e:?}");
@@ -506,6 +505,10 @@ mod test {
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
+    use http_body_util::Full;
+    use hyper::Response;
+    use hyper::server::conn::http1;
+    use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
     use otap_df_config::PortName;
     use otap_df_engine::Interests;
@@ -539,9 +542,12 @@ mod test {
     use crate::otlp_http::client_settings::HttpClientSettings;
     use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use crate::otlp_receiver::OtlpReceiverMetrics;
+    use crate::pdata;
     use crate::testing::TestCallData;
 
-    /// run test HTTP server serving OTLP HTTP API
+    /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
+    /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
+    /// the test is finished), and a receiver that will emit any pdata that the server produces.
     fn run_server(
         tokio_rt: &Runtime,
         pipeline_ctx: &PipelineContext,
@@ -625,14 +631,52 @@ mod test {
                     let shutdown_token = shutdown_token.clone();
                     drop(tracker.spawn(async move {
                         let io = TokioIo::new(stream);
-                        let conn = hyper::server::conn::http1::Builder::new().serve_connection(io, hyper::service::service_fn(|_req| async {
+                        let conn = http1::Builder::new().serve_connection(io, service_fn(|req| async move {
                             if status_err {
-                                Ok::<_, hyper::Error>(hyper::Response::builder()
+
+                                Ok::<_, hyper::Error>(Response::builder()
                                     .status(500)
-                                    .body("body".to_string())
+                                    .body(Full::new(Bytes::from("".as_bytes().to_vec())))
                                     .unwrap())
                             } else {
-                                todo!()
+                                let mut body = Vec::new();
+                                let uri = req.uri();
+                                match uri.path() {
+                                    LOGS_PATH => {
+                                        let service_resp = ExportLogsServiceResponse {
+                                            partial_success: Some(ExportLogsPartialSuccess {
+                                                rejected_log_records: 1,
+                                                error_message: "partial success error".into(),
+                                            }),
+                                        };
+                                        service_resp.encode(&mut body).unwrap();
+                                    }
+                                    METRICS_PATH => {
+                                        let service_resp = ExportMetricsServiceResponse {
+                                            partial_success: Some(ExportMetricsPartialSuccess {
+                                                rejected_data_points: 1,
+                                                error_message: "partial success error".into(),
+                                            }),
+                                        };
+                                        service_resp.encode(&mut body).unwrap();
+                                    }
+                                    TRACES_PATH => {
+                                        let service_resp = ExportTraceServiceResponse {
+                                            partial_success: Some(ExportTracePartialSuccess {
+                                                rejected_spans: 1,
+                                                error_message: "partial success error".into(),
+                                            }),
+                                        };
+                                        service_resp.encode(&mut body).unwrap();
+                                    }
+                                    _ => {
+                                        panic!("unexpected path: {uri}");
+                                    }
+                                }
+                                Ok(Response::builder()
+                                    .status(StatusCode::OK)
+                                    .body(Full::new(Bytes::from(body)))
+                                    .unwrap())
                             }
                         }));
                         let mut conn = std::pin::pin!(conn);
@@ -796,6 +840,7 @@ mod test {
                     // ensure exit success
                     result.unwrap();
 
+                    // ensure we got back all the signals we expected ...
                     let num_expected_pdatas = 3;
                     let mut pdatas_received = Vec::new();
                     loop {
@@ -851,8 +896,6 @@ mod test {
                             Ok(msg) => msg,
                             Err(_) => break, // channel closed, no more messages will be received
                         };
-
-                        println!("here is a control message: {msg:?}");
 
                         match msg {
                             PipelineControlMsg::DeliverAck { node_id, .. } => {
@@ -974,7 +1017,6 @@ mod test {
             max_in_flight: 10,
         };
 
-        let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
 
@@ -1042,6 +1084,121 @@ mod test {
                     assert_eq!(ack_count, num_expected_nacks);
                 })
             })
+    }
+
+    #[test]
+    fn test_handles_partial_success() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_in_flight: 10,
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        let tokio_rt = Runtime::new().unwrap();
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, false);
+
+        let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+        )));
+
+        let mut bytes = Vec::new();
+        metrics_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
+        )));
+
+        let mut bytes = Vec::new();
+        traces_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
+        )));
+
+        let pdatas = subscribe_pdatas(pdatas);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 3;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+
+                                assert!(
+                                    nack.reason.contains("partial success error (1 rejected)"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
+
+                    server_cancellation_token.cancel();
+                })
+            })
+    }
+
+    #[test]
+    fn test_handles_invalid_otap_payloads() {
+        todo!()
+    }
+
+    #[test]
+    fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
+        todo!()
+    }
+
+    #[test]
+    fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
+        todo!()
     }
 
     #[test]
