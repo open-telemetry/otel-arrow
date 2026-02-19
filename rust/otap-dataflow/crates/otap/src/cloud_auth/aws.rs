@@ -4,6 +4,8 @@
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use serde::{Deserialize, Serialize};
 
+use crate::cloud_auth::opaque_string::OpaqueString;
+
 /// AWS authentication methods. This can be leveraged in component
 /// configuration objects for a consistent way to specify AWS auth information.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -19,10 +21,10 @@ pub enum AuthMethod {
         access_key_id: String,
 
         /// AWS secret access key.
-        secret_access_key: String,
+        secret_access_key: OpaqueString,
 
         /// Optional session token.
-        session_token: Option<String>,
+        session_token: Option<OpaqueString>,
     },
 
     /// Assume role with web identity token, commonly used in EKS.
@@ -64,9 +66,9 @@ pub fn configure_builder(builder: AmazonS3Builder, auth: &AuthMethod) -> AmazonS
         } => {
             let mut configured = builder
                 .with_access_key_id(access_key_id)
-                .with_secret_access_key(secret_access_key);
+                .with_secret_access_key(secret_access_key.as_ref());
             if let Some(token) = session_token {
-                configured = configured.with_token(token);
+                configured = configured.with_token(token.as_ref());
             }
             configured
         }
@@ -126,11 +128,23 @@ mod test {
         let method: AuthMethod = serde_json::from_str(&json).expect("Failed to deserialize");
         let expected = AuthMethod::StaticCredentials {
             access_key_id: "test-access-key".to_string(),
-            secret_access_key: "test-secret-key".to_string(),
-            session_token: Some("test-session-token".to_string()),
+            secret_access_key: "test-secret-key".into(),
+            session_token: Some("test-session-token".into()),
         };
 
         assert_eq!(method, expected);
+    }
+
+    #[test]
+    fn test_static_credentials_debug_redacts_secrets() {
+        let method = AuthMethod::StaticCredentials {
+            access_key_id: "AKIA...".to_string(),
+            secret_access_key: "super-secret".into(),
+            session_token: Some("token-value".into()),
+        };
+        let debug = format!("{method:?}");
+        assert!(!debug.contains("super-secret"));
+        assert!(!debug.contains("token-value"));
     }
 
     #[test]

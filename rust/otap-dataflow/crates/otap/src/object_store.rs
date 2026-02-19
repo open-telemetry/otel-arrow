@@ -309,7 +309,7 @@ mod test {
             virtual_hosted_style_request: Some(false),
             auth: cloud_auth::aws::AuthMethod::StaticCredentials {
                 access_key_id: "test".to_string(),
-                secret_access_key: "test".to_string(),
+                secret_access_key: "test".into(),
                 session_token: None,
             },
         };
@@ -464,8 +464,8 @@ mod test {
             virtual_hosted_style_request: Some(false),
             auth: cloud_auth::aws::AuthMethod::StaticCredentials {
                 access_key_id: "test".to_string(),
-                secret_access_key: "test".to_string(),
-                session_token: Some("token".to_string()),
+                secret_access_key: "test".into(),
+                session_token: Some("token".into()),
             },
         };
         test_deserialize(&json, expected);
