@@ -135,10 +135,10 @@ separate event for each value.
 
 ```rust
 // BAD -- four callsites for the same conceptual event:
-otel_warn!("receiver.grpc.unauthenticated", code = 16, message = %msg);
-otel_warn!("receiver.grpc.permission_denied", code = 7, message = %msg);
-otel_warn!("receiver.grpc.unavailable",       code = 14, message = %msg);
-otel_warn!("receiver.grpc.resource_exhausted", code = 8, message = %msg);
+otel_warn!("receiver.grpc.unauthenticated", status_code = 16, message = %msg);
+otel_warn!("receiver.grpc.permission_denied", status_code = 7, message = %msg);
+otel_warn!("receiver.grpc.unavailable", status_code = 14, message = %msg);
+otel_warn!("receiver.grpc.resource_exhausted", status_code = 8, message = %msg);
 
 // GOOD -- one callsite, status_code as an attribute:
 otel_warn!("receiver.grpc.error",
