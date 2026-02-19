@@ -16,7 +16,7 @@ use crate::control::{ControlSenders, NodeControlMsg, PipelineControlMsg, Pipelin
 use crate::error::Error;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
 use otap_df_config::DeployedPipelineKey;
-use otap_df_config::settings::TelemetrySettings;
+use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
@@ -197,7 +197,7 @@ pub struct PipelineCtrlMsgManager<PData> {
     channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
 
     /// Flags controlling capture of internal engine metrics.
-    telemetry: TelemetrySettings,
+    telemetry: TelemetryPolicy,
 }
 
 impl<PData> PipelineCtrlMsgManager<PData> {
@@ -210,7 +210,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
         control_senders: ControlSenders<PData>,
         event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
-        internal_telemetry: TelemetrySettings,
+        telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
     ) -> Self {
         Self {
@@ -224,7 +224,7 @@ impl<PData> PipelineCtrlMsgManager<PData> {
             event_reporter,
             metrics_reporter,
             channel_metrics,
-            telemetry: internal_telemetry,
+            telemetry: telemetry_policy,
         }
     }
 
@@ -526,7 +526,6 @@ mod tests {
     use crate::shared::message::{SharedReceiver, SharedSender};
     use crate::testing::test_nodes;
     use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-    use otap_df_config::pipeline::PipelineConfig;
     use otap_df_config::{PipelineGroupId, PipelineId};
     use otap_df_state::store::ObservedStateStore;
     use std::collections::HashMap;
@@ -571,9 +570,6 @@ mod tests {
             ObservedStateStore::new(&ObservedStateSettings::default(), metrics_system.registry());
         let pipeline_group_id: PipelineGroupId = Default::default();
         let pipeline_id: PipelineId = Default::default();
-        let pipeline_config =
-            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), "")
-                .expect("valid");
         let core_id = 0;
         let thread_id = 0;
         let controller_context = ControllerContext::new(metrics_system.registry());
@@ -603,7 +599,7 @@ mod tests {
             control_senders,
             observed_state_store.reporter(SendPolicy::default()),
             metrics_reporter,
-            pipeline_config.pipeline_settings().telemetry.clone(),
+            TelemetryPolicy::default(),
             Vec::new(),
         );
         (
@@ -1047,7 +1043,7 @@ mod tests {
                     ControlSenders::new(),
                     observed_state_store.reporter(SendPolicy::default()),
                     metrics_reporter,
-                    TelemetrySettings::default(),
+                    TelemetryPolicy::default(),
                     Vec::new(),
                 );
                 let duration = Duration::from_millis(50);

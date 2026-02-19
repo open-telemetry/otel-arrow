@@ -2,21 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Pipeline configuration specification.
-
-pub mod service;
+pub mod telemetry;
 
 use crate::error::{Context, Error, HyperEdgeSpecDetails};
-use crate::health::HealthPolicy;
 use crate::node::{NodeKind, NodeUserConfig};
-use crate::pipeline::service::ServiceConfig;
-use crate::settings::TelemetrySettings;
+use crate::policy::Policies;
 use crate::{Description, NodeId, NodeUrn, PipelineGroupId, PipelineId, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
-use std::path::Path;
 use std::sync::Arc;
 
 /// A pipeline configuration describing the interconnections between nodes.
@@ -27,7 +22,8 @@ use std::sync::Arc;
 ///   communication semantics. For example, it can route each message to one destination (`one_of`), or
 ///   in the future it can broadcast to every destination.
 ///
-/// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
+/// This configuration defines the pipeline’s nodes, the interconnections
+/// (hyper-edges) and optional pipeline-level policies.
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
 /// deserializing directly with serde to ensure plugin URNs are normalized.
@@ -41,13 +37,9 @@ pub struct PipelineConfig {
     #[serde(default = "default_pipeline_type")]
     r#type: PipelineType,
 
-    /// Settings for this pipeline.
-    #[serde(default)]
-    settings: PipelineSettings,
-
-    /// Quota for this pipeline.
-    #[serde(default)]
-    quota: Quota,
+    /// Optional policy set for this pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policies: Option<Policies>,
 
     /// All nodes in this pipeline, keyed by node ID.
     #[serde(default)]
@@ -59,20 +51,6 @@ pub struct PipelineConfig {
     /// the main pipeline graph.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     connections: Vec<PipelineConnection>,
-
-    /// Internal telemetry pipeline nodes. These have the same structure
-    /// as `nodes` but are independent and isolated to a separate internal
-    /// telemetry runtime.
-    #[serde(default, skip_serializing_if = "PipelineNodes::is_empty")]
-    internal: PipelineNodes,
-
-    /// Explicit graph connections for the internal telemetry pipeline.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    internal_connections: Vec<PipelineConnection>,
-
-    /// Service-level telemetry configuration.
-    #[serde(default)]
-    service: ServiceConfig,
 }
 
 const fn default_pipeline_type() -> PipelineType {
@@ -89,75 +67,6 @@ pub enum PipelineType {
     Otlp,
     /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
     Otap,
-}
-
-/// Pipeline quota configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Quota {
-    /// CPU core allocation strategy for this pipeline.
-    #[serde(default)]
-    pub core_allocation: CoreAllocation,
-}
-
-/// Defines how CPU cores should be allocated for pipeline execution.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CoreAllocation {
-    /// Use all available CPU cores.
-    #[default]
-    AllCores,
-    /// Use a specific number of CPU cores (starting from core 0).
-    /// If the requested number exceeds available cores, use all available cores.
-    CoreCount {
-        /// Number of cores to use. If 0, uses all available cores.
-        count: usize,
-    },
-    /// Defines a set of CPU cores should be allocated for pipeline execution.
-    CoreSet {
-        /// Core set defined as a set of ranges.
-        set: Vec<CoreRange>,
-    },
-}
-
-impl Display for CoreAllocation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CoreAllocation::AllCores => write!(f, "*"),
-            CoreAllocation::CoreCount { count } => write!(f, "[{count} cores]"),
-            CoreAllocation::CoreSet { set } => {
-                let mut first = true;
-                for item in set {
-                    if !first {
-                        write!(f, ",")?
-                    }
-                    write!(f, "{item}")?;
-                    first = false
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Defines a range of CPU cores should be allocated for pipeline execution.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub struct CoreRange {
-    /// Start core ID (inclusive).
-    pub start: usize,
-    /// End core ID (inclusive).
-    pub end: usize,
-}
-
-impl Display for CoreRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.start == self.end {
-            write!(f, "{}", self.start)
-        } else {
-            write!(f, "{}-{}", self.start, self.end)
-        }
-    }
 }
 
 /// Connection source selector.
@@ -522,60 +431,6 @@ impl FromIterator<(NodeId, Arc<NodeUserConfig>)> for PipelineNodes {
     }
 }
 
-/// A configuration for a pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PipelineSettings {
-    /// The default size of the node control message channels.
-    /// These channels are used for sending control messages by the pipeline engine to nodes.
-    #[serde(default = "default_node_ctrl_msg_channel_size")]
-    pub default_node_ctrl_msg_channel_size: usize,
-
-    /// The default size of the pipeline control message channels.
-    /// This MPSC channel is used for sending control messages from nodes to the pipeline engine.
-    #[serde(default = "default_pipeline_ctrl_msg_channel_size")]
-    pub default_pipeline_ctrl_msg_channel_size: usize,
-
-    /// The default size of the pdata channels.
-    #[serde(default = "default_pdata_channel_size")]
-    pub default_pdata_channel_size: usize,
-
-    /// Health policy.
-    #[serde(default)]
-    pub health_policy: HealthPolicy,
-
-    /// Pipeline-level telemetry settings.
-    ///
-    /// These flags control capture of pipeline runtime metrics emitted by the pipeline
-    /// execution loop (e.g. per-pipeline CPU/memory metrics and Tokio runtime metrics).
-    ///
-    /// This is distinct from `service.telemetry`, which configures exporting of OpenTelemetry
-    /// signals to external backends.
-    #[serde(default)]
-    pub telemetry: TelemetrySettings,
-}
-
-const fn default_node_ctrl_msg_channel_size() -> usize {
-    100
-}
-const fn default_pipeline_ctrl_msg_channel_size() -> usize {
-    100
-}
-const fn default_pdata_channel_size() -> usize {
-    100
-}
-
-impl Default for PipelineSettings {
-    fn default() -> Self {
-        Self {
-            default_node_ctrl_msg_channel_size: default_node_ctrl_msg_channel_size(),
-            default_pipeline_ctrl_msg_channel_size: default_pipeline_ctrl_msg_channel_size(),
-            default_pdata_channel_size: default_pdata_channel_size(),
-            health_policy: HealthPolicy::default(),
-            telemetry: TelemetrySettings::default(),
-        }
-    }
-}
-
 impl PipelineConfig {
     /// Create a new [`PipelineConfig`] from a JSON string.
     pub fn from_json(
@@ -613,79 +468,10 @@ impl PipelineConfig {
         Ok(spec)
     }
 
-    /// Load a [`PipelineConfig`] from a JSON file.
-    pub fn from_json_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-            details: e.to_string(),
-        })?;
-        Self::from_json(pipeline_group_id, pipeline_id, &contents)
-    }
-
-    /// Load a [`PipelineConfig`] from a YAML file.
-    pub fn from_yaml_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(pipeline_group_id.clone(), pipeline_id.clone()),
-            details: e.to_string(),
-        })?;
-        Self::from_yaml(pipeline_group_id, pipeline_id, &contents)
-    }
-
-    /// Load a [`PipelineConfig`] from a file, automatically detecting the format based on file extension.
-    ///
-    /// Supports:
-    /// - JSON files: `.json`
-    /// - YAML files: `.yaml`, `.yml`
-    pub fn from_file<P: AsRef<Path>>(
-        pipeline_group_id: PipelineGroupId,
-        pipeline_id: PipelineId,
-        path: P,
-    ) -> Result<Self, Error> {
-        let path = path.as_ref();
-        let extension = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_lowercase());
-
-        match extension.as_deref() {
-            Some("json") => Self::from_json_file(pipeline_group_id, pipeline_id, path),
-            Some("yaml") | Some("yml") => {
-                Self::from_yaml_file(pipeline_group_id, pipeline_id, path)
-            }
-            _ => {
-                let context = Context::new(pipeline_group_id, pipeline_id);
-                let details = format!(
-                    "Unsupported file extension: {}. Supported extensions are: .json, .yaml, .yml",
-                    extension.unwrap_or_else(|| "<none>".to_string())
-                );
-                Err(Error::FileReadError { context, details })
-            }
-        }
-    }
-
-    /// Returns the general settings for this pipeline.
+    /// Returns the policy set for this pipeline, if defined.
     #[must_use]
-    pub const fn pipeline_settings(&self) -> &PipelineSettings {
-        &self.settings
-    }
-
-    /// Returns the quota configuration for this pipeline.
-    #[must_use]
-    pub const fn quota(&self) -> &Quota {
-        &self.quota
-    }
-
-    /// Sets the quota configuration for this pipeline.
-    pub fn set_quota(&mut self, quota: Quota) {
-        self.quota = quota;
+    pub const fn policies(&self) -> Option<&Policies> {
+        self.policies.as_ref()
     }
 
     /// Returns a reference to the main pipeline nodes.
@@ -793,82 +579,29 @@ impl PipelineConfig {
         ConnectedSets { incoming, outgoing }
     }
 
-    /// Returns the service-level telemetry configuration.
+    /// Builds a dedicated engine observability pipeline configuration.
     #[must_use]
-    pub const fn service(&self) -> &ServiceConfig {
-        &self.service
-    }
-
-    /// Returns true if the internal telemetry pipeline is configured.
-    #[must_use]
-    pub fn has_internal_pipeline(&self) -> bool {
-        !self.internal.is_empty()
-    }
-
-    /// Returns a reference to the internal pipeline nodes.
-    #[must_use]
-    pub const fn internal_nodes(&self) -> &PipelineNodes {
-        &self.internal
-    }
-
-    /// Returns an iterator visiting all nodes in the internal telemetry pipeline.
-    pub fn internal_node_iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
-        self.internal.iter()
-    }
-
-    /// Extracts the internal telemetry pipeline as a separate PipelineConfig.
-    #[must_use]
-    pub fn extract_internal_config(&self) -> Option<PipelineConfig> {
-        if self.internal.is_empty() {
-            return None;
-        }
-
-        Some(PipelineConfig {
-            r#type: self.r#type.clone(),
-            settings: Self::internal_pipeline_settings(),
-            quota: Quota::default(),
-            nodes: self.internal.clone(),
-            connections: self.internal_connections.clone(),
-            internal: PipelineNodes::default(),
-            internal_connections: Vec::new(),
-            service: ServiceConfig::default(),
-        })
-    }
-
-    /// Returns hardcoded settings for the internal telemetry pipeline.
-    ///
-    /// TODO: these are hard-coded, add configurability.
-    #[must_use]
-    pub fn internal_pipeline_settings() -> PipelineSettings {
-        PipelineSettings {
-            default_node_ctrl_msg_channel_size: 50,
-            default_pipeline_ctrl_msg_channel_size: 50,
-            default_pdata_channel_size: 50,
-            health_policy: HealthPolicy::default(),
-            telemetry: TelemetrySettings {
-                pipeline_metrics: false,
-                tokio_metrics: false,
-                channel_metrics: false,
-            },
+    pub fn for_observability_pipeline(
+        policies: Option<Policies>,
+        nodes: PipelineNodes,
+        connections: Vec<PipelineConnection>,
+    ) -> Self {
+        Self {
+            r#type: PipelineType::Otap,
+            policies,
+            nodes,
+            connections,
         }
     }
 
-    /// Normalize plugin URNs for both main and internal pipeline node maps.
-    ///
-    /// This delegates to `PipelineNodes::canonicalize_plugin_urns` for each
-    /// node collection, ensuring a single canonical representation.
+    /// Normalize plugin URNs for pipeline nodes.
     fn canonicalize_plugin_urns(
         &mut self,
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
     ) -> Result<(), Error> {
         self.nodes
-            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
-        if !self.internal.is_empty() {
-            self.internal
-                .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)?;
-        }
-        Ok(())
+            .canonicalize_plugin_urns(pipeline_group_id, pipeline_id)
     }
 
     /// Validate the pipeline specification.
@@ -891,23 +624,6 @@ impl PipelineConfig {
             pipeline_id,
             &mut errors,
         );
-
-        // Validate internal pipeline if present
-        if !self.internal.is_empty() {
-            // TODO: the location of the internal telemetry pipeline
-            // nodes is subject to change. Temporarily, we append
-            // ("_internal") to the pipeline_id. We need a way to
-            // refer to the set of node defining the internal
-            // pipeline.
-            let internal_id: PipelineId = format!("{}_internal", &pipeline_id).into();
-            self.validate_connections(
-                &self.internal,
-                &self.internal_connections,
-                pipeline_group_id,
-                &internal_id,
-                &mut errors,
-            );
-        }
 
         if !errors.is_empty() {
             Err(Error::InvalidConfiguration { errors })
@@ -1159,9 +875,6 @@ fn prune_connection(
 
 /// A builder for constructing a [`PipelineConfig`]. This type is used
 /// for easy testing of the PipelineNodes logic.
-///
-/// Note: does not support testing the internal pipeline build,
-/// because it is identical.
 pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeUserConfig>,
@@ -1454,12 +1167,8 @@ impl PipelineConfigBuilder {
                     .map(|(id, node)| (id, Arc::new(node)))
                     .collect(),
                 connections: built_connections,
-                internal: PipelineNodes(HashMap::new()),
-                internal_connections: Vec::new(),
-                settings: PipelineSettings::default(),
-                quota: Quota::default(),
+                policies: None,
                 r#type: pipeline_type,
-                service: ServiceConfig::default(),
             };
 
             spec.canonicalize_plugin_urns(&pipeline_group_id, &pipeline_id)?;
@@ -1480,46 +1189,14 @@ mod tests {
     use crate::error::Error;
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
-    use crate::pipeline::service::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::service::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
-    use crate::pipeline::service::telemetry::metrics::readers::{
+    use crate::pipeline::telemetry::metrics::MetricsConfig;
+    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterConfig;
+    use crate::pipeline::telemetry::metrics::readers::{
         MetricsReaderConfig, MetricsReaderPeriodicConfig,
     };
-    use crate::pipeline::service::telemetry::{AttributeValue, TelemetryConfig};
-    use crate::pipeline::{CoreAllocation, CoreRange, PipelineConfigBuilder, PipelineType};
+    use crate::pipeline::telemetry::{AttributeValue, TelemetryConfig};
+    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
-
-    #[test]
-    fn test_core_allocation_display_all_cores() {
-        let allocation = CoreAllocation::AllCores;
-        assert_eq!(allocation.to_string(), "*");
-    }
-
-    #[test]
-    fn test_core_allocation_display_core_count() {
-        let allocation = CoreAllocation::CoreCount { count: 4 };
-        assert_eq!(allocation.to_string(), "[4 cores]");
-    }
-
-    #[test]
-    fn test_core_allocation_display_core_set_single_range() {
-        let allocation = CoreAllocation::CoreSet {
-            set: vec![CoreRange { start: 0, end: 3 }],
-        };
-        assert_eq!(allocation.to_string(), "0-3");
-    }
-
-    #[test]
-    fn test_core_allocation_display_core_set_multiple_ranges() {
-        let allocation = CoreAllocation::CoreSet {
-            set: vec![
-                CoreRange { start: 0, end: 3 },
-                CoreRange { start: 8, end: 11 },
-                CoreRange { start: 16, end: 16 },
-            ],
-        };
-        assert_eq!(allocation.to_string(), "0-3,8-11,16");
-    }
 
     #[test]
     fn test_duplicate_node_errors() {
@@ -1911,250 +1588,6 @@ mod tests {
     }
 
     #[test]
-    fn test_from_json_file() {
-        // Use a dedicated test fixture file
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.json"
-        );
-
-        // Test loading from JSON file
-        let result = super::PipelineConfig::from_json_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 2);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("exporter1"));
-
-        let telemetry_config = config.service.telemetry;
-        let reporting_interval = telemetry_config.reporting_interval;
-        assert_eq!(reporting_interval.as_secs(), 5);
-
-        let resource_attrs = &telemetry_config.resource;
-
-        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
-            assert_eq!(val, "test_service");
-        } else {
-            panic!("Expected service.name to be a string");
-        }
-        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
-            assert_eq!(val, "1.0.0");
-        } else {
-            panic!("Expected service.version to be a string");
-        }
-        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
-            assert_eq!(i, 10);
-        } else {
-            panic!("Expected instance.id to be an integer");
-        }
-
-        if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
-                panic!("Expected MetricsPeriodicExporterConfig");
-            }
-        } else {
-            panic!("Expected first metrics reader to be Periodic");
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_file() {
-        // Use a dedicated test fixture file
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.yaml"
-        );
-
-        // Test loading from YAML file
-        let result = super::PipelineConfig::from_yaml_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok(), "failed parsing {}", result.unwrap_err());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 3);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("processor1"));
-        assert!(config.nodes.contains_key("exporter1"));
-
-        assert_eq!(config.internal.len(), 4);
-        assert!(config.internal.contains_key("receiver1"));
-        assert!(config.internal.contains_key("processor1"));
-        assert!(config.internal.contains_key("processor2"));
-        assert!(config.internal.contains_key("exporter1"));
-
-        let telemetry_config = &config.service().telemetry;
-        let reporting_interval = telemetry_config.reporting_interval;
-        assert_eq!(reporting_interval.as_secs(), 5);
-        let resource_attrs = &telemetry_config.resource;
-
-        if let AttributeValue::String(val) = &resource_attrs["service.name"] {
-            assert_eq!(val, "test_service");
-        } else {
-            panic!("Expected service.name to be a string");
-        }
-        if let AttributeValue::String(val) = &resource_attrs["service.version"] {
-            assert_eq!(val, "1.0.0");
-        } else {
-            panic!("Expected service.version to be a string");
-        }
-        if let AttributeValue::I64(i) = resource_attrs["instance.id"] {
-            assert_eq!(i, 10);
-        } else {
-            panic!("Expected instance.id to be an integer");
-        }
-
-        if let MetricsReaderConfig::Periodic(reader_config) = &telemetry_config.metrics.readers[0] {
-            if MetricsPeriodicExporterConfig::Console != reader_config.exporter {
-                panic!("Expected MetricsPeriodicExporterConfig");
-            }
-        } else {
-            panic!("Expected first metrics reader to be Periodic");
-        }
-    }
-
-    #[test]
-    fn test_from_json_file_nonexistent_file() {
-        let result = super::PipelineConfig::from_json_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/path/pipeline.json",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { .. }) => {}
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_yaml_file_nonexistent_file() {
-        let result = super::PipelineConfig::from_yaml_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/path/pipeline.yaml",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { .. }) => {}
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_json_extension() {
-        // Test auto-detection with .json extension
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.json"
-        );
-
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 2);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("exporter1"));
-    }
-
-    #[test]
-    fn test_from_file_yaml_extension() {
-        // Test auto-detection with .yaml extension
-        let file_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/test_pipeline.yaml"
-        );
-
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            file_path,
-        );
-
-        assert!(result.is_ok());
-        let config = result.unwrap();
-        assert_eq!(config.nodes.len(), 3);
-        assert!(config.nodes.contains_key("receiver1"));
-        assert!(config.nodes.contains_key("processor1"));
-        assert!(config.nodes.contains_key("exporter1"));
-    }
-
-    #[test]
-    fn test_from_file_yml_extension() {
-        // Test auto-detection with .yml extension (alternative YAML extension)
-        // We'll create a simple test using a path that would have .yml extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/nonexistent/test.yml", // This will fail at file reading, but should pass extension detection
-        );
-
-        assert!(result.is_err());
-        // Should be FileReadError (file doesn't exist), not unsupported extension
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                // Make sure it's a file read error and not an extension error
-                assert!(!details.contains("Unsupported file extension"));
-            }
-            other => panic!("Expected FileReadError, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_unsupported_extension() {
-        // Test with unsupported file extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/some/path/config.txt",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                assert!(details.contains("Unsupported file extension"));
-                assert!(details.contains("txt"));
-                assert!(details.contains(".json, .yaml, .yml"));
-            }
-            other => panic!("Expected FileReadError with unsupported extension, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_from_file_no_extension() {
-        // Test with file that has no extension
-        let result = super::PipelineConfig::from_file(
-            "test_group".into(),
-            "test_pipeline".into(),
-            "/some/path/config",
-        );
-
-        assert!(result.is_err());
-        match result {
-            Err(Error::FileReadError { details, .. }) => {
-                assert!(details.contains("Unsupported file extension"));
-                assert!(details.contains("<none>"));
-                assert!(details.contains(".json, .yaml, .yml"));
-            }
-            other => panic!("Expected FileReadError with no extension, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn test_telemetry_config_deserialization() {
         let yaml_data: &str = r#"
             reporting_channel_size: 200
@@ -2254,72 +1687,30 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_internal_config_from_yaml() {
-        // Parse a config with internal nodes from YAML
-        let yaml = r#"
-            settings:
-              default_pipeline_ctrl_msg_channel_size: 100
-              default_node_ctrl_msg_channel_size: 100
-              default_pdata_channel_size: 100
+    fn test_for_observability_pipeline_defaults() {
+        let nodes: super::PipelineNodes = serde_yaml::from_str(
+            r#"
+itr:
+  type: "urn:otel:internal_telemetry:receiver"
+  config: {}
+sink:
+  type: "urn:otel:console:exporter"
+  config: {}
+"#,
+        )
+        .expect("nodes should parse");
+        let connections: Vec<super::PipelineConnection> = serde_yaml::from_str(
+            r#"
+- from: itr
+  to: sink
+"#,
+        )
+        .expect("connections should parse");
 
-            nodes:
-              receiver:
-                type: "urn:test:example:receiver"
-                config: {}
-              exporter:
-                type: "urn:test:example:exporter"
-                config: {}
-            connections:
-              - from: receiver
-                to: exporter
-
-            internal:
-              itr:
-                type: "urn:otel:internal_telemetry:receiver"
-                config: {}
-              console:
-                type: "urn:otel:console:exporter"
-                config: {}
-            internal_connections:
-              - from: itr
-                to: console
-        "#;
-
-        use super::PipelineConfig;
-        let config: PipelineConfig = serde_yaml::from_str(yaml).expect("should parse");
-
-        // Verify the main pipeline has internal nodes
-        assert_eq!(config.internal_node_iter().count(), 2);
-
-        // Extract internal config
-        let internal_config = config.extract_internal_config();
-        assert!(internal_config.is_some(), "should extract internal config");
-
-        let internal = internal_config.unwrap();
-
-        // Should have the internal pipeline settings
-        assert_eq!(internal.settings.default_node_ctrl_msg_channel_size, 50);
-        assert_eq!(internal.settings.default_pdata_channel_size, 50);
-
-        // Should have the internal nodes as its main nodes
-        assert_eq!(internal.nodes.len(), 2);
-
-        assert_eq!(
-            internal.nodes["itr"].r#type.as_ref(),
-            "urn:otel:internal_telemetry:receiver"
-        );
-        assert_eq!(
-            internal.nodes["console"].r#type.as_ref(),
-            "urn:otel:console:exporter"
-        );
-
-        // The extracted config's internal should be empty
-        assert!(internal.internal.is_empty());
-        assert!(internal.internal_connections.is_empty());
-        assert_eq!(internal.connection_iter().count(), 1);
-
-        // Telemetry should be disabled
-        assert!(!internal.settings.telemetry.pipeline_metrics);
+        let config = super::PipelineConfig::for_observability_pipeline(None, nodes, connections);
+        assert_eq!(config.node_iter().count(), 2);
+        assert_eq!(config.connection_iter().count(), 1);
+        assert!(config.policies().is_none());
     }
 
     #[test]

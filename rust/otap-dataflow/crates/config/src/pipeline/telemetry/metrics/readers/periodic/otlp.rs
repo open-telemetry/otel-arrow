@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::pipeline::service::telemetry::metrics::readers::Temporality;
+use crate::pipeline::telemetry::metrics::readers::Temporality;
 
 /// OpenTelemetry OTLP Exporter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
