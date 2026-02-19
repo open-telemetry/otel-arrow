@@ -4,7 +4,7 @@
 //! OpenTelemetry Metrics Views configuration.
 
 use opentelemetry_sdk::metrics::{Instrument, MeterProviderBuilder, Stream};
-use otap_df_config::pipeline::service::telemetry::metrics::views::ViewConfig;
+use otap_df_config::pipeline::telemetry::metrics::views::ViewConfig;
 
 use crate::error::Error;
 
@@ -66,7 +66,7 @@ impl DeclarativeView {
 mod tests {
     use super::*;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
-    use otap_df_config::pipeline::service::telemetry::metrics::views::{
+    use otap_df_config::pipeline::telemetry::metrics::views::{
         MetricSelector, MetricStream, ViewConfig,
     };
 

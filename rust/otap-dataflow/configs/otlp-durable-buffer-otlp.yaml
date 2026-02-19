@@ -1,51 +1,59 @@
-# OTLP -> Durable Buffer -> OTLP pipeline example
-#
-# This configuration demonstrates the durable buffer providing
-# crash-resilient buffering for OTLP data. By default, OTLP bytes are stored as
-# opaque binary for efficient pass-through (near-zero CPU overhead).
-# Set otlp_handling: convert_to_arrow to enable querying on stored data.
-#
-# Build with: cargo build --release
-# Run with:   ./target/release/df_engine --pipeline configs/otlp-durable-buffer-otlp.yaml
-#
-# To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        # OTLP -> Durable Buffer -> OTLP pipeline example
+        #
+        # This configuration demonstrates the durable buffer providing
+        # crash-resilient buffering for OTLP data. By default, OTLP bytes are stored as
+        # opaque binary for efficient pass-through (near-zero CPU overhead).
+        # Set otlp_handling: convert_to_arrow to enable querying on stored data.
+        #
+        # Build with: cargo build --release
+        # Run with:   ./target/release/df_engine --config configs/otlp-durable-buffer-otlp.yaml
+        #
+        # To test, run a backend OTLP receiver on port 4318, then send OTLP data to port 4317.
 
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      listening_addr: "127.0.0.1:4317"
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              listening_addr: "127.0.0.1:4317"
 
-  durable_buffer:
-    type: durable_buffer:processor
-    config:
-      # Directory for WAL and segment files (created if not exists)
-      path: /var/lib/otap/otlp-durable-buffer-otlp-example/buffer
-      # How often to poll Quiver for available bundles (default: 100ms)
-      poll_interval: 100ms
-      # Maximum age of data to retain (e.g., "24h", "7d")
-      max_age: 72h
-      # Maximum disk usage for the durable buffer
-      retention_size_cap: "10GB"
-      # What to do when size cap is exceeded: backpressure or drop_oldest
-      size_cap_policy: backpressure
-      # OTLP handling mode:
-      # - pass_through (default): Store OTLP as opaque binary, very CPU efficient
-      # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
-      otlp_handling: pass_through
+          durable_buffer:
+            type: durable_buffer:processor
+            config:
+              # Directory for WAL and segment files (created if not exists)
+              path: /var/lib/otap/otlp-durable-buffer-otlp-example/buffer
+              # How often to poll Quiver for available bundles (default: 100ms)
+              poll_interval: 100ms
+              # Maximum age of data to retain (e.g., "24h", "7d")
+              max_age: 72h
+              # Maximum disk usage for the durable buffer
+              retention_size_cap: "10GB"
+              # What to do when size cap is exceeded: backpressure or drop_oldest
+              size_cap_policy: backpressure
+              # OTLP handling mode:
+              # - pass_through (default): Store OTLP as opaque binary, very CPU efficient
+              # - convert_to_arrow: Convert to Arrow format, enables querying but higher CPU
+              otlp_handling: pass_through
 
-  exporter:
-    type: otlp:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:4318"
+          exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4318"
 
-connections:
-  - from: receiver
-    to: durable_buffer
-  - from: durable_buffer
-    to: exporter
+        connections:
+          - from: receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: exporter
