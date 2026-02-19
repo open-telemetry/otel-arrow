@@ -76,6 +76,7 @@ socket2 = { workspace = true }
 ipnet = { workspace = true }
 flate2 = { workspace = true }
 zstd = { workspace = true }
+url = { workspace = true }
 
 # Geneva exporter dependencies
 geneva-uploader = { version = "0.4.0", optional = true }
@@ -138,7 +139,6 @@ flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-url.workspace = true
 tokio-util.workspace = true
 time.workspace = true
 wiremock.workspace = true
