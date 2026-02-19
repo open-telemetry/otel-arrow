@@ -77,6 +77,9 @@ pub mod testing;
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
+/// Content-based router processor (routes by resource attribute value)
+pub mod content_router;
+
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
 
