@@ -273,6 +273,24 @@ Topic defaults:
 - `policies.queue_capacity = 128`
 - `policies.queue_on_full = block`
 
+`topic:exporter` may locally override full-queue behavior:
+
+```yaml
+nodes:
+  publish/raw:
+    type: topic:exporter
+    config:
+      topic: raw_signals
+      queue_on_full: drop_newest
+```
+
+Exporter-local `queue_on_full` behavior:
+
+- optional (`block` or `drop_newest`)
+- precedence: exporter `config.queue_on_full` -> topic `policies.queue_on_full`
+  -> default `block`
+- `queue_capacity` remains topic-declaration-only (no exporter-local override)
+
 ## Output Ports
 
 Terminology:

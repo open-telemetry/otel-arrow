@@ -134,6 +134,13 @@ Topic declaration precedence (for a pipeline in a given group):
 
 - `groups.<group>.topics.<name>` -> `topics.<name>`
 
+`topic:exporter` node config can optionally override `queue_on_full` locally:
+
+- `config.queue_on_full`: `block` | `drop_newest`
+- effective precedence:
+  `topic:exporter.config.queue_on_full` -> `topic.policies.queue_on_full` -> `block`
+- `queue_capacity` remains topic-scope only
+
 ## Engine Observability Pipeline
 
 The dedicated engine internal telemetry pipeline is configured at:

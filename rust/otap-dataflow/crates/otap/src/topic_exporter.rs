@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Topic exporter.
-//! 
+//!
 //! Note: This implementation is incomplete and only focus on the configuration.
 
 use crate::OTAP_EXPORTER_FACTORIES;
@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::topic::TopicQueueOnFullPolicy;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NodeControlMsg};
@@ -35,6 +36,10 @@ pub const TOPIC_EXPORTER_URN: &str = "urn:otel:topic:exporter";
 pub struct TopicExporterConfig {
     /// Topic name to publish to.
     pub topic: TopicName,
+    /// Optional local override for publish behavior when topic queue is full.
+    /// If omitted, runtime falls back to the topic declaration policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_on_full: Option<TopicQueueOnFullPolicy>,
 }
 
 /// Exporter for topic publishing.
@@ -96,12 +101,35 @@ impl Exporter<OtapPdata> for TopicExporter {
 #[cfg(test)]
 mod tests {
     use super::TopicExporter;
+    use otap_df_config::topic::TopicQueueOnFullPolicy;
     use serde_json::json;
 
     #[test]
     fn parse_config_accepts_minimal_topic() {
         let cfg = TopicExporter::parse_config(&json!({"topic": "raw"})).expect("valid config");
         assert_eq!(cfg.topic.as_ref(), "raw");
+        assert!(cfg.queue_on_full.is_none());
+    }
+
+    #[test]
+    fn parse_config_accepts_local_queue_on_full_override() {
+        let cfg = TopicExporter::parse_config(&json!({
+            "topic": "raw",
+            "queue_on_full": "drop_newest"
+        }))
+        .expect("valid config");
+        assert_eq!(cfg.topic.as_ref(), "raw");
+        assert_eq!(cfg.queue_on_full, Some(TopicQueueOnFullPolicy::DropNewest));
+    }
+
+    #[test]
+    fn parse_config_rejects_unknown_queue_on_full_variant() {
+        let err = TopicExporter::parse_config(&json!({
+            "topic": "raw",
+            "queue_on_full": "drop_oldest"
+        }))
+        .expect_err("unknown queue_on_full should fail");
+        assert!(err.to_string().contains("unknown variant"));
     }
 
     #[test]
