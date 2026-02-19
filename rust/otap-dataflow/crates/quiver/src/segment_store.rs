@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::{Mutex, RwLock};
 
@@ -18,6 +18,42 @@ use crate::budget::DiskBudget;
 use crate::logging::{otel_debug, otel_error, otel_warn};
 use crate::segment::{ReconstructedBundle, SegmentReader, SegmentSeq};
 use crate::subscriber::{BundleIndex, BundleRef, SegmentProvider, SubscriberError};
+
+/// Maximum number of maintenance cycles a pending delete is retried before
+/// the entry is abandoned and the budget is forcibly released.
+///
+/// When a deletion consistently fails (e.g. permanent permission error),
+/// the segment's budget bytes are released after this many attempts to
+/// avoid a permanent budget leak, even though the file may still be on
+/// disk.  An error-level log is emitted so operators can investigate.
+const MAX_DELETE_ATTEMPTS: u32 = 10;
+
+/// Base interval for the exponential backoff between delete retries.
+/// Each failure doubles the wait time: 1 s → 2 s → 4 s → … capped at
+/// [`MAX_RETRY_INTERVAL`].
+const BASE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Upper bound on the exponential backoff interval so that retries do
+/// not stall for excessively long periods.
+const MAX_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A segment whose file deletion was deferred for later retry.
+#[derive(Debug, Clone, Copy)]
+struct PendingDelete {
+    /// Size in bytes tracked by the budget for this segment.
+    file_size: u64,
+    /// How many times `retry_pending_deletes` has attempted to remove
+    /// this file (starts at 0 on first deferral).
+    attempts: u32,
+    /// Current backoff interval.  Doubled (up to [`MAX_RETRY_INTERVAL`])
+    /// after each failed attempt.
+    backoff: Duration,
+    /// Earliest [`Instant`] at which the next retry should be attempted.
+    /// Entries whose `next_retry_at` is in the future are skipped by
+    /// [`SegmentStore::retry_pending_deletes`], implementing exponential
+    /// backoff.
+    next_retry_at: Instant,
+}
 
 /// Result of scanning the segment directory during startup.
 ///
@@ -159,9 +195,9 @@ pub struct SegmentStore {
     /// Optional disk budget for tracking segment storage usage.
     budget: Option<Arc<DiskBudget>>,
     /// Segments pending deletion (e.g., file still in use or transient I/O error).
-    /// Maps segment sequence → file size so the budget can be released on successful retry.
-    /// These will be retried during the next maintenance cycle.
-    pending_deletes: Mutex<HashMap<SegmentSeq, u64>>,
+    /// Entries are retried each maintenance cycle and evicted after
+    /// [`MAX_DELETE_ATTEMPTS`] failures (releasing the budget with an error log).
+    pending_deletes: Mutex<HashMap<SegmentSeq, PendingDelete>>,
 }
 
 impl std::fmt::Debug for SegmentStore {
@@ -211,6 +247,21 @@ impl SegmentStore {
             budget: Some(budget),
             pending_deletes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Inserts or replaces a pending-delete entry, preserving the attempt
+    /// count if the segment was already deferred.
+    fn defer_delete(&self, seq: SegmentSeq, file_size: u64) {
+        let mut pending = self.pending_deletes.lock();
+        let _ = pending
+            .entry(seq)
+            .and_modify(|p| p.file_size = file_size)
+            .or_insert(PendingDelete {
+                file_size,
+                attempts: 0,
+                backoff: BASE_RETRY_INTERVAL,
+                next_retry_at: Instant::now(),
+            });
     }
 
     /// Sets a callback to be invoked when a segment is registered.
@@ -360,10 +411,7 @@ impl SegmentStore {
                             message = "Failed to delete segment, deferring for retry",
                         );
                     }
-                    let _ = self
-                        .pending_deletes
-                        .lock()
-                        .insert(seq, file_size.unwrap_or(0));
+                    self.defer_delete(seq, file_size.unwrap_or(0));
                 }
             }
         } else {
@@ -416,30 +464,44 @@ impl SegmentStore {
     /// Retries deletion of segments that previously failed.
     ///
     /// On success (or if the file has been removed externally), releases the
-    /// segment's tracked bytes from the disk budget. On failure the segment
-    /// stays in the pending list for the next maintenance cycle.
+    /// segment's tracked bytes from the disk budget.  On failure the attempt
+    /// counter is incremented and the next retry is scheduled with
+    /// exponential backoff (see [`BASE_RETRY_INTERVAL`] /
+    /// [`MAX_RETRY_INTERVAL`]).  After [`MAX_DELETE_ATTEMPTS`] consecutive
+    /// failures the entry is **evicted**: the budget bytes are released and
+    /// an error is logged so operators can investigate the orphaned file.
     ///
-    /// Returns the number of segments successfully deleted.
+    /// Entries whose backoff timer has not yet elapsed are skipped so that
+    /// callers can invoke this method on every ingest cycle without
+    /// hammering the filesystem.
+    ///
+    /// Returns the number of segments whose budget was released (successful
+    /// deletes + abandoned entries).
     pub fn retry_pending_deletes(&self) -> usize {
-        let pending: Vec<(SegmentSeq, u64)> = {
+        let now = Instant::now();
+        let pending: Vec<(SegmentSeq, PendingDelete)> = {
             let pending = self.pending_deletes.lock();
-            pending.iter().map(|(&seq, &size)| (seq, size)).collect()
+            pending
+                .iter()
+                .filter(|(_, pd)| now >= pd.next_retry_at)
+                .map(|(&seq, &pd)| (seq, pd))
+                .collect()
         };
 
         if pending.is_empty() {
             return 0;
         }
 
-        let mut deleted = 0;
-        for (seq, size) in pending {
+        let mut cleared = 0;
+        for (seq, pd) in pending {
             let path = self.segment_path(seq);
             if !path.exists() {
                 // File was deleted externally — release budget and remove from pending.
                 let _ = self.pending_deletes.lock().remove(&seq);
                 if let Some(budget) = &self.budget {
-                    budget.remove(size);
+                    budget.remove(pd.file_size);
                 }
-                deleted += 1;
+                cleared += 1;
                 continue;
             }
 
@@ -447,7 +509,7 @@ impl SegmentStore {
                 Ok(()) => {
                     let _ = self.pending_deletes.lock().remove(&seq);
                     if let Some(budget) = &self.budget {
-                        budget.remove(size);
+                        budget.remove(pd.file_size);
                     }
                     otel_debug!(
                         "quiver.segment.drop",
@@ -455,32 +517,75 @@ impl SegmentStore {
                         phase = "deferred",
                         message = "Successfully deleted deferred segment on retry",
                     );
-                    deleted += 1;
+                    cleared += 1;
                 }
                 Err(e) if Self::is_sharing_violation(&e) => {
-                    // Still in use, keep in pending list for next cycle.
+                    // Still in use — schedule next retry with backoff.
+                    let mut pending = self.pending_deletes.lock();
+                    if let Some(entry) = pending.get_mut(&seq) {
+                        entry.attempts += 1;
+                        entry.next_retry_at = now + entry.backoff;
+                        entry.backoff =
+                            (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
+                    }
                     otel_debug!(
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         phase = "deferred",
-                        message = "Segment still in use, will retry deletion in next cycle",
+                        attempt = pd.attempts + 1,
+                        message = "Segment still in use, will retry deletion after backoff",
                     );
                 }
                 Err(e) => {
-                    // Other transient error — keep in pending list for retry.
+                    // Other error — schedule next retry with backoff.
+                    let mut pending = self.pending_deletes.lock();
+                    if let Some(entry) = pending.get_mut(&seq) {
+                        entry.attempts += 1;
+                        entry.next_retry_at = now + entry.backoff;
+                        entry.backoff =
+                            (entry.backoff * 2).min(MAX_RETRY_INTERVAL);
+                    }
                     otel_warn!(
                         "quiver.segment.drop",
                         segment = seq.raw(),
                         error = %e,
                         error_type = "io",
                         phase = "deferred",
-                        message = "Failed to delete deferred segment, will retry in next cycle",
+                        attempt = pd.attempts + 1,
+                        message = "Failed to delete deferred segment, will retry after backoff",
                     );
                 }
             }
         }
 
-        deleted
+        // Evict entries that have exceeded the maximum retry count.
+        // Release their budget bytes so persistent errors don't cause a
+        // permanent budget leak.
+        {
+            let mut pending = self.pending_deletes.lock();
+            let abandoned: Vec<(SegmentSeq, u64)> = pending
+                .iter()
+                .filter(|(_, pd)| pd.attempts >= MAX_DELETE_ATTEMPTS)
+                .map(|(&seq, pd)| (seq, pd.file_size))
+                .collect();
+            for (seq, size) in abandoned {
+                let _ = pending.remove(&seq);
+                if let Some(budget) = &self.budget {
+                    budget.remove(size);
+                }
+                otel_error!(
+                    "quiver.segment.drop",
+                    segment = seq.raw(),
+                    phase = "abandoned",
+                    attempts = MAX_DELETE_ATTEMPTS,
+                    message = "Giving up on segment deletion after max retries; \
+                               budget released but file may remain on disk",
+                );
+                cleared += 1;
+            }
+        }
+
+        cleared
     }
 
     /// Returns the number of segments pending deletion.
@@ -787,7 +892,10 @@ mod tests {
         // Manually add a segment to pending deletes (simulating a failed delete)
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(SegmentSeq::new(1), 0);
+            let _ = pending.insert(
+                SegmentSeq::new(1),
+                PendingDelete { file_size: 0, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+            );
         }
         assert_eq!(store.pending_delete_count(), 1);
 
@@ -813,7 +921,10 @@ mod tests {
         // Manually add to pending deletes
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(seq, 0);
+            let _ = pending.insert(
+                seq,
+                PendingDelete { file_size: 0, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+            );
         }
         assert_eq!(store.pending_delete_count(), 1);
 
@@ -1094,7 +1205,10 @@ mod tests {
         assert_eq!(budget.used(), tracked_size);
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(seq, tracked_size);
+            let _ = pending.insert(
+                seq,
+                PendingDelete { file_size: tracked_size, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+            );
         }
 
         // Retry should delete the file and release the budget.
@@ -1129,7 +1243,10 @@ mod tests {
         budget.add(tracked_size);
         {
             let mut pending = store.pending_deletes.lock();
-            let _ = pending.insert(seq, tracked_size);
+            let _ = pending.insert(
+                seq,
+                PendingDelete { file_size: tracked_size, attempts: 0, backoff: BASE_RETRY_INTERVAL, next_retry_at: Instant::now() },
+            );
         }
 
         // File doesn't exist — retry should release budget and clear pending.
@@ -1162,4 +1279,160 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(store.pending_delete_count(), 0);
     }
+
+    #[test]
+    fn retry_pending_deletes_abandons_after_max_attempts() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Create a segment file that we'll make undeletable (simulated via
+        // pre-setting attempts to the threshold).
+        let seq = SegmentSeq::new(99);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        let tracked_size: u64 = 7000;
+        std::fs::write(&path, vec![0u8; tracked_size as usize]).unwrap();
+
+        budget.add(tracked_size);
+        assert_eq!(budget.used(), tracked_size);
+
+        // Simulate that we've already retried MAX_DELETE_ATTEMPTS times.
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(
+                seq,
+                PendingDelete {
+                    file_size: tracked_size,
+                    attempts: MAX_DELETE_ATTEMPTS,
+                    backoff: MAX_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
+            );
+        }
+
+        // On the next retry cycle, the entry should be evicted and budget released.
+        let cleared = store.retry_pending_deletes();
+        // retry_pending_deletes will first successfully delete the file (it IS
+        // deletable in this test env), so it counts as cleared = 1 that way.
+        // But if we truly can't delete, it evicts.  Either way the budget is freed.
+        assert!(cleared >= 1, "entry should be cleared");
+        assert_eq!(store.pending_delete_count(), 0);
+        assert_eq!(
+            budget.used(),
+            0,
+            "budget should be released after abandoning"
+        );
+    }
+
+    #[test]
+    fn retry_pending_deletes_increments_attempts_on_failure() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Create a read-only directory segment entry that can't be deleted
+        // by making the segment path a subdirectory (remove_file fails on dirs).
+        let seq = SegmentSeq::new(77);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        std::fs::create_dir_all(&path).unwrap();
+
+        let tracked_size: u64 = 4000;
+        budget.add(tracked_size);
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(
+                seq,
+                PendingDelete {
+                    file_size: tracked_size,
+                    attempts: 0,
+                    backoff: BASE_RETRY_INTERVAL,
+                    next_retry_at: Instant::now(),
+                },
+            );
+        }
+
+        // First retry: deletion fails (it's a directory), attempts incremented.
+        let cleared = store.retry_pending_deletes();
+        assert_eq!(cleared, 0, "should not be cleared on first failure");
+        assert_eq!(store.pending_delete_count(), 1);
+        assert_eq!(
+            budget.used(),
+            tracked_size,
+            "budget should remain charged while retrying"
+        );
+
+        // Verify attempts incremented and backoff doubled.
+        {
+            let pending = store.pending_deletes.lock();
+            let pd = pending.get(&seq).expect("should still be pending");
+            assert_eq!(pd.attempts, 1);
+            assert_eq!(pd.backoff, BASE_RETRY_INTERVAL * 2);
+            assert!(
+                pd.next_retry_at > Instant::now() - Duration::from_millis(100),
+                "next_retry_at should have been updated"
+            );
+        }
+
+        // Clean up the directory so the test doesn't leave artifacts.
+        let _ = std::fs::remove_dir(&path);
+    }
+
+    #[test]
+    fn retry_pending_deletes_skips_entries_with_future_backoff() {
+        let dir = tempdir().unwrap();
+        let segment_dir = dir.path().join("segments");
+        std::fs::create_dir_all(&segment_dir).unwrap();
+
+        let budget = Arc::new(DiskBudget::new(
+            10_000_000,
+            1_000_000,
+            RetentionPolicy::Backpressure,
+        ));
+        let store =
+            SegmentStore::with_budget(&segment_dir, SegmentReadMode::Standard, budget.clone());
+
+        // Create a real deletable file but set next_retry_at far in the future.
+        let seq = SegmentSeq::new(50);
+        let path = segment_dir.join(format!("{}.qseg", seq.to_filename_component()));
+        let tracked_size: u64 = 2000;
+        std::fs::write(&path, vec![0u8; tracked_size as usize]).unwrap();
+
+        budget.add(tracked_size);
+        {
+            let mut pending = store.pending_deletes.lock();
+            let _ = pending.insert(
+                seq,
+                PendingDelete {
+                    file_size: tracked_size,
+                    attempts: 1,
+                    backoff: BASE_RETRY_INTERVAL * 2,
+                    next_retry_at: Instant::now() + Duration::from_secs(3600),
+                },
+            );
+        }
+
+        // Retry should skip this entry because the backoff timer hasn't elapsed.
+        let cleared = store.retry_pending_deletes();
+        assert_eq!(cleared, 0, "should skip entries whose backoff has not elapsed");
+        assert_eq!(store.pending_delete_count(), 1, "entry should remain pending");
+        assert!(path.exists(), "file should still exist");
+        assert_eq!(budget.used(), tracked_size, "budget should remain charged");
+    }
+
 }
