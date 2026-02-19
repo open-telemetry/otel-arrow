@@ -112,6 +112,9 @@ The macros support `tracing`-style formatting hints:
 - `?value` -- Debug formatting (`fmt::Debug`)
 - `value` -- passed directly (integers, booleans, etc.)
 
+Prefer `%` (Display) for info/warn/error severity events. Reserve `?` (Debug)
+for debug-level events, as it can expose internal struct layouts.
+
 ```rust
 otel_info!("node.connect",
     endpoint = %addr,
