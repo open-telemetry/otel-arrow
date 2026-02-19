@@ -259,7 +259,11 @@ impl DiskBudget {
     /// (that's expected — finalization overshoot is bounded by
     /// `segment_headroom`).
     pub fn add(&self, bytes: u64) {
-        let _ = self.used.fetch_add(bytes, Ordering::Release);
+        let _ = self
+            .used
+            .fetch_update(Ordering::Release, Ordering::Acquire, |current| {
+                Some(current.saturating_add(bytes))
+            });
     }
 
     /// Records bytes deleted from disk.
