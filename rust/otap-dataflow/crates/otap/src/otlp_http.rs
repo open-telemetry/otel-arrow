@@ -695,7 +695,6 @@ impl HttpHandler {
                 .await
                 .is_err()
             {
-
                 println!("error sending pdata in server");
                 otap_df_telemetry::otel_warn!(
                     "HttpPipelineSendFailed",

@@ -154,6 +154,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
 
+        // TODO these could be consts
         let logs_endpoint = Rc::new(format!("{}/v1/logs", self.config.http.endpoint));
         let metrics_endpoint = Rc::new(format!("{}/v1/metrics", self.config.http.endpoint));
         let traces_endpoint = Rc::new(format!("{}/v1/traces", self.config.http.endpoint));
@@ -230,8 +231,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
 
-                    // encode the payload into the request body, while keeping a copy of the
-                    // original payload if the context wishes it to be returned
+                    // proto encode the payload into the request body, while keeping a copy of the
+                    // original payload if the context allows it to be returned
                     let (body, saved_payload) = match payload {
                         OtapPayload::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
@@ -485,14 +486,20 @@ mod test {
 
     use otap_df_config::PortName;
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::pipeline_ctrl_msg_channel;
+    use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
     use otap_df_engine::shared::message::SharedSender;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::node::test_node;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
+    use otap_df_pdata::proto::opentelemetry::metrics::v1::{
+        Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+    };
+    use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
+    use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use parking_lot::lock_api::Mutex;
@@ -535,7 +542,8 @@ mod test {
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_HTTP_EXPORTER_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        // let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let test_runtime_name = test_runtime.config().name.clone();
         let node_id = test_node(test_runtime_name.clone());
@@ -599,71 +607,155 @@ mod test {
         });
 
         // TODO need a way to detect if server is ready?
+        let logs_batch = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        event_name: "Hello".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let metrics_batch = MetricsData::new(vec![ResourceMetrics {
+            scope_metrics: vec![ScopeMetrics {
+                metrics: vec![Metric::build().name("metric").finish()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let traces_batch = TracesData::new(vec![ResourceSpans {
+            scope_spans: vec![otap_df_pdata::proto::opentelemetry::trace::v1::ScopeSpans {
+                spans: vec![otap_df_pdata::proto::opentelemetry::trace::v1::Span {
+                    name: "span".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let mut pdatas = vec![];
+
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+        )));
+
+        let mut bytes = Vec::new();
+        metrics_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes)),
+        )));
+
+        let mut bytes = Vec::new();
+        traces_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes)),
+        )));
 
         test_runtime
             .set_exporter(exporter)
             .run_test(|ctx| {
                 Box::pin(async move {
-                    println!("here 0");
-                    let batch1 = LogsData {
-                        resource_logs: vec![ResourceLogs {
-                            scope_logs: vec![ScopeLogs {
-                                log_records: vec![LogRecord {
-                                    event_name: "Hello".into(),
-                                    ..Default::default()
-                                }],
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        }],
-                    };
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
 
-                    let mut bytes = Vec::new();
-                    batch1.encode(&mut bytes).unwrap();
-                    let pdata_payload = OtapPayload::OtlpBytes(OtlpProtoBytes::ExportLogsRequest(
-                        Bytes::from(bytes),
-                    ));
-                    let pdata = OtapPdata::new_default(pdata_payload);
-                    println!("here 1");
-                    ctx.send_pdata(pdata).await.unwrap();
-
-                    println!("here 2");
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
-
-                    println!("here 3");
                 })
             })
             .run_validation(|mut ctx, result| {
                 Box::pin(async move {
-                    println!("here 4");
                     // ensure exit success
                     result.unwrap();
 
-                    println!("here 5");
+                    let num_expected_pdatas = 3;
                     let mut pdatas_received = Vec::new();
                     loop {
                         match pdata_rx.recv().await {
                             Some(pdata) => {
                                 pdatas_received.push(pdata);
-                                if pdatas_received.len() >= 1 {
+                                if pdatas_received.len() >= num_expected_pdatas {
                                     server_cancellation_token2.cancel();
                                 }
-                            },
-                            None => {
-                                break
+                            }
+                            None => break,
+                        }
+                    }
+
+                    for mut pdata in pdatas_received {
+                        match pdata.signal_type() {
+                            SignalType::Logs => {
+                                let pdata: OtlpProtoBytes =
+                                    pdata.take_payload().try_into().unwrap();
+                                let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
+                                assert_equivalent(
+                                    &[OtlpProtoMessage::Logs(pdata_decoded)],
+                                    &[OtlpProtoMessage::Logs(logs_batch.clone())],
+                                );
+                            }
+                            SignalType::Metrics => {
+                                let pdata: OtlpProtoBytes =
+                                    pdata.take_payload().try_into().unwrap();
+                                let pdata_decoded = MetricsData::decode(pdata.as_bytes()).unwrap();
+                                assert_equivalent(
+                                    &[OtlpProtoMessage::Metrics(pdata_decoded)],
+                                    &[OtlpProtoMessage::Metrics(metrics_batch.clone())],
+                                );
+                            }
+                            SignalType::Traces => {
+                                let pdata: OtlpProtoBytes =
+                                    pdata.take_payload().try_into().unwrap();
+                                let pdata_decoded = TracesData::decode(pdata.as_bytes()).unwrap();
+                                assert_equivalent(
+                                    &[OtlpProtoMessage::Traces(pdata_decoded)],
+                                    &[OtlpProtoMessage::Traces(traces_batch.clone())],
+                                );
                             }
                         }
-
                     }
-                    // while let Some(pdata) = pdata_rx.recv().await {
-                    //     println!("received pdata");
-                    // }
 
-                    println!("here 6");
-                    // shutdown the server
-                    // server_cancellation_token2.cancel();
+                    // validate we received three Acks
+                    let mut ack_count = 0;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverAck { node_id, .. } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+                                if ack_count >= num_expected_pdatas {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverNack { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+
+                    // validate we updated our metrics
+                    // TODO - this doesn't seem to be working be
+                    // telemetry_registry_handle.visit_current_metrics(|metric_desc, _attrs, iter| {
+                    //     for (field, value) in iter {
+                    //         println!("field = {:?}, value = {:?}", field, value);
+                    //     }
+                    // });
                 })
             })
     }

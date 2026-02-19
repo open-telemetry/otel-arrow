@@ -262,6 +262,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 .await
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {
+                        println!("writing snapshot to terminal reporter: {snapshot:?}");
                         let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
                     }
                 })
