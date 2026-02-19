@@ -94,10 +94,12 @@ fn extract_path_prefix(base_uri: &str) -> Result<Option<Path>, object_store::Err
 
     let path = url.path();
 
-    // For scheme-based URIs (s3://, az://, abfs://), the path starts with /
-    // and the first segment after the leading slash is the prefix.
-    // For HTTPS Azure URIs, the first path segment is the container name,
-    // so the prefix starts from the second segment.
+    // For scheme-based URIs (s3://, az://, abfs://), the path starts with '/'
+    // and the entire path after the leading slash (minus any trailing '/') is
+    // treated as the prefix.
+    // For HTTPS Azure URIs, the first path segment is the container name, and
+    // the prefix is the remainder of the path after that container segment
+    // (minus any trailing '/').
     let is_https = url.scheme() == "https" || url.scheme() == "http";
 
     let trimmed = path.trim_start_matches('/');
@@ -208,8 +210,8 @@ pub fn from_storage_type(
             if let Some(endpoint) = endpoint {
                 builder = builder.with_endpoint(endpoint);
             }
-            if let Some(true) = allow_http {
-                builder = builder.with_allow_http(true);
+            if let Some(allow) = allow_http {
+                builder = builder.with_allow_http(*allow);
             }
             if let Some(vhost) = virtual_hosted_style_request {
                 builder = builder.with_virtual_hosted_style_request(*vhost);
