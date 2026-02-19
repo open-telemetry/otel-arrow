@@ -118,8 +118,12 @@ for debug-level events, as it can expose internal struct layouts.
 ```rust
 otel_info!("node.connect",
     endpoint = %addr,
-    config   = ?node_config,
     count    = 42,
+);
+
+// Debug formatting is acceptable at debug level:
+otel_debug!("node.connect",
+    config = ?node_config,
 );
 ```
 
