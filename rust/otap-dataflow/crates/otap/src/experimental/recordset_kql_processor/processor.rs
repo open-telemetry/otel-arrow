@@ -98,36 +98,18 @@ impl RecordsetKqlProcessor {
                     .max()
                     .unwrap_or_default();
 
-                match max {
-                    RecordSetEngineDiagnosticLevel::Verbose => {
-                        otap_df_telemetry::otel_debug!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Info => {
-                        otap_df_telemetry::otel_info!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Warn => {
-                        otap_df_telemetry::otel_warn!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Error => {
-                        otap_df_telemetry::otel_error!(
-                            "processor.query_output",
-                            processor = "recordset_kql",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                }
+                let level = match max {
+                    RecordSetEngineDiagnosticLevel::Verbose => otap_df_telemetry::Level::DEBUG,
+                    RecordSetEngineDiagnosticLevel::Info => otap_df_telemetry::Level::INFO,
+                    RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
+                    RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
+                };
+                otap_df_telemetry::otel_log!(
+                    level,
+                    "processor.query_output",
+                    processor = "recordset_kql",
+                    formatted_diagnostics = %d
+                );
             }))
     }
 

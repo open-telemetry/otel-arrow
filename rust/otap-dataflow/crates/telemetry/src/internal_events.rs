@@ -3,10 +3,10 @@
 
 //! Internal logging macros for the OTAP Dataflow Engine.
 //!
-//! This module provides logging macros (`otel_info!`, `otel_warn!`, `otel_debug!`, and `otel_error!`)
-//! for internal use within the OTAP engine codebase. These macros wrap the `tracing` crate's
-//! logging functionality and are intended for instrumenting engine internals, receivers,
-//! processors, exporters, and other pipeline components.
+//! This module provides logging macros (`otel_info!`, `otel_warn!`, `otel_debug!`, `otel_error!`,
+//! and `otel_log!`) for internal use within the OTAP engine codebase. These macros wrap the
+//! `tracing` crate's logging functionality and are intended for instrumenting engine internals,
+//! receivers, processors, exporters, and other pipeline components.
 
 #![allow(unused_macros)]
 
@@ -16,7 +16,7 @@ pub mod _private {
     pub use tracing::field::ValueSet;
     pub use tracing::metadata::Kind;
     pub use tracing::{Event, Level};
-    pub use tracing::{callsite2, debug, error, info, valueset, warn};
+    pub use tracing::{callsite2, debug, error, info, trace, valueset, warn};
 }
 
 /// Macro for logging informational messages.
@@ -109,6 +109,72 @@ macro_rules! otel_error {
     };
 }
 
+/// Macro for logging messages at a runtime-selectable severity level.
+///
+/// This macro accepts a [`tracing::Level`] value as its first argument, allowing the
+/// severity to be determined dynamically (e.g., from a variable or computed expression).
+/// Internally it dispatches to the appropriate level-specific macro, so each invocation
+/// produces one static callsite per supported level rather than requiring separate
+/// `otel_debug!`/`otel_info!`/`otel_warn!`/`otel_error!` call sites.
+///
+/// # Arguments:
+/// - First argument (required): A [`tracing::Level`] value.
+/// - Second argument (required): The OpenTelemetry Event name identifying the log event.
+///   See [OpenTelemetry Event name specification](https://github.com/open-telemetry/opentelemetry-specification/blob/v1.50.0/specification/logs/data-model.md#field-eventname).
+/// - Additional optional key-value pairs can be passed as attributes.
+///
+/// # Example:
+/// ```ignore
+/// use otap_df_telemetry::otel_log;
+/// use tracing::Level;
+///
+/// let level = Level::DEBUG;
+/// otel_log!(level, "processor.query_output", component = "my_processor");
+///
+/// otel_log!(Level::WARN, "channel.full", dropped_count = 10);
+/// ```
+#[macro_export]
+macro_rules! otel_log {
+    ($level:expr, $name:expr, $($fields:tt)+) => {
+        match $level {
+            $crate::_private::Level::TRACE => {
+                $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            $crate::_private::Level::DEBUG => {
+                $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            $crate::_private::Level::INFO => {
+                $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            $crate::_private::Level::WARN => {
+                $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+            _ => {
+                $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), $($fields)+);
+            }
+        }
+    };
+    ($level:expr, $name:expr) => {
+        match $level {
+            $crate::_private::Level::TRACE => {
+                $crate::_private::trace!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            $crate::_private::Level::DEBUG => {
+                $crate::_private::debug!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            $crate::_private::Level::INFO => {
+                $crate::_private::info!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            $crate::_private::Level::WARN => {
+                $crate::_private::warn!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+            _ => {
+                $crate::_private::error!(name: $name, target: env!("CARGO_PKG_NAME"), "");
+            }
+        }
+    };
+}
+
 /// Log an error message directly to stderr, bypassing the tracing dispatcher.
 ///
 /// Note! the way this is written, it supports the full `tracing` syntax for
@@ -166,5 +232,31 @@ mod tests {
         let err = Error::ConfigurationError("bad config".into());
         raw_error!("raw error message", error = ?err);
         raw_error!("simple error message");
+    }
+
+    #[test]
+    fn test_otel_log_with_fields() {
+        use tracing::Level;
+
+        // Verify otel_log! compiles and runs with various runtime levels.
+        for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
+            otel_log!(level, "test.otel_log.fields", key = 42, reason = "test");
+        }
+    }
+
+    #[test]
+    fn test_otel_log_without_fields() {
+        use tracing::Level;
+
+        for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN, Level::ERROR] {
+            otel_log!(level, "test.otel_log.no_fields");
+        }
+    }
+
+    #[test]
+    fn test_otel_log_with_const_level() {
+        // Verify otel_log! works with compile-time constant levels.
+        otel_log!(tracing::Level::DEBUG, "test.otel_log.const_level", key = 1);
+        otel_log!(tracing::Level::INFO, "test.otel_log.const_level");
     }
 }
