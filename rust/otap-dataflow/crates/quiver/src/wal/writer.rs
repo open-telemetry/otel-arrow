@@ -232,6 +232,14 @@ pub(crate) struct WalWriterOptions {
     /// When provided, WAL bytes are recorded in this budget, enabling unified
     /// disk capacity management across all engine components.
     pub budget: Option<Arc<DiskBudget>>,
+    /// Whether to set rotated WAL files to read-only after rotation.
+    ///
+    /// When `true` (the default), rotated WAL files are `chmod`-ed to `0o440`
+    /// (Unix) or marked read-only (other platforms) to prevent accidental
+    /// corruption.  When `false`, the permission change is skipped — this is
+    /// necessary on filesystems that do not support `chmod` (e.g., SMB/CIFS
+    /// mounts, certain Kubernetes volumeMounts).
+    pub enforce_file_readonly: bool,
 }
 
 impl WalWriterOptions {
@@ -245,6 +253,7 @@ impl WalWriterOptions {
             rotation_target_bytes: DEFAULT_ROTATION_TARGET_BYTES,
             buffer_decay_rate: DEFAULT_BUFFER_DECAY_RATE,
             budget: None,
+            enforce_file_readonly: true,
         }
     }
 
@@ -275,6 +284,15 @@ impl WalWriterOptions {
     /// and other engine components.
     pub fn with_budget(mut self, budget: Arc<DiskBudget>) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    /// Controls whether rotated WAL files are set to read-only.
+    ///
+    /// Pass `false` on filesystems that don't support `chmod`
+    /// (e.g., certain Kubernetes volumeMounts, Azure Files SMB mounts).
+    pub const fn with_enforce_file_readonly(mut self, enforce: bool) -> Self {
+        self.enforce_file_readonly = enforce;
         self
     }
 
@@ -1333,19 +1351,23 @@ impl WalCoordinator {
 
         // Set rotated file to read-only to prevent accidental corruption.
         // Rotated WAL files should never be modified.
-        // Note: Permission changes use std::fs as tokio doesn't wrap these
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let permissions = std::fs::Permissions::from_mode(0o440);
-            std::fs::set_permissions(&new_rotated_path, permissions)?;
-        }
+        // Skipped when the filesystem doesn't support chmod (e.g., certain
+        // Kubernetes volumeMounts, Azure Files SMB mounts).
+        if self.options.enforce_file_readonly {
+            // Note: Permission changes use std::fs as tokio doesn't wrap these
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let permissions = std::fs::Permissions::from_mode(0o440);
+                std::fs::set_permissions(&new_rotated_path, permissions)?;
+            }
 
-        #[cfg(not(unix))]
-        {
-            let mut permissions = std::fs::metadata(&new_rotated_path)?.permissions();
-            permissions.set_readonly(true);
-            std::fs::set_permissions(&new_rotated_path, permissions)?;
+            #[cfg(not(unix))]
+            {
+                let mut permissions = std::fs::metadata(&new_rotated_path)?.permissions();
+                permissions.set_readonly(true);
+                std::fs::set_permissions(&new_rotated_path, permissions)?;
+            }
         }
 
         sync_parent_dir(&self.options.path).await?;
@@ -1481,8 +1503,12 @@ impl WalCoordinator {
         while let Some(front) = self.rotated_files.front() {
             if front.wal_position_end <= self.cursor_state.wal_position {
                 // On non-Unix platforms, read-only files cannot be deleted directly.
+                // Only attempt to clear the read-only flag when we actually set it
+                // during rotation; otherwise we may hit errors on filesystems that
+                // don't support permission changes (e.g. certain Kubernetes
+                // volumeMounts, Azure Files SMB mounts).
                 #[cfg(not(unix))]
-                {
+                if self.options.enforce_file_readonly {
                     let mut permissions = std::fs::metadata(&front.path)?.permissions();
                     // The clippy warning about world-writable files only applies to Unix.
                     #[allow(clippy::permissions_set_readonly_false)]
