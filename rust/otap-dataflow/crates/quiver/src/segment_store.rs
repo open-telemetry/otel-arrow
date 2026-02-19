@@ -1135,7 +1135,7 @@ mod tests {
             batch,
         );
         let _ = open_segment.append(&bundle).unwrap();
-        let writer = SegmentWriter::new(seq);
+        let writer = SegmentWriter::new(seq, true);
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
