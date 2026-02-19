@@ -79,7 +79,7 @@ impl OtlpProtoBytes {
         }
     }
 
-    /// TODO docs
+    /// Replaces the internal bytes with new bytes and returns the old bytes.
     pub fn replace_bytes<B>(&mut self, b: B) -> Bytes
     where
         B: Into<Vec<u8>>,
