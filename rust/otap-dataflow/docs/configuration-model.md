@@ -1,15 +1,112 @@
 # OTAP Dataflow Configuration Model (v1)
 
-This document describes the configuration model used by the OTAP Dataflow
-Engine.
+This document describes the runtime configuration model used by the OTAP
+Dataflow Engine.
 
 If you want background on why this model is structured this way, see the
 `Design Rationale` section below.
 
-If you implement receivers/processors/exporters and need crate-level model/API
+If you implement receivers/processors/exporters and need crate-level API
 details plus custom node config guidance, see:
 
 - [crates/config/README.md](../crates/config/README.md)
+
+## Configuration File Spec
+
+The engine runtime accepts a single configuration file format (v1).
+
+- `version`: required schema version (`otel_dataflow/v1`)
+- `policies`: optional top-level defaults
+- `engine`: optional engine-wide settings
+- `groups`: pipeline groups map
+
+The engine binary loads this configuration file via `--config`.
+Standalone pipeline files are not a runtime root format.
+
+Contributor note: this top-level model is represented in code as
+`OtelDataflowSpec`.
+
+Minimal configuration example:
+
+```yaml
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          otlp/ingest:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          batcher:
+            type: batch:processor
+            config: {}
+          otlp/export:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4318"
+        connections:
+          - from: otlp/ingest
+            to: batcher
+          - from: batcher
+            to: otlp/export
+```
+
+## Pipeline Groups and Pipelines
+
+The runtime model is hierarchical:
+
+- top-level configuration (root)
+- `groups` (map of pipeline groups)
+- `pipelines` (map of pipelines inside each group)
+
+A **pipeline group** is a logical container for related pipelines.
+
+- It scopes a set of pipelines under one group id.
+- It can define group-level `policies` applied to pipelines in that group.
+- It is the intermediate level between root defaults and pipeline-specific overrides.
+
+A **pipeline** is an executable dataflow graph.
+
+- It contains `nodes`, `connections`, and optional pipeline-level `policies`.
+- It is identified by `(group_id, pipeline_id)`.
+- Pipeline ids must be unique within their group.
+
+Example:
+
+```yaml
+version: otel_dataflow/v1
+groups:
+  ingest:
+    policies:
+      channel_capacity:
+          control:
+            node: 256
+            pipeline: 256
+          pdata: 128
+    pipelines:
+      traces:
+        nodes: { ... }
+        connections: [ ... ]
+      metrics:
+        nodes: { ... }
+        connections: [ ... ]
+
+  egress:
+    pipelines:
+      otlp_out:
+        nodes: { ... }
+        connections: [ ... ]
+```
+
+Policy precedence for regular pipelines follows the hierarchy:
+
+- pipeline-level `policies`
+- group-level `policies`
+- top-level `policies`
 
 ## Pipeline Structure
 
@@ -17,9 +114,7 @@ At pipeline level:
 
 - `nodes`: map of node id -> node declaration
 - `connections`: explicit graph wiring
-- `settings`, `quota`, `service`
-
-Note: `settings`, `quota`, and `service` are not yet fully stabilized in v1.
+- `policies` (optional)
 
 At node level:
 
@@ -43,6 +138,95 @@ Important behavior:
   if we find good use cases for extensibility, but for now this is intentional
   to catch typos and mistakes early).
 
+## Engine Section
+
+`engine` is the home for engine-wide settings:
+
+- `http_admin`
+- `telemetry`
+- `observed_state`
+- `observability`
+
+### Observability Pipeline
+
+Internal telemetry pipeline wiring is declared at:
+`engine.observability.pipeline`.
+
+```yaml
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "urn:otel:internal_telemetry:receiver"
+          config: {}
+        sink:
+          type: "urn:otel:console:exporter"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+```
+
+Optional observability policies are supported at:
+`engine.observability.pipeline.policies` for:
+
+- `channel_capacity`
+- `health`
+- `telemetry`
+
+`resources` is intentionally not supported for observability and is rejected.
+
+## Policy Hierarchy
+
+Policies include channel capacity, health, runtime telemetry, and resources controls:
+
+```yaml
+policies:
+  channel_capacity:
+      control:
+        node: 256
+        pipeline: 256
+      pdata: 128
+  health:
+    # optional overrides; defaults are applied when omitted
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: true
+  resources:
+    core_allocation:
+      type: all_cores
+```
+
+Resolution order:
+
+- regular pipelines:
+  `groups.<group>.pipelines.<pipeline>.policies` -> `groups.<group>.policies` ->
+  top-level `policies`
+- observability pipeline:
+  `engine.observability.pipeline.policies` -> top-level `policies`
+
+Defaults at top-level:
+
+- `channel_capacity.control.node = 256`
+- `channel_capacity.control.pipeline = 256`
+- `channel_capacity.pdata = 128`
+- `telemetry.pipeline_metrics = true`
+- `telemetry.tokio_metrics = true`
+- `telemetry.channel_metrics = true`
+- `resources.core_allocation = all_cores`
+
+Resolution semantics:
+
+- precedence is applied at policy-family level (`channel_capacity`, `health`,
+  `telemetry`, `resources`)
+- selected lower scope replaces upper scope for that family
+- no cross-scope deep merge of nested fields
+- policy objects are default-filled: if a lower-scope `policies` block exists,
+  omitted families are populated with defaults at that scope (they do not
+  inherit from upper scopes)
+
 ## Output Ports
 
 Terminology:
@@ -57,76 +241,49 @@ Node behavior:
 - They can explicitly declare additional named output ports with `outputs`.
 - Exporters are sinks and do not expose output ports.
 
-Note: We currently don't have a use case for named input ports, but this could
-be added in the future if needed.
-
-## Quick Start
-
-Minimal pipeline:
-
-```yaml
-nodes:
-  otlp/ingest:
-    type: otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4317"
-
-  batcher:
-    type: batch:processor
-    config: { }
-
-  otlp/export:
-    type: otlp:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:4318"
-
-connections:
-  - from: otlp/ingest
-    to: batcher
-  - from: batcher
-    to: otlp/export
-```
-
 ## Multi-Output Example
 
 ```yaml
-nodes:
-  otlp/ingest:
-    type: otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4317"
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          otlp/ingest:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
 
-  router:
-    type: type_router:processor
-    outputs: [ "logs", "metrics", "traces" ]
-    config: { }
+          router:
+            type: type_router:processor
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
 
-  logs_exporter:
-    type: otlp:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:4318"
+          logs_exporter:
+            type: otlp:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4318"
 
-  metrics_exporter:
-    type: noop:exporter
-    config: { }
+          metrics_exporter:
+            type: noop:exporter
+            config: {}
 
-  traces_exporter:
-    type: noop:exporter
-    config: { }
+          traces_exporter:
+            type: noop:exporter
+            config: {}
 
-connections:
-  - from: otlp/ingest
-    to: router
-  - from: router["logs"]
-    to: logs_exporter
-  - from: router["metrics"]
-    to: metrics_exporter
-  - from: router["traces"]
-    to: traces_exporter
+        connections:
+          - from: otlp/ingest
+            to: router
+          - from: router["logs"]
+            to: logs_exporter
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: traces_exporter
 ```
 
 Port selection rules:
@@ -156,7 +313,10 @@ Config loading validates:
 - Missing source/destination nodes in connections.
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
-- Additional node-specific constraints (for example, fanout destination rules).
+- Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Root schema version compatibility (`version: otel_dataflow/v1`).
+- Observability constraints (`engine.observability.pipeline.policies.resources`
+  is rejected).
 
 ## Go Collector Users: Mapping and Differences
 

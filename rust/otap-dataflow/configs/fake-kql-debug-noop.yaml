@@ -1,45 +1,50 @@
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        max_signal_count: 100
-        max_batch_size: 50
-        signals_per_second: 10
-        log_weight: 100
-        metric_weight: 0
-        trace_weight: 0
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-
-  kql:
-    type: urn:microsoft:recordset_kql:processor
-    config:
-      query: |
-        source
-        | extend Body = case(
-            EventName == "azure.resource.log",
-            strcat(Body, "\n\nTroubleshooting resource errors: https://docs.example.com/exporter-errors#kql-processor"),
-            Body
-        )
-
-  debug:
-    type: debug:processor
-    config:
-      verbosity: detailed
-      mode: signal
-
-  noop:
-    type: noop:exporter
-    config:
-
-connections:
-  - from: receiver
-    to: kql
-  - from: kql
-    to: debug
-  - from: debug
-    to: noop
-settings:
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: "error"
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                max_signal_count: 100
+                max_batch_size: 50
+                signals_per_second: 10
+                log_weight: 100
+                metric_weight: 0
+                trace_weight: 0
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+
+          kql:
+            type: urn:microsoft:recordset_kql:processor
+            config:
+              query: |
+                source
+                | extend Body = case(
+                    EventName == "azure.resource.log",
+                    strcat(Body, "\n\nTroubleshooting resource errors: https://docs.example.com/exporter-errors#kql-processor"),
+                    Body
+                )
+
+          debug:
+            type: debug:processor
+            config:
+              verbosity: detailed
+              mode: signal
+
+          noop:
+            type: noop:exporter
+            config:
+
+        connections:
+          - from: receiver
+            to: kql
+          - from: kql
+            to: debug
+          - from: debug
+            to: noop

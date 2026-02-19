@@ -1,30 +1,86 @@
-# This configuration file reproduces the continuous benchmarking setup used
-# in our CI pipelines. However, the systems: traffic generator, system under
-# test, and backend are all included in a single configuration for easier
-# local testing and debugging.
+version: otel_dataflow/v1
 
-# Engine-wide settings
-settings:
+# This configuration file reproduces the continuous benchmarking setup used
+# in our CI pipelines. The traffic generators, system under test, and backend
+# are all included in a single configuration for easier local testing/debugging.
+#
+# Runtime CLI overrides:
+# - --num-cores / --core-id-range override top-level
+#   `policies.resources.core_allocation`.
+# - Pipeline/group-level `policies.resources` still take precedence over that
+#   top-level value.
+# - --http-admin-bind overrides `engine.http_admin.bind_address`.
+#
+# If you want --num-cores / --core-id-range to drive all pipelines uniformly,
+# remove the pipeline-level `policies.resources` sections below.
+
+# Top-level policy.
+# Values below match the engine defaults (explicit to showcase the v1 policy model).
+policies:
+  channel_capacity:
+    control:
+      node: 256
+      pipeline: 256
+    pdata: 128
+  health: {}
+  telemetry:
+    pipeline_metrics: true
+    tokio_metrics: true
+    channel_metrics: true
+  resources:
+    core_allocation:
+      type: all_cores
+
+# Engine-wide settings.
+engine:
   http_admin:
     bind_address: 127.0.0.1:8085
+  telemetry:
+    logs:
+      level: info
 
-# Pipeline groups are used to logically separate different sets of
-# pipelines. We will introduce progressively more features around
-# pipeline groups in the future such as resource quotas, scheduling
-# policies, named channels, group life-cycle management, ...
-pipeline_groups:
-  # This group contains all the pipelines required for continuous benchmarking
+  # Internal telemetry system (ITS) declaration.
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: internal_telemetry:receiver
+          config: {}
+        sink:
+          type: noop:exporter
+          config: null
+      connections:
+        - from: itr
+          to: sink
+
+# Pipeline groups are used to logically separate sets of pipelines.
+# Resolution order for regular pipelines is:
+# pipeline.policies -> group.policies -> top-level policies
+# (replacement is per policy family, not deep-merge).
+groups:
   continuous_benchmark:
+    # Group-level policies are optional. This one is explicit and matches
+    # defaults, to demonstrate the hierarchy without changing behavior.
+    policies:
+      channel_capacity:
+        control:
+          node: 256
+          pipeline: 256
+        pdata: 128
+
     pipelines:
       # ======================================================================
-      # Pipelines generating traffic
+      # Traffic generation pipelines
       # ======================================================================
-      # First group of traffic generators based a static pre-generated dataset
+
+      # First traffic generator: static pre-generated dataset.
+      # Pipeline-level resources override group/top-level resources.
       traffic_gen1:
-        quota:
-          core_allocation:
-            type: core_count
-            count: 15
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 15
 
         nodes:
           receiver:
@@ -42,21 +98,20 @@ pipeline_groups:
             type: otlp:exporter
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
-      # Second group of traffic generators based on on-the-fly data generation
-      # derived from semantic conventions
 
         connections:
           - from: receiver
             to: exporter
 
+      # Second traffic generator: dynamic generation from semantic conventions.
       traffic_gen2:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 21
-                end: 35
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 21
+                  end: 35
 
         nodes:
           receiver:
@@ -74,21 +129,22 @@ pipeline_groups:
             config:
               grpc_endpoint: "http://127.0.0.1:4337"
 
-      # ======================================================================
-      # System Under Test pipeline
-      # ======================================================================
-
         connections:
           - from: receiver
             to: exporter
+
+      # ======================================================================
+      # System Under Test pipeline
+      # ======================================================================
       sut:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 0
-                end: 1
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+
         nodes:
           otlp_recv1:
             type: otlp:receiver
@@ -123,16 +179,11 @@ pipeline_groups:
 
           metrics_exporter:
             type: noop:exporter
-            config:
+            config: null
 
           spans_exporter:
             type: noop:exporter
-            config:
-
-
-      # ======================================================================
-      # Performance No-Op pipeline to measure receiver performance
-      # ======================================================================
+            config: null
 
         connections:
           - from: otlp_recv1
@@ -148,14 +199,17 @@ pipeline_groups:
           - from: retry
             to: logs_exporter
 
+      # ======================================================================
+      # Backend pipeline
+      # ======================================================================
       backend:
-        quota:
-          core_allocation:
-            type: core_set
-            set:
-              - type: CoreRange
-                start: 1
-                end: 1
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 1
+                  end: 1
 
         nodes:
           receiver:
