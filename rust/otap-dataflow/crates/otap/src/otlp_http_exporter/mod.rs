@@ -519,6 +519,10 @@ impl HttpClientPool {
             http::header::CONTENT_TYPE,
             HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
         );
+        _ = default_headers.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
+        );
 
         let pool_size: usize = pool_size.into();
         let mut pool = Vec::with_capacity(pool_size);
