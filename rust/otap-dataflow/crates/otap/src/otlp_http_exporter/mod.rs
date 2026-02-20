@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::FutureExt;
+use bytes::{Bytes, BytesMut};
+use futures::{FutureExt, Stream, StreamExt};
 use http::{HeaderMap, HeaderValue};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -291,12 +291,19 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         SignalType::Traces => &traces_endpoint,
                     });
 
+                    let max_response_body_len = self.config.max_response_body_length;
+
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
                         let result = client.post(endpoint.as_str()).body(body).send().await;
 
                         CompletedExport {
-                            result: query_result_to_service_response(&signal_type, result).await,
+                            result: query_result_to_service_response(
+                                &signal_type,
+                                max_response_body_len,
+                                result,
+                            )
+                            .await,
                             context,
                             saved_payload,
                             signal_type,
@@ -383,6 +390,9 @@ enum ServiceRequestError {
 
     #[error("An error occurred decoding response body: {0}")]
     DecodeError(#[from] prost::DecodeError),
+
+    #[error("Response body size {body_size} exceeds maximum allowed size of {max_size} bytes")]
+    BodyTooLarge { body_size: usize, max_size: usize },
 }
 
 fn format_source(e: &reqwest::Error) -> String {
@@ -395,17 +405,50 @@ fn format_source(e: &reqwest::Error) -> String {
 
 async fn query_result_to_service_response(
     signal_type: &SignalType,
+    max_response_body_len: usize,
     result: Result<Response, reqwest::Error>,
 ) -> Result<ServiceResponse, ServiceRequestError> {
-    let mut bytes = result?.error_for_status()?.bytes().await?;
+    let resp = result?.error_for_status()?;
+    let mut body = collect_body(resp, max_response_body_len).await?;
 
     let service_resp = match signal_type {
-        SignalType::Logs => ExportLogsServiceResponse::decode(&mut bytes).map(Into::into),
-        SignalType::Metrics => ExportMetricsServiceResponse::decode(&mut bytes).map(Into::into),
-        SignalType::Traces => ExportTraceServiceResponse::decode(&mut bytes).map(Into::into),
+        SignalType::Logs => ExportLogsServiceResponse::decode(&mut body).map(Into::into),
+        SignalType::Metrics => ExportMetricsServiceResponse::decode(&mut body).map(Into::into),
+        SignalType::Traces => ExportTraceServiceResponse::decode(&mut body).map(Into::into),
     };
 
     Ok(service_resp?)
+}
+
+async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, ServiceRequestError> {
+    let mut stream = response.bytes_stream();
+
+    let size_hint = stream.size_hint();
+    if let Some(upper) = size_hint.1 {
+        return Err(ServiceRequestError::BodyTooLarge {
+            body_size: upper,
+            max_size: max_len,
+        });
+    }
+
+    let mut buf = BytesMut::with_capacity(size_hint.0);
+    let mut remaining = max_len;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+
+        if chunk.len() > remaining {
+            return Err(ServiceRequestError::BodyTooLarge {
+                body_size: max_len - remaining + chunk.len(),
+                max_size: max_len,
+            });
+        }
+
+        remaining -= chunk.len();
+        buf.extend_from_slice(&chunk);
+    }
+
+    Ok(buf.freeze())
 }
 
 async fn finalize_completed_export(
@@ -793,6 +836,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -928,6 +972,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1011,6 +1056,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1092,6 +1138,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1183,6 +1230,96 @@ mod test {
     }
 
     #[test]
+    fn test_handles_response_body_too_large() {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let config = Config {
+            http: HttpClientSettings::default(),
+            endpoint: endpoint.clone(),
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            // smaller than expected response body
+            max_response_body_length: 2,
+            max_in_flight: 10,
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        let tokio_rt = Runtime::new().unwrap();
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, false);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let mut pdatas = vec![];
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        pdatas.push(OtapPdata::new_default(OtapPayload::OtlpBytes(
+            OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+        )));
+
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    // validate we received three Nacks
+                    let mut ack_count = 0;
+                    let num_expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                                assert_eq!(node_id, node_id);
+                                ack_count += 1;
+
+                                assert!(
+                                    nack.reason.contains("exceeds maximum allowed size"),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+
+                                if ack_count >= num_expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_nacks);
+
+                    server_cancellation_token.cancel();
+                })
+            })
+    }
+
+    #[test]
     fn test_handles_invalid_otap_payloads() {
         let port = pick_unused_port().unwrap();
         let endpoint_addr = format!("127.0.0.1:{}", port);
@@ -1192,6 +1329,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1284,6 +1422,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1378,6 +1517,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
@@ -1474,6 +1614,7 @@ mod test {
             http: HttpClientSettings::default(),
             endpoint: endpoint.clone(),
             client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
             max_in_flight: 10,
         };
 
