@@ -5,12 +5,12 @@ This crate contains optional (feature-gated) contrib processors and exporters.
 ## Folder Layout
 
 - `src/exporters/`
-	- `azure_monitor_exporter/`
-	- `geneva_exporter/`
+  - `azure_monitor_exporter/`
+  - `geneva_exporter/`
 - `src/processors/`
-	- `condense_attributes_processor/`
-	- `recordset_kql_processor/`
-	- `resource_validator_processor/`
+  - `condense_attributes_processor/`
+  - `recordset_kql_processor/`
+  - `resource_validator_processor/`
 
 ## Features
 
