@@ -81,7 +81,7 @@ enum ArrowPayloadType {
   HISTOGRAM_DP_ATTRS = 17;
   EXP_HISTOGRAM_DP_ATTRS = 18;
   NUMBER_DP_EXEMPLARS = 19;
-  HISTOGRAM_DP_EXEMPLARS = 20;
+ HISTOGRAM_DP_EXEMPLARS = 20;
   EXP_HISTOGRAM_DP_EXEMPLARS = 21;
   NUMBER_DP_EXEMPLAR_ATTRS = 22;
   HISTOGRAM_DP_EXEMPLAR_ATTRS = 23;
@@ -122,7 +122,7 @@ message ArrowPayload {
   bytes record = 3;
 }
 
-// A message sent by a Collector to the exporter that opened the data stream.
+// A message sent by the server to the client that opened the data stream
 message BatchStatus {
   int64 batch_id = 1;
   StatusCode status_code = 2;
