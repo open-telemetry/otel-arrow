@@ -5,8 +5,9 @@ use std::str::FromStr;
 
 use data_engine_expressions::Expression;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RecordSetEngineDiagnosticLevel {
+    #[default]
     Verbose = 0,
     Info = 1,
     Warn = 2,

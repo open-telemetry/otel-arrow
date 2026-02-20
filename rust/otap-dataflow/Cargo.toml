@@ -73,7 +73,7 @@ async-unsync = "0.3.0"
 axum = "0.8.4"
 base64 = "0.22.1"
 bitflags = "2.10"
-bytes = "1.11"
+bytes = "1.11.1"
 bytemuck = "1.24"
 blake3 = "1.5.5"
 chrono = { version = "0.4", features = ["serde"] }

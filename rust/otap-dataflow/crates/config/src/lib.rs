@@ -26,10 +26,13 @@ pub mod node_urn;
 pub mod observed_state;
 pub mod pipeline;
 pub mod pipeline_group;
-/// Pipeline and engine settings.
+pub mod policy;
+/// Engine telemetry settings.
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
+pub mod topic;
+pub use topic::{SubscriptionGroupName, TopicName};
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

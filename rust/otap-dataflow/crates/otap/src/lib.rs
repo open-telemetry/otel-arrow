@@ -79,6 +79,9 @@ pub mod testing;
 /// Signal-type router processor (OTAP-based)
 pub mod signal_type_router;
 
+/// Content-based router processor (routes by resource attribute value)
+pub mod content_router;
+
 /// Attributes processor (OTAP-based)
 pub mod attributes_processor;
 
@@ -105,6 +108,10 @@ pub mod cloud_auth;
 
 /// Internal telemetry receiver
 pub mod internal_telemetry_receiver;
+
+pub mod topic_receiver;
+
+pub mod topic_exporter;
 
 /// Object storage utilities including integrations for different cloud
 /// providers
