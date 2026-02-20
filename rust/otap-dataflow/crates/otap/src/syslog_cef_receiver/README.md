@@ -23,24 +23,36 @@ The receiver automatically detects and parses the following message formats:
 ```yaml
 receivers:
   syslog_cef:
-    listening_addr: "0.0.0.0:514"
-    protocol: tcp  # or "udp"
+    protocol:
+      tcp:
+        listening_addr: "0.0.0.0:514"
 
-    # Optional: TLS configuration (TCP only, requires "experimental-tls" feature)
-    tls:
-      cert_file: "/path/to/server.crt"
-      key_file: "/path/to/server.key"
-      client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
-      handshake_timeout: "10s"             # Optional: default 10s
+        # Optional: TLS configuration (requires "experimental-tls" feature)
+        tls:
+          cert_file: "/path/to/server.crt"
+          key_file: "/path/to/server.key"
+          client_ca_file: "/path/to/ca.crt"    # Optional: client cert verification
+          handshake_timeout: "10s"             # Optional: default 10s
+```
+
+Or for UDP:
+
+```yaml
+receivers:
+  syslog_cef:
+    protocol:
+      udp:
+        listening_addr: "0.0.0.0:514"
 ```
 
 ### Configuration Options
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
-| `protocol` | `string` | Yes | Transport protocol: `tcp` or `udp` |
-| `tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
+| `protocol` | `object` | Yes | Exactly one of `tcp` or `udp` |
+| `protocol.tcp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
+| `protocol.tcp.tls` | `object` | No | TLS config for secure TCP (RFC 5425) |
+| `protocol.udp.listening_addr` | `string` | Yes | Socket address (e.g., `"0.0.0.0:514"`) |
 
 ## Transport Protocols
 
@@ -361,8 +373,9 @@ The receiver exposes the following internal metrics:
 ```yaml
 receivers:
   syslog_cef:
-    listening_addr: "0.0.0.0:1514"
-    protocol: tcp
+    protocol:
+      tcp:
+        listening_addr: "0.0.0.0:1514"
 
 processors:
   batch:

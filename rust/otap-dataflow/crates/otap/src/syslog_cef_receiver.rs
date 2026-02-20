@@ -53,41 +53,68 @@ const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow
 /// Maximum time to wait for spawned TCP tasks to drain during shutdown.
 const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
 
-/// Protocol type for the receiver
-#[derive(Debug, Clone, Deserialize)]
+/// TCP-specific settings for the syslog CEF receiver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TcpConfig {
+    /// The address to listen on for TCP connections.
+    listening_addr: SocketAddr,
+    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
+    ///
+    /// When configured, TCP connections will require TLS.
+    #[cfg(feature = "experimental-tls")]
+    tls: Option<TlsServerConfig>,
+}
+
+/// UDP-specific settings for the syslog CEF receiver.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UdpConfig {
+    /// The address to listen on for UDP datagrams.
+    listening_addr: SocketAddr,
+}
+
+/// Protocol configuration for the syslog CEF receiver.
+///
+/// Exactly one protocol variant must be specified.
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
+#[allow(clippy::large_enum_variant)] // This enum is only used for configuration, so the size is not a concern.
 enum Protocol {
-    /// TCP protocol
-    Tcp,
-    /// UDP protocol
-    Udp,
+    /// TCP protocol settings.
+    Tcp(TcpConfig),
+    /// UDP protocol settings.
+    Udp(UdpConfig),
 }
 
 /// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    listening_addr: SocketAddr,
-    /// The protocol to use for receiving messages
+    /// Protocol-specific configuration.
     protocol: Protocol,
-    /// TLS configuration for secure TCP connections (Syslog over TLS, RFC 5425).
-    ///
-    /// When configured, TCP connections will require TLS. This is only applicable
-    /// when `protocol` is `tcp`. UDP does not support TLS.
-    #[cfg(feature = "experimental-tls")]
-    pub tls: Option<TlsServerConfig>,
 }
 
 impl Config {
+    /// Creates a new Config for TCP.
     #[must_use]
     #[allow(dead_code)]
-    pub const fn new(listening_addr: SocketAddr, protocol: Protocol) -> Self {
+    pub const fn new_tcp(listening_addr: SocketAddr) -> Self {
         Self {
-            listening_addr,
-            protocol,
-            #[cfg(feature = "experimental-tls")]
-            tls: None,
+            protocol: Protocol::Tcp(TcpConfig {
+                listening_addr,
+                #[cfg(feature = "experimental-tls")]
+                tls: None,
+            }),
+        }
+    }
+
+    /// Creates a new Config for UDP.
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn new_udp(listening_addr: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp(UdpConfig { listening_addr }),
         }
     }
 }
@@ -150,25 +177,25 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otel_info!(
-            "receiver.start",
-            protocol = format!("{:?}", self.config.protocol),
-            listening_addr = self.config.listening_addr.to_string(),
-            message = "Starting Syslog/CEF Receiver"
-        );
-
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
             .await?;
 
-        match self.config.protocol {
-            Protocol::Tcp => {
-                let listener = effect_handler.tcp_listener(self.config.listening_addr)?;
+        match &self.config.protocol {
+            Protocol::Tcp(tcp_config) => {
+                otel_info!(
+                    "receiver.start",
+                    protocol = "TCP",
+                    listening_addr = tcp_config.listening_addr.to_string(),
+                    message = "Starting Syslog/CEF receiver"
+                );
+
+                let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
 
                 // Build TLS acceptor if TLS is configured
                 #[cfg(feature = "experimental-tls")]
-                let maybe_tls_acceptor = build_tls_acceptor(self.config.tls.as_ref())
+                let maybe_tls_acceptor = build_tls_acceptor(tcp_config.tls.as_ref())
                     .await
                     .map_err(|e| Error::ReceiverError {
                         receiver: effect_handler.receiver_id(),
@@ -179,8 +206,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                 // Extract handshake timeout from TLS config (if present)
                 #[cfg(feature = "experimental-tls")]
-                let maybe_handshake_timeout = self
-                    .config
+                let maybe_handshake_timeout = tcp_config
                     .tls
                     .as_ref()
                     .and_then(|tls| tls.handshake_timeout);
@@ -512,8 +538,15 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
             }
 
-            Protocol::Udp => {
-                let socket = effect_handler.udp_socket(self.config.listening_addr)?;
+            Protocol::Udp(udp_config) => {
+                otel_info!(
+                    "receiver.start",
+                    protocol = "UDP",
+                    listening_addr = udp_config.listening_addr.to_string(),
+                    message = "Starting Syslog/CEF receiver"
+                );
+
+                let socket = effect_handler.udp_socket(udp_config.listening_addr)?;
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
@@ -1079,8 +1112,7 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Udp);
-        // create our UDP receiver
+        let config = Config::new_udp(listening_addr);
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
         let receiver = ReceiverWrapper::local(
             SyslogCefReceiver::new(config),
@@ -1104,8 +1136,8 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Tcp);
-        // create our TCP receiver - we need to modify the receiver to support TCP
+        let config = Config::new_tcp(listening_addr);
+        // create our TCP receiver
         let receiver = SyslogCefReceiver::new(config);
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(SYSLOG_CEF_RECEIVER_URN));
@@ -1131,7 +1163,7 @@ mod tests {
         let listening_port = portpicker::pick_unused_port().expect("No free ports");
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
-        let config = Config::new(listening_addr, Protocol::Tcp);
+        let config = Config::new_tcp(listening_addr);
         // create our TCP receiver
         let receiver = SyslogCefReceiver::new(config);
 
@@ -1148,6 +1180,223 @@ mod tests {
             .set_receiver(receiver_wrapper)
             .run_test(tcp_incomplete_scenario(listening_addr))
             .run_validation(tcp_incomplete_validation_procedure());
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn valid_tcp() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_ok(), "Valid TCP config should parse successfully");
+    }
+
+    #[test]
+    fn valid_udp() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_ok(), "Valid UDP config should parse successfully");
+    }
+
+    #[test]
+    fn missing_protocol() {
+        let json = serde_json::json!({});
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config without protocol field should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_protocol() {
+        let json = serde_json::json!({
+            "protocol": {
+                "unix": {
+                    "path": "/var/run/syslog.sock"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with unknown protocol should be rejected"
+        );
+    }
+
+    #[test]
+    fn unknown_top_level_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "extra_field": "unexpected"
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with unknown top-level field should be rejected"
+        );
+    }
+
+    #[test]
+    fn tcp_unknown_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "unknown_option": true
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "TCP config with unknown field should be rejected"
+        );
+    }
+
+    #[test]
+    fn protocol_is_case_sensitive() {
+        // Protocol variants are snake_case; uppercase/mixed-case must be rejected.
+        for variant in &["TCP", "Tcp", "UDP", "Udp"] {
+            let json = serde_json::json!({
+                "protocol": {
+                    *variant: {
+                        "listening_addr": "127.0.0.1:5140"
+                    }
+                }
+            });
+            let config: Result<Config, _> = serde_json::from_value(json);
+            assert!(
+                config.is_err(),
+                "Protocol variant '{variant}' should be rejected (expected lowercase)"
+            );
+        }
+    }
+
+    #[test]
+    fn both_protocols_rejected() {
+        // The Protocol enum is externally tagged, so specifying both tcp and udp
+        // in the same config must be rejected — only one protocol per instance.
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                },
+                "udp": {
+                    "listening_addr": "127.0.0.1:5145"
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Config with both tcp and udp should be rejected"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with valid TLS settings should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls_and_client_ca() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem",
+                        "client_ca_file": "/path/to/ca.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with TLS + mTLS client CA should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn valid_tcp_with_tls_handshake_timeout() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem",
+                        "handshake_timeout": "5s"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_ok(),
+            "TCP config with TLS handshake timeout should parse successfully"
+        );
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    #[test]
+    fn udp_with_tls_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140",
+                    "tls": {
+                        "cert_file": "/path/to/cert.pem",
+                        "key_file": "/path/to/key.pem"
+                    }
+                }
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "UDP config with TLS should be rejected (TLS is TCP-only)"
+        );
     }
 }
 
@@ -1184,10 +1433,8 @@ mod telemetry_tests {
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
             // Receiver with metrics enabled via pipeline
-            let receiver = SyslogCefReceiver::with_pipeline(
-                pipeline,
-                Config::new(listening_addr, Protocol::Udp),
-            );
+            let receiver =
+                SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(listening_addr));
 
             // Keep downstream open to avoid refused
             let (out_tx, mut _out_rx) = otap_df_channel::mpsc::Channel::new(8);
@@ -1278,8 +1525,7 @@ mod telemetry_tests {
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             // Receiver with pipeline metrics
-            let receiver =
-                SyslogCefReceiver::with_pipeline(pipeline, Config::new(addr, Protocol::Udp));
+            let receiver = SyslogCefReceiver::with_pipeline(pipeline, Config::new_udp(addr));
 
             // Wire a closed downstream to force refused
             let (tx, rx) = otap_df_channel::mpsc::Channel::new(1);
