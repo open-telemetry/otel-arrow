@@ -1039,7 +1039,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverAck { node_id, .. } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
@@ -1213,7 +1212,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 assert!(
@@ -1317,7 +1315,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 assert!(
@@ -1412,7 +1409,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 assert!(
@@ -1512,7 +1508,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 assert!(
@@ -1602,7 +1597,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1700,7 +1694,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1841,7 +1834,6 @@ mod test {
 
                         match msg {
                             PipelineControlMsg::DeliverAck { node_id, .. } => {
-                                assert_eq!(node_id, node_id);
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
