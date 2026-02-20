@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-engine.workspace = true
 otap-df-otap.workspace = true
@@ -48,7 +49,9 @@ tikv-jemallocator = { workspace = true, optional = true }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-controller = { path = "crates/controller" }
+otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
@@ -191,11 +194,6 @@ zip = "=4.2.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-# Recordset KQL OTLP query_engine Processor
-data_engine_recordset_otlp_bridge = { path = "../experimental/query_engine/engine-recordset-otlp-bridge" }
-data_engine_recordset = { path = "../experimental/query_engine/engine-recordset" }
-
-# Azure Monitor Exporter
 azure_core = {version = "0.32.0", default-features = false }
 azure_identity = {version = "0.32.0", default-features = false }
 flate2 = "1.1.5"
@@ -212,17 +210,19 @@ azure = ["otap-df-otap/azure"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
+
 # Experimental features
 experimental-tls = ["otap-df-otap/experimental-tls", "dep:rustls"]
-# Experimental exporters (opt-in)
-experimental-exporters = ["otap-df-otap/experimental-exporters"]
-geneva-exporter = ["otap-df-otap/geneva-exporter"]
-azure-monitor-exporter = ["otap-df-otap/azure-monitor-exporter"]
-# Experimental processors (opt-in)
-experimental-processors = ["otap-df-otap/experimental-processors"]
-condense-attributes-processor = ["otap-df-otap/condense-attributes-processor"]
-recordset-kql-processor = ["otap-df-otap/recordset-kql-processor"]
-resource-validator-processor = ["otap-df-otap/resource-validator-processor"]
+
+# Contrib exporters (opt-in) - now in contrib-nodes
+contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
+geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
+azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib processors (opt-in) - now in contrib-nodes
+contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
+condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
+recordset-kql-processor = ["otap-df-contrib-nodes/recordset-kql-processor"]
+resource-validator-processor = ["otap-df-contrib-nodes/resource-validator-processor"]
 
 [workspace.lints.rust]
 # General compatibility lints

@@ -37,8 +37,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 
 /// URN identifier for the Condense Attributes processor
 pub const CONDENSE_ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:condense_attributes:processor";
@@ -625,7 +625,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 #[cfg(test)]
 mod condense_tests {
     use super::*;
-    use crate::pdata::OtapPdata;
+    use otap_df_otap::pdata::OtapPdata;
     use bytes::BytesMut;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
@@ -697,7 +697,7 @@ mod condense_tests {
                     .expect("process");
 
                 let out = ctx.drain_pdata().await;
-                let first = out.into_iter().next().expect("one output").payload();
+                let (_, first) = out.into_iter().next().expect("one output").into_parts();
 
                 let otlp_bytes: OtlpProtoBytes = first.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {

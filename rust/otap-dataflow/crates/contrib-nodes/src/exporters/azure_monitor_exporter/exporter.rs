@@ -28,7 +28,7 @@ use super::in_flight_exports::{CompletedExport, InFlightExports};
 use super::state::AzureMonitorExporterState;
 use super::stats::AzureMonitorExporterStats;
 use super::transformer::Transformer;
-use crate::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
@@ -620,7 +620,7 @@ exports | in_flight={} stats_time={:?}
 mod tests {
     use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
     use super::*;
-    use crate::pdata::Context;
+    use otap_df_otap::pdata::Context;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
     use http::StatusCode;

@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::pdata::Context;
+use otap_df_otap::pdata::Context;
 use ahash::{AHashMap as HashMap, AHashSet as HashSet};
 use otap_df_pdata::OtapPayload;
 
@@ -142,7 +142,7 @@ impl AzureMonitorExporterState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pdata::Context;
+    use otap_df_otap::pdata::Context;
     use bytes::Bytes;
     use otap_df_pdata::otlp::OtlpProtoBytes;
 
