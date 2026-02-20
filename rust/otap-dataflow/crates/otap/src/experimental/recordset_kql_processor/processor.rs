@@ -87,37 +87,45 @@ impl RecordsetKqlProcessor {
             .unwrap_or_default()
             .set_include_dropped_records(false)
             .set_diagnostic_options(BridgeDiagnosticOptions::Callback(|d| {
-                let max = d
-                    .get_diagnostics()
-                    .iter()
-                    .map(|v| v.get_diagnostic_level())
-                    .max()
-                    .unwrap_or_default();
-
-                match max {
-                    RecordSetEngineDiagnosticLevel::Verbose => {
-                        otap_df_telemetry::otel_debug!(
-                            "recordset_kql_processor.query_output",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Info => {
-                        otap_df_telemetry::otel_info!(
-                            "recordset_kql_processor.query_output",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Warn => {
-                        otap_df_telemetry::otel_warn!(
-                            "recordset_kql_processor.query_output",
-                            formatted_diagnostics = %d
-                        );
-                    }
-                    RecordSetEngineDiagnosticLevel::Error => {
-                        otap_df_telemetry::otel_error!(
-                            "recordset_kql_processor.query_output",
-                            formatted_diagnostics = %d
-                        );
+                for diagnostic in d.get_diagnostics() {
+                    let (query_line_number, query_column_number) = diagnostic
+                        .get_expression()
+                        .get_query_location()
+                        .get_line_and_column_numbers();
+                    let message = diagnostic.get_message();
+                    match diagnostic.get_diagnostic_level() {
+                        RecordSetEngineDiagnosticLevel::Verbose => {
+                            otap_df_telemetry::otel_debug!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Info => {
+                            otap_df_telemetry::otel_info!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Warn => {
+                            otap_df_telemetry::otel_warn!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Error => {
+                            otap_df_telemetry::otel_error!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
                     }
                 }
             }))
@@ -140,7 +148,7 @@ impl RecordsetKqlProcessor {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.processing_logs",
-                    input_items = input_items
+                    input_items
                 );
                 self.process_logs(bytes, signal)
             }
@@ -162,8 +170,8 @@ impl RecordsetKqlProcessor {
 
                 otap_df_telemetry::otel_debug!(
                     "recordset_kql_processor.success",
-                    input_items = input_items,
-                    output_items = output_items,
+                    input_items,
+                    output_items,
                 );
 
                 let processed_data = OtapPdata::new(ctx, payload);
@@ -175,8 +183,8 @@ impl RecordsetKqlProcessor {
                 let message = e.to_string();
                 otap_df_telemetry::otel_error!(
                     "recordset_kql_processor.failure",
-                    input_items = input_items,
-                    error = message,
+                    input_items,
+                    message,
                 );
 
                 effect_handler
@@ -242,7 +250,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                         Err(e) => {
                                             otap_df_telemetry::otel_warn!(
                                                 "recordset_kql_processor.reconfigure_error",
-                                                error = %e
+                                                message = %e
                                             );
                                             None
                                         }
@@ -268,7 +276,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                             format!("Failed to parse updated query: {:?}", errors);
                                         otap_df_telemetry::otel_error!(
                                             "recordset_kql_processor.reconfigure_error",
-                                            error = message,
+                                            message,
                                         );
                                     }
                                 }
