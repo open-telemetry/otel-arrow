@@ -8,7 +8,8 @@ use crate::pdata::OtapPdata;
 use async_trait::async_trait;
 use data_engine_recordset::RecordSetEngineDiagnosticLevel;
 use data_engine_recordset_otlp_bridge::{
-    BridgeError, BridgeOptions, BridgePipeline, parse_kql_query_into_pipeline,
+    BridgeDiagnosticOptions, BridgeError, BridgeOptions, BridgePipeline,
+    parse_kql_query_into_pipeline,
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use linkme::distributed_slice;
@@ -48,19 +49,16 @@ impl RecordsetKqlProcessor {
         _pipeline_ctx: PipelineContext,
         config: RecordsetKqlProcessorConfig,
     ) -> Result<Self, ConfigError> {
-        let bridge_options = Self::parse_bridge_options(&config.bridge_options)?;
-        let pipeline =
-            parse_kql_query_into_pipeline(&config.query, bridge_options).map_err(|errors| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("Failed to parse KQL query: {:?}", errors),
-                }
-            })?;
+        let parsed_bridge_options = Self::parse_bridge_options(&config.bridge_options)?;
+        let pipeline = parse_kql_query_into_pipeline(
+            &config.query,
+            Some(Self::apply_bridge_options_defaults(parsed_bridge_options)),
+        )
+        .map_err(|errors| ConfigError::InvalidUserConfig {
+            error: format!("Failed to parse KQL query: {:?}", errors),
+        })?;
 
-        otap_df_telemetry::otel_info!(
-            "processor.ready",
-            processor = "kql",
-            message = "KQL processor initialized successfully"
-        );
+        otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
 
         Ok(Self { config, pipeline })
     }
@@ -69,20 +67,68 @@ impl RecordsetKqlProcessor {
     pub fn parse_bridge_options(
         bridge_options_json: &Option<serde_json::Value>,
     ) -> Result<Option<BridgeOptions>, ConfigError> {
-        if let Some(json_value) = bridge_options_json {
+        Ok(if let Some(json_value) = bridge_options_json {
             let json_str =
                 serde_json::to_string(json_value).map_err(|e| ConfigError::InvalidUserConfig {
                     error: format!("Failed to serialize bridge options: {}", e),
                 })?;
-            let bridge_options = BridgeOptions::from_json(&json_str).map_err(|e| {
+            Some(BridgeOptions::from_json(&json_str).map_err(|e| {
                 ConfigError::InvalidUserConfig {
                     error: format!("Failed to parse bridge options: {}", e),
                 }
-            })?;
-            Ok(Some(bridge_options.set_include_dropped_records(false)))
+            })?)
         } else {
-            Ok(None)
-        }
+            None
+        })
+    }
+
+    pub fn apply_bridge_options_defaults(options: Option<BridgeOptions>) -> BridgeOptions {
+        options
+            .unwrap_or_default()
+            .set_include_dropped_records(false)
+            .set_diagnostic_options(BridgeDiagnosticOptions::Callback(|d| {
+                for diagnostic in d.get_diagnostics() {
+                    let (query_line_number, query_column_number) = diagnostic
+                        .get_expression()
+                        .get_query_location()
+                        .get_line_and_column_numbers();
+                    let message = diagnostic.get_message();
+                    match diagnostic.get_diagnostic_level() {
+                        RecordSetEngineDiagnosticLevel::Verbose => {
+                            otap_df_telemetry::otel_debug!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Info => {
+                            otap_df_telemetry::otel_info!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Warn => {
+                            otap_df_telemetry::otel_warn!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                        RecordSetEngineDiagnosticLevel::Error => {
+                            otap_df_telemetry::otel_error!(
+                                "recordset_kql_processor.query_output",
+                                query_line_number,
+                                query_column_number,
+                                message
+                            );
+                        }
+                    }
+                }
+            }))
     }
 
     async fn process_data(
@@ -101,10 +147,8 @@ impl RecordsetKqlProcessor {
         let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
-                    "processor.processing_logs",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    "Processing KQL query"
+                    "recordset_kql_processor.processing_logs",
+                    input_items
                 );
                 self.process_logs(bytes, signal)
             }
@@ -125,10 +169,9 @@ impl RecordsetKqlProcessor {
                 let output_items = payload.num_items() as u64;
 
                 otap_df_telemetry::otel_debug!(
-                    "processor.success",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    output_items = output_items,
+                    "recordset_kql_processor.success",
+                    input_items,
+                    output_items,
                 );
 
                 let processed_data = OtapPdata::new(ctx, payload);
@@ -139,10 +182,9 @@ impl RecordsetKqlProcessor {
             Err(e) => {
                 let message = e.to_string();
                 otap_df_telemetry::otel_error!(
-                    "processor.failure",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    error = message,
+                    "recordset_kql_processor.failure",
+                    input_items,
+                    message,
                 );
 
                 effect_handler
@@ -203,13 +245,12 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                             if new_config.query != self.config.query
                                 || new_config.bridge_options != self.config.bridge_options
                             {
-                                let bridge_options =
+                                let parsed_bridge_options =
                                     match Self::parse_bridge_options(&new_config.bridge_options) {
                                         Err(e) => {
                                             otap_df_telemetry::otel_warn!(
-                                                "processor.reconfigure_error",
-                                                processor = "kql",
-                                                message = format!("{e}")
+                                                "recordset_kql_processor.reconfigure_error",
+                                                message = %e
                                             );
                                             None
                                         }
@@ -218,12 +259,13 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
 
                                 match parse_kql_query_into_pipeline(
                                     &new_config.query,
-                                    bridge_options,
+                                    Some(Self::apply_bridge_options_defaults(
+                                        parsed_bridge_options,
+                                    )),
                                 ) {
                                     Ok(pipeline) => {
                                         otap_df_telemetry::otel_info!(
-                                            "processor.reconfigured",
-                                            processor = "kql",
+                                            "recordset_kql_processor.reconfigured"
                                         );
 
                                         self.pipeline = pipeline;
@@ -233,9 +275,8 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                         let message =
                                             format!("Failed to parse updated query: {:?}", errors);
                                         otap_df_telemetry::otel_error!(
-                                            "processor.reconfigure_error",
-                                            processor = "kql",
-                                            message = message,
+                                            "recordset_kql_processor.reconfigure_error",
+                                            message,
                                         );
                                     }
                                 }
