@@ -641,6 +641,30 @@ mod tests {
     }
 
     #[test]
+    #[rustfmt::skip]
+    fn test_split_logs_singleton() {
+        let batch = logs!(
+            (Logs,
+                ("id", UInt16, vec![0u16]),
+                ("scope.id", UInt16, vec![0u16]),
+                ("resource.id", UInt16, vec![0u16])),
+            (LogAttrs,
+                ("parent_id", UInt16, vec![0u16])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16]))
+        );
+
+        let result = split::<{ Logs::COUNT }>(
+            &mut vec![batch], NonZeroU32::new(1).unwrap(),
+        ).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(num_items(&result[0]), 1);
+    }
+
+    #[test]
     fn test_split_empty_batches() {
         let mut logs: Vec<[Option<RecordBatch>; Logs::COUNT]> = vec![];
         let result = split::<{ Logs::COUNT }>(&mut logs, NonZeroU32::new(2).unwrap()).unwrap();
@@ -662,18 +686,24 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_traces() {
         let span_ids        = vec![0u16, 1, 2, 3];
+        let scope_ids       = vec![0u16, 0, 1, 1];
+        let resource_ids    = vec![0u16, 0, 0, 1];
         let span_attr_pids  = vec![0, 1, 2, 3, 3];
         let event_ids       = vec![0u32, 1, 2, 3];
         let event_pids      = vec![0u16, 1, 2, 3];
         let event_attr_pids = vec![0u32, 1, 2, 3];
         let link_ids        = vec![0u32, 1];
         let link_pids       = vec![1u16, 3];
+        let scope_pids      = vec![0u16, 0, 1];
+        let resource_pids   = vec![0u16, 0, 1, 1];
 
         // Plain parent_ids
         test_split::<{ Traces::COUNT }>(&[traces!(
-            (Spans, 
-                ("id", UInt16, span_ids.clone())),
-            (SpanAttrs, 
+            (Spans,
+                ("id", UInt16, span_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
+            (SpanAttrs,
                 ("parent_id", UInt16, span_attr_pids.clone())),
             (SpanEvents,
                 ("id", UInt32, event_ids.clone()),
@@ -682,13 +712,19 @@ mod tests {
                 ("parent_id", UInt32, event_attr_pids.clone())),
             (SpanLinks,
                 ("id", UInt32, link_ids.clone()),
-                ("parent_id", UInt16, link_pids.clone()))
+                ("parent_id", UInt16, link_pids.clone())),
+            (ScopeAttrs,
+                ("parent_id", UInt16, scope_pids.clone())),
+            (ResourceAttrs,
+                ("parent_id", UInt16, resource_pids.clone()))
         )]);
 
         // Dict<UInt8, UInt16> / Dict<UInt8, UInt32> parent_ids
         test_split::<{ Traces::COUNT }>(&[traces!(
             (Spans,
-                ("id", UInt16, span_ids.clone())),
+                ("id", UInt16, span_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
             (SpanAttrs,
                 ("parent_id", (UInt8, UInt16), (vec![4u8, 3, 2, 1, 0], span_attr_pids.clone()))),
             (SpanEvents,
@@ -698,8 +734,35 @@ mod tests {
                 ("parent_id", (UInt8, UInt32), (vec![3u8, 2, 1, 0], event_attr_pids.clone()))),
             (SpanLinks,
                 ("id", UInt32, link_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![1u8, 0], link_pids.clone())))
+                ("parent_id", (UInt8, UInt16), (vec![1u8, 0], link_pids.clone()))),
+            (ScopeAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+            (ResourceAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone())))
         )]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_traces_singleton() {
+        let batch = traces!(
+            (Spans,
+                ("id", UInt16, vec![0u16])),
+            (SpanAttrs,
+                ("parent_id", UInt16, vec![0u16])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 0])),
+            (SpanEventAttrs,
+                ("parent_id", UInt32, vec![0u32, 1]))
+        );
+
+        let result = split::<{ Traces::COUNT }>(
+            &mut vec![batch], NonZeroU32::new(1).unwrap(),
+        ).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(num_items(&result[0]), 1);
     }
 
     #[test]
@@ -727,6 +790,11 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_metrics_number_dp() {
         let metric_ids       = vec![0u16, 1, 2, 3];
+        let scope_ids        = vec![0u16, 0, 1, 1];
+        let resource_ids     = vec![0u16, 0, 0, 1];
+        let metric_attr_pids = vec![0u16, 1, 2, 3];
+        let scope_pids       = vec![0u16, 0, 1];
+        let resource_pids    = vec![0u16, 0, 1, 1];
         let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
         let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
         let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
@@ -736,17 +804,25 @@ mod tests {
 
         test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids.clone())),
+                ("id", UInt16, metric_ids),
+                ("scope.id", UInt16, scope_ids),
+                ("resource.id", UInt16, resource_ids)),
+            (MetricAttrs,
+                ("parent_id", UInt16, metric_attr_pids)),
+            (ScopeAttrs,
+                ("parent_id", UInt16, scope_pids)),
+            (ResourceAttrs,
+                ("parent_id", UInt16, resource_pids)),
             (NumberDataPoints,
-                ("id", UInt32, dp_ids.clone()),
-                ("parent_id", UInt16, dp_pids.clone())),
+                ("id", UInt32, dp_ids),
+                ("parent_id", UInt16, dp_pids)),
             (NumberDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids.clone())),
+                ("parent_id", UInt32, dp_attr_pids)),
             (NumberDpExemplars,
-                ("id", UInt32, ex_ids.clone()),
-                ("parent_id", UInt32, ex_pids.clone())),
+                ("id", UInt32, ex_ids),
+                ("parent_id", UInt32, ex_pids)),
             (NumberDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids.clone()))
+                ("parent_id", UInt32, ex_attr_pids))
         )]);
     }
 
@@ -754,6 +830,11 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_metrics_histogram_dp() {
         let metric_ids       = vec![0u16, 1, 2, 3];
+        let scope_ids        = vec![0u16, 0, 1, 1];
+        let resource_ids     = vec![0u16, 0, 0, 1];
+        let metric_attr_pids = vec![0u16, 1, 2, 3];
+        let scope_pids       = vec![0u16, 0, 1];
+        let resource_pids    = vec![0u16, 0, 1, 1];
         let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
         let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
         let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
@@ -763,17 +844,25 @@ mod tests {
 
         test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids.clone())),
+                ("id", UInt16, metric_ids),
+                ("scope.id", UInt16, scope_ids),
+                ("resource.id", UInt16, resource_ids)),
+            (MetricAttrs,
+                ("parent_id", UInt16, metric_attr_pids)),
+            (ScopeAttrs,
+                ("parent_id", UInt16, scope_pids)),
+            (ResourceAttrs,
+                ("parent_id", UInt16, resource_pids)),
             (HistogramDataPoints,
-                ("id", UInt32, dp_ids.clone()),
-                ("parent_id", UInt16, dp_pids.clone())),
+                ("id", UInt32, dp_ids),
+                ("parent_id", UInt16, dp_pids)),
             (HistogramDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids.clone())),
+                ("parent_id", UInt32, dp_attr_pids)),
             (HistogramDpExemplars,
-                ("id", UInt32, ex_ids.clone()),
-                ("parent_id", UInt32, ex_pids.clone())),
+                ("id", UInt32, ex_ids),
+                ("parent_id", UInt32, ex_pids)),
             (HistogramDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids.clone()))
+                ("parent_id", UInt32, ex_attr_pids))
         )]);
     }
 
@@ -781,6 +870,11 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_metrics_exp_histogram_dp() {
         let metric_ids       = vec![0u16, 1, 2, 3];
+        let scope_ids        = vec![0u16, 0, 1, 1];
+        let resource_ids     = vec![0u16, 0, 0, 1];
+        let metric_attr_pids = vec![0u16, 1, 2, 3];
+        let scope_pids       = vec![0u16, 0, 1];
+        let resource_pids    = vec![0u16, 0, 1, 1];
         let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
         let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
         let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
@@ -790,17 +884,25 @@ mod tests {
 
         test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids.clone())),
+                ("id", UInt16, metric_ids),
+                ("scope.id", UInt16, scope_ids),
+                ("resource.id", UInt16, resource_ids)),
+            (MetricAttrs,
+                ("parent_id", UInt16, metric_attr_pids)),
+            (ScopeAttrs,
+                ("parent_id", UInt16, scope_pids)),
+            (ResourceAttrs,
+                ("parent_id", UInt16, resource_pids)),
             (ExpHistogramDataPoints,
-                ("id", UInt32, dp_ids.clone()),
-                ("parent_id", UInt16, dp_pids.clone())),
+                ("id", UInt32, dp_ids),
+                ("parent_id", UInt16, dp_pids)),
             (ExpHistogramDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids.clone())),
+                ("parent_id", UInt32, dp_attr_pids)),
             (ExpHistogramDpExemplars,
-                ("id", UInt32, ex_ids.clone()),
-                ("parent_id", UInt32, ex_pids.clone())),
+                ("id", UInt32, ex_ids),
+                ("parent_id", UInt32, ex_pids)),
             (ExpHistogramDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids.clone()))
+                ("parent_id", UInt32, ex_attr_pids))
         )]);
     }
 
@@ -808,18 +910,31 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_metrics_summary_dp() {
         let metric_ids       = vec![0u16, 1, 2, 3];
+        let scope_ids        = vec![0u16, 0, 1, 1];
+        let resource_ids     = vec![0u16, 0, 0, 1];
+        let metric_attr_pids = vec![0u16, 1, 2, 3];
+        let scope_pids       = vec![0u16, 0, 1];
+        let resource_pids    = vec![0u16, 0, 1, 1];
         let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
         let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
         let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
 
         test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids.clone())),
+                ("id", UInt16, metric_ids),
+                ("scope.id", UInt16, scope_ids),
+                ("resource.id", UInt16, resource_ids)),
+            (MetricAttrs,
+                ("parent_id", UInt16, metric_attr_pids)),
+            (ScopeAttrs,
+                ("parent_id", UInt16, scope_pids)),
+            (ResourceAttrs,
+                ("parent_id", UInt16, resource_pids)),
             (SummaryDataPoints,
-                ("id", UInt32, dp_ids.clone()),
-                ("parent_id", UInt16, dp_pids.clone())),
+                ("id", UInt32, dp_ids),
+                ("parent_id", UInt16, dp_pids)),
             (SummaryDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids.clone()))
+                ("parent_id", UInt32, dp_attr_pids))
         )]);
     }
 
@@ -879,8 +994,15 @@ mod tests {
             assert_eq!(result_items, expected_items);
 
             // For metrics, verify row counts are preserved per table.
+            // Skip ScopeAttrs and ResourceAttrs — these are sliced by min/max
+            // of scope.id/resource.id ranges and may be duplicated across batches.
             if N == Metrics::COUNT {
+                let scope_idx = POSITION_LOOKUP[ArrowPayloadType::ScopeAttrs as usize];
+                let resource_idx = POSITION_LOOKUP[ArrowPayloadType::ResourceAttrs as usize];
                 for idx in 0..N {
+                    if idx == scope_idx || idx == resource_idx {
+                        continue;
+                    }
                     let input_rows: usize = batches
                         .iter()
                         .map(|b| b[idx].as_ref().map_or(0, |rb| rb.num_rows()))
