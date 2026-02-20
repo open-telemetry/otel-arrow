@@ -1038,7 +1038,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { node_id, .. } => {
+                            PipelineControlMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
@@ -1211,7 +1211,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1314,7 +1314,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1408,7 +1408,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1507,7 +1507,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 assert!(
@@ -1596,7 +1596,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1693,7 +1693,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 match nack.refused.payload() {
@@ -1833,7 +1833,7 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverAck { node_id, .. } => {
+                            PipelineControlMsg::DeliverAck { .. } => {
                                 ack_count += 1;
                                 if ack_count >= num_expected_pdatas {
                                     break;
