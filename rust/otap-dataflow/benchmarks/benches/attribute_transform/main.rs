@@ -18,8 +18,8 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use otap_df_pdata::otap::transform::{
-    AttributesTransform, DeleteTransform, RenameTransform, transform_attributes,
-    transform_attributes_with_stats,
+    AttributesTransform, DeleteTransform, LiteralValue, RenameTransform,
+    UpsertTransform, transform_attributes, transform_attributes_with_stats,
 };
 use otap_df_pdata::schema::{FieldExt, consts};
 
@@ -86,6 +86,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_24".into(),
         )]))),
         delete: None,
+        upsert: None,
     };
 
     let single_replace_single_delete = AttributesTransform {
@@ -95,12 +96,14 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_24".into(),
         )]))),
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+        upsert: None,
     };
 
     let no_replace_single_delete = AttributesTransform {
         insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr15".into()]))),
+        upsert: None,
     };
 
     let attr3_replace_no_delete = AttributesTransform {
@@ -110,12 +113,14 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_3".into(),
         )]))),
         delete: None,
+        upsert: None,
     };
 
     let no_replace_attr9_delete = AttributesTransform {
         insert: None,
         rename: None,
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+        upsert: None,
     };
 
     let attr3_replace_attr9_delete = AttributesTransform {
@@ -125,6 +130,7 @@ fn bench_transform_attributes(c: &mut Criterion) {
             "attr_3".into(),
         )]))),
         delete: Some(DeleteTransform::new(BTreeSet::from_iter(["attr9".into()]))),
+        upsert: None,
     };
 
     let mut group = c.benchmark_group("transform_attributes_dict_keys");
@@ -553,13 +559,125 @@ fn bench_transport_optimized_transform_attributes(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmarks for upsert transforms (insert-or-update semantics).
+/// Measures both the case where keys already exist (update path) and where they don't (insert
+/// path), as well as combined upsert+delete scenarios.
+fn bench_upsert_attributes(c: &mut Criterion) {
+    let mut group = c.benchmark_group("upsert_attributes");
+
+    // Upsert a single key that does NOT exist in any row (pure insert path)
+    let upsert_new_key = AttributesTransform::default().with_upsert(UpsertTransform::new(
+        [("new_key".into(), LiteralValue::Str("new_val".into()))]
+            .into_iter()
+            .collect(),
+    ));
+
+    // Upsert a single key that DOES exist in every row (update/overwrite path)
+    let upsert_existing_key = AttributesTransform::default().with_upsert(UpsertTransform::new(
+        [("key_2".into(), LiteralValue::Str("updated_val".into()))]
+            .into_iter()
+            .collect(),
+    ));
+
+    // Upsert + delete combined
+    let upsert_with_delete = AttributesTransform::default()
+        .with_upsert(UpsertTransform::new(
+            [("key_1".into(), LiteralValue::Str("upserted_val".into()))]
+                .into_iter()
+                .collect(),
+        ))
+        .with_delete(DeleteTransform::new(
+            [("key_3".into())].into_iter().collect(),
+        ));
+
+    // Upsert multiple keys (mix of new and existing)
+    let upsert_multiple = AttributesTransform::default().with_upsert(UpsertTransform::new(
+        [
+            ("key_0".into(), LiteralValue::Str("updated_0".into())),
+            ("key_2".into(), LiteralValue::Str("updated_2".into())),
+            ("inserted_key".into(), LiteralValue::Str("new".into())),
+        ]
+        .into_iter()
+        .collect(),
+    ));
+
+    for dict_encoded_keys in [false, true] {
+        for num_rows in [128, 1536, 8192] {
+            let input = gen_transport_optimized_bench_batch(num_rows, dict_encoded_keys, false);
+            let id_prefix = format!("rows={num_rows},dict_keys={dict_encoded_keys}");
+
+            let _ = group.bench_with_input(
+                BenchmarkId::new("upsert_new_key", &id_prefix),
+                &input,
+                |b, input| {
+                    b.iter_batched(
+                        || input,
+                        |input| {
+                            transform_attributes(black_box(input), &upsert_new_key)
+                                .expect("no error")
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+
+            let _ = group.bench_with_input(
+                BenchmarkId::new("upsert_existing_key", &id_prefix),
+                &input,
+                |b, input| {
+                    b.iter_batched(
+                        || input,
+                        |input| {
+                            transform_attributes(black_box(input), &upsert_existing_key)
+                                .expect("no error")
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+
+            let _ = group.bench_with_input(
+                BenchmarkId::new("upsert_with_delete", &id_prefix),
+                &input,
+                |b, input| {
+                    b.iter_batched(
+                        || input,
+                        |input| {
+                            transform_attributes(black_box(input), &upsert_with_delete)
+                                .expect("no error")
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+
+            let _ = group.bench_with_input(
+                BenchmarkId::new("upsert_multiple_keys", &id_prefix),
+                &input,
+                |b, input| {
+                    b.iter_batched(
+                        || input,
+                        |input| {
+                            transform_attributes(black_box(input), &upsert_multiple)
+                                .expect("no error")
+                        },
+                        BatchSize::SmallInput,
+                    )
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod benches {
     use super::*;
     criterion_group!(
         name = benches;
         config = Criterion::default();
-        targets = bench_transform_attributes, bench_transport_optimized_transform_attributes
+        targets = bench_transform_attributes, bench_transport_optimized_transform_attributes, bench_upsert_attributes
     );
 }
 criterion_main!(benches::benches);
