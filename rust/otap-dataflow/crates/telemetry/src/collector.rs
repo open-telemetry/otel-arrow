@@ -43,6 +43,15 @@ impl InternalCollector {
         )
     }
 
+    /// Performs a single collection of metrics from the reporting channel and,
+    /// if there are any buffered messages, aggregates them into the `registry`.
+    pub fn collect_once(self: Arc<Self>) {
+        if let Ok(metrics) = self.metrics_receiver.try_recv() {
+            self.registry
+                .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
+        }
+    }
+
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).

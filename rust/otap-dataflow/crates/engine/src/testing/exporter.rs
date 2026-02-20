@@ -256,6 +256,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             .expect("Failed to set PData receiver");
         let metrics_reporter_start = self.metrics_reporter();
         let metrics_reporter_terminal = self.metrics_reporter();
+        let metrics_collector = self.metrics_system.collector();
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter_start)
@@ -263,6 +264,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {
                         let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
+                        metrics_collector.clone().collect_once();
                     }
                 })
         });
