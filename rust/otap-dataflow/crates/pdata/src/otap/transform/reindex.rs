@@ -422,7 +422,8 @@ where
                     let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
                         .map_err(|e| Error::Batching { source: e })?;
                     let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
-                    remove_record_batch_ranges(rb, &key_redactions)?
+                    remove_record_batch_ranges(&rb, &key_redactions)
+                        .map_err(|e| Error::Batching { source: e })?
                 } else {
                     rb
                 };
@@ -432,7 +433,8 @@ where
             _ => {
                 // Primitive column: sort batch, remove violation rows, compact.
                 let rb = sort_record_batch_by_indices(rb, &value_sort_indices)?;
-                let rb = remove_record_batch_ranges(rb, &violations)?;
+                let rb = remove_record_batch_ranges(&rb, &violations)
+                    .map_err(|e| Error::Batching { source: e })?;
                 remove_vec_ranges(&mut new_ids, &violations);
                 return replace_id_column::<T>(rb, column_path, new_ids);
             }
@@ -502,6 +504,7 @@ fn map_value_redactions_to_key_redactions<K>(
 ) -> Vec<Range<usize>>
 where
     K: ArrowDictionaryKeyType,
+    K::Native: Ord,
 {
     debug_assert!(
         value_redactions.windows(2).all(|w| w[0].end <= w[1].start),
@@ -514,9 +517,10 @@ where
 
     let dict = id_col.as_dictionary::<K>();
 
-    // Keys are indices into the values array - directly comparable to the
-    // redaction ranges which are also value-array indices.
-    let mut sorted_keys: Vec<usize> = dict.keys().values().iter().map(|k| k.as_usize()).collect();
+    // Keys are indices into the values array — directly comparable to the
+    // redaction ranges which are also value-array indices. We keep the keys
+    // in their native type (u8 or u16) and cast the range bounds to match.
+    let mut sorted_keys: Vec<K::Native> = dict.keys().values().to_vec();
     sorted_keys.sort_unstable();
 
     // Merge-scan sorted keys against value redaction ranges.
@@ -528,9 +532,15 @@ where
     while key_idx < sorted_keys.len() && redaction_idx < value_redactions.len() {
         let key = sorted_keys[key_idx];
         let redaction = &value_redactions[redaction_idx];
+        // Cast range bounds to the key type. Safe because dictionary keys
+        // index into the values array, so all indices fit in K::Native.
+        // safety: K::Native is at most 16 bits, so we should be able to cast that into
+        // a usize on any 32 bit or larger platform.
+        let redaction_start = K::Native::from_usize(redaction.start).expect("usize > 16 bits");
+        let redaction_end = K::Native::from_usize(redaction.end).expect("usize > 16 bits");
 
         // Key is before this redaction range - not a violation.
-        if key < redaction.start {
+        if key < redaction_start {
             if let Some(start) = current_start.take() {
                 key_redactions.push(start..key_idx);
             }
@@ -540,7 +550,7 @@ where
         }
 
         // Key is past this redaction range - advance to the next range.
-        if key >= redaction.end {
+        if key >= redaction_end {
             if let Some(start) = current_start.take() {
                 key_redactions.push(start..key_idx);
             }

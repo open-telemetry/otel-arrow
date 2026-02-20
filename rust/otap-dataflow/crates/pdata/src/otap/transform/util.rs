@@ -1,11 +1,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::{
-    Array, ArrayRef, MutableArrayData, PrimitiveArray, RecordBatch, StructArray, make_array,
-};
-use arrow::compute::{SortColumn, sort_to_indices};
-use arrow::datatypes::UInt32Type;
+use arrow::array::{Array, ArrayRef, MutableArrayData, RecordBatch, StructArray, make_array};
+use arrow::compute::SortColumn;
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
@@ -15,63 +12,8 @@ use crate::schema::{FieldExt, consts};
 
 use super::transport_optimize::{Encoding, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 
-// Maps a DataType variant name to its corresponding Arrow primitive type.
-// #[macro_export]
-// #[rustfmt::skip]
-// macro_rules! arrow_primitive_type {
-//     (UInt8)   => { ::arrow_array::types::UInt8Type   };
-//     (UInt16)  => { ::arrow_array::types::UInt16Type  };
-//     (UInt32)  => { ::arrow_array::types::UInt32Type  };
-//     (UInt64)  => { ::arrow_array::types::UInt64Type  };
-//     (Int8)    => { ::arrow_array::types::Int8Type    };
-//     (Int16)   => { ::arrow_array::types::Int16Type   };
-//     (Int32)   => { ::arrow_array::types::Int32Type   };
-//     (Int64)   => { ::arrow_array::types::Int64Type   };
-//     (Float32) => { ::arrow_array::types::Float32Type };
-//     (Float64) => { ::arrow_array::types::Float64Type };
-// }
-
-/// Dispatches on an Arrow DataType, transparently handling Dictionary-encoded variants.
-///
-/// Each matched arm binds `T` to the corresponding Arrow primitive type. The `_` arm
-/// is used as the fallback for both unmatched plain types and unmatched Dictionary
-/// value types.
-#[macro_export]
-macro_rules! value_type_dispatch {
-    (
-        $data_type:expr,
-        {
-            $( $( $variant:ident )|+ => $body:block ),+
-            $(,)?
-            _ => $default:block $(,)?
-        }
-    ) => {
-        match $data_type {
-            $($(
-                ::arrow_schema::DataType::$variant => {
-                    ::paste::paste! {
-                        type T = ::arrow::datatypes::[<$variant Type>];
-                        $body
-                    }
-                },
-            )+)+
-            ::arrow_schema::DataType::Dictionary(_, __value_type) => match __value_type.as_ref() {
-                $($(
-                    ::arrow_schema::DataType::$variant => {
-                        ::paste::paste! {
-                            type T = ::arrow::datatypes::[<$variant Type>];
-                            $body
-                        }
-                    },
-                )+)+
-                _ => $default,
-            },
-            _ => $default,
-        }
-    };
-}
-
-pub(crate) fn take_ranges(
+/// Create a new record batch by taking the specified ranges from the provided record batch.
+pub(crate) fn take_record_batch_ranges(
     rb: &RecordBatch,
     ranges: &[Range<usize>],
 ) -> arrow::error::Result<RecordBatch> {
@@ -89,7 +31,8 @@ pub(crate) fn take_ranges(
     RecordBatch::try_new(rb.schema(), new_columns)
 }
 
-pub(crate) fn remove_ranges(
+/// Create a new record batch by removing the specified ranges from the provided record batch.
+pub(crate) fn remove_record_batch_ranges(
     rb: &RecordBatch,
     ranges: &[Range<usize>],
 ) -> arrow::error::Result<RecordBatch> {
@@ -100,9 +43,10 @@ pub(crate) fn remove_ranges(
         let mut new_data = MutableArrayData::new(vec![&data], false, new_len);
         let mut pos = 0;
         for range in ranges {
-            new_data.extend(0, pos, pos + range.start);
+            new_data.extend(0, pos, range.start);
             pos = range.end;
         }
+        new_data.extend(0, pos, rb.num_rows());
         new_columns.push(make_array(new_data.freeze()));
     }
 
@@ -121,10 +65,9 @@ pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
     Ok(())
 }
 
-// TODO [JD]: Move any tests for this stuff over to here
 // TODO [JD]: Optimize this because doing a column sort with dictionary encoded
 // causes complete expansion of the dictionary. We can probably do this faster
-// for a two column sort. Transport_optimize has some optimizations for this
+// for a two column sort. transport_optimize has some optimizations for this
 // and we can steal some techniques.
 pub(crate) fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
     let schema = rb.schema();
@@ -160,53 +103,6 @@ pub(crate) fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
     sort_record_batch_by_indices(rb, &indices)
 }
 
-pub(crate) fn sort_record_batch_by_id_col(
-    rb: RecordBatch,
-    col: &str,
-) -> Result<(RecordBatch, PrimitiveArray<UInt32Type>)> {
-    let Ok(id_col) = extract_id_column(&rb, col) else {
-        return Err(Error::ColumnNotFound {
-            name: col.to_string(),
-        });
-    };
-
-    let indices =
-        sort_to_indices(&id_col, None, None).map_err(|e| Error::Batching { source: e })?;
-    let rb = sort_record_batch_by_indices(rb, &indices)?;
-    Ok((rb, indices))
-
-    // TODO: Consider some kind of dispatch macro for this that lets us
-    // dispatch based on the value type of the IDColumn so we don't have to have
-    // this kind of struct all over the place.
-    // match id_col.data_type() {
-    //     DataType::UInt16 => {
-    //         todo!()
-    //     }
-    //     DataType::UInt32 => {
-    //         todo!()
-    //     }
-    //     DataType::Dictionary(_, value_type) => match value_type.as_ref() {
-    //         DataType::UInt16 => {
-    //             todo!()
-    //         }
-    //         DataType::UInt32 => {
-    //             todo!()
-    //         }
-    //         _ => Err(Error::UnsupportedDictionaryValueType {
-    //             expect_oneof: vec![DataType::UInt16, DataType::UInt32],
-    //             actual: value_type.as_ref().clone(),
-    //         }),
-    //     },
-    //     _ => {
-    //         Err(Error::ColumnDataTypeMismatch {
-    //             name: col.to_string(),
-    //             expect: DataType::UInt16, // or UInt32
-    //             actual: id_col.data_type().clone(),
-    //         })
-    //     }
-    // }
-}
-
 /// Extracts an ID column from a record batch
 pub(crate) fn extract_id_column(rb: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
     access_column(column_path, &rb.schema(), rb.columns()).ok_or_else(|| Error::ColumnNotFound {
@@ -229,40 +125,6 @@ pub(crate) fn sort_record_batch_by_indices(
 
     // safety: We did a valid tranformation on all columns
     Ok(RecordBatch::try_new(schema, new_columns).expect("valid record batch"))
-}
-
-/// Removes rows at the given ranges from a record batch by slicing out the
-/// valid (non-violation) ranges and concatenating them back together.
-/// TODO [JD]: We can make this a lot faster
-pub(crate) fn remove_record_batch_ranges(
-    rb: RecordBatch,
-    ranges: &[Range<usize>],
-) -> Result<RecordBatch> {
-    let total_len = rb.num_rows();
-    let schema = rb.schema();
-
-    let mut valid_ranges = Vec::new();
-    let mut pos = 0;
-    for r in ranges {
-        if pos < r.start {
-            valid_ranges.push(pos..r.start);
-        }
-        pos = r.end;
-    }
-    if pos < total_len {
-        valid_ranges.push(pos..total_len);
-    }
-
-    if valid_ranges.is_empty() {
-        return Ok(RecordBatch::new_empty(schema));
-    }
-
-    let slices: Vec<RecordBatch> = valid_ranges
-        .iter()
-        .map(|r| rb.slice(r.start, r.end - r.start))
-        .collect();
-
-    arrow::compute::concat_batches(&schema, &slices).map_err(|e| Error::Batching { source: e })
 }
 
 /// Helper function for accessing the column associated for the (possibly nested) path

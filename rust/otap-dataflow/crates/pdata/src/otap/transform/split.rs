@@ -15,15 +15,27 @@ use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{METRIC_TYPE, PARENT_ID};
 
-use super::util::{access_column, extract_id_column, payload_relations, take_ranges};
+use super::util::{access_column, extract_id_column, payload_relations, take_record_batch_ranges};
 
 type SplitResult<const N: usize> = Result<Vec<[Option<RecordBatch>; N]>>;
 
 /// Perform a naive split of the provided record batches ensuring that each
 /// batch has no more than `max_items` items.
 ///
-/// Oversized batches are split in place: the original entry keeps the
-/// "leftover" (last chunk) and the earlier chunks are appended to `batches`.
+/// This is broadly done in two stages:
+///
+/// 1. Planning - Computes the split boundaries based on the root record batch.
+/// 2. Splitting - Splits each record batch into non-overlapping ranges.
+///
+/// # Planning
+///
+/// Logs and Traces are relatively trivial to plan because every entry in the
+/// root record batch represents a single item. To chunk a record batch into
+/// items of at most `max_items`, we simply chunk the range 0..len into `max_items`
+/// sized pieces.
+///
+/// For metrics we need to handle the fact that each metric row corresponds to
+/// multiple data points in one of four data point tables.
 pub fn split<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     max_items: NonZeroU32,
@@ -463,7 +475,7 @@ fn take_child_rows(
             let r = &row_ranges[0];
             Ok(Some(child_rb.slice(r.start, r.end - r.start)))
         }
-        _ => take_ranges(child_rb, &row_ranges)
+        _ => take_record_batch_ranges(child_rb, &row_ranges)
             .map(Some)
             .map_err(|e| Error::Batching { source: e }),
     }
@@ -608,27 +620,18 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_logs() {
-        let log_ids       = vec![0, 1, 2, 3, 4, 5];
-        let scope_ids     = vec![0, 0, 0, 1, 1, 2];
-        let resource_ids  = vec![0, 0, 0, 1, 2, 3];
-        let log_pids      = vec![0, 0, 1, 2, 3, 3];
-        let scope_pids    = vec![0, 0, 1, 2, 2, 2];
-        let resource_pids = vec![0, 0, 1, 2, 3, 3];
-
-        // Plain UInt16 parent_ids
         test_split::<{ Logs::COUNT }>(&to_otap_logs, &[logs!(
             (Logs,
-                ("id", UInt16, log_ids.clone()),
-                ("scope.id", UInt16, scope_ids.clone()),
-                ("resource.id", UInt16, resource_ids.clone())),
-            (LogAttrs, 
-                ("parent_id", UInt16, log_pids.clone())),
-            (ScopeAttrs, 
-                ("parent_id", UInt16, scope_pids.clone())),
-            (ResourceAttrs, 
-                ("parent_id", UInt16, resource_pids.clone()))
+                ("id", UInt16, vec![0u16, 1, 2, 3, 4, 5]),
+                ("scope.id", UInt16, vec![0u16, 0, 0, 1, 1, 2]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1, 2, 3])),
+            (LogAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1, 2, 3, 3])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1, 2, 2, 2])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1, 2, 3, 3]))
         )]);
-
     }
 
     #[test]
@@ -783,18 +786,15 @@ mod tests {
     fn test_split_overlapping_parent_ranges() {
         // Tests the scenario where some different child ids are associated to the same
         // parent.
-        let span_ids = vec![0u16, 1, 2, 3];
-        let batches = vec![traces!(
+        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
             (Spans,
-                ("id", UInt16, span_ids.clone())),
+                ("id", UInt16, vec![0u16, 1, 2, 3])),
             (SpanEvents,
-                ("id", UInt32, vec![0u32, 1, 2, 1, 2, 2, 3, 2]),
-                ("parent_id", UInt16, vec![0u16, 0, 0, 1, 1, 1, 2, 3])),
+                ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 7, 6]),
+                ("parent_id", UInt16, vec![1u16, 1, 0, 0, 0, 1, 1, 3])),
             (SpanEventAttrs,
                 ("parent_id", UInt32, vec![0u32, 1, 0, 1, 1, 0, 3, 2]))
-        )];
-
-        test_split::<{ Traces::COUNT }>(&to_otap_traces, &batches);
+        )]);
     }
 
     // ---- Metrics tests ----
@@ -815,10 +815,13 @@ mod tests {
         let ex_pids          = vec![0u32, 2, 4, 7];
         let ex_attr_pids     = vec![0u32, 1, 2, 3];
 
+        let gauge_types = vec![MetricType::Gauge as u8; 4];
+
         // Plain parent_ids
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
+                ("metric_type", UInt8, gauge_types.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
@@ -843,6 +846,7 @@ mod tests {
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
+                ("metric_type", UInt8, gauge_types.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
@@ -867,6 +871,7 @@ mod tests {
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone()),
+                ("metric_type", UInt8, gauge_types.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
@@ -891,112 +896,79 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_histogram_dp() {
-        let metric_ids       = vec![0u16, 1, 2, 3];
-        let scope_ids        = vec![0u16, 0, 1, 1];
-        let resource_ids     = vec![0u16, 0, 0, 1];
-        let metric_attr_pids = vec![0u16, 1, 2, 3];
-        let scope_pids       = vec![0u16, 0, 1];
-        let resource_pids    = vec![0u16, 0, 1, 1];
-        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
-        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let ex_ids           = vec![0u32, 1, 2, 3];
-        let ex_pids          = vec![0u32, 2, 4, 7];
-        let ex_attr_pids     = vec![0u32, 1, 2, 3];
-
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids),
-                ("scope.id", UInt16, scope_ids),
-                ("resource.id", UInt16, resource_ids)),
+                ("id", UInt16, vec![0u16, 1, 2, 3]),
+                ("metric_type", UInt8, vec![MetricType::Histogram as u8; 4]),
+                ("scope.id", UInt16, vec![0u16, 0, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1])),
             (MetricAttrs,
-                ("parent_id", UInt16, metric_attr_pids)),
+                ("parent_id", UInt16, vec![0u16, 1, 2, 3])),
             (ScopeAttrs,
-                ("parent_id", UInt16, scope_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1])),
             (ResourceAttrs,
-                ("parent_id", UInt16, resource_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1])),
             (HistogramDataPoints,
-                ("id", UInt32, dp_ids),
-                ("parent_id", UInt16, dp_pids)),
+                ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7]),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1, 1, 2, 3, 3])),
             (HistogramDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids)),
+                ("parent_id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7])),
             (HistogramDpExemplars,
-                ("id", UInt32, ex_ids),
-                ("parent_id", UInt32, ex_pids)),
+                ("id", UInt32, vec![0u32, 1, 2, 3]),
+                ("parent_id", UInt32, vec![0u32, 2, 4, 7])),
             (HistogramDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids))
+                ("parent_id", UInt32, vec![0u32, 1, 2, 3]))
         )]);
     }
 
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_exp_histogram_dp() {
-        let metric_ids       = vec![0u16, 1, 2, 3];
-        let scope_ids        = vec![0u16, 0, 1, 1];
-        let resource_ids     = vec![0u16, 0, 0, 1];
-        let metric_attr_pids = vec![0u16, 1, 2, 3];
-        let scope_pids       = vec![0u16, 0, 1];
-        let resource_pids    = vec![0u16, 0, 1, 1];
-        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
-        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let ex_ids           = vec![0u32, 1, 2, 3];
-        let ex_pids          = vec![0u32, 2, 4, 7];
-        let ex_attr_pids     = vec![0u32, 1, 2, 3];
-
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids),
-                ("scope.id", UInt16, scope_ids),
-                ("resource.id", UInt16, resource_ids)),
+                ("id", UInt16, vec![0u16, 1, 2, 3]),
+                ("metric_type", UInt8, vec![MetricType::ExponentialHistogram as u8; 4]),
+                ("scope.id", UInt16, vec![0u16, 0, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1])),
             (MetricAttrs,
-                ("parent_id", UInt16, metric_attr_pids)),
+                ("parent_id", UInt16, vec![0u16, 1, 2, 3])),
             (ScopeAttrs,
-                ("parent_id", UInt16, scope_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1])),
             (ResourceAttrs,
-                ("parent_id", UInt16, resource_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1])),
             (ExpHistogramDataPoints,
-                ("id", UInt32, dp_ids),
-                ("parent_id", UInt16, dp_pids)),
+                ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7]),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1, 1, 2, 3, 3])),
             (ExpHistogramDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids)),
+                ("parent_id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7])),
             (ExpHistogramDpExemplars,
-                ("id", UInt32, ex_ids),
-                ("parent_id", UInt32, ex_pids)),
+                ("id", UInt32, vec![0u32, 1, 2, 3]),
+                ("parent_id", UInt32, vec![0u32, 2, 4, 7])),
             (ExpHistogramDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids))
+                ("parent_id", UInt32, vec![0u32, 1, 2, 3]))
         )]);
     }
 
     #[test]
     #[rustfmt::skip]
     fn test_split_metrics_summary_dp() {
-        let metric_ids       = vec![0u16, 1, 2, 3];
-        let scope_ids        = vec![0u16, 0, 1, 1];
-        let resource_ids     = vec![0u16, 0, 0, 1];
-        let metric_attr_pids = vec![0u16, 1, 2, 3];
-        let scope_pids       = vec![0u16, 0, 1];
-        let resource_pids    = vec![0u16, 0, 1, 1];
-        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
-        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-
         test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids),
-                ("scope.id", UInt16, scope_ids),
-                ("resource.id", UInt16, resource_ids)),
+                ("id", UInt16, vec![0u16, 1, 2, 3]),
+                ("metric_type", UInt8, vec![MetricType::Summary as u8; 4]),
+                ("scope.id", UInt16, vec![0u16, 0, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1])),
             (MetricAttrs,
-                ("parent_id", UInt16, metric_attr_pids)),
+                ("parent_id", UInt16, vec![0u16, 1, 2, 3])),
             (ScopeAttrs,
-                ("parent_id", UInt16, scope_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1])),
             (ResourceAttrs,
-                ("parent_id", UInt16, resource_pids)),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1])),
             (SummaryDataPoints,
-                ("id", UInt32, dp_ids),
-                ("parent_id", UInt16, dp_pids)),
+                ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7]),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1, 1, 2, 3, 3])),
             (SummaryDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids))
+                ("parent_id", UInt32, vec![0u32, 1, 2, 3, 4, 5, 6, 7]))
         )]);
     }
 
@@ -1009,7 +981,8 @@ mod tests {
         // must be emitted as a singleton batch that exceeds the limit.
         let batch = metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, vec![0u16])),
+                ("id", UInt16, vec![0u16]),
+                ("metric_type", UInt8, vec![MetricType::Gauge as u8])),
             (NumberDataPoints,
                 ("id", UInt32, vec![0u32, 1, 2, 3, 4, 5]),
                 ("parent_id", UInt16, vec![0u16, 0, 0, 0, 0, 0]))
@@ -1024,6 +997,149 @@ mod tests {
         // The oversized metric is emitted as a single batch.
         assert_eq!(result.len(), 1);
         assert_eq!(num_items(&result[0]), 6);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_metrics_mixed_types() {
+        // One metric of each type in the same batch:
+        //   metric 0 → Gauge        (2 dp)
+        //   metric 1 → Histogram    (2 dp)
+        //   metric 2 → ExpHistogram (2 dp)
+        //   metric 3 → Summary      (2 dp)
+        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, vec![0u16, 1, 2, 3]),
+                ("metric_type", UInt8, vec![
+                    MetricType::Gauge as u8,
+                    MetricType::Histogram as u8,
+                    MetricType::ExponentialHistogram as u8,
+                    MetricType::Summary as u8,
+                ]),
+                ("scope.id", UInt16, vec![0u16, 0, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1])),
+            (MetricAttrs,
+                ("parent_id", UInt16, vec![0u16, 1, 2, 3])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1])),
+            (NumberDataPoints,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 0])),
+            (HistogramDataPoints,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![1u16, 1])),
+            (ExpHistogramDataPoints,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![2u16, 2])),
+            (SummaryDataPoints,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![3u16, 3]))
+        )]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_logs_multi_batch() {
+        let batch1 = logs!(
+            (Logs,
+                ("id", UInt16, vec![0u16, 1, 2]),
+                ("scope.id", UInt16, vec![0u16, 0, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 1])),
+            (LogAttrs,
+                ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16, 1]))
+        );
+        let batch2 = logs!(
+            (Logs,
+                ("id", UInt16, vec![0u16, 1, 2, 3]),
+                ("scope.id", UInt16, vec![0u16, 0, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 0, 1])),
+            (LogAttrs,
+                ("parent_id", UInt16, vec![0u16, 1, 2, 3])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16, 0, 1]))
+        );
+        test_split::<{ Logs::COUNT }>(&to_otap_logs, &[batch1, batch2]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_traces_multi_batch() {
+        let batch1 = traces!(
+            (Spans,
+                ("id", UInt16, vec![0u16, 1]),
+                ("scope.id", UInt16, vec![0u16, 0]),
+                ("resource.id", UInt16, vec![0u16, 0])),
+            (SpanAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (SpanEventAttrs,
+                ("parent_id", UInt32, vec![0u32, 1]))
+        );
+        let batch2 = traces!(
+            (Spans,
+                ("id", UInt16, vec![0u16, 1, 2]),
+                ("scope.id", UInt16, vec![0u16, 1, 1]),
+                ("resource.id", UInt16, vec![0u16, 0, 1])),
+            (SpanAttrs,
+                ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1, 2]),
+                ("parent_id", UInt16, vec![0u16, 1, 2])),
+            (SpanEventAttrs,
+                ("parent_id", UInt32, vec![0u32, 1, 2])),
+            (SpanLinks,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![1u16, 2]))
+        );
+        test_split::<{ Traces::COUNT }>(&to_otap_traces, &[batch1, batch2]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_metrics_multi_batch() {
+        let batch1 = metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, vec![0u16, 1]),
+                ("metric_type", UInt8, vec![MetricType::Gauge as u8; 2]),
+                ("scope.id", UInt16, vec![0u16, 0]),
+                ("resource.id", UInt16, vec![0u16, 0])),
+            (MetricAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16])),
+            (NumberDataPoints,
+                ("id", UInt32, vec![0u32, 1, 2, 3]),
+                ("parent_id", UInt16, vec![0u16, 0, 1, 1]))
+        );
+        let batch2 = metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, vec![0u16, 1]),
+                ("metric_type", UInt8, vec![MetricType::Gauge as u8; 2]),
+                ("scope.id", UInt16, vec![0u16, 1]),
+                ("resource.id", UInt16, vec![0u16, 1])),
+            (MetricAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (ScopeAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (ResourceAttrs,
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (NumberDataPoints,
+                ("id", UInt32, vec![0u32, 1, 2]),
+                ("parent_id", UInt16, vec![0u16, 0, 1]))
+        );
+        test_split::<{ Metrics::COUNT }>(&to_otap_metrics, &[batch1, batch2]);
     }
 
     fn test_split<const N: usize>(
@@ -1091,6 +1207,25 @@ mod tests {
                 }
             }
 
+            // Every output batch must respect the max_items limit, except
+            // for oversized singleton metrics (a single metric whose data
+            // points exceed the limit — these have exactly 1 root row).
+            for batch in &result {
+                let item_count = num_items(batch);
+                if item_count > i {
+                    assert_eq!(
+                        N,
+                        Metrics::COUNT,
+                        "non-metric batch exceeded max_items: {item_count} > {i}"
+                    );
+                    let root_rows = batch[root_idx].as_ref().unwrap().num_rows();
+                    assert_eq!(
+                        root_rows, 1,
+                        "oversized metric batch must be a singleton, got {root_rows} metrics"
+                    );
+                }
+            }
+
             // Referential integrity for every output batch.
             for batch in &result {
                 assert_referential_integrity::<N>(batch, root_type);
@@ -1101,7 +1236,7 @@ mod tests {
                 reindex::<N>(&mut result).unwrap();
                 let output_combined = concatenate::<N>(&mut result).unwrap();
                 let output_otlp = otap_to_otlp(&to_otap(&output_combined));
-                assert_equivalent(&[input_otlp.clone()], &[output_otlp]);
+                assert_equivalent(std::slice::from_ref(&input_otlp), &[output_otlp]);
             }
         }
     }

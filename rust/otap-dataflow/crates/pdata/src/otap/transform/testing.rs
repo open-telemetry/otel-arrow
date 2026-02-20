@@ -24,10 +24,6 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 /// Known ID column paths that need plain encoding metadata.
 pub const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
 
-// ---------------------------------------------------------------------------
-// Convenience macros for constructing test batches
-// ---------------------------------------------------------------------------
-
 /// Build a `[Option<RecordBatch>; Logs::COUNT]` from payload‑type / column specs.
 ///
 /// ```ignore
@@ -88,10 +84,6 @@ macro_rules! metrics {
     };
 }
 pub(crate) use metrics;
-
-// ---------------------------------------------------------------------------
-// Batch construction helpers
-// ---------------------------------------------------------------------------
 
 /// Convert `ArrowPayloadType` -> position index, panicking if unused.
 pub fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
@@ -365,10 +357,6 @@ pub fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
         .expect("Failed to mark id columns as plain")
 }
-
-// ---------------------------------------------------------------------------
-// Assertion / validation helpers
-// ---------------------------------------------------------------------------
 
 /// For each batch group, relation, and child type, records which child row
 /// indices map to each parent by ordinal position (smallest parent ID = 0,

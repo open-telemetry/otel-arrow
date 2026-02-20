@@ -48,14 +48,6 @@ use super::util::{
 
 mod attributes;
 
-// For the majority of columns, we'll be able to identify the path within the record batch as
-// the column name directly, but Resource ID and Scope ID, they're typically nested within a
-// struct on the root record so we treat these as special cases:/
-/// path within the record batch to the resource ID column
-pub const RESOURCE_ID_COL_PATH: &str = "resource.id";
-/// path within the record batch to the scope ID column
-pub const SCOPE_ID_COL_PATH: &str = "scope.id";
-
 /// identifier for column encoding
 #[derive(Clone, Copy)]
 pub(crate) enum Encoding {
@@ -81,6 +73,14 @@ pub(crate) enum Encoding {
     /// which are contained within this enum variant).
     ColumnarQuasiDelta(&'static [&'static str]),
 }
+
+// For the majority of columns, we'll be able to identify the path within the record batch as
+// the column name directly, but Resource ID and Scope ID, they're typically nested within a
+// struct on the root record so we treat these as special cases:/
+/// path within the record batch to the resource ID column
+pub const RESOURCE_ID_COL_PATH: &str = "resource.id";
+/// path within the record batch to the scope ID column
+pub const SCOPE_ID_COL_PATH: &str = "scope.id";
 
 /// specification for encoding that should be applied to some column
 struct ColumnEncoding<'a> {
