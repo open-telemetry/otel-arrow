@@ -8,17 +8,20 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
+};
 
 use crate::error::{Error, Result};
-use crate::otap::transform::transport_optimize::{
-    access_column, remove_transport_optimized_encodings, replace_column,
+use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
+use crate::otap::transform::util::{
+    extract_id_column, remove_record_batch_ranges, replace_column, sort_record_batch_by_indices,
 };
 use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::consts::{ID, PARENT_ID};
+use crate::schema::consts::PARENT_ID;
 
-use super::transport_optimize::{RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
+use super::util::{PrimaryIdInfo, payload_relations};
 
 /// Reindex the provided record batches in place such that all IDs are unique
 /// for each payload type across all batches. This makes it safe to concatenate
@@ -195,7 +198,6 @@ where
 {
     // Find the first batch with the parent payload to inspect the ID column type
     let parent_idx = payload_to_idx(parent_payload_type);
-
     for i in 0..store.len() {
         if let Some(parent_batch) = &store.batches[i][parent_idx] {
             if let Ok(id_col) = extract_id_column(parent_batch, id_column_path) {
@@ -317,7 +319,7 @@ where
         //  space
         //
         // Create mappings for the parent IDs
-        let mut ids = materialize_id_column::<T>(id_col.as_ref())?
+        let mut ids = materialize_id_values::<T>(id_col.as_ref())?
             .values()
             .to_vec();
         let sort_indices = sort_vec_to_indices(&ids);
@@ -358,7 +360,7 @@ where
 /// creation of the mappings from applying those mappings to potentially multiple
 /// child batches.
 fn reindex_child_column<T>(
-    mut rb: RecordBatch,
+    rb: RecordBatch,
     column_path: &str,
     mappings: &[IdMapping<T::Native>],
 ) -> Result<RecordBatch>
@@ -366,87 +368,83 @@ where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
 {
-    // Extract ID column
+    // Materialize the id values. In the case of a dictionary this is the
+    // values array and does not include the keys.
     let id_col = extract_id_column(&rb, column_path)?;
-    let ids = materialize_id_column::<T>(id_col.as_ref())?;
-    let mut ids = ids.values().to_vec();
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let mut id_values = id_values.values().to_vec();
 
-    // Sort the ids. If we already did this in the parent batch, we can skip it here
-    // and reuse the same allocation.
-    let sort_indices = sort_vec_to_indices(&ids);
-    let sort_indices = PrimitiveArray::from(sort_indices);
-    let mut new_ids = vec![T::Native::default(); ids.len()];
-    take_vec(&ids, &mut new_ids, sort_indices.values());
+    let value_sort_indices = sort_vec_to_indices(&id_values);
+    let value_sort_indices = PrimitiveArray::from(value_sort_indices);
+    let mut new_ids = vec![T::Native::default(); id_values.len()];
+    take_vec(&id_values, &mut new_ids, value_sort_indices.values());
     if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
-        // We have integrity violations in some number of ranges. We need to eliminate
+        // We may have integrity violations in some number of ranges. We need to eliminate
         // them because we're on the reindexing path where we're squashing all ids
         // to contiguous ranges starting at 0, so any strays left behind may accidentally
-        // be associated to ids in other batches.
+        // be associated to ids in other batches if we apply some offset to them.
         //
-        // Process is as follows:
-        // 1. Sort the entire record batch by the indices so that the ranges correspond to
-        // the violation ranges.
-        // 2. Remove all rows in those ranges by constructing the valid slices
-        // of the record batch (opposite of the violations), slicing the record
-        // batch to remove them, and then `concat`ing them back together.
-        // 3. Remove all rows in the new_ids vector.
-        // 4. The record batch is now sorted and violation-free. Replace the id
-        // column directly with the remapped ids and return.
+        // For primitive columns the violation ranges correspond directly to rows in
+        // the sorted record batch so we sort, remove the rows, compact new_ids, and
+        // replace the column.
         //
-        // Note: We don't need to unsort new_ids anymore because the whole record
-        // batch is sorted.
-        rb = sort_record_batch_by_indices(rb, &sort_indices)?;
-        rb = remove_record_batch_ranges(rb, &violations)?;
-        remove_vec_ranges(&mut new_ids, &violations);
-        return replace_id_column::<T>(rb, column_path, new_ids);
+        // For dictionary columns the violations are in the values array, not the
+        // keys. In this case the violations could be for unreferenced dict values,
+        // so we map value-level redactions to key-level redactions to see what
+        // needs to be removed.
+        match id_col.data_type() {
+            DataType::Dictionary(key_type, _) => {
+                // Determine which value violations correspond to actual rows.
+                let key_redactions = match key_type.as_ref() {
+                    DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
+                        id_col.as_ref(),
+                        &violations,
+                    ),
+                    DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
+                        id_col.as_ref(),
+                        &violations,
+                    ),
+                    _ => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                            actual: key_type.as_ref().clone(),
+                        });
+                    }
+                };
+
+                // Unsort the remapped values back to original order. Violation
+                // positions contain garbage but no key references them.
+                untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
+
+                let rb = if !key_redactions.is_empty() {
+                    // Genuine violations - sort batch by the same key order
+                    // used to produce the key redaction ranges, then remove.
+                    let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
+                        .map_err(|e| Error::Batching { source: e })?;
+                    let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
+                    remove_record_batch_ranges(&rb, &key_redactions)
+                        .map_err(|e| Error::Batching { source: e })?
+                } else {
+                    rb
+                };
+
+                return replace_id_column::<T>(rb, column_path, id_values);
+            }
+            _ => {
+                // Primitive column: sort batch, remove violation rows, compact.
+                let rb = sort_record_batch_by_indices(rb, &value_sort_indices)?;
+                let rb = remove_record_batch_ranges(&rb, &violations)
+                    .map_err(|e| Error::Batching { source: e })?;
+                remove_vec_ranges(&mut new_ids, &violations);
+                return replace_id_column::<T>(rb, column_path, new_ids);
+            }
+        }
     }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
-    untake_vec(&new_ids, &mut ids, sort_indices.values());
-    replace_id_column::<T>(rb, column_path, ids)
-}
-
-fn sort_record_batch_by_indices(rb: RecordBatch, indices: &dyn Array) -> Result<RecordBatch> {
-    let (schema, columns, _) = rb.into_parts();
-    let new_columns: Vec<_> = columns
-        .iter()
-        .map(|c| arrow::compute::take(c, indices, None))
-        .collect::<arrow::error::Result<Vec<_>>>()
-        .map_err(|e| Error::Batching { source: e })?;
-
-    // safety: We did a valid tranformation on all columns
-    Ok(RecordBatch::try_new(schema, new_columns).expect("valid record batch"))
-}
-
-/// Removes rows at the given ranges from a record batch by slicing out the
-/// valid (non-violation) ranges and concatenating them back together.
-fn remove_record_batch_ranges(rb: RecordBatch, ranges: &[Range<usize>]) -> Result<RecordBatch> {
-    let total_len = rb.num_rows();
-    let schema = rb.schema();
-
-    let mut valid_ranges = Vec::new();
-    let mut pos = 0;
-    for r in ranges {
-        if pos < r.start {
-            valid_ranges.push(pos..r.start);
-        }
-        pos = r.end;
-    }
-    if pos < total_len {
-        valid_ranges.push(pos..total_len);
-    }
-
-    if valid_ranges.is_empty() {
-        return Ok(RecordBatch::new_empty(schema));
-    }
-
-    let slices: Vec<RecordBatch> = valid_ranges
-        .iter()
-        .map(|r| rb.slice(r.start, r.end - r.start))
-        .collect();
-
-    arrow::compute::concat_batches(&schema, &slices).map_err(|e| Error::Batching { source: e })
+    untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
+    replace_id_column::<T>(rb, column_path, id_values)
 }
 
 /// Removes elements at the given ranges from a vector in place.
@@ -456,6 +454,123 @@ fn remove_vec_ranges<T>(vec: &mut Vec<T>, ranges: &[Range<usize>]) {
     for range in ranges.iter().rev() {
         drop(vec.drain(range.clone()));
     }
+}
+
+/// Maps value-level redaction ranges to key-level (row-level) redaction ranges
+/// for dictionary-encoded columns.
+///
+/// # Background
+///
+/// When [reindex_child_column] processes a dictionary-encoded id column, it
+/// operates on the dictionary **values** array rather
+/// than the per-row keys. Not all dictionary values are necessarily referenced
+/// by a key which is a problem because [apply_mappings] may flag values that
+/// are not actually referenced in any row.
+///
+/// This function determines which, if any, flagged values are referenced by
+/// keys and returns ranges of indices for the keys which need to be removed.
+///
+/// # Algorithm
+///
+/// Dictionary keys are indices into the values array, and the redaction ranges
+/// are also indices into the values array. Both are directly comparable. We:
+///
+/// 1. Sort the keys. Since the redaction ranges are sorted and non-overlapping
+///    by construction, we merge-scan them in a single pass.
+/// 2. If a key falls inside a redaction range, that row has a genuine integrity
+///    violation.
+///
+/// The output ranges are positions in the sorted-key order, which corresponds
+/// to rows in the record batch after sorting by
+/// `arrow::compute::sort_to_indices(&id_col)`.
+///
+/// # Example
+///
+/// ```text
+/// Dictionary values array:  [0, 1, 2, 3, 4]   (indices 0..5)
+/// Dictionary keys array:    [0, 2, 4, 1]      (4 rows)
+/// Value redactions:         [3..5]            (values at indices 3,4 flagged)
+///
+/// ```
+///
+/// In this case:
+///
+/// Value index 3 was NOT referenced by any key (spurious).
+/// Value index 4 WAS referenced by key 4 (genuine) -> Output is [3..4)
+///
+fn map_value_redactions_to_key_redactions<K>(
+    id_col: &dyn Array,
+    value_redactions: &[Range<usize>],
+) -> Vec<Range<usize>>
+where
+    K: ArrowDictionaryKeyType,
+    K::Native: Ord,
+{
+    debug_assert!(
+        value_redactions.windows(2).all(|w| w[0].end <= w[1].start),
+        "value_redactions must be sorted and non-overlapping"
+    );
+
+    if value_redactions.is_empty() {
+        return Vec::new();
+    }
+
+    let dict = id_col.as_dictionary::<K>();
+
+    // Keys are indices into the values array — directly comparable to the
+    // redaction ranges which are also value-array indices. We keep the keys
+    // in their native type (u8 or u16) and cast the range bounds to match.
+    let mut sorted_keys: Vec<K::Native> = dict.keys().values().to_vec();
+    sorted_keys.sort_unstable();
+
+    // Merge-scan sorted keys against value redaction ranges.
+    let mut key_redactions = Vec::new();
+    let mut key_idx = 0;
+    let mut redaction_idx = 0;
+    let mut current_start: Option<usize> = None;
+
+    while key_idx < sorted_keys.len() && redaction_idx < value_redactions.len() {
+        let key = sorted_keys[key_idx];
+        let redaction = &value_redactions[redaction_idx];
+        // Cast range bounds to the key type. Safe because dictionary keys
+        // index into the values array, so all indices fit in K::Native.
+        // safety: K::Native is at most 16 bits, so we should be able to cast that into
+        // a usize on any 32 bit or larger platform.
+        let redaction_start = K::Native::from_usize(redaction.start).expect("usize > 16 bits");
+        let redaction_end = K::Native::from_usize(redaction.end).expect("usize > 16 bits");
+
+        // Key is before this redaction range - not a violation.
+        if key < redaction_start {
+            if let Some(start) = current_start.take() {
+                key_redactions.push(start..key_idx);
+            }
+
+            key_idx += 1;
+            continue;
+        }
+
+        // Key is past this redaction range - advance to the next range.
+        if key >= redaction_end {
+            if let Some(start) = current_start.take() {
+                key_redactions.push(start..key_idx);
+            }
+
+            redaction_idx += 1;
+            continue;
+        }
+
+        // Key is inside the redaction range - genuine violation.
+        if current_start.is_none() {
+            current_start = Some(key_idx);
+        }
+        key_idx += 1;
+    }
+
+    if let Some(start) = current_start {
+        key_redactions.push(start..key_idx);
+    }
+
+    key_redactions
 }
 
 fn replace_id_column<T>(
@@ -480,13 +595,6 @@ where
     Ok(rb)
 }
 
-/// Extracts an ID column from a record batch
-fn extract_id_column(rb: &RecordBatch, column_path: &str) -> Result<ArrayRef> {
-    access_column(column_path, &rb.schema(), rb.columns()).ok_or_else(|| Error::ColumnNotFound {
-        name: column_path.to_string(),
-    })
-}
-
 /// Sorts a vector of values and returns the resulting sort indices
 fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
     let mut indices: Vec<u32> = (0u32..values.len() as u32).collect();
@@ -499,7 +607,7 @@ fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
 /// For dictionary arrays, returns the VALUES array (unique dictionary entries), not the per-row
 /// logical values. This is intentional: callers remap just the dictionary values, and the
 /// dictionary keys preserve the per-row structure automatically.
-fn materialize_id_column<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
+fn materialize_id_values<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
 where
     T: ArrowPrimitiveType,
 {
@@ -728,298 +836,27 @@ fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     pos
 }
 
-#[derive(Debug)]
-struct PayloadRelationInfo {
-    primary_id: Option<PrimaryIdInfo>,
-    relations: &'static [Relation],
-}
-
-#[derive(Debug, Clone, Copy)]
-enum IdColumnType {
-    U16,
-    U32,
-}
-
-impl IdColumnType {
-    fn max(&self) -> u64 {
-        match self {
-            IdColumnType::U16 => u16::MAX as u64,
-            IdColumnType::U32 => u32::MAX as u64,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PrimaryIdInfo {
-    name: &'static str,
-    size: IdColumnType,
-}
-
-#[derive(Debug)]
-struct Relation {
-    key_col: &'static str,
-    child_types: &'static [ArrowPayloadType],
-}
-
-/// Get the primary ID column info and foreign relations for the given payload type.
-fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelationInfo {
-    match parent_type {
-        // Logs
-        ArrowPayloadType::Logs => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U16,
-            }),
-            relations: &[
-                Relation {
-                    key_col: RESOURCE_ID_COL_PATH,
-                    child_types: &[ArrowPayloadType::ResourceAttrs],
-                },
-                Relation {
-                    key_col: SCOPE_ID_COL_PATH,
-                    child_types: &[ArrowPayloadType::ScopeAttrs],
-                },
-                Relation {
-                    key_col: ID,
-                    child_types: &[ArrowPayloadType::LogAttrs],
-                },
-            ],
-        },
-        // Traces
-        ArrowPayloadType::Spans => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U16,
-            }),
-            relations: &[
-                Relation {
-                    key_col: RESOURCE_ID_COL_PATH,
-                    child_types: &[ArrowPayloadType::ResourceAttrs],
-                },
-                Relation {
-                    key_col: SCOPE_ID_COL_PATH,
-                    child_types: &[ArrowPayloadType::ScopeAttrs],
-                },
-                Relation {
-                    key_col: ID,
-                    child_types: &[
-                        ArrowPayloadType::SpanAttrs,
-                        ArrowPayloadType::SpanEvents,
-                        ArrowPayloadType::SpanLinks,
-                    ],
-                },
-            ],
-        },
-        ArrowPayloadType::SpanEvents => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::SpanEventAttrs],
-            }],
-        },
-        ArrowPayloadType::SpanLinks => PayloadRelationInfo {
-            primary_id: None,
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::SpanLinkAttrs],
-            }],
-        },
-
-        // Metrics
-        ArrowPayloadType::UnivariateMetrics | ArrowPayloadType::MultivariateMetrics => {
-            PayloadRelationInfo {
-                primary_id: Some(PrimaryIdInfo {
-                    name: ID,
-                    size: IdColumnType::U16,
-                }),
-                relations: &[
-                    Relation {
-                        key_col: RESOURCE_ID_COL_PATH,
-                        child_types: &[ArrowPayloadType::ResourceAttrs],
-                    },
-                    Relation {
-                        key_col: SCOPE_ID_COL_PATH,
-                        child_types: &[ArrowPayloadType::ScopeAttrs],
-                    },
-                    Relation {
-                        key_col: ID,
-                        child_types: &[
-                            ArrowPayloadType::MetricAttrs,
-                            ArrowPayloadType::NumberDataPoints,
-                            ArrowPayloadType::SummaryDataPoints,
-                            ArrowPayloadType::HistogramDataPoints,
-                            ArrowPayloadType::ExpHistogramDataPoints,
-                        ],
-                    },
-                ],
-            }
-        }
-
-        ArrowPayloadType::NumberDataPoints => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[
-                    ArrowPayloadType::NumberDpAttrs,
-                    ArrowPayloadType::NumberDpExemplars,
-                ],
-            }],
-        },
-        ArrowPayloadType::NumberDpExemplars => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::NumberDpExemplarAttrs],
-            }],
-        },
-        ArrowPayloadType::SummaryDataPoints => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::SummaryDpAttrs],
-            }],
-        },
-        ArrowPayloadType::HistogramDataPoints => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[
-                    ArrowPayloadType::HistogramDpAttrs,
-                    ArrowPayloadType::HistogramDpExemplars,
-                ],
-            }],
-        },
-        ArrowPayloadType::HistogramDpExemplars => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::HistogramDpExemplarAttrs],
-            }],
-        },
-        ArrowPayloadType::ExpHistogramDataPoints => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[
-                    ArrowPayloadType::ExpHistogramDpAttrs,
-                    ArrowPayloadType::ExpHistogramDpExemplars,
-                ],
-            }],
-        },
-        ArrowPayloadType::ExpHistogramDpExemplars => PayloadRelationInfo {
-            primary_id: Some(PrimaryIdInfo {
-                name: ID,
-                size: IdColumnType::U32,
-            }),
-            relations: &[Relation {
-                key_col: ID,
-                child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
-            }],
-        },
-
-        _ => PayloadRelationInfo {
-            primary_id: None,
-            relations: &[],
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
-    use std::sync::Arc;
 
-    use arrow::array::{
-        Array, ArrayRef, AsArray, Int64Array, RecordBatch, StringArray, StructArray, UInt8Array,
-    };
-    use arrow::datatypes::{
-        ArrowDictionaryKeyType, DataType, Field, Schema, UInt16Type, UInt32Type,
-    };
+    use arrow::array::RecordBatch;
 
     use crate::error::Error;
-    use crate::otap::transform::transport_optimize::{
-        access_column, apply_transport_optimized_encodings, replace_column, struct_column_name,
-        update_field_encoding_metadata,
+    use crate::otap::transform::testing::{
+        self, assert_no_id_overlaps, extract_relation_fingerprints, find_parent_id_size, logs,
+        metrics, traces,
     };
+    use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
+    use crate::otap::transform::util::{IdColumnType, payload_relations};
     use crate::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;
     use crate::testing::equiv::assert_equivalent;
     use crate::testing::round_trip::otap_to_otlp;
 
-    /// Known ID column paths that need plain encoding metadata
-    const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
     const HALF_U16: u16 = (u16::MAX / 2) + 1;
-
-    macro_rules! logs {
-        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
-            {
-                use $crate::otap::Logs;
-                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-
-                make_test_batch::<Logs, { Logs::COUNT }>(vec![
-                    $((
-                        ArrowPayloadType::$payload,
-                        $crate::record_batch!($($record_batch_args)*).unwrap(),
-                    ),)*
-                ])
-            }
-        };
-    }
-
-    macro_rules! traces {
-        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
-            {
-                use $crate::otap::Traces;
-                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-
-                make_test_batch::<Traces, { Traces::COUNT }>(vec![
-                    $((
-                        ArrowPayloadType::$payload,
-                        $crate::record_batch!($($record_batch_args)*).unwrap(),
-                    ),)*
-                ])
-            }
-        };
-    }
-
-    macro_rules! metrics {
-        ($(($payload:ident, $($record_batch_args:tt)*)),* $(,)?) => {
-            {
-                use $crate::otap::Metrics;
-                use $crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-
-                make_test_batch::<Metrics, { Metrics::COUNT }>(vec![
-                    $((
-                        ArrowPayloadType::$payload,
-                        $crate::record_batch!($($record_batch_args)*).unwrap(),
-                    ),)*
-                ])
-            }
-        };
-    }
 
     // ---- Logs tests ----
 
@@ -2087,28 +1924,7 @@ mod tests {
                 record_batch!(("id", UInt16, ids), ("parent_id", UInt32, pids)).unwrap()
             }
         };
-        complete_batch(payload_type, batch, &[payload_type])
-    }
-
-    /// Searches all allowed payload types in a batch store to find if
-    /// `child_type` appears as a child in any relation. If found, returns the
-    /// parent's primary id column size (which determines the parent_id column
-    /// type). Returns `None` for root types that have no parent.
-    fn find_parent_id_size<S: OtapBatchStore>(
-        child_type: ArrowPayloadType,
-    ) -> Option<IdColumnType> {
-        for &pt in S::allowed_payload_types() {
-            let info = payload_relations(pt);
-            let Some(primary_id) = info.primary_id else {
-                continue;
-            };
-            for relation in info.relations {
-                if relation.child_types.contains(&child_type) {
-                    return Some(primary_id.size);
-                }
-            }
-        }
-        None
+        testing::complete_batch(payload_type, batch, &[payload_type])
     }
 
     // ---- Test helpers ----
@@ -2161,16 +1977,7 @@ mod tests {
         let after_otlp: Vec<_> = batches.iter().map(|b| otap_to_otlp(&to_otap(b))).collect();
 
         // Pretty print batches
-        // Useful for debugging, keep this in and uncomment when running a single
-        // test along with `-- --no-capture`
-        // for (idx, b) in batches.iter().enumerate() {
-        //     use arrow::util::pretty;
-        //     eprintln!("-----Batch #{}------", idx);
-        //     for rb in b.iter().flatten().cloned() {
-        //         eprintln!("{}", pretty::pretty_format_batches(&[rb]).unwrap());
-        //     }
-        //     eprintln!("-----End Batch #{}------", idx);
-        // }
+        // pretty_print_otap_batches(&batches);
 
         assert_equivalent(&before_otlp, &after_otlp);
     }
@@ -2198,6 +2005,24 @@ mod tests {
         assert_equivalent(&before_otlp, &after_otlp);
     }
 
+    #[test]
+    #[rustfmt::skip]
+    fn test_reindex_dict_parent_id_values_longer_than_keys() {
+        // 2 rows, but the dictionary values array has 4 entries.
+        // keys=[0,1], values=[0,1,2,3]
+        let batch_a = traces!(
+            (Spans,
+                ("id", UInt16, vec![0u16, 1])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (SpanEventAttrs,
+                ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1, 2, 3])))
+        );
+
+        reindex_traces(&mut [batch_a]).unwrap();
+    }
+
     /// Applies transport optimized encodings to all payload types in each batch group.
     fn apply_transport_encodings<S: OtapBatchStore, const N: usize>(
         batches: &mut [[Option<RecordBatch>; N]],
@@ -2212,448 +2037,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// For each batch group, relation, and child type, records which child row
-    /// indices map to each parent by ordinal position (smallest parent ID = 0,
-    /// second smallest = 1, etc). This captures structural relationships
-    /// independent of actual ID values, so it should be identical before and
-    /// after reindexing.
-    fn extract_relation_fingerprints<S: OtapBatchStore, const N: usize>(
-        batches: &[[Option<RecordBatch>; N]],
-    ) -> Vec<Vec<Vec<usize>>> {
-        let mut fingerprints = Vec::new();
-
-        for group in batches.iter() {
-            for &payload_type in S::allowed_payload_types() {
-                let parent_idx = payload_to_idx(payload_type);
-                let Some(parent_batch) = &group[parent_idx] else {
-                    continue;
-                };
-
-                for relation in payload_relations(payload_type).relations {
-                    let Some(parent_col) = access_column(
-                        relation.key_col,
-                        &parent_batch.schema(),
-                        parent_batch.columns(),
-                    ) else {
-                        continue;
-                    };
-                    let parent_ids = collect_row_ids(parent_col.as_ref());
-
-                    // Sort and deduplicate to get ordinal mapping
-                    let mut unique_sorted: Vec<u64> = parent_ids.clone();
-                    unique_sorted.sort();
-                    unique_sorted.dedup();
-
-                    for &child_type in relation.child_types {
-                        let child_idx = payload_to_idx(child_type);
-                        let Some(child_batch) = &group[child_idx] else {
-                            continue;
-                        };
-
-                        let Some(child_col) = access_column(
-                            "parent_id",
-                            &child_batch.schema(),
-                            child_batch.columns(),
-                        ) else {
-                            continue;
-                        };
-                        let child_parent_ids = collect_row_ids(child_col.as_ref());
-
-                        // For each parent ordinal, record which child row indices reference it
-                        let mut ordinal_to_children: Vec<Vec<usize>> =
-                            vec![vec![]; unique_sorted.len()];
-                        for (child_row, &child_pid) in child_parent_ids.iter().enumerate() {
-                            if let Ok(ordinal) = unique_sorted.binary_search(&child_pid) {
-                                ordinal_to_children[ordinal].push(child_row);
-                            }
-                        }
-
-                        fingerprints.push(ordinal_to_children);
-                    }
-                }
-            }
-        }
-
-        fingerprints
-    }
-
-    /// Validates that no ID column has overlapping values across batch groups.
-    /// Uses payload_relations to discover all ID columns that should be unique.
-    fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
-        batches: &[[Option<RecordBatch>; N]],
-    ) {
-        for &payload_type in S::allowed_payload_types() {
-            let idx = payload_to_idx(payload_type);
-
-            for relation in payload_relations(payload_type).relations {
-                let mut seen = HashSet::new();
-
-                for group in batches.iter() {
-                    let Some(batch) = &group[idx] else {
-                        continue;
-                    };
-
-                    let Some(col) =
-                        access_column(relation.key_col, &batch.schema(), batch.columns())
-                    else {
-                        continue;
-                    };
-
-                    let ids = collect_ids(col.as_ref());
-                    for id in ids {
-                        assert!(
-                            seen.insert(id),
-                            "Overlapping ID in column '{}'",
-                            relation.key_col,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// Collects unique ID values from a column (for dictionary arrays, returns the
-    /// dictionary VALUES, not per-row values). Used by `assert_no_id_overlaps`.
-    fn collect_ids(col: &dyn Array) -> Vec<u64> {
-        match col.data_type() {
-            DataType::Dictionary(ktype, _) => match ktype.as_ref() {
-                DataType::UInt8 => {
-                    let values = col.as_dictionary::<UInt8Type>().values();
-                    collect_ids(values)
-                }
-                DataType::UInt16 => {
-                    let values = col.as_dictionary::<UInt16Type>().values();
-                    collect_ids(values)
-                }
-                _ => unreachable!(),
-            },
-            DataType::UInt16 => col
-                .as_primitive::<UInt16Type>()
-                .values()
-                .iter()
-                .map(|&v| v as u64)
-                .collect(),
-            DataType::UInt32 => col
-                .as_primitive::<UInt32Type>()
-                .values()
-                .iter()
-                .map(|&v| v as u64)
-                .collect(),
-            _ => unreachable!(),
-        }
-    }
-
-    /// Collects per-row logical ID values, resolving dictionary encoding.
-    fn collect_row_ids(col: &dyn Array) -> Vec<u64> {
-        match col.data_type() {
-            DataType::UInt16 => col
-                .as_primitive::<UInt16Type>()
-                .values()
-                .iter()
-                .map(|&v| v as u64)
-                .collect(),
-            DataType::UInt32 => col
-                .as_primitive::<UInt32Type>()
-                .values()
-                .iter()
-                .map(|&v| v as u64)
-                .collect(),
-            DataType::Dictionary(key_type, _) => match key_type.as_ref() {
-                DataType::UInt8 => collect_dict_row_ids::<UInt8Type>(col),
-                DataType::UInt16 => collect_dict_row_ids::<UInt16Type>(col),
-                _ => unreachable!("Unsupported dictionary key type"),
-            },
-            _ => unreachable!("Unsupported column type: {:?}", col.data_type()),
-        }
-    }
-
-    fn collect_dict_row_ids<K>(col: &dyn Array) -> Vec<u64>
-    where
-        K: ArrowDictionaryKeyType,
-        K::Native: ArrowNativeType,
-    {
-        let dict = col.as_dictionary::<K>();
-        let values = dict.values();
-        match values.data_type() {
-            DataType::UInt16 => {
-                let vals = values.as_primitive::<UInt16Type>();
-                dict.keys()
-                    .values()
-                    .iter()
-                    .map(|k: &K::Native| vals.value(k.as_usize()) as u64)
-                    .collect()
-            }
-            DataType::UInt32 => {
-                let vals = values.as_primitive::<UInt32Type>();
-                dict.keys()
-                    .values()
-                    .iter()
-                    .map(|k: &K::Native| vals.value(k.as_usize()) as u64)
-                    .collect()
-            }
-            _ => unreachable!("Unsupported dictionary value type"),
-        }
-    }
-
-    fn make_test_batch<S: OtapBatchStore, const N: usize>(
-        inputs: Vec<(ArrowPayloadType, RecordBatch)>,
-    ) -> [Option<RecordBatch>; N] {
-        let allowed = S::allowed_payload_types();
-        let mut result: [Option<RecordBatch>; N] = std::array::from_fn(|_| None);
-        let all_payload_types: Vec<ArrowPayloadType> = inputs.iter().map(|(pt, _)| *pt).collect();
-
-        for (payload_type, batch) in inputs {
-            assert!(
-                allowed.contains(&payload_type),
-                "Payload type {:?} is not allowed for this store",
-                payload_type
-            );
-
-            let idx = payload_to_idx(payload_type);
-            assert!(
-                result[idx].is_none(),
-                "Duplicate payload type {:?}",
-                payload_type
-            );
-
-            result[idx] = Some(complete_batch(payload_type, batch, &all_payload_types));
-        }
-
-        result
-    }
-
-    fn complete_batch(
-        payload_type: ArrowPayloadType,
-        batch: RecordBatch,
-        all_payload_types: &[ArrowPayloadType],
-    ) -> RecordBatch {
-        let batch = match payload_type {
-            ArrowPayloadType::Logs => complete_logs_batch(batch),
-            ArrowPayloadType::Spans => complete_spans_batch(batch),
-            ArrowPayloadType::SpanEvents => complete_span_events_batch(batch),
-            ArrowPayloadType::SpanLinks => complete_span_links_batch(batch),
-
-            // Root metrics table
-            ArrowPayloadType::UnivariateMetrics => {
-                complete_metrics_batch(batch, infer_metric_type(all_payload_types))
-            }
-
-            // Attrs (adds key/type/int columns if missing)
-            ArrowPayloadType::LogAttrs
-            | ArrowPayloadType::SpanAttrs
-            | ArrowPayloadType::MetricAttrs
-            | ArrowPayloadType::ResourceAttrs
-            | ArrowPayloadType::ScopeAttrs
-            | ArrowPayloadType::SpanEventAttrs
-            | ArrowPayloadType::SpanLinkAttrs
-            | ArrowPayloadType::NumberDpAttrs
-            | ArrowPayloadType::SummaryDpAttrs
-            | ArrowPayloadType::HistogramDpAttrs
-            | ArrowPayloadType::ExpHistogramDpAttrs
-            | ArrowPayloadType::NumberDpExemplarAttrs
-            | ArrowPayloadType::HistogramDpExemplarAttrs
-            | ArrowPayloadType::ExpHistogramDpExemplarAttrs => complete_attrs_batch(batch),
-
-            // Data points and exemplars: only id/parent_id needed
-            ArrowPayloadType::NumberDataPoints
-            | ArrowPayloadType::SummaryDataPoints
-            | ArrowPayloadType::HistogramDataPoints
-            | ArrowPayloadType::ExpHistogramDataPoints
-            | ArrowPayloadType::NumberDpExemplars
-            | ArrowPayloadType::HistogramDpExemplars
-            | ArrowPayloadType::ExpHistogramDpExemplars => batch,
-
-            _ => batch,
-        };
-        mark_id_columns_plain(batch)
-    }
-
-    fn infer_metric_type(payload_types: &[ArrowPayloadType]) -> u8 {
-        for pt in payload_types {
-            match pt {
-                ArrowPayloadType::HistogramDataPoints
-                | ArrowPayloadType::HistogramDpAttrs
-                | ArrowPayloadType::HistogramDpExemplars
-                | ArrowPayloadType::HistogramDpExemplarAttrs => return 3,
-                ArrowPayloadType::ExpHistogramDataPoints
-                | ArrowPayloadType::ExpHistogramDpAttrs
-                | ArrowPayloadType::ExpHistogramDpExemplars
-                | ArrowPayloadType::ExpHistogramDpExemplarAttrs => return 4,
-                ArrowPayloadType::SummaryDataPoints | ArrowPayloadType::SummaryDpAttrs => return 5,
-                ArrowPayloadType::NumberDataPoints
-                | ArrowPayloadType::NumberDpAttrs
-                | ArrowPayloadType::NumberDpExemplars
-                | ArrowPayloadType::NumberDpExemplarAttrs => return 1,
-                _ => {}
-            }
-        }
-        1 // Default: Gauge
-    }
-
-    fn complete_metrics_batch(batch: RecordBatch, metric_type: u8) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
-
-        if schema.fields.find("metric_type").is_none() {
-            fields.push(Arc::new(Field::new("metric_type", DataType::UInt8, false)));
-            columns.push(Arc::new(UInt8Array::from(vec![metric_type; num_rows])));
-        }
-
-        if schema.fields.find("name").is_none() {
-            fields.push(Arc::new(Field::new("name", DataType::Utf8, false)));
-            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed metrics batch")
-    }
-
-    fn complete_logs_batch(batch: RecordBatch) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
-
-        if schema.fields.find("body").is_none() {
-            let body_fields = vec![
-                Field::new("type", DataType::UInt8, false),
-                Field::new("int", DataType::Int64, true),
-            ];
-            let body_arrays: Vec<ArrayRef> = vec![
-                Arc::new(UInt8Array::from(vec![0u8; num_rows])),
-                Arc::new(Int64Array::from(vec![0i64; num_rows])),
-            ];
-            let body = StructArray::try_new(body_fields.clone().into(), body_arrays, None)
-                .expect("Failed to create body struct");
-
-            fields.push(Arc::new(Field::new(
-                "body",
-                DataType::Struct(body_fields.into()),
-                true,
-            )));
-            columns.push(Arc::new(body));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed logs batch")
-    }
-
-    fn complete_attrs_batch(batch: RecordBatch) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        if schema.fields.find("key").is_none() {
-            fields.push(Arc::new(Field::new("key", DataType::Utf8, false)));
-            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
-        }
-
-        if schema.fields.find("type").is_none() {
-            fields.push(Arc::new(Field::new("type", DataType::UInt8, false)));
-            columns.push(Arc::new(UInt8Array::from(vec![0u8; num_rows])));
-        }
-
-        if schema.fields.find("int").is_none() {
-            fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
-            columns.push(Arc::new(Int64Array::from(vec![0i64; num_rows])));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed attrs batch")
-    }
-
-    fn complete_spans_batch(batch: RecordBatch) -> RecordBatch {
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-        wrap_struct_id_columns(&schema, &mut fields, &mut columns);
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed spans batch")
-    }
-
-    /// SpanEvents batch: needs a "name" column for transport decode
-    fn complete_span_events_batch(batch: RecordBatch) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        if schema.fields.find("name").is_none() {
-            fields.push(Arc::new(Field::new("name", DataType::Utf8, true)));
-            columns.push(Arc::new(StringArray::from(vec![""; num_rows])));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed span events batch")
-    }
-
-    /// SpanLinks batch: needs a "trace_id" column for transport decode
-    fn complete_span_links_batch(batch: RecordBatch) -> RecordBatch {
-        let num_rows = batch.num_rows();
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields: Vec<Arc<Field>> = schema.fields().iter().cloned().collect();
-
-        if schema.fields.find("trace_id").is_none() {
-            fields.push(Arc::new(Field::new(
-                "trace_id",
-                DataType::FixedSizeBinary(16),
-                true,
-            )));
-            let empty_bytes = vec![0u8; num_rows * 16];
-            columns.push(Arc::new(
-                arrow::array::FixedSizeBinaryArray::try_new(16, empty_bytes.into(), None)
-                    .expect("Failed to create trace_id array"),
-            ));
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to create completed span links batch")
-    }
-
-    /// Wraps flat "resource.id" / "scope.id" columns into struct columns
-    /// (e.g. "resource.id" UInt16 -> "resource" Struct { "id": UInt16 })
-    fn wrap_struct_id_columns(
-        schema: &Schema,
-        fields: &mut Vec<Arc<Field>>,
-        columns: &mut Vec<ArrayRef>,
-    ) {
-        for &path in ID_COLUMN_PATHS {
-            let Some(struct_name) = struct_column_name(path) else {
-                continue;
-            };
-            let Some((idx, _)) = schema.fields.find(path) else {
-                continue;
-            };
-            let id_col = columns.remove(idx);
-            let _ = fields.remove(idx);
-            let id_field = Field::new("id", id_col.data_type().clone(), true);
-            let struct_col =
-                StructArray::try_new(vec![id_field.clone()].into(), vec![id_col], None)
-                    .expect("Failed to create struct");
-            fields.push(Arc::new(Field::new(
-                struct_name,
-                DataType::Struct(vec![id_field].into()),
-                true,
-            )));
-            columns.push(Arc::new(struct_col));
-        }
-    }
-
-    fn mark_id_columns_plain(batch: RecordBatch) -> RecordBatch {
-        let (schema, mut columns, _) = batch.into_parts();
-        let mut fields = schema.fields.to_vec();
-
-        for &path in ID_COLUMN_PATHS {
-            if let Some(col) = access_column(path, &schema, &columns) {
-                replace_column(path, None, &schema, &mut columns, col);
-                update_field_encoding_metadata(path, None, &mut fields);
-            }
-        }
-
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("Failed to mark id columns as plain")
     }
 }
