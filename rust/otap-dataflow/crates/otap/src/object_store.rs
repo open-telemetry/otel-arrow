@@ -7,8 +7,13 @@ use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use serde::Deserialize;
 
-#[cfg(feature = "azure")]
+#[cfg(any(feature = "azure", feature = "aws"))]
 use crate::cloud_auth;
+
+#[cfg(any(feature = "azure", feature = "aws"))]
+use object_store::path::Path;
+#[cfg(any(feature = "azure", feature = "aws"))]
+use object_store::prefix::PrefixStore;
 
 /// Azure object storage
 #[cfg(feature = "azure")]
@@ -42,6 +47,104 @@ pub enum StorageType {
         /// The auth settings, see [cloud_auth::azure::AuthMethod]
         auth: cloud_auth::azure::AuthMethod,
     },
+
+    /// AWS S3 storage
+    #[cfg(feature = "aws")]
+    S3 {
+        /// The S3 bucket URI, e.g. `s3://my-bucket/prefix`
+        base_uri: String,
+
+        /// AWS region, e.g. `us-east-1`. If not provided, falls back to
+        /// environment and default AWS provider chain behavior.
+        region: Option<String>,
+
+        /// Optional custom endpoint URL (for S3-compatible stores like
+        /// LocalStack).
+        endpoint: Option<String>,
+
+        /// Whether to allow HTTP (non-TLS) connections.
+        allow_http: Option<bool>,
+
+        /// Whether to use virtual hosted-style requests.
+        /// Set to false for S3-compatible stores that require path-style.
+        virtual_hosted_style_request: Option<bool>,
+
+        /// The auth settings, see [cloud_auth::aws::AuthMethod]
+        auth: cloud_auth::aws::AuthMethod,
+    },
+}
+
+/// Extract the path prefix from a cloud storage URI that builders discard.
+///
+/// Cloud storage builders (`AmazonS3Builder::with_url`, `MicrosoftAzureBuilder::with_url`)
+/// parse the bucket/container from the URL but discard any path after it. This function
+/// extracts that discarded path so it can be used with `PrefixStore`.
+///
+/// Examples:
+/// - `s3://bucket/telemetry` → `Some(Path::from("telemetry"))`
+/// - `s3://bucket` → `None`
+/// - `az://container/prefix` → `Some(Path::from("prefix"))`
+/// - `https://account.blob.core.windows.net/container/prefix` → `Some(Path::from("prefix"))`
+#[cfg(any(feature = "azure", feature = "aws"))]
+fn extract_path_prefix(base_uri: &str) -> Result<Option<Path>, object_store::Error> {
+    let url = url::Url::parse(base_uri).map_err(|e| object_store::Error::Generic {
+        store: "cloud",
+        source: Box::new(e),
+    })?;
+
+    let path = url.path();
+
+    // For scheme-based URIs (s3://, az://, abfs://), the path starts with '/'
+    // and the entire path after the leading slash (minus any trailing '/') is
+    // treated as the prefix.
+    // For HTTPS Azure URIs, the first path segment is the container name, and
+    // the prefix is the remainder of the path after that container segment
+    // (minus any trailing '/').
+    let is_https = url.scheme() == "https" || url.scheme() == "http";
+
+    let trimmed = path.trim_start_matches('/');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let prefix = if is_https {
+        // For HTTPS URLs like https://account.blob.core.windows.net/container/prefix/sub
+        // Skip the first segment (container) and use the rest
+        match trimmed.find('/') {
+            Some(idx) => {
+                let after_container = &trimmed[idx + 1..];
+                let after_container = after_container.trim_end_matches('/');
+                if after_container.is_empty() {
+                    return Ok(None);
+                }
+                after_container
+            }
+            None => return Ok(None), // Only container, no prefix
+        }
+    } else {
+        // For scheme-based URIs (s3://bucket/prefix, az://container/prefix)
+        // the host is the bucket/container, path is the prefix
+        trimmed.trim_end_matches('/')
+    };
+
+    if prefix.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Path::from(prefix)))
+    }
+}
+
+/// Wrap an object store with a `PrefixStore` if the URI contains a path prefix.
+#[cfg(any(feature = "azure", feature = "aws"))]
+fn wrap_with_prefix(
+    store: impl ObjectStore,
+    base_uri: &str,
+) -> Result<Arc<dyn ObjectStore>, object_store::Error> {
+    if let Some(prefix) = extract_path_prefix(base_uri)? {
+        Ok(Arc::new(PrefixStore::new(store, prefix)))
+    } else {
+        Ok(Arc::new(store))
+    }
 }
 
 /// Fetch an object store based on the provide storage
@@ -81,12 +184,42 @@ pub fn from_storage_type(
             let credential_provider =
                 azure::AzureTokenCredentialProvider::new(token_credential, storage_scope.clone());
 
-            Ok(Arc::new(
-                MicrosoftAzureBuilder::new()
-                    .with_url(base_uri)
-                    .with_credentials(Arc::new(credential_provider))
-                    .build()?,
-            ))
+            let store = MicrosoftAzureBuilder::new()
+                .with_url(base_uri)
+                .with_credentials(Arc::new(credential_provider))
+                .build()?;
+            wrap_with_prefix(store, base_uri)
+        }
+
+        #[cfg(feature = "aws")]
+        StorageType::S3 {
+            base_uri,
+            region,
+            endpoint,
+            allow_http,
+            virtual_hosted_style_request,
+            auth,
+        } => {
+            use object_store::aws::AmazonS3Builder;
+
+            let mut builder = AmazonS3Builder::from_env().with_url(base_uri);
+
+            if let Some(region) = region {
+                builder = builder.with_region(region);
+            }
+            if let Some(endpoint) = endpoint {
+                builder = builder.with_endpoint(endpoint);
+            }
+            if let Some(allow) = allow_http {
+                builder = builder.with_allow_http(*allow);
+            }
+            if let Some(vhost) = virtual_hosted_style_request {
+                builder = builder.with_virtual_hosted_style_request(*vhost);
+            }
+
+            builder = cloud_auth::aws::configure_builder(builder, auth);
+            let store = builder.build()?;
+            wrap_with_prefix(store, base_uri)
         }
     }
 }
@@ -244,6 +377,24 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "aws")]
+    fn test_get_s3_storage() {
+        let storage = StorageType::S3 {
+            base_uri: "s3://my-bucket/test".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:4566".to_string()),
+            allow_http: Some(true),
+            virtual_hosted_style_request: Some(false),
+            auth: cloud_auth::aws::AuthMethod::StaticCredentials {
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".into(),
+                session_token: None,
+            },
+        };
+        assert!(from_storage_type(&storage).is_ok());
+    }
+
+    #[test]
     fn test_file_config() {
         let json = json!({
             "file": {
@@ -337,6 +488,203 @@ mod test {
             },
         };
         test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_default_auth() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "auth": {
+                    "type": "default"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: None,
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::Default,
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_static_credentials() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "endpoint": "http://localhost:4566",
+                "allow_http": true,
+                "virtual_hosted_style_request": false,
+                "auth": {
+                    "type": "static_credentials",
+                    "access_key_id": "test",
+                    "secret_access_key": "test",
+                    "session_token": "token"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: Some("http://localhost:4566".to_string()),
+            allow_http: Some(true),
+            virtual_hosted_style_request: Some(false),
+            auth: cloud_auth::aws::AuthMethod::StaticCredentials {
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".into(),
+                session_token: Some("token".into()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_web_identity() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "auth": {
+                    "type": "web_identity",
+                    "role_arn": "arn:aws:iam::123456789012:role/TestRole",
+                    "token_file_path": "/var/run/secrets/token"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::WebIdentity {
+                role_arn: Some("arn:aws:iam::123456789012:role/TestRole".to_string()),
+                token_file_path: Some("/var/run/secrets/token".to_string()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_s3_config_with_assume_role() {
+        let json = json!({
+            "s3": {
+                "base_uri": "s3://my-bucket/telemetry",
+                "region": "us-east-1",
+                "auth": {
+                    "type": "assume_role",
+                    "role_arn": "arn:aws:iam::123456789012:role/CrossAccountRole",
+                    "external_id": "my-external-id",
+                    "session_name": "otap-session"
+                }
+            }
+        })
+        .to_string();
+
+        let expected = StorageType::S3 {
+            base_uri: "s3://my-bucket/telemetry".to_string(),
+            region: Some("us-east-1".to_string()),
+            endpoint: None,
+            allow_http: None,
+            virtual_hosted_style_request: None,
+            auth: cloud_auth::aws::AuthMethod::AssumeRole {
+                role_arn: "arn:aws:iam::123456789012:role/CrossAccountRole".to_string(),
+                external_id: Some("my-external-id".to_string()),
+                session_name: Some("otap-session".to_string()),
+            },
+        };
+        test_deserialize(&json, expected);
+    }
+
+    // --- extract_path_prefix tests ---
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_with_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket/telemetry").unwrap();
+        assert_eq!(prefix, Some(Path::from("telemetry")));
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_nested_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket/a/b/c").unwrap();
+        assert_eq!(prefix, Some(Path::from("a/b/c")));
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_no_prefix() {
+        let prefix = extract_path_prefix("s3://my-bucket").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "aws")]
+    fn test_extract_prefix_s3_trailing_slash() {
+        let prefix = extract_path_prefix("s3://my-bucket/telemetry/").unwrap();
+        assert_eq!(prefix, Some(Path::from("telemetry")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_az_with_prefix() {
+        let prefix = extract_path_prefix("az://container/prefix").unwrap();
+        assert_eq!(prefix, Some(Path::from("prefix")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_az_no_prefix() {
+        let prefix = extract_path_prefix("az://container").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_with_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/prefix").unwrap();
+        assert_eq!(prefix, Some(Path::from("prefix")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_nested_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/a/b/c").unwrap();
+        assert_eq!(prefix, Some(Path::from("a/b/c")));
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_no_prefix() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container").unwrap();
+        assert_eq!(prefix, None);
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn test_extract_prefix_azure_https_container_trailing_slash() {
+        let prefix =
+            extract_path_prefix("https://account.blob.core.windows.net/container/").unwrap();
+        assert_eq!(prefix, None);
     }
 
     fn test_deserialize(json: &str, expected: StorageType) {
