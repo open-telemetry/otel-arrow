@@ -1027,7 +1027,6 @@ mod test {
                         }
                     }
 
-                    // validate we received three Acks
                     let mut ack_count = 0;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
                     loop {
@@ -1198,7 +1197,6 @@ mod test {
                     // ensure exit success
                     result.unwrap();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1301,7 +1299,6 @@ mod test {
                     // ensure exit success
                     result.unwrap();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 3;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1395,7 +1392,6 @@ mod test {
                     // ensure exit success
                     result.unwrap();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1494,7 +1490,6 @@ mod test {
                     // ensure exit success
                     result.unwrap();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1583,7 +1578,6 @@ mod test {
 
                     server_cancellation_token.cancel();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1680,7 +1674,6 @@ mod test {
 
                     server_cancellation_token.cancel();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
@@ -1821,7 +1814,6 @@ mod test {
                         }
                     }
 
-                    // validate we received three Acks
                     let mut ack_count = 0;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
                     loop {
