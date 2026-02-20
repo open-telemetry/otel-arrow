@@ -8,6 +8,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
+use arrow::compute::sort_to_indices;
 use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
@@ -358,7 +359,7 @@ where
 /// creation of the mappings from applying those mappings to potentially multiple
 /// child batches.
 fn reindex_child_column<T>(
-    mut rb: RecordBatch,
+    rb: RecordBatch,
     column_path: &str,
     mappings: &[IdMapping<T::Native>],
 ) -> Result<RecordBatch>
@@ -366,17 +367,16 @@ where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
 {
-    // Extract ID column
+    // Materialize the id values. In the case of a dictionary this is the
+    // values array and does not include the keys.
     let id_col = extract_id_column(&rb, column_path)?;
-    let ids = materialize_id_column::<T>(id_col.as_ref())?;
-    let mut ids = ids.values().to_vec();
+    let id_values = materialize_id_column::<T>(id_col.as_ref())?;
+    let mut id_values = id_values.values().to_vec();
 
-    // Sort the ids. If we already did this in the parent batch, we can skip it here
-    // and reuse the same allocation.
-    let sort_indices = sort_vec_to_indices(&ids);
-    let sort_indices = PrimitiveArray::from(sort_indices);
-    let mut new_ids = vec![T::Native::default(); ids.len()];
-    take_vec(&ids, &mut new_ids, sort_indices.values());
+    let value_sort_indices = sort_vec_to_indices(&id_values);
+    let value_sort_indices = PrimitiveArray::from(value_sort_indices);
+    let mut new_ids = vec![T::Native::default(); id_values.len()];
+    take_vec(&id_values, &mut new_ids, value_sort_indices.values());
     if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
         // We have integrity violations in some number of ranges. We need to eliminate
         // them because we're on the reindexing path where we're squashing all ids
@@ -395,16 +395,29 @@ where
         //
         // Note: We don't need to unsort new_ids anymore because the whole record
         // batch is sorted.
-        rb = sort_record_batch_by_indices(rb, &sort_indices)?;
-        rb = remove_record_batch_ranges(rb, &violations)?;
+
+        // Currently we have sort indices for the values of the ids. If the id column
+        // is a primitive type then this is the same as the value sort indices.
+        //
+        // If this is a dictionary type then we need to sort the keys which is
+        // done by rank.
+        let rb = match id_col.data_type() {
+            DataType::Dictionary(_, _) => {
+                let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
+                    .map_err(|e| Error::Batching { source: e })?;
+                sort_record_batch_by_indices(rb, &sort_indices)?
+            }
+            _ => sort_record_batch_by_indices(rb, &value_sort_indices)?,
+        };
+        let rb = remove_record_batch_ranges(rb, &violations)?;
         remove_vec_ranges(&mut new_ids, &violations);
         return replace_id_column::<T>(rb, column_path, new_ids);
     }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
-    untake_vec(&new_ids, &mut ids, sort_indices.values());
-    replace_id_column::<T>(rb, column_path, ids)
+    untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
+    replace_id_column::<T>(rb, column_path, id_values)
 }
 
 /// Removes elements at the given ranges from a vector in place.
