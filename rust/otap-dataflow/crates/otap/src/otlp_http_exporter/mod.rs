@@ -261,6 +261,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                     SignalType::Traces => traces_proto_encoder
                                         .encode(&mut otap_batch, &mut proto_buffer),
                                 };
+
+                            if !context.may_return_payload() {
+                                // drop the original OTAP batch if the the context indicates it
+                                // does not wish it to be returned
+                                _ = otap_batch.take_payload();
+                            }
+
                             let body = if let Err(e) = encode_result {
                                 // encoding error, we must have received an invalid structured batch
                                 _ = effect_handler
@@ -274,12 +281,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             } else {
                                 Bytes::copy_from_slice(proto_buffer.as_ref())
                             };
-
-                            if !context.may_return_payload() {
-                                // drop the original OTAP batch if the the context indicates it
-                                // does not wish it to be returned
-                                _ = otap_batch.take_payload();
-                            }
 
                             (body, otap_batch.into())
                         }
