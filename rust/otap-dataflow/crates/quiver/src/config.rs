@@ -315,13 +315,9 @@ pub enum RetentionPolicy {
 }
 
 /// Retention-related configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetentionConfig {
-    /// Total bytes allowed for finalized segments on disk.
-    pub size_cap_bytes: NonZeroU64,
-    /// Policy applied when usage exceeds [`RetentionConfig::size_cap_bytes`].
-    pub policy: RetentionPolicy,
     /// Optional maximum wall-clock retention irrespective of size.
     ///
     /// When set, segments older than this duration are automatically deleted
@@ -339,16 +335,6 @@ impl RetentionConfig {
             ));
         }
         Ok(())
-    }
-}
-
-impl Default for RetentionConfig {
-    fn default() -> Self {
-        Self {
-            size_cap_bytes: NonZeroU64::new(500 * 1024 * 1024 * 1024).expect("non-zero"),
-            policy: RetentionPolicy::Backpressure,
-            max_age: None,
-        }
     }
 }
 
@@ -371,7 +357,6 @@ mod tests {
         let cfg = QuiverConfig {
             retention: RetentionConfig {
                 max_age: Some(Duration::ZERO),
-                ..RetentionConfig::default()
             },
             ..QuiverConfig::default()
         };
@@ -412,8 +397,6 @@ mod tests {
             max_stream_count: 1,
         };
         let retention = RetentionConfig {
-            size_cap_bytes: NonZeroU64::new(2048).unwrap(),
-            policy: RetentionPolicy::DropOldest,
             max_age: Some(Duration::from_secs(1)),
         };
 

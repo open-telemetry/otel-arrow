@@ -38,7 +38,7 @@ groups:
             config:
               path: /var/lib/otap/fake-durable-buffer-noop-example/buffer
               poll_interval: 10ms
-              retention_size_cap: "500MB"
+              retention_size_cap: "10GB"
               size_cap_policy: backpressure
               # Faster segment finalization for testing
               max_segment_open_duration: 500ms

@@ -114,6 +114,11 @@ use otap_df_telemetry_macros::metric_set;
 /// URN for the durable buffer.
 pub const DURABLE_BUFFER_URN: &str = "urn:otel:durable_buffer:processor";
 
+/// Minimum interval between repeated warning logs for the same condition
+/// (backpressure, flush failures). Prevents log flooding when the timer
+/// tick fires every poll_interval (~100 ms).
+const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
+
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
 
@@ -174,9 +179,13 @@ pub struct DurableBufferMetrics {
     pub produced_arrow_traces: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
-    /// Number of ingest errors.
+    /// Number of ingest errors (excludes backpressure/capacity rejections).
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
+
+    /// Number of ingest rejections due to storage backpressure (soft cap exceeded).
+    #[metric(unit = "{rejection}")]
+    pub ingest_backpressure: Counter<u64>,
 
     /// Number of read errors.
     #[metric(unit = "{error}")]
@@ -349,10 +358,19 @@ pub struct DurableBuffer {
 
     /// Whether timer has been started.
     timer_started: bool,
+
+    /// Last time we logged a flush warning (rate-limiting).
+    last_flush_warn: Option<Instant>,
+
+    /// Last time we logged a backpressure warning (rate-limiting).
+    last_backpressure_warn: Option<Instant>,
 }
 
 impl DurableBuffer {
     /// Creates a new durable buffer with the given configuration.
+    ///
+    /// Validates that the configured `retention_size_cap` is large enough for
+    /// the Quiver engine to operate via [`DiskBudget::minimum_hard_cap()`].
     ///
     /// Note: The Quiver engine is lazily initialized on the first message
     /// to ensure we're running within an async context.
@@ -364,6 +382,39 @@ impl DurableBuffer {
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
 
+        // Validate that per-core budget is large enough for the engine.
+        // QuiverEngine::open() enforces this lazily on first message. Catch it
+        // here so the pipeline fails fast at construction time.
+        let quiver_config = Self::build_quiver_config(&config);
+        let total_size_cap = config.size_cap_bytes();
+        let per_core_size_cap = total_size_cap / num_cores.max(1) as u64;
+        let segment_size = quiver_config.segment.target_size_bytes.get();
+        let wal_max = DiskBudget::effective_wal_size(&quiver_config);
+        let min_per_core = DiskBudget::minimum_hard_cap(segment_size, wal_max);
+
+        if per_core_size_cap < min_per_core {
+            let min_total = min_per_core * num_cores as u64;
+            let max_cores = total_size_cap / min_per_core;
+            return Err(ConfigError::InvalidUserConfig {
+                error: if max_cores == 0 {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small: \
+                         the engine requires at least {min_per_core} bytes per core \
+                         (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Increase retention_size_cap to at least {min_total} bytes",
+                    )
+                } else {
+                    format!(
+                        "retention_size_cap ({total_size_cap} bytes) is too small for {num_cores} core(s): \
+                         per-core capacity is {per_core_size_cap} bytes, but the engine requires at \
+                         least {min_per_core} bytes per core (WAL max {wal_max} + 2 * segment size {segment_size}). \
+                         Either increase retention_size_cap to at least {min_total} bytes, \
+                         or reduce the core count to at most {max_cores}",
+                    )
+                },
+            });
+        }
+
         Ok(Self {
             engine_state: EngineState::Uninitialized,
             pending_bundles: HashMap::new(),
@@ -373,7 +424,41 @@ impl DurableBuffer {
             num_cores,
             metrics,
             timer_started: false,
+            last_flush_warn: None,
+            last_backpressure_warn: None,
         })
+    }
+
+    /// Build the [`QuiverConfig`] that will be used for the engine.
+    ///
+    /// This is the single source of truth for translating [`DurableBufferConfig`]
+    /// fields into Quiver engine settings. Both [`new()`](Self::new) (for early
+    /// validation) and [`init_engine()`](Self::init_engine) (for construction)
+    /// call this so the two can never drift apart.
+    ///
+    /// The returned config does **not** include the per-core `data_dir`; that is
+    /// added by `init_engine` since it depends on `core_id`.
+    fn build_quiver_config(config: &DurableBufferConfig) -> QuiverConfig {
+        // Exhaustive destructure: if a field is added to DurableBufferConfig,
+        // the compiler will force you to handle it here (no `..`).
+        let DurableBufferConfig {
+            path: _,               // per-core subdir added by init_engine
+            retention_size_cap: _, // drives the DiskBudget, not QuiverConfig
+            max_age,
+            size_cap_policy: _, // drives the DiskBudget policy
+            poll_interval: _,   // DurableBuffer timer, not engine config
+            otlp_handling: _,   // DurableBuffer adapter concern
+            max_segment_open_duration,
+            initial_retry_interval: _, // DurableBuffer retry logic
+            max_retry_interval: _,     // DurableBuffer retry logic
+            retry_multiplier: _,       // DurableBuffer retry logic
+            max_in_flight: _,          // DurableBuffer flow control
+        } = config;
+
+        let mut quiver_config = QuiverConfig::default();
+        quiver_config.segment.max_open_duration = *max_segment_open_duration;
+        quiver_config.retention.max_age = *max_age;
+        quiver_config
     }
 
     /// Calculate exponential backoff delay with jitter.
@@ -490,31 +575,10 @@ impl DurableBuffer {
         let num_cores = self.num_cores.max(1) as u64;
         let per_core_size_cap = total_size_cap / num_cores;
 
-        // Minimum per-core capacity: 1 MiB (enough for WAL + at least a small segment).
-        // Default segment target is 32 MiB, so this is quite small but prevents
-        // obviously broken configurations (e.g., 100 bytes for 1000 cores).
-        const MIN_PER_CORE_BYTES: u64 = 1024 * 1024; // 1 MiB
-
-        if per_core_size_cap < MIN_PER_CORE_BYTES {
-            otel_error!(
-                "durable_buffer.config.invalid",
-                total_size_cap = total_size_cap,
-                num_cores = num_cores,
-                per_core_size_cap = per_core_size_cap,
-                min_per_core_bytes = MIN_PER_CORE_BYTES,
-                message = "per-core storage capacity is below minimum threshold"
-            );
-            return Err(Error::InternalError {
-                message: format!(
-                    "retention_size_cap ({} bytes) is too small for {} cores; \
-                     per-core capacity is {} bytes but minimum is {} bytes (1 MiB)",
-                    total_size_cap, num_cores, per_core_size_cap, MIN_PER_CORE_BYTES
-                ),
-            });
-        }
-
-        // Create per-core data directory: {base_path}/core_{core_id}
+        // Build the QuiverConfig from our DurableBufferConfig (same helper used
+        // in new() for early validation, ensuring the two stay in sync).
         let core_data_dir = self.config.path.join(format!("core_{}", self.core_id));
+        let quiver_config = Self::build_quiver_config(&self.config).with_data_dir(&core_data_dir);
 
         otel_info!(
             "durable_buffer.engine.init",
@@ -526,13 +590,16 @@ impl DurableBuffer {
             max_age = ?self.config.max_age
         );
 
-        // Create Quiver configuration with per-core data directory
-        let mut quiver_config = QuiverConfig::default().with_data_dir(&core_data_dir);
-        quiver_config.segment.max_open_duration = self.config.max_segment_open_duration;
-        quiver_config.retention.max_age = self.config.max_age;
-
-        // Create disk budget with per-core share of the total cap
-        let budget = Arc::new(DiskBudget::new(per_core_size_cap, policy));
+        // Create disk budget with per-core share of the total cap.
+        // DiskBudget::for_config() reads segment/WAL sizes directly from the
+        // QuiverConfig, ensuring the budget matches the engine configuration.
+        let budget = Arc::new(
+            DiskBudget::for_config(per_core_size_cap, &quiver_config, policy).map_err(|e| {
+                Error::InternalError {
+                    message: format!("invalid budget configuration: {e}"),
+                }
+            })?,
+        );
 
         // Build the Quiver engine
         let engine = QuiverEngine::builder(quiver_config)
@@ -735,8 +802,22 @@ impl DurableBuffer {
                 Ok(())
             }
             Err((e, original_payload)) => {
-                self.metrics.ingest_errors.add(1);
-                otel_error!("durable_buffer.ingest.failed", error = %e);
+                if e.is_at_capacity() {
+                    // Normal backpressure: soft cap exceeded. Count separately
+                    // and rate-limit logging to avoid flooding.
+                    self.metrics.ingest_backpressure.add(1);
+                    let now = Instant::now();
+                    let should_log = self
+                        .last_backpressure_warn
+                        .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
+                    if should_log {
+                        self.last_backpressure_warn = Some(now);
+                        otel_warn!("durable_buffer.ingest.backpressure", error = %e);
+                    }
+                } else {
+                    self.metrics.ingest_errors.add(1);
+                    otel_error!("durable_buffer.ingest.failed", error = %e);
+                }
 
                 // Preserve original payload so upstream can retry
                 let nack_pdata = OtapPdata::new(context, original_payload);
@@ -771,7 +852,16 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                otel_warn!("durable_buffer.flush.failed", error = %e);
+                // Rate-limit flush warnings since the timer tick fires every
+                // poll_interval (~100ms).
+                let now = Instant::now();
+                let should_log = self
+                    .last_flush_warn
+                    .is_none_or(|last| now.duration_since(last) >= WARN_RATE_LIMIT);
+                if should_log {
+                    self.last_flush_warn = Some(now);
+                    otel_warn!("durable_buffer.flush.failed", error = %e);
+                }
             }
         }
 
@@ -1412,7 +1502,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         let budget = engine.budget();
                         Some((
                             budget.used(),
-                            budget.cap(),
+                            budget.hard_cap(),
                             engine.force_dropped_segments(),
                             engine.force_dropped_bundles(),
                         ))
@@ -1581,7 +1671,7 @@ mod tests {
 
         let config = DurableBufferConfig {
             path: std::path::PathBuf::from("/tmp/test"),
-            retention_size_cap: byte_unit::Byte::from_u64(1024),
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MB (above min for default WAL/segment sizes)
             max_age: None,
             size_cap_policy: SizeCapPolicy::Backpressure,
             poll_interval: Duration::from_millis(100),
