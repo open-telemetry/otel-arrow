@@ -25,7 +25,8 @@ type SplitResult<const N: usize> = Result<Vec<[Option<RecordBatch>; N]>>;
 /// This is broadly done in two stages:
 ///
 /// 1. Planning - Computes the split boundaries based on the root record batch.
-/// 2. Splitting - Splits each record batch into non-overlapping ranges.
+/// 2. Splitting - Splits each record batch into non-overlapping ranges starting
+///    with the root record batch.
 ///
 /// # Planning
 ///
@@ -35,7 +36,22 @@ type SplitResult<const N: usize> = Result<Vec<[Option<RecordBatch>; N]>>;
 /// sized pieces with some offset for the first chunk to make it fit evenly.
 ///
 /// For metrics we need to handle the fact that each metric row corresponds to
-/// multiple data points in one of four data point tables.
+/// multiple data points in one of four data point tables. That requires effectively
+/// a join between the root metrics table and the data points tables to compute
+/// how many items each row accounts for.
+///
+/// Uneven item sizes also introduces the problem of infeasibility where we may
+/// have to break up individual metrics into more than one metric. The current
+/// implementation does not handle this case, but rather emits a single metric
+/// in its own batch in the case that there is a single one with more than max items.
+///
+/// # Splitting
+///
+/// Splitting is done starting at the root. We sort all record batches
+/// by their parent_id if present and then id. For each batch, we identify the
+/// id ranges that are a part of the current slice. Then we recursively split the
+/// children by matching their parent_id column to our id ranges. This continues
+/// until we hit a record batch without an id column.
 pub fn split<const N: usize>(
     batches: &mut [[Option<RecordBatch>; N]],
     max_items: NonZeroU32,
