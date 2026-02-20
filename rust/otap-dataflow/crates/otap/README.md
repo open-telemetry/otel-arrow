@@ -34,7 +34,8 @@ optional contrib processors) live in `crates/contrib-nodes`.
 - Error Exporter (`src/error_exporter.rs`)
 - Noop Exporter (`src/noop_exporter.rs`)
 - OTAP Exporter (`src/otap_exporter/`, `src/otap_exporter.rs`)
-- OTLP Exporter (`src/otlp_exporter.rs`)
+- OTLP gRPC Exporter (`src/otlp_exporter.rs`)
+- OTLP HTTP Exporter (`src/otlp_http_exporter/`)
 - Parquet Exporter (`src/parquet_exporter/`, `src/parquet_exporter.rs`)
 - Perf Exporter (`src/perf_exporter/`)
 
