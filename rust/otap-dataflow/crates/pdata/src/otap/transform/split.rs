@@ -1,4 +1,5 @@
-// Copyright The OpenTelemetry Authors SPDX-License-Identifier: Apache-2.0
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use std::num::NonZeroU32;
 use std::ops::{Range, RangeInclusive};
@@ -123,7 +124,7 @@ fn plan_split(
     // previous batch plus this first chunk fit exactly into `max_items`.
     // This may not be a behavior that's important in the future.
     let remainder = offset % max;
-    let first_chunk_size = if remainder == 0 { max } else { max - remainder };
+    let first_chunk_size = max - remainder;
 
     let mut ranges = Vec::new();
     let mut pos = 0;
