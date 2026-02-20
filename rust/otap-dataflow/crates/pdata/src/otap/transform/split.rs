@@ -10,7 +10,7 @@ use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type, 
 
 use crate::error::{Error, Result};
 use crate::otap::transform::util::sort_otap_batch_by_parent_then_id;
-use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces};
+use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, num_items};
 use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{METRIC_TYPE, PARENT_ID};
@@ -54,10 +54,14 @@ pub fn split<const N: usize>(
 
     let original_len = batches.len();
     let mut output = Vec::with_capacity(original_len);
+    // Track total items seen across batches so that split boundaries align
+    // with the downstream concatenation step. Without this, trailing chunks
+    // from one batch may be too small to meet the batch processor's
+    // lower_limit when concatenated.
+    let mut total_items: usize = 0;
     #[allow(clippy::needless_range_loop)]
     for i in 0..original_len {
         // TODO: Can we make this impossible by OtapBatchStore guarantees?
-        // TODO: Test this scenario
         if batches[i][root_idx].is_none() {
             continue;
         };
@@ -70,9 +74,11 @@ pub fn split<const N: usize>(
         let root_rb = batch[root_idx].as_ref().expect("root");
         let ranges = match N {
             Metrics::COUNT => plan_metrics_split(root_rb, &batch, max_items)?,
-            Logs::COUNT | Traces::COUNT => plan_split(root_rb, max_items)?,
+            Logs::COUNT | Traces::COUNT => plan_split(root_rb, max_items, total_items)?,
             _ => unreachable!(),
         };
+
+        total_items += num_items(&batch);
 
         // Execute
         execute_split(batch, root_type, &ranges, &mut output)?;
@@ -87,16 +93,30 @@ pub fn split<const N: usize>(
 ///
 ///  Returns `N` non-overlapping,
 /// sorted ranges that cover the entire root.
-fn plan_split(root_rb: &RecordBatch, max_items: NonZeroU32) -> Result<Vec<Range<usize>>> {
+fn plan_split(
+    root_rb: &RecordBatch,
+    max_items: NonZeroU32,
+    offset: usize,
+) -> Result<Vec<Range<usize>>> {
     let n_rows = root_rb.num_rows();
     let max = max_items.get() as usize;
-    let n_chunks = n_rows.div_ceil(max);
 
-    let mut ranges = Vec::with_capacity(n_chunks);
-    for i in 0..n_chunks {
-        let start = i * max;
-        let end = (start + max).min(n_rows);
-        ranges.push(start..end);
+    // Size the first chunk to fill the remainder of the current
+    // concatenation bin. This ensures that when `generic_concatenate`
+    // later processes the split output, the trailing chunk from the
+    // previous batch plus this first chunk fit exactly into `max_items`.
+    // This may not be a behavior that's important in the future.
+    let remainder = offset % max;
+    let first_chunk_size = if remainder == 0 { max } else { max - remainder };
+
+    let mut ranges = Vec::new();
+    let mut pos = 0;
+    let mut chunk_size = first_chunk_size;
+    while pos < n_rows {
+        let end = (pos + chunk_size).min(n_rows);
+        ranges.push(pos..end);
+        pos = end;
+        chunk_size = max;
     }
 
     Ok(ranges)
