@@ -58,11 +58,7 @@ impl RecordsetKqlProcessor {
             error: format!("Failed to parse KQL query: {:?}", errors),
         })?;
 
-        otap_df_telemetry::otel_info!(
-            "processor.ready",
-            processor = "kql",
-            message = "KQL processor initialized successfully"
-        );
+        otap_df_telemetry::otel_info!("recordset_kql_processor.ready");
 
         Ok(Self { config, pipeline })
     }
@@ -91,25 +87,26 @@ impl RecordsetKqlProcessor {
             .unwrap_or_default()
             .set_include_dropped_records(false)
             .set_diagnostic_options(BridgeDiagnosticOptions::Callback(|d| {
-                let max = d
-                    .get_diagnostics()
-                    .iter()
-                    .map(|v| v.get_diagnostic_level())
-                    .max()
-                    .unwrap_or_default();
-
-                let level = match max {
-                    RecordSetEngineDiagnosticLevel::Verbose => otap_df_telemetry::Level::DEBUG,
-                    RecordSetEngineDiagnosticLevel::Info => otap_df_telemetry::Level::INFO,
-                    RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
-                    RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
-                };
-                otap_df_telemetry::otel_event!(
-                    level,
-                    "processor.query_output",
-                    processor = "recordset_kql",
-                    formatted_diagnostics = %d
-                );
+                for diagnostic in d.get_diagnostics() {
+                    let (query_line_number, query_column_number) = diagnostic
+                        .get_expression()
+                        .get_query_location()
+                        .get_line_and_column_numbers();
+                    let message = diagnostic.get_message();
+                    let level = match diagnostic.get_diagnostic_level() {
+                        RecordSetEngineDiagnosticLevel::Verbose => otap_df_telemetry::Level::DEBUG,
+                        RecordSetEngineDiagnosticLevel::Info => otap_df_telemetry::Level::INFO,
+                        RecordSetEngineDiagnosticLevel::Warn => otap_df_telemetry::Level::WARN,
+                        RecordSetEngineDiagnosticLevel::Error => otap_df_telemetry::Level::ERROR,
+                    };
+                    otap_df_telemetry::otel_event!(
+                        level,
+                        "recordset_kql_processor.query_output",
+                        query_line_number,
+                        query_column_number,
+                        message
+                    );
+                }
             }))
     }
 
@@ -129,10 +126,8 @@ impl RecordsetKqlProcessor {
         let result = match otlp_bytes {
             OtlpProtoBytes::ExportLogsRequest(bytes) => {
                 otap_df_telemetry::otel_debug!(
-                    "processor.processing_logs",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    "Processing KQL query"
+                    "recordset_kql_processor.processing_logs",
+                    input_items
                 );
                 self.process_logs(bytes, signal)
             }
@@ -153,10 +148,9 @@ impl RecordsetKqlProcessor {
                 let output_items = payload.num_items() as u64;
 
                 otap_df_telemetry::otel_debug!(
-                    "processor.success",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    output_items = output_items,
+                    "recordset_kql_processor.success",
+                    input_items,
+                    output_items,
                 );
 
                 let processed_data = OtapPdata::new(ctx, payload);
@@ -167,10 +161,9 @@ impl RecordsetKqlProcessor {
             Err(e) => {
                 let message = e.to_string();
                 otap_df_telemetry::otel_error!(
-                    "processor.failure",
-                    processor = "recordset_kql",
-                    input_items = input_items,
-                    error = message,
+                    "recordset_kql_processor.failure",
+                    input_items,
+                    message,
                 );
 
                 effect_handler
@@ -235,9 +228,8 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                     match Self::parse_bridge_options(&new_config.bridge_options) {
                                         Err(e) => {
                                             otap_df_telemetry::otel_warn!(
-                                                "processor.reconfigure_error",
-                                                processor = "kql",
-                                                message = format!("{e}")
+                                                "recordset_kql_processor.reconfigure_error",
+                                                message = %e
                                             );
                                             None
                                         }
@@ -252,8 +244,7 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                 ) {
                                     Ok(pipeline) => {
                                         otap_df_telemetry::otel_info!(
-                                            "processor.reconfigured",
-                                            processor = "kql",
+                                            "recordset_kql_processor.reconfigured"
                                         );
 
                                         self.pipeline = pipeline;
@@ -263,9 +254,8 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                                         let message =
                                             format!("Failed to parse updated query: {:?}", errors);
                                         otap_df_telemetry::otel_error!(
-                                            "processor.reconfigure_error",
-                                            processor = "kql",
-                                            message = message,
+                                            "recordset_kql_processor.reconfigure_error",
+                                            message,
                                         );
                                     }
                                 }
