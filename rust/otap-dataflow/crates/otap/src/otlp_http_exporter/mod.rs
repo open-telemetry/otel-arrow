@@ -240,8 +240,8 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     let (body, saved_payload) = match payload {
                         OtapPayload::OtlpBytes(mut otlp_bytes) => {
                             if context.may_return_payload() {
-                                // copy the bytes to the request body
-                                let body = Bytes::copy_from_slice(otlp_bytes.as_bytes());
+                                // use cheap clone of bytes as the request body
+                                let body = otlp_bytes.clone_bytes();
                                 (body, otlp_bytes.into())
                             } else {
                                 // take the bytes and replace with empty bytes in original payload

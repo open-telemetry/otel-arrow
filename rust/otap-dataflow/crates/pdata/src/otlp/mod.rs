@@ -92,6 +92,16 @@ impl OtlpProtoBytes {
         }
     }
 
+    /// Get a cloned reference-counted view of the serialized proto bytes.
+    #[must_use]
+    pub fn clone_bytes(&self) -> Bytes {
+        match self {
+            OtlpProtoBytes::ExportLogsRequest(bytes)
+            | OtlpProtoBytes::ExportMetricsRequest(bytes)
+            | OtlpProtoBytes::ExportTracesRequest(bytes) => bytes.clone(),
+        }
+    }
+
     /// Return the byte-size of this message.
     #[must_use]
     pub fn num_bytes(&self) -> usize {
