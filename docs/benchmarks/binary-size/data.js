@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771460694715,
+  "lastUpdate": 1771546964123,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1887,6 +1887,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 70.24,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Mikel Blanchard",
+            "username": "CodeBlanch",
+            "email": "mblanchard@macrosssoftware.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "97d16599d5567931e574032d01f71164c0e1f906",
+          "message": "[recordset_kql_processor] Update logs based on feedback (#2073)\n\nRelated to #2066\n\nFollowing up on\nhttps://github.com/open-telemetry/otel-arrow/pull/2066#discussion_r2829796910\n\n/cc @cijothomas @drewrelmas",
+          "timestamp": "2026-02-19T22:21:22Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/97d16599d5567931e574032d01f71164c0e1f906"
+        },
+        "date": 1771546959862,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 82.35,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 70.37,
             "unit": "MB"
           }
         ]
