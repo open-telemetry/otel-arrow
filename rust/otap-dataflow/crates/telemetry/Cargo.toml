@@ -49,3 +49,4 @@ tracing-subscriber = { workspace = true, features = ["env-filter","registry", "s
 [dev-dependencies]
 tower = { workspace = true }
 tempfile = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }

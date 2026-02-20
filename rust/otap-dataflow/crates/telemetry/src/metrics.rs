@@ -12,6 +12,7 @@ pub mod dispatcher;
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality};
 use crate::entity::EntityRegistry;
+use crate::instrument::MmscSnapshot;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
@@ -20,14 +21,17 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
-/// Numeric metric value (integer or floating-point).
+/// Numeric metric value — a scalar integer or float, or a pre-aggregated MMSC summary.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars; acceptable for internal telemetry.
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
     U64(u64),
     /// 64-bit floating point value.
     F64(f64),
+    /// Pre-aggregated min/max/sum/count summary from an [`crate::instrument::Mmsc`] instrument.
+    Mmsc(MmscSnapshot),
 }
 
 impl MetricValue {
@@ -37,20 +41,36 @@ impl MetricValue {
         match self {
             MetricValue::U64(v) => v == 0,
             MetricValue::F64(v) => v == 0.0,
+            MetricValue::Mmsc(s) => s.count == 0,
         }
     }
 
     /// Returns a zero value of the same variant.
+    ///
+    /// For `Mmsc`, the zero state uses sentinel values (`f64::MAX` for min,
+    /// `f64::MIN` for max) so that subsequent merges work correctly.
     #[must_use]
     pub const fn zero_of_kind(self) -> Self {
         match self {
             MetricValue::U64(_) => MetricValue::U64(0),
             MetricValue::F64(_) => MetricValue::F64(0.0),
+            MetricValue::Mmsc(_) => MetricValue::Mmsc(MmscSnapshot {
+                min: f64::MAX,
+                max: f64::MIN,
+                sum: 0.0,
+                count: 0,
+            }),
         }
     }
 
     /// Adds another metric value to this one, converting between numeric kinds if needed.
-    pub fn add_in_place(&mut self, other: MetricValue) {
+    ///
+    /// For scalars, this performs addition. For MMSC, this performs a
+    /// merge (min of mins, max of maxes, sum of sums, count of counts).
+    ///
+    /// # Panics (debug only)
+    /// Debug-asserts that both values are the same variant.
+    pub const fn add_in_place(&mut self, other: MetricValue) {
         match other {
             MetricValue::U64(rhs) => match self {
                 MetricValue::U64(lhs) => {
@@ -66,6 +86,9 @@ impl MetricValue {
                 MetricValue::F64(lhs) => {
                     *lhs += rhs as f64;
                 }
+                MetricValue::Mmsc(_) => {
+                    debug_assert!(false, "add_in_place: cannot add U64 to Mmsc");
+                }
             },
             MetricValue::F64(rhs) => match self {
                 MetricValue::U64(lhs) => {
@@ -73,6 +96,20 @@ impl MetricValue {
                 }
                 MetricValue::F64(lhs) => {
                     *lhs += rhs;
+                }
+                MetricValue::Mmsc(_) => {
+                    debug_assert!(false, "add_in_place: cannot add F64 to Mmsc");
+                }
+            },
+            MetricValue::Mmsc(rhs) => match self {
+                MetricValue::Mmsc(lhs) => {
+                    lhs.min = lhs.min.min(rhs.min);
+                    lhs.max = lhs.max.max(rhs.max);
+                    lhs.sum += rhs.sum;
+                    lhs.count += rhs.count;
+                }
+                _ => {
+                    debug_assert!(false, "add_in_place: cannot add Mmsc to scalar");
                 }
             },
         }
@@ -84,20 +121,34 @@ impl MetricValue {
     }
 
     /// Returns the floating-point representation of the value.
+    ///
+    /// This method is intended for **scalar** values only.
+    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
     #[must_use]
     pub const fn to_f64(self) -> f64 {
         match self {
             MetricValue::U64(v) => v as f64,
             MetricValue::F64(v) => v,
+            MetricValue::Mmsc(_) => {
+                debug_assert!(false, "to_f64() called on Mmsc MetricValue");
+                0.0
+            }
         }
     }
 
     /// Converts the metric value to `u64`, lossy for floating-point values.
+    ///
+    /// This method is intended for **scalar** values only.
+    /// For `Mmsc` variants, use [`MmscSnapshot`] fields directly.
     #[must_use]
     pub const fn to_u64_lossy(self) -> u64 {
         match self {
             MetricValue::U64(v) => v,
             MetricValue::F64(v) => v as u64,
+            MetricValue::Mmsc(_) => {
+                debug_assert!(false, "to_u64_lossy() called on Mmsc MetricValue");
+                0
+            }
         }
     }
 }
@@ -117,6 +168,12 @@ impl From<f64> for MetricValue {
 impl std::ops::AddAssign for MetricValue {
     fn add_assign(&mut self, rhs: Self) {
         self.add_in_place(rhs);
+    }
+}
+
+impl From<MmscSnapshot> for MetricValue {
+    fn from(value: MmscSnapshot) -> Self {
+        MetricValue::Mmsc(value)
     }
 }
 
@@ -206,7 +263,7 @@ pub trait MetricSetHandler {
 pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
     pub metrics_descriptor: &'static MetricsDescriptor,
-    /// Current metric values stored as a vector
+    /// Current snapshot values stored as a vector
     pub metric_values: Vec<MetricValue>,
 
     /// Entity key for the associated attribute set
@@ -387,8 +444,8 @@ impl MetricSetRegistry {
                         // Gauges report absolute values; replace.
                         *current = *incoming;
                     }
-                    Instrument::Histogram => {
-                        // Histograms (currently represented as numeric aggregates) report per-interval changes.
+                    Instrument::Histogram | Instrument::Mmsc => {
+                        // Histograms and MMSC instruments report per-interval changes.
                         current.add_in_place(*incoming);
                     }
                     Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
@@ -819,7 +876,6 @@ mod tests {
 
         let values = [MetricValue::U64(10)];
         let iter = MetricsIterator::new(fields, &values);
-
         let (lower, upper) = iter.size_hint();
         assert_eq!(lower, 1);
         assert_eq!(upper, Some(1));
@@ -839,8 +895,9 @@ mod tests {
         let values = [MetricValue::U64(10)];
         let mut iter = MetricsIterator::new(fields, &values);
 
-        let _first = iter.next();
-
+        // Consume the single item
+        assert!(iter.next().is_some());
+        // After exhaustion, further calls must keep returning None (fused)
         assert!(iter.next().is_none());
         assert!(iter.next().is_none());
     }
@@ -980,5 +1037,213 @@ mod tests {
 
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
         assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_is_zero() {
+        let zero = MetricValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        assert!(zero.is_zero());
+
+        let non_zero = MetricValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 5.0,
+            sum: 6.0,
+            count: 2,
+        });
+        assert!(!non_zero.is_zero());
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_zero_of_kind() {
+        let val = MetricValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 5.0,
+            sum: 6.0,
+            count: 2,
+        });
+        let zero = val.zero_of_kind();
+        assert!(zero.is_zero());
+        match zero {
+            MetricValue::Mmsc(s) => {
+                assert_eq!(s.min, f64::MAX);
+                assert_eq!(s.max, f64::MIN);
+                assert_eq!(s.sum, 0.0);
+                assert_eq!(s.count, 0);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_merge() {
+        let mut a = MetricValue::Mmsc(MmscSnapshot {
+            min: 2.0,
+            max: 8.0,
+            sum: 15.0,
+            count: 3,
+        });
+        let b = MetricValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 10.0,
+            sum: 20.0,
+            count: 4,
+        });
+        a.add_in_place(b);
+        match a {
+            MetricValue::Mmsc(s) => {
+                assert_eq!(s.min, 1.0);
+                assert_eq!(s.max, 10.0);
+                assert_eq!(s.sum, 35.0);
+                assert_eq!(s.count, 7);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_snapshot_value_merge_zero_to_value() {
+        // Merging into a zero/sentinel Mmsc should produce the incoming value
+        let mut a = MetricValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        let b = MetricValue::Mmsc(MmscSnapshot {
+            min: 3.0,
+            max: 7.0,
+            sum: 10.0,
+            count: 2,
+        });
+        a.add_in_place(b);
+        match a {
+            MetricValue::Mmsc(s) => {
+                assert_eq!(s.min, 3.0);
+                assert_eq!(s.max, 7.0);
+                assert_eq!(s.sum, 10.0);
+                assert_eq!(s.count, 2);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
+    }
+
+    #[test]
+    fn test_mmsc_from_snapshot() {
+        let snap = MmscSnapshot {
+            min: 1.0,
+            max: 10.0,
+            sum: 25.0,
+            count: 5,
+        };
+        let val = MetricValue::from(snap);
+        assert_eq!(
+            val,
+            MetricValue::Mmsc(MmscSnapshot {
+                min: 1.0,
+                max: 10.0,
+                sum: 25.0,
+                count: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn test_accumulate_snapshot_mmsc() {
+        #[derive(Debug)]
+        struct MockMmscMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl MockMmscMetricSet {
+            fn new() -> Self {
+                Self {
+                    values: vec![MetricValue::Mmsc(MmscSnapshot {
+                        min: f64::MAX,
+                        max: f64::MIN,
+                        sum: 0.0,
+                        count: 0,
+                    })],
+                }
+            }
+        }
+
+        impl Default for MockMmscMetricSet {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
+
+        static MOCK_MMSC_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_mmsc_metrics",
+            metrics: &[MetricsField {
+                name: "latency",
+                unit: "ms",
+                brief: "Test MMSC instrument",
+                instrument: Instrument::Mmsc,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        impl MetricSetHandler for MockMmscMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_MMSC_METRICS_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|&v| !v.is_zero())
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMmscMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        // First snapshot: min=2, max=8, sum=15, count=3
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[MetricValue::Mmsc(MmscSnapshot {
+                min: 2.0,
+                max: 8.0,
+                sum: 15.0,
+                count: 3,
+            })],
+        );
+
+        // Second snapshot: min=1, max=10, sum=20, count=4
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[MetricValue::Mmsc(MmscSnapshot {
+                min: 1.0,
+                max: 10.0,
+                sum: 20.0,
+                count: 4,
+            })],
+        );
+
+        // Accumulated: min=1, max=10, sum=35, count=7
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        match entry.metric_values[0] {
+            MetricValue::Mmsc(s) => {
+                assert_eq!(s.min, 1.0);
+                assert_eq!(s.max, 10.0);
+                assert_eq!(s.sum, 35.0);
+                assert_eq!(s.count, 7);
+            }
+            _ => panic!("Expected Mmsc variant"),
+        }
     }
 }

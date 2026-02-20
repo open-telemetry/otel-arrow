@@ -61,6 +61,12 @@ fn format_metric_value(value: &MetricValue) -> String {
     match value {
         MetricValue::U64(v) => v.to_string(),
         MetricValue::F64(v) => v.to_string(),
+        MetricValue::Mmsc(s) => {
+            format!(
+                "min={} max={} sum={} count={}",
+                s.min, s.max, s.sum, s.count
+            )
+        }
     }
 }
 
@@ -83,8 +89,8 @@ mod tests {
             "true"
         );
 
-        assert_eq!(format_metric_value(&MetricValue::U64(42)), "42");
-        assert_eq!(format_metric_value(&MetricValue::F64(4.1)), "4.1");
+        assert_eq!(format_metric_value(&MetricValue::from(42u64)), "42");
+        assert_eq!(format_metric_value(&MetricValue::from(4.1f64)), "4.1");
     }
 
     #[test]
@@ -105,7 +111,7 @@ mod tests {
                     instrument: Instrument::Counter,
                     temporality: Some(Temporality::Cumulative),
                     value_type: MetricValueType::U64,
-                    value: MetricValue::U64(123),
+                    value: MetricValue::from(123u64),
                 }],
             }],
         };
