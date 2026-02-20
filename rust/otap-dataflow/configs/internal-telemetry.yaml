@@ -55,10 +55,19 @@ groups:
                 signals_per_second: 1000
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+            telemetry_attributes:
+              pipeline_name:
+                value: "MyCustomPipelineName"
+                brief: "Custom pipeline name for identification" # optional
+              node_sequence: 1
           noop:
             type: noop:exporter
             config: {}
-
+            telemetry_attributes:
+              pipeline_name:
+                value: "MyCustomPipelineName"
+                brief: "Custom pipeline name for identification" # optional
+              node_sequence: 2
         connections:
           - from: generator
             to: noop

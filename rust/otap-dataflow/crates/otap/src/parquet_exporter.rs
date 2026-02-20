@@ -1423,6 +1423,7 @@ mod test {
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
             );
 
         let exporter_impl = ParquetExporter::from_config(

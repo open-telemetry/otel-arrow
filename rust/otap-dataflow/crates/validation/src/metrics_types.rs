@@ -54,6 +54,7 @@ fn format_attribute_value(value: &AttributeValue) -> String {
         AttributeValue::UInt(v) => v.to_string(),
         AttributeValue::Double(v) => v.to_string(),
         AttributeValue::Boolean(v) => v.to_string(),
+        AttributeValue::Map(_) => value.to_string_value(),
     }
 }
 

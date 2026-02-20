@@ -79,6 +79,8 @@ pub enum AttributeValueType {
     Double,
     /// Boolean attribute value
     Boolean,
+    /// Map attribute value (key-value pairs)
+    Map,
 }
 
 /// Metadata describing a single attribute field.

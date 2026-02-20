@@ -1222,6 +1222,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: outputs.clone(),
             default_output: None,
             config: json!({
@@ -1273,6 +1274,7 @@ mod tests {
         NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec![TEST_OUT_PORT_NAME.into()],
             default_output: None,
             config: json!({
@@ -1325,6 +1327,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: (0..65).map(|i| PortName::from(format!("p{i}"))).collect(),
             default_output: None,
             config: json!({}),
@@ -1361,6 +1364,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["p1".into(), "p2".into()],
             default_output: None,
             config: json!({}),
@@ -1390,6 +1394,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["p1".into(), "p2".into()],
             default_output: None,
             config: json!({}),
@@ -1412,6 +1417,7 @@ mod tests {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
             outputs: vec!["p1".into()],
+            telemetry_attributes: HashMap::new(),
             default_output: None,
             config: json!({}),
         };
@@ -1443,6 +1449,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["primary".into(), "backup".into()],
             default_output: None,
             config: json!({}),
@@ -1474,6 +1481,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["dest".into()],
             default_output: None,
             config: json!({}),
@@ -1518,6 +1526,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["primary".into(), "a".into(), "b".into()],
             default_output: None,
             config: json!({}),
@@ -1558,6 +1567,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["primary".into(), "fb1".into(), "fb2".into()],
             default_output: None,
             config: json!({}),
@@ -1601,6 +1611,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: vec!["p1".into(), "p2".into()],
             default_output: None,
             config: json!({
@@ -2470,6 +2481,7 @@ mod tests {
         let node_cfg = NodeUserConfig {
             r#type: FANOUT_PROCESSOR_URN.into(),
             description: None,
+            telemetry_attributes: HashMap::new(),
             outputs: outputs.clone(),
             default_output: None,
             config,
