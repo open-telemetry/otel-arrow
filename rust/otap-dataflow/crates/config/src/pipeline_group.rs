@@ -6,7 +6,8 @@
 use crate::error::Error;
 use crate::pipeline::PipelineConfig;
 use crate::policy::Policies;
-use crate::{PipelineGroupId, PipelineId};
+use crate::topic::TopicSpec;
+use crate::{PipelineGroupId, PipelineId, TopicName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,6 +21,10 @@ pub struct PipelineGroupConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policies: Option<Policies>,
 
+    /// Group-local topic declarations visible only to pipelines in this group.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub topics: HashMap<TopicName, TopicSpec>,
+
     /// All pipelines belonging to this pipeline group, keyed by pipeline ID.
     pub pipelines: HashMap<PipelineId, PipelineConfig>,
 }
@@ -30,6 +35,7 @@ impl PipelineGroupConfig {
     pub fn new() -> Self {
         Self {
             policies: None,
+            topics: HashMap::new(),
             pipelines: HashMap::new(),
         }
     }
@@ -55,6 +61,16 @@ impl PipelineGroupConfig {
             let path = format!("groups.{pipeline_group_id}.policies");
             errors.extend(
                 policies
+                    .validation_errors(&path)
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+
+        for (topic_name, topic) in &self.topics {
+            let path = format!("groups.{pipeline_group_id}.topics.{topic_name}");
+            errors.extend(
+                topic
                     .validation_errors(&path)
                     .into_iter()
                     .map(|error| Error::InvalidUserConfig { error }),

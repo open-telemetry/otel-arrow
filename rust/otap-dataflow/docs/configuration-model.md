@@ -17,6 +17,7 @@ The engine runtime accepts a single configuration file format (v1).
 
 - `version`: required schema version (`otel_dataflow/v1`)
 - `policies`: optional top-level defaults
+- `topics`: optional top-level topic declarations
 - `engine`: optional engine-wide settings
 - `groups`: pipeline groups map
 
@@ -107,6 +108,11 @@ Policy precedence for regular pipelines follows the hierarchy:
 - pipeline-level `policies`
 - group-level `policies`
 - top-level `policies`
+
+Topic declaration precedence for a pipeline in a given group:
+
+- `groups.<group>.topics.<topic>`
+- `topics.<topic>`
 
 ## Pipeline Structure
 
@@ -227,6 +233,64 @@ Resolution semantics:
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
 
+## Topic Declarations
+
+Topics are named in-process communication points used to decouple pipelines.
+Producers publish to a topic name, and consumers subscribe to that topic name
+without direct pipeline-to-pipeline wiring.
+
+Common use cases:
+
+- Fan-out distribution where multiple downstream pipelines consume the same
+  stream.
+- Worker-pool style processing where multiple consumers share one input stream.
+- Isolation between ingest, transform, and egress stages while keeping dataflow
+  composition flexible.
+
+Topics are declared in two places:
+
+- global scope: `topics.<name>`
+- group scope: `groups.<group>.topics.<name>`
+
+Current topic policy support:
+
+```yaml
+topics:
+  raw_signals:
+    description: "raw ingest stream"
+    policies:
+      queue_capacity: 1000
+      queue_on_full: drop_newest
+```
+
+Supported `queue_on_full` values:
+
+- `block`
+- `drop_newest`
+
+Topic defaults:
+
+- `policies.queue_capacity = 128`
+- `policies.queue_on_full = block`
+
+`topic:exporter` may locally override full-queue behavior:
+
+```yaml
+nodes:
+  publish/raw:
+    type: topic:exporter
+    config:
+      topic: raw_signals
+      queue_on_full: drop_newest
+```
+
+Exporter-local `queue_on_full` behavior:
+
+- optional (`block` or `drop_newest`)
+- precedence: exporter `config.queue_on_full` -> topic `policies.queue_on_full`
+  -> default `block`
+- `queue_capacity` remains topic-declaration-only (no exporter-local override)
+
 ## Output Ports
 
 Terminology:
@@ -314,6 +378,7 @@ Config loading validates:
 - Graph cycles.
 - Source output selector validity when node `outputs` is declared.
 - Non-zero channel capacities (`control.node`, `control.pipeline`, `pdata`).
+- Non-zero topic queue capacity (`topics.*.policies.queue_capacity`).
 - Root schema version compatibility (`version: otel_dataflow/v1`).
 - Observability constraints (`engine.observability.pipeline.policies.resources`
   is rejected).
@@ -364,7 +429,8 @@ The following ideas are discussed and intentionally left for later steps:
   - policy-level `attributes`
 - Global defaults section (for example edge policy defaults).
 - Node-level lifecycle/tenancy/telemetry policies.
-- Topic-based inter-pipeline wiring.
+- Topic receiver/exporter runtime wiring and additional topic policy families
+  (slow consumer handling, persistence, delivery guarantees).
 
 ## URN Reference
 

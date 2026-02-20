@@ -22,6 +22,7 @@ Main public model types:
 - `pipeline_group::PipelineGroupConfig`
 - `pipeline::PipelineConfig`: nodes, connections, optional policies
 - `policy::Policies`: channel-capacity/health/telemetry/resources policy families
+- `topic::TopicSpec`: named inter-pipeline topic specification
 - `node::NodeUserConfig`: per-node configuration envelope
 - `node_urn::NodeUrn`: parsed/canonicalized node type URN
 - `engine::ResolvedOtelDataflowSpec`: deterministic resolved runtime snapshot
@@ -114,6 +115,31 @@ Resolution semantics:
 - policy objects are default-filled: if a lower-scope `policies` block exists,
   omitted families are populated with defaults at that scope (they do not
   inherit from upper scopes)
+
+## Topic Declarations
+
+Topics can be declared in two scopes:
+
+- top-level: `topics.<name>`
+- group-level: `groups.<group>.topics.<name>` (visible only in that group)
+
+Current topic policy support:
+
+- `policies.queue_capacity` (default: `128`, must be > 0)
+- `policies.queue_on_full`:
+  - `block` (default)
+  - `drop_newest`
+
+Topic declaration precedence (for a pipeline in a given group):
+
+- `groups.<group>.topics.<name>` -> `topics.<name>`
+
+`topic:exporter` node config can optionally override `queue_on_full` locally:
+
+- `config.queue_on_full`: `block` | `drop_newest`
+- effective precedence:
+  `topic:exporter.config.queue_on_full` -> `topic.policies.queue_on_full` -> `block`
+- `queue_capacity` remains topic-scope only
 
 ## Engine Observability Pipeline
 

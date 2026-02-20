@@ -31,6 +31,8 @@ pub mod policy;
 pub mod settings;
 /// TLS configuration.
 pub mod tls;
+pub mod topic;
+pub use topic::{SubscriptionGroupName, TopicName};
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
