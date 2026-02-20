@@ -19,7 +19,6 @@ use arrow::datatypes::{
 };
 use arrow::row::{RowConverter, SortField};
 use arrow::util::bit_iterator::{BitIndexIterator, BitSliceIterator};
-use arrow_schema::SortOptions;
 
 use crate::arrays::{
     MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_required_array,
