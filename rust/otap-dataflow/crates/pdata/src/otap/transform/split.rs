@@ -629,19 +629,6 @@ mod tests {
                 ("parent_id", UInt16, resource_pids.clone()))
         )]);
 
-        // Dict<UInt8, UInt16> parent_ids
-        test_split::<{ Logs::COUNT }>(&to_otap_logs, &[logs!(
-            (Logs,
-                ("id", UInt16, log_ids.clone()),
-                ("scope.id", UInt16, scope_ids.clone()),
-                ("resource.id", UInt16, resource_ids.clone())),
-            (LogAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5], log_pids.clone()))),
-            (ScopeAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5], scope_pids.clone()))),
-            (ResourceAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5], resource_pids.clone())))
-        )]);
     }
 
     #[test]
@@ -723,26 +710,26 @@ mod tests {
                 ("parent_id", UInt16, resource_pids.clone()))
         )]);
 
-        // Dict<UInt8, UInt16> / Dict<UInt8, UInt32> parent_ids
+        // Dict<UInt8, UInt32> parent_ids for u32 columns
         test_split::<{ Traces::COUNT }>(&to_otap_traces, &[traces!(
             (Spans,
                 ("id", UInt16, span_ids.clone()),
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (SpanAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![4u8, 3, 2, 1, 0], span_attr_pids.clone()))),
+                ("parent_id", UInt16, span_attr_pids.clone())),
             (SpanEvents,
                 ("id", UInt32, event_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![3u8, 2, 1, 0], event_pids.clone()))),
+                ("parent_id", UInt16, event_pids.clone())),
             (SpanEventAttrs,
                 ("parent_id", (UInt8, UInt32), (vec![3u8, 2, 1, 0], event_attr_pids.clone()))),
             (SpanLinks,
                 ("id", UInt32, link_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![1u8, 0], link_pids.clone()))),
+                ("parent_id", UInt16, link_pids.clone())),
             (ScopeAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+                ("parent_id", UInt16, scope_pids.clone())),
             (ResourceAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone())))
+                ("parent_id", UInt16, resource_pids.clone()))
         )]);
 
         // Dict<UInt16, UInt32> parent_ids for u32 columns
@@ -752,19 +739,19 @@ mod tests {
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (SpanAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![4u8, 3, 2, 1, 0], span_attr_pids.clone()))),
+                ("parent_id", UInt16, span_attr_pids.clone())),
             (SpanEvents,
                 ("id", UInt32, event_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![3u8, 2, 1, 0], event_pids.clone()))),
+                ("parent_id", UInt16, event_pids.clone())),
             (SpanEventAttrs,
                 ("parent_id", (UInt16, UInt32), (vec![3u16, 2, 1, 0], event_attr_pids.clone()))),
             (SpanLinks,
                 ("id", UInt32, link_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![1u8, 0], link_pids.clone()))),
+                ("parent_id", UInt16, link_pids.clone())),
             (ScopeAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+                ("parent_id", UInt16, scope_pids.clone())),
             (ResourceAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone())))
+                ("parent_id", UInt16, resource_pids.clone()))
         )]);
     }
 
@@ -859,14 +846,14 @@ mod tests {
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], metric_attr_pids.clone()))),
+                ("parent_id", UInt16, metric_attr_pids.clone())),
             (ScopeAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+                ("parent_id", UInt16, scope_pids.clone())),
             (ResourceAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone()))),
+                ("parent_id", UInt16, resource_pids.clone())),
             (NumberDataPoints,
                 ("id", UInt32, dp_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_pids.clone()))),
+                ("parent_id", UInt16, dp_pids.clone())),
             (NumberDpAttrs,
                 ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_attr_pids.clone()))),
             (NumberDpExemplars,
@@ -883,14 +870,14 @@ mod tests {
                 ("scope.id", UInt16, scope_ids.clone()),
                 ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], metric_attr_pids.clone()))),
+                ("parent_id", UInt16, metric_attr_pids.clone())),
             (ScopeAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+                ("parent_id", UInt16, scope_pids.clone())),
             (ResourceAttrs,
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone()))),
+                ("parent_id", UInt16, resource_pids.clone())),
             (NumberDataPoints,
                 ("id", UInt32, dp_ids.clone()),
-                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_pids.clone()))),
+                ("parent_id", UInt16, dp_pids.clone())),
             (NumberDpAttrs,
                 ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2, 3, 4, 5, 6, 7], dp_attr_pids.clone()))),
             (NumberDpExemplars,
