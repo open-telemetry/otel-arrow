@@ -657,7 +657,7 @@ mod tests {
         );
 
         let result = split::<{ Logs::COUNT }>(
-            &mut vec![batch], NonZeroU32::new(1).unwrap(),
+            &mut [batch], NonZeroU32::new(1).unwrap(),
         ).unwrap();
 
         assert_eq!(result.len(), 1);
@@ -758,7 +758,7 @@ mod tests {
         );
 
         let result = split::<{ Traces::COUNT }>(
-            &mut vec![batch], NonZeroU32::new(1).unwrap(),
+            &mut [batch], NonZeroU32::new(1).unwrap(),
         ).unwrap();
 
         assert_eq!(result.len(), 1);
@@ -1012,7 +1012,8 @@ mod tests {
                         .sum();
                     assert_eq!(
                         input_rows, output_rows,
-                        "data point row count mismatch for {:?}", dp_type
+                        "data point row count mismatch for {:?}",
+                        dp_type
                     );
                 }
             }
