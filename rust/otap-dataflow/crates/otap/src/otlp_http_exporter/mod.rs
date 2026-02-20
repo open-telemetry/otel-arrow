@@ -21,7 +21,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, Stream, StreamExt};
-use http::{HeaderMap, HeaderValue};
+use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -275,12 +275,12 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
                             let body = if let Err(e) = encode_result {
                                 // encoding error, we must have received an invalid structured batch
-                                _ = effect_handler
-                                    .notify_nack(NackMsg::new(
-                                        e.to_string(),
-                                        OtapPdata::new(context, otap_batch.into()),
-                                    ))
-                                    .await;
+                                let mut nack = NackMsg::new(
+                                    e.to_string(),
+                                    OtapPdata::new(context, otap_batch.into()),
+                                );
+                                nack.permanent = true;
+                                _ = effect_handler.notify_nack(nack).await;
                                 self.pdata_metrics.add_failed(signal_type, 1);
                                 continue;
                             } else {
@@ -401,6 +401,50 @@ enum ServiceRequestError {
     BodyTooLarge { body_size: usize, max_size: usize },
 }
 
+impl ServiceRequestError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::RequestError { err: req_err } => {
+                match req_err.status() {
+                    Some(status) => {
+                        // we received a non-200 response. The OTLP HTTP spec defines certain
+                        // status codes for which the client may retry the request
+                        // https://opentelemetry.io/docs/specs/otlp/#retryable-response-codes
+                        status == StatusCode::TOO_MANY_REQUESTS
+                            || status == StatusCode::BAD_GATEWAY
+                            || status == StatusCode::SERVICE_UNAVAILABLE
+                            || status == StatusCode::GATEWAY_TIMEOUT
+                    }
+                    None => {
+                        // we've encountered some other kind of error sending the request. For
+                        // example, maybe there was connection refused, the server disconnected
+                        // without sending a response, or there was non HTTP timeout.
+                        //
+                        // The OTLP spec isn't entirely clear on what to do here, but it does
+                        // instruct to adhere to HTTP spec and explicitly states to retry on
+                        // server disconnects
+                        // https://opentelemetry.io/docs/specs/otlp/#all-other-responses
+                        //
+                        // we'll do something reasonable here and retry on these errors which
+                        // may be transient, network related
+                        req_err.is_connect() || req_err.is_timeout()
+                    }
+                }
+            }
+
+            Self::BodyTooLarge { .. } | ServiceRequestError::DecodeError(_) => {
+                // these errors happen when we've received a 200 response, but for some reason
+                // were unable to deserialize the response body.
+                //
+                // this indicates either a full success, or partial success. In either case, we
+                // shouldn't retry. The spec explicitly states this for partial success
+                // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
+                false
+            }
+        }
+    }
+}
+
 fn format_source(e: &reqwest::Error) -> String {
     use std::error::Error;
     match e.source() {
@@ -471,22 +515,41 @@ async fn finalize_completed_export(
 
     let pdata = OtapPdata::new(context, saved_payload);
 
-    let err_msg = match result {
-        Ok(service_resp) => service_resp.partial_success.map(|partial_success| {
-            format!(
-                "{} ({} rejected)",
-                partial_success.error_message, partial_success.rejected
-            )
+    let err = match result {
+        Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
+            // As per OTLP HTTP spec, the server may use partial success to convey information
+            // even in the case where it fully accepts the request. In these cases, it MUST have
+            // set the rejected_<signal> field to 0. We'll treat this case as a success
+            if partial_success.rejected == 0 {
+                otel_debug!(
+                    "otlp.exporter.http.zero_partial_rejected",
+                    details = partial_success.error_message
+                );
+
+                None
+            } else {
+                // In the case we received a partial_success, the spec states that the request
+                // should not be retried.
+                // https://opentelemetry.io/docs/specs/otlp/#partial-success-1
+                let retryable = false;
+                Some((
+                    format!(
+                        "{} ({} rejected)",
+                        partial_success.error_message, partial_success.rejected
+                    ),
+                    retryable,
+                ))
+            }
         }),
-        Err(e) => Some(e.to_string()),
+        Err(e) => Some((e.to_string(), e.is_retryable())),
     };
 
-    let export_and_notify_success = match err_msg {
+    let export_and_notify_success = match err {
         None => effect_handler.notify_ack(AckMsg::new(pdata)).await.is_ok(),
-        Some(err_msg) => {
-            _ = effect_handler
-                .notify_nack(NackMsg::new(&err_msg, pdata))
-                .await;
+        Some((err_msg, retryable)) => {
+            let mut nack = NackMsg::new(&err_msg, pdata);
+            nack.permanent = !retryable;
+            _ = effect_handler.notify_nack(nack).await;
             false
         }
     };
@@ -656,13 +719,13 @@ mod test {
 
     /// run an http server that returns error for any request
     ///
-    /// if `status_err` is true, server will return 500 status code with body "body"
+    /// if `status_err` is Some, server will return this status code with empty body
     /// if `status_err` is false, server will return 200 status code with body that
     /// indicates only a partial success
     fn run_error_server(
         tokio_rt: &Runtime,
         endpoint_addr: &str,
-        status_err: bool,
+        status_err: Option<u16>,
     ) -> CancellationToken {
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
@@ -677,7 +740,7 @@ mod test {
     async fn serve_errors(
         endpoint_addr: String,
         shutdown_token: CancellationToken,
-        status_err: bool,
+        status_err: Option<u16>,
     ) {
         let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
         let tracker = TaskTracker::new();
@@ -690,10 +753,10 @@ mod test {
                     drop(tracker.spawn(async move {
                         let io = TokioIo::new(stream);
                         let conn = http1::Builder::new().serve_connection(io, service_fn(|req| async move {
-                            if status_err {
+                            if let Some(status) = status_err {
 
                                 Ok::<_, hyper::Error>(Response::builder()
-                                    .status(500)
+                                    .status(status)
                                     .body(Full::new(Bytes::from("".as_bytes().to_vec())))
                                     .unwrap())
                             } else {
@@ -997,8 +1060,7 @@ mod test {
             })
     }
 
-    #[test]
-    fn test_handles_http_status_errors() {
+    fn run_error_status_code_test(status: u16, retryable: bool) {
         let port = pick_unused_port().unwrap();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
@@ -1014,7 +1076,7 @@ mod test {
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, true);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(status));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1054,14 +1116,19 @@ mod test {
                         };
 
                         match msg {
-                            PipelineControlMsg::DeliverNack { node_id, nack } => {
-                                assert_eq!(node_id, node_id);
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
                                 ack_count += 1;
 
                                 assert!(
-                                    nack.reason.contains("500 Internal Server Error"),
+                                    nack.reason.contains("HTTP status")
+                                        && nack.reason.contains(&status.to_string()),
                                     "unexpected error message in Nack: {}",
                                     nack.reason
+                                );
+
+                                assert_eq!(
+                                    nack.permanent, !retryable,
+                                    "invalid retryable nack decision for status {status}"
                                 );
 
                                 if ack_count >= num_expected_nacks {
@@ -1079,6 +1146,15 @@ mod test {
                     assert_eq!(ack_count, num_expected_nacks);
                 })
             })
+    }
+
+    #[test]
+    fn test_handles_non_200_response_status() {
+        let test_cases = [(500, false), (429, true), (503, true), (504, true)];
+
+        for (status, retryable) in test_cases {
+            run_error_status_code_test(status, retryable);
+        }
     }
 
     #[test]
@@ -1146,6 +1222,11 @@ mod test {
                                     nack.reason
                                 );
 
+                                assert!(
+                                    !nack.permanent,
+                                    "expected connection error to be retryable nack"
+                                );
+
                                 if ack_count >= num_expected_nacks {
                                     break;
                                 }
@@ -1181,7 +1262,7 @@ mod test {
         let (_, exporter) = setup_exporter(&test_runtime, config);
 
         let tokio_rt = Runtime::new().unwrap();
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, false);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, None);
 
         let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
 
@@ -1245,6 +1326,11 @@ mod test {
                                     nack.reason
                                 );
 
+                                assert!(
+                                    nack.permanent,
+                                    "expected partial success to be permanent nack"
+                                );
+
                                 if ack_count >= num_expected_nacks {
                                     break;
                                 }
@@ -1283,7 +1369,7 @@ mod test {
         let (_, exporter) = setup_exporter(&test_runtime, config);
 
         let tokio_rt = Runtime::new().unwrap();
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, false);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, None);
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1333,6 +1419,11 @@ mod test {
                                     nack.reason.contains("exceeds maximum allowed size"),
                                     "unexpected error message in Nack: {}",
                                     nack.reason
+                                );
+
+                                assert!(
+                                    nack.permanent,
+                                    "expected too large body to be permanent nack"
                                 );
 
                                 if ack_count >= num_expected_nacks {
@@ -1430,6 +1521,11 @@ mod test {
                                     nack.reason
                                 );
 
+                                assert!(
+                                    nack.permanent,
+                                    "expected malformed OTAP batch to be permanent nack"
+                                );
+
                                 if ack_count >= num_expected_nacks {
                                     break;
                                 }
@@ -1464,7 +1560,7 @@ mod test {
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, true);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(500));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
@@ -1559,7 +1655,7 @@ mod test {
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
-        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, true);
+        let server_cancellation_token = run_error_server(&tokio_rt, &endpoint_addr, Some(500));
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
 
