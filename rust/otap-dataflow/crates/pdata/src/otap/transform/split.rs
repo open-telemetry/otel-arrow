@@ -740,6 +740,28 @@ mod tests {
             (ResourceAttrs,
                 ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone())))
         )]);
+
+        // Dict<UInt16, UInt32> parent_ids for u32 columns
+        test_split::<{ Traces::COUNT }>(&[traces!(
+            (Spans,
+                ("id", UInt16, span_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
+            (SpanAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![4u8, 3, 2, 1, 0], span_attr_pids.clone()))),
+            (SpanEvents,
+                ("id", UInt32, event_ids.clone()),
+                ("parent_id", (UInt8, UInt16), (vec![3u8, 2, 1, 0], event_pids.clone()))),
+            (SpanEventAttrs,
+                ("parent_id", (UInt16, UInt32), (vec![3u16, 2, 1, 0], event_attr_pids.clone()))),
+            (SpanLinks,
+                ("id", UInt32, link_ids.clone()),
+                ("parent_id", (UInt8, UInt16), (vec![1u8, 0], link_pids.clone()))),
+            (ScopeAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+            (ResourceAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone())))
+        )]);
     }
 
     #[test]
@@ -802,27 +824,76 @@ mod tests {
         let ex_pids          = vec![0u32, 2, 4, 7];
         let ex_attr_pids     = vec![0u32, 1, 2, 3];
 
+        // Plain parent_ids
         test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
-                ("id", UInt16, metric_ids),
-                ("scope.id", UInt16, scope_ids),
-                ("resource.id", UInt16, resource_ids)),
+                ("id", UInt16, metric_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
             (MetricAttrs,
-                ("parent_id", UInt16, metric_attr_pids)),
+                ("parent_id", UInt16, metric_attr_pids.clone())),
             (ScopeAttrs,
-                ("parent_id", UInt16, scope_pids)),
+                ("parent_id", UInt16, scope_pids.clone())),
             (ResourceAttrs,
-                ("parent_id", UInt16, resource_pids)),
+                ("parent_id", UInt16, resource_pids.clone())),
             (NumberDataPoints,
-                ("id", UInt32, dp_ids),
-                ("parent_id", UInt16, dp_pids)),
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", UInt16, dp_pids.clone())),
             (NumberDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids)),
+                ("parent_id", UInt32, dp_attr_pids.clone())),
             (NumberDpExemplars,
-                ("id", UInt32, ex_ids),
-                ("parent_id", UInt32, ex_pids)),
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", UInt32, ex_pids.clone())),
             (NumberDpExemplarAttrs,
-                ("parent_id", UInt32, ex_attr_pids))
+                ("parent_id", UInt32, ex_attr_pids.clone()))
+        )]);
+
+        // Dict<UInt8, UInt32> parent_ids for u32 columns
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, metric_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
+            (MetricAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], metric_attr_pids.clone()))),
+            (ScopeAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+            (ResourceAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone()))),
+            (NumberDataPoints,
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_pids.clone()))),
+            (NumberDpAttrs,
+                ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_attr_pids.clone()))),
+            (NumberDpExemplars,
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2, 3], ex_pids.clone()))),
+            (NumberDpExemplarAttrs,
+                ("parent_id", (UInt8, UInt32), (vec![0u8, 1, 2, 3], ex_attr_pids.clone())))
+        )]);
+
+        // Dict<UInt16, UInt32> parent_ids for u32 columns
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, metric_ids.clone()),
+                ("scope.id", UInt16, scope_ids.clone()),
+                ("resource.id", UInt16, resource_ids.clone())),
+            (MetricAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], metric_attr_pids.clone()))),
+            (ScopeAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2], scope_pids.clone()))),
+            (ResourceAttrs,
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3], resource_pids.clone()))),
+            (NumberDataPoints,
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", (UInt8, UInt16), (vec![0u8, 1, 2, 3, 4, 5, 6, 7], dp_pids.clone()))),
+            (NumberDpAttrs,
+                ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2, 3, 4, 5, 6, 7], dp_attr_pids.clone()))),
+            (NumberDpExemplars,
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2, 3], ex_pids.clone()))),
+            (NumberDpExemplarAttrs,
+                ("parent_id", (UInt16, UInt32), (vec![0u16, 1, 2, 3], ex_attr_pids.clone())))
         )]);
     }
 
