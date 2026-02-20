@@ -126,7 +126,7 @@ mod tests {
     fn parse_config_rejects_unknown_queue_on_full_variant() {
         let err = TopicExporter::parse_config(&json!({
             "topic": "raw",
-            "queue_on_full": "drop_oldest"
+            "queue_on_full": "unknown_variant"
         }))
         .expect_err("unknown queue_on_full should fail");
         assert!(err.to_string().contains("unknown variant"));
