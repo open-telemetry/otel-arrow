@@ -264,8 +264,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 .map(|terminal_state| {
                     for snapshot in terminal_state.into_metrics() {
                         let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
-                        metrics_collector.clone().collect_once();
                     }
+                    metrics_collector.collect_pending(); // Collect after sending all the
                 })
         });
         TestPhase {
