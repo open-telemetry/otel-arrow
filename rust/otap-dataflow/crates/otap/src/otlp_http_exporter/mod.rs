@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, StreamExt};
 use http::{HeaderMap, HeaderValue, StatusCode};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
@@ -471,17 +471,16 @@ async fn query_result_to_service_response(
 }
 
 async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, ServiceRequestError> {
-    let mut stream = response.bytes_stream();
-
-    let size_hint = stream.size_hint();
-    if let Some(upper) = size_hint.1 {
+    let content_length = response.content_length().unwrap_or(0) as usize;
+    if content_length > max_len {
         return Err(ServiceRequestError::BodyTooLarge {
-            body_size: upper,
+            body_size: content_length,
             max_size: max_len,
         });
     }
+    let mut buf = BytesMut::with_capacity(content_length);
+    let mut stream = response.bytes_stream();
 
-    let mut buf = BytesMut::with_capacity(size_hint.0);
     let mut remaining = max_len;
 
     while let Some(chunk) = stream.next().await {
@@ -1104,7 +1103,6 @@ mod test {
 
                     server_cancellation_token.cancel();
 
-                    // validate we received three Nacks
                     let mut ack_count = 0;
                     let num_expected_nacks = 1;
                     let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
