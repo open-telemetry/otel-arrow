@@ -112,6 +112,11 @@ impl OtlpHttpExporter {
             }
         })?;
 
+        // validate the endpoint URL
+        _ = reqwest::Url::parse(&config.endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+            error: format!("invalid endpoint URL: {e}"),
+        })?;
+
         Ok(Self {
             config,
             pdata_metrics,
@@ -829,6 +834,31 @@ mod test {
             .into_iter()
             .map(|pdata| pdata.test_subscribe_to(interests, TestCallData::default().into(), 123))
             .collect()
+    }
+
+    #[test]
+    fn test_from_config_validates_endpoint() {
+        let invalid_config = serde_json::json!({
+            "endpoint": "not a valid url"
+        });
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_group".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+
+        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.err().unwrap(),
+            ConfigError::InvalidUserConfig { .. }
+        ));
     }
 
     #[test]
