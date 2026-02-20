@@ -234,6 +234,7 @@ pub enum TelemetryAttribute {
 
 impl TelemetryAttribute {
     /// Create a new telemetry attribute with just a value (no brief).
+    #[must_use]
     pub fn new(value: AttributeValue) -> Self {
         Self::Bare(value)
     }
@@ -247,6 +248,7 @@ impl TelemetryAttribute {
     }
 
     /// Returns a reference to the attribute value.
+    #[must_use]
     pub fn value(&self) -> &AttributeValue {
         match self {
             Self::Extended { value, .. } => value,
@@ -255,6 +257,7 @@ impl TelemetryAttribute {
     }
 
     /// Returns the optional brief description.
+    #[must_use]
     pub fn brief(&self) -> Option<&str> {
         match self {
             Self::Extended { brief, .. } => brief.as_deref(),
