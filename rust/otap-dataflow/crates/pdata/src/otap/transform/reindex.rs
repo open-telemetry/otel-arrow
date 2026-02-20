@@ -1848,6 +1848,24 @@ mod tests {
         assert_equivalent(&before_otlp, &after_otlp);
     }
 
+    #[test]
+    #[rustfmt::skip]
+    fn test_reindex_dict_parent_id_values_longer_than_keys() {
+        // 2 rows, but the dictionary values array has 4 entries.
+        // keys=[0,1], values=[0,1,2,3]
+        let batch_a = traces!(
+            (Spans,
+                ("id", UInt16, vec![0u16, 1])),
+            (SpanEvents,
+                ("id", UInt32, vec![0u32, 1]),
+                ("parent_id", UInt16, vec![0u16, 1])),
+            (SpanEventAttrs,
+                ("parent_id", (UInt8, UInt32), (vec![0u8, 1], vec![0u32, 1, 2, 3])))
+        );
+
+        reindex_traces(&mut [batch_a]).unwrap();
+    }
+
     /// Applies transport optimized encodings to all payload types in each batch group.
     fn apply_transport_encodings<S: OtapBatchStore, const N: usize>(
         batches: &mut [[Option<RecordBatch>; N]],

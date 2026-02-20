@@ -218,6 +218,8 @@ pub(crate) fn sort_record_batch_by_indices(
     rb: RecordBatch,
     indices: &dyn Array,
 ) -> Result<RecordBatch> {
+    assert_eq!(rb.num_rows(), indices.len());
+
     let (schema, columns, _) = rb.into_parts();
     let new_columns: Vec<_> = columns
         .iter()
