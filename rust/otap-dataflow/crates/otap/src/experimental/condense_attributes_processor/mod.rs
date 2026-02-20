@@ -19,18 +19,20 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::error::{Error, ProcessorErrorKind};
+use otap_df_engine::control::NackMsg;
+use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::encode::record::attributes::StrKeysAttributesRecordBatchBuilder;
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
+use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -57,59 +59,8 @@ pub struct Config {
     exclude_keys: Option<HashSet<String>>,
 }
 
-/// Processor that condenses multiple attributes into a single attribute based on predefined rules.
-pub struct CondenseAttributesProcessor {
-    config: Config,
-    rows_to_preserve: Vec<usize>,
-}
-
-fn engine_err(msg: &str) -> Error {
-    Error::PdataConversionError {
-        error: msg.to_string(),
-    }
-}
-
-/// Factory function to create a Condense Attributes processor
-pub fn create_condense_attributes_processor(
-    _: PipelineContext,
-    node: NodeId,
-    node_config: Arc<NodeUserConfig>,
-    processor_config: &ProcessorConfig,
-) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    Ok(ProcessorWrapper::local(
-        CondenseAttributesProcessor::from_config(&node_config.config)?,
-        node,
-        node_config,
-        processor_config,
-    ))
-}
-
-/// Register CondenseAttributesProcessor as an OTAP processor factory
-#[allow(unsafe_code)]
-#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
-    otap_df_engine::ProcessorFactory {
-        name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
-        create: |pipeline_ctx: PipelineContext,
-                 node: NodeId,
-                 node_config: Arc<NodeUserConfig>,
-                 proc_cfg: &ProcessorConfig| {
-            create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
-        },
-        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    };
-
-impl CondenseAttributesProcessor {
-    /// Creates a new CondenseAttributesProcessor instance
-    #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            rows_to_preserve: Vec::new(),
-        }
-    }
-
-    /// Creates a new CondenseAttributesProcessor instance from configuration
+impl Config {
+    /// Creates a new Config instance from configuration
     pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
         let destination_key = config
             .get("destination_key")
@@ -193,12 +144,74 @@ impl CondenseAttributesProcessor {
             }
         }
 
-        Ok(Self::new(Config {
+        Ok(Self {
             destination_key,
             delimiter,
             source_keys,
             exclude_keys,
-        }))
+        })
+    }
+}
+
+/// Processor that condenses multiple attributes into a single attribute based on predefined rules.
+pub struct CondenseAttributesProcessor {
+    config: Config,
+    rows_to_preserve: Vec<usize>,
+}
+
+fn engine_err(msg: &str) -> Error {
+    Error::PdataConversionError {
+        error: msg.to_string(),
+    }
+}
+
+/// Factory function to create a Condense Attributes processor
+pub fn create_condense_attributes_processor(
+    _: PipelineContext,
+    node: NodeId,
+    node_config: Arc<NodeUserConfig>,
+    processor_config: &ProcessorConfig,
+) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
+    let processor = CondenseAttributesProcessor::from_config(&node_config.config)?;
+
+    otap_df_telemetry::otel_info!("condense_attributes_processor.ready");
+
+    Ok(ProcessorWrapper::local(
+        processor,
+        node,
+        node_config,
+        processor_config,
+    ))
+}
+
+/// Register CondenseAttributesProcessor as an OTAP processor factory
+#[allow(unsafe_code)]
+#[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
+pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
+    otap_df_engine::ProcessorFactory {
+        name: CONDENSE_ATTRIBUTES_PROCESSOR_URN,
+        create: |pipeline_ctx: PipelineContext,
+                 node: NodeId,
+                 node_config: Arc<NodeUserConfig>,
+                 proc_cfg: &ProcessorConfig| {
+            create_condense_attributes_processor(pipeline_ctx, node, node_config, proc_cfg)
+        },
+        wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    };
+
+impl CondenseAttributesProcessor {
+    /// Creates a new CondenseAttributesProcessor instance
+    #[must_use]
+    pub fn new(config: Config) -> Self {
+        Self {
+            config,
+            rows_to_preserve: Vec::new(),
+        }
+    }
+
+    /// Creates a new CondenseAttributesProcessor instance from configuration
+    pub fn from_config(config: &Value) -> Result<Self, ConfigError> {
+        Ok(Self::new(Config::from_config(config)?))
     }
 
     /// Condenses attributes in the given record batch according to the processor configuration.
@@ -531,34 +544,79 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
         effect_handler: &mut local::EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         match msg {
-            Message::Control(_control) => Ok(()),
+            Message::Control(control_msg) => {
+                use otap_df_engine::control::NodeControlMsg;
+                match control_msg {
+                    NodeControlMsg::Config { config } => {
+                        match Config::from_config(&config) {
+                            Ok(new_config) => {
+                                otap_df_telemetry::otel_info!(
+                                    "condense_attributes_processor.reconfigured"
+                                );
+                                self.config = new_config;
+                            }
+                            Err(e) => {
+                                otap_df_telemetry::otel_warn!(
+                                    "condense_attributes_processor.reconfigure_error",
+                                    message = %e
+                                );
+                            }
+                        }
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
                 let (context, payload) = pdata.into_parts();
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
-                let condensed_records: OtapArrowRecords =
-                    match signal {
-                        SignalType::Logs => match self.condense(&mut records) {
-                            // TODO: Add instrumentation for condensed count
-                            Ok(_condensed) => records,
-                            Err(e) => return Err(e),
-                        },
-                        _ => return Err(Error::ProcessorError {
-                            processor: effect_handler.processor_id(),
-                            kind: ProcessorErrorKind::Other,
-                            error:
-                                "CondenseAttributesProcessor only supported for SignalType 'Logs'"
-                                    .to_string(),
-                            source_detail: String::new(),
-                        }),
-                    };
+                let input_items = records.num_items() as u64;
 
-                effect_handler
-                    .send_message(OtapPdata::new(context, condensed_records.into()))
-                    .await?;
-                Ok(())
+                otap_df_telemetry::otel_debug!(
+                    "condense_attributes_processor.processing",
+                    input_items
+                );
+
+                let result = match signal {
+                    SignalType::Logs => self.condense(&mut records),
+                    _ => Err(Error::InternalError {
+                        message: "CondenseAttributesProcessor only supported for SignalType 'Logs'"
+                            .to_string(),
+                    }),
+                };
+
+                match result {
+                    Ok(condensed) => {
+                        otap_df_telemetry::otel_debug!(
+                            "condense_attributes_processor.success",
+                            input_items,
+                            output_items = condensed
+                        );
+                        effect_handler
+                            .send_message(OtapPdata::new(context, records.into()))
+                            .await?;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let message = e.to_string();
+                        otap_df_telemetry::otel_error!(
+                            "condense_attributes_processor.failure",
+                            input_items,
+                            message,
+                        );
+
+                        effect_handler
+                            .notify_nack(NackMsg::new(
+                                message,
+                                OtapPdata::new(context, OtapPayload::empty(SignalType::Logs)),
+                            ))
+                            .await?;
+                        Err(e)
+                    }
+                }
             }
         }
     }

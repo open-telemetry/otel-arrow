@@ -286,7 +286,6 @@ impl Processor<OtapPdata> for RecordsetKqlProcessor {
                         }
                         Ok(())
                     }
-                    NodeControlMsg::Shutdown { .. } => Ok(()),
                     _ => Ok(()),
                 }
             }
