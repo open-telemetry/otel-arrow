@@ -278,6 +278,7 @@ pub static SIGNAL_TYPE_ROUTER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFa
         Ok(ProcessorWrapper::local(router, node, node_config, proc_cfg))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<SignalTypeRouterConfig>,
 };
 
 #[cfg(test)]
