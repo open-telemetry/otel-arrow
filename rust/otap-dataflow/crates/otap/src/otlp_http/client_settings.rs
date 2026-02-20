@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Shared configuration for gRPC-based clients.
+//! Shared configuration for HTTP-based clients.
 
 use reqwest::ClientBuilder;
 use serde::Deserialize;
