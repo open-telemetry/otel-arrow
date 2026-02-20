@@ -80,11 +80,7 @@ impl OtlpProtoBytes {
     }
 
     /// Replaces the internal bytes with new bytes and returns the old bytes.
-    pub fn replace_bytes<B>(&mut self, b: B) -> Bytes
-    where
-        B: Into<Vec<u8>>,
-    {
-        let new_bytes: Bytes = b.into().into();
+    pub fn replace_bytes(&mut self, new_bytes: Bytes) -> Bytes {
         match self {
             OtlpProtoBytes::ExportLogsRequest(bytes) => std::mem::replace(bytes, new_bytes),
             OtlpProtoBytes::ExportMetricsRequest(bytes) => std::mem::replace(bytes, new_bytes),
