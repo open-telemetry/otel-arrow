@@ -725,23 +725,102 @@ mod tests {
 
     #[test]
     #[rustfmt::skip]
-    fn test_split_metrics() {
-        let metric_ids   = vec![0u16, 1, 2, 3];
-        let dp_ids       = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
-        let dp_pids      = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
-        let dp_attr_pids = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+    fn test_split_metrics_number_dp() {
+        let metric_ids       = vec![0u16, 1, 2, 3];
+        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
+        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let ex_ids           = vec![0u32, 1, 2, 3];
+        let ex_pids          = vec![0u32, 2, 4, 7];
+        let ex_attr_pids     = vec![0u32, 1, 2, 3];
 
-        let batches = vec![metrics!(
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, metric_ids.clone())),
             (NumberDataPoints,
                 ("id", UInt32, dp_ids.clone()),
                 ("parent_id", UInt16, dp_pids.clone())),
             (NumberDpAttrs,
-                ("parent_id", UInt32, dp_attr_pids.clone()))
-        )];
+                ("parent_id", UInt32, dp_attr_pids.clone())),
+            (NumberDpExemplars,
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", UInt32, ex_pids.clone())),
+            (NumberDpExemplarAttrs,
+                ("parent_id", UInt32, ex_attr_pids.clone()))
+        )]);
+    }
 
-        test_split::<{ Metrics::COUNT }>(&batches);
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_metrics_histogram_dp() {
+        let metric_ids       = vec![0u16, 1, 2, 3];
+        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
+        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let ex_ids           = vec![0u32, 1, 2, 3];
+        let ex_pids          = vec![0u32, 2, 4, 7];
+        let ex_attr_pids     = vec![0u32, 1, 2, 3];
+
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, metric_ids.clone())),
+            (HistogramDataPoints,
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", UInt16, dp_pids.clone())),
+            (HistogramDpAttrs,
+                ("parent_id", UInt32, dp_attr_pids.clone())),
+            (HistogramDpExemplars,
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", UInt32, ex_pids.clone())),
+            (HistogramDpExemplarAttrs,
+                ("parent_id", UInt32, ex_attr_pids.clone()))
+        )]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_metrics_exp_histogram_dp() {
+        let metric_ids       = vec![0u16, 1, 2, 3];
+        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
+        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let ex_ids           = vec![0u32, 1, 2, 3];
+        let ex_pids          = vec![0u32, 2, 4, 7];
+        let ex_attr_pids     = vec![0u32, 1, 2, 3];
+
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, metric_ids.clone())),
+            (ExpHistogramDataPoints,
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", UInt16, dp_pids.clone())),
+            (ExpHistogramDpAttrs,
+                ("parent_id", UInt32, dp_attr_pids.clone())),
+            (ExpHistogramDpExemplars,
+                ("id", UInt32, ex_ids.clone()),
+                ("parent_id", UInt32, ex_pids.clone())),
+            (ExpHistogramDpExemplarAttrs,
+                ("parent_id", UInt32, ex_attr_pids.clone()))
+        )]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_split_metrics_summary_dp() {
+        let metric_ids       = vec![0u16, 1, 2, 3];
+        let dp_ids           = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+        let dp_pids          = vec![0u16, 0, 1, 1, 1, 2, 3, 3];
+        let dp_attr_pids     = vec![0u32, 1, 2, 3, 4, 5, 6, 7];
+
+        test_split::<{ Metrics::COUNT }>(&[metrics!(
+            (UnivariateMetrics,
+                ("id", UInt16, metric_ids.clone())),
+            (SummaryDataPoints,
+                ("id", UInt32, dp_ids.clone()),
+                ("parent_id", UInt16, dp_pids.clone())),
+            (SummaryDpAttrs,
+                ("parent_id", UInt32, dp_attr_pids.clone()))
+        )]);
     }
 
     #[test]
