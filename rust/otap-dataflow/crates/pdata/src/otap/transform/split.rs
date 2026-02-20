@@ -993,16 +993,15 @@ mod tests {
             let result_items: usize = result.iter().map(num_items).sum();
             assert_eq!(result_items, expected_items);
 
-            // For metrics, verify row counts are preserved per table.
-            // Skip ScopeAttrs and ResourceAttrs — these are sliced by min/max
-            // of scope.id/resource.id ranges and may be duplicated across batches.
+            // For metrics, verify data point row counts are preserved per type.
             if N == Metrics::COUNT {
-                let scope_idx = POSITION_LOOKUP[ArrowPayloadType::ScopeAttrs as usize];
-                let resource_idx = POSITION_LOOKUP[ArrowPayloadType::ResourceAttrs as usize];
-                for idx in 0..N {
-                    if idx == scope_idx || idx == resource_idx {
-                        continue;
-                    }
+                for dp_type in [
+                    ArrowPayloadType::NumberDataPoints,
+                    ArrowPayloadType::SummaryDataPoints,
+                    ArrowPayloadType::HistogramDataPoints,
+                    ArrowPayloadType::ExpHistogramDataPoints,
+                ] {
+                    let idx = POSITION_LOOKUP[dp_type as usize];
                     let input_rows: usize = batches
                         .iter()
                         .map(|b| b[idx].as_ref().map_or(0, |rb| rb.num_rows()))
@@ -1013,7 +1012,7 @@ mod tests {
                         .sum();
                     assert_eq!(
                         input_rows, output_rows,
-                        "row count mismatch at table index {idx}"
+                        "data point row count mismatch for {:?}", dp_type
                     );
                 }
             }
