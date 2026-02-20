@@ -15,7 +15,7 @@ pub struct RecordsetKqlProcessorConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::experimental::recordset_kql_processor::processor::RecordsetKqlProcessor;
+    use super::super::processor::RecordsetKqlProcessor;
 
     use super::*;
     use otap_df_engine::context::{ControllerContext, PipelineContext};

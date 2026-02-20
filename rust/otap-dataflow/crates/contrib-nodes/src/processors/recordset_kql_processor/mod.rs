@@ -4,9 +4,9 @@
 pub(crate) mod config;
 pub(crate) mod processor;
 
-use crate::experimental::recordset_kql_processor::config::RecordsetKqlProcessorConfig;
-use crate::experimental::recordset_kql_processor::processor::RecordsetKqlProcessor;
-use crate::pdata::OtapPdata;
+use self::config::RecordsetKqlProcessorConfig;
+use self::processor::RecordsetKqlProcessor;
+use otap_df_otap::pdata::OtapPdata;
 
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::{

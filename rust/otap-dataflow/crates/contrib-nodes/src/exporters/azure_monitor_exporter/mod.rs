@@ -15,8 +15,8 @@ use otap_df_engine::node::NodeId;
 use serde_json;
 use std::sync::Arc;
 
-use crate::OTAP_EXPORTER_FACTORIES;
-use crate::pdata::OtapPdata;
+use otap_df_otap::OTAP_EXPORTER_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 
 mod auth;
 mod client;

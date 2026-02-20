@@ -1,0 +1,13 @@
+[package]
+name = "otap-df-core-nodes"
+description = "OTAP Core nodes"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

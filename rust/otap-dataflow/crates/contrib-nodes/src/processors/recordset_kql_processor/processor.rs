@@ -1,9 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::experimental::recordset_kql_processor::config::RecordsetKqlProcessorConfig;
-use crate::experimental::recordset_kql_processor::create_recordset_kql_processor;
-use crate::pdata::OtapPdata;
+use super::config::RecordsetKqlProcessorConfig;
+use super::create_recordset_kql_processor;
+use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use data_engine_recordset::RecordSetEngineDiagnosticLevel;
@@ -30,7 +30,7 @@ pub const RECORDSET_KQL_PROCESSOR_URN: &str = "urn:microsoft:recordset_kql:proce
 
 /// OTAP KQL Processor
 #[allow(unsafe_code)]
-#[distributed_slice(crate::OTAP_PROCESSOR_FACTORIES)]
+#[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RECORDSET_KQL_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RECORDSET_KQL_PROCESSOR_URN,
     create: create_recordset_kql_processor,
@@ -298,12 +298,12 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::pdata::OtapPdata;
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,

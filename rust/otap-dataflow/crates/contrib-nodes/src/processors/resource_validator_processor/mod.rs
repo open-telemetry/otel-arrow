@@ -78,8 +78,8 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::OTAP_PROCESSOR_FACTORIES;
-use crate::pdata::OtapPdata;
+use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::pdata::OtapPdata;
 
 /// URN identifier for the Resource Validator processor
 pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:resource_validator:processor";
