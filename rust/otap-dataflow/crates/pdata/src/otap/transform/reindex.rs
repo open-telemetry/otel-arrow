@@ -8,8 +8,9 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::compute::sort_to_indices;
-use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
+};
 
 use crate::error::{Error, Result};
 use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
@@ -318,7 +319,7 @@ where
         //  space
         //
         // Create mappings for the parent IDs
-        let mut ids = materialize_id_column::<T>(id_col.as_ref())?
+        let mut ids = materialize_id_values::<T>(id_col.as_ref())?
             .values()
             .to_vec();
         let sort_indices = sort_vec_to_indices(&ids);
@@ -370,7 +371,7 @@ where
     // Materialize the id values. In the case of a dictionary this is the
     // values array and does not include the keys.
     let id_col = extract_id_column(&rb, column_path)?;
-    let id_values = materialize_id_column::<T>(id_col.as_ref())?;
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
     let mut id_values = id_values.values().to_vec();
 
     let value_sort_indices = sort_vec_to_indices(&id_values);
@@ -378,40 +379,64 @@ where
     let mut new_ids = vec![T::Native::default(); id_values.len()];
     take_vec(&id_values, &mut new_ids, value_sort_indices.values());
     if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
-        // We have integrity violations in some number of ranges. We need to eliminate
+        // We may have integrity violations in some number of ranges. We need to eliminate
         // them because we're on the reindexing path where we're squashing all ids
         // to contiguous ranges starting at 0, so any strays left behind may accidentally
-        // be associated to ids in other batches.
+        // be associated to ids in other batches if we apply some offset to them.
         //
-        // Process is as follows:
-        // 1. Sort the entire record batch by the indices so that the ranges correspond to
-        // the violation ranges.
-        // 2. Remove all rows in those ranges by constructing the valid slices
-        // of the record batch (opposite of the violations), slicing the record
-        // batch to remove them, and then `concat`ing them back together.
-        // 3. Remove all rows in the new_ids vector.
-        // 4. The record batch is now sorted and violation-free. Replace the id
-        // column directly with the remapped ids and return.
+        // For primitive columns the violation ranges correspond directly to rows in
+        // the sorted record batch so we sort, remove the rows, compact new_ids, and
+        // replace the column.
         //
-        // Note: We don't need to unsort new_ids anymore because the whole record
-        // batch is sorted.
+        // For dictionary columns the violations are in the values array, not the
+        // keys. In this case the violations could be for unreferenced dict values,
+        // so we map value-level redactions to key-level redactions to see what
+        // needs to be removed.
+        match id_col.data_type() {
+            DataType::Dictionary(key_type, _) => {
+                // Determine which value violations correspond to actual rows.
+                let key_redactions = match key_type.as_ref() {
+                    DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
+                        id_col.as_ref(),
+                        &violations,
+                    ),
+                    DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
+                        id_col.as_ref(),
+                        &violations,
+                    ),
+                    _ => {
+                        return Err(Error::UnsupportedDictionaryKeyType {
+                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                            actual: key_type.as_ref().clone(),
+                        });
+                    }
+                };
 
-        // Currently we have sort indices for the values of the ids. If the id column
-        // is a primitive type then this is the same as the value sort indices.
-        //
-        // If this is a dictionary type then we need to sort the keys which is
-        // done by rank.
-        let rb = match id_col.data_type() {
-            DataType::Dictionary(_, _) => {
-                let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
-                    .map_err(|e| Error::Batching { source: e })?;
-                sort_record_batch_by_indices(rb, &sort_indices)?
+                // Unsort the remapped values back to original order. Violation
+                // positions contain garbage but no key references them.
+                untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
+
+                let rb = if !key_redactions.is_empty() {
+                    // Genuine violations - sort batch by the same key order
+                    // used to produce the key redaction ranges, then remove.
+                    let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
+                        .map_err(|e| Error::Batching { source: e })?;
+                    let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
+                    remove_record_batch_ranges(rb, &key_redactions)?
+                } else {
+                    rb
+                };
+
+                return replace_id_column::<T>(rb, column_path, id_values);
             }
-            _ => sort_record_batch_by_indices(rb, &value_sort_indices)?,
-        };
-        let rb = remove_record_batch_ranges(rb, &violations)?;
-        remove_vec_ranges(&mut new_ids, &violations);
-        return replace_id_column::<T>(rb, column_path, new_ids);
+            _ => {
+                // Primitive column: sort batch, remove violation rows, compact.
+                let rb = sort_record_batch_by_indices(rb, &value_sort_indices)?;
+                let rb = remove_record_batch_ranges(rb, &violations)?;
+                remove_vec_ranges(&mut new_ids, &violations);
+                return replace_id_column::<T>(rb, column_path, new_ids);
+            }
+        }
     }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
@@ -427,6 +452,115 @@ fn remove_vec_ranges<T>(vec: &mut Vec<T>, ranges: &[Range<usize>]) {
     for range in ranges.iter().rev() {
         drop(vec.drain(range.clone()));
     }
+}
+
+/// Maps value-level redaction ranges to key-level (row-level) redaction ranges
+/// for dictionary-encoded columns.
+///
+/// # Background
+///
+/// When [reindex_child_column] processes a dictionary-encoded id column, it
+/// operates on the dictionary **values** array rather
+/// than the per-row keys. Not all dictionary values are necessarily referenced
+/// by a key which is a problem because [apply_mappings] may flag values that
+/// are not actually referenced in any row.
+///
+/// This function determines which, if any, flagged values are referenced by
+/// keys and returns ranges of indices for the keys which need to be removed.
+///
+/// # Algorithm
+///
+/// Dictionary keys are indices into the values array, and the redaction ranges
+/// are also indices into the values array. Both are directly comparable. We:
+///
+/// 1. Sort the keys. Since the redaction ranges are sorted and non-overlapping
+///    by construction, we merge-scan them in a single pass.
+/// 2. If a key falls inside a redaction range, that row has a genuine integrity
+///    violation.
+///
+/// The output ranges are positions in the sorted-key order, which corresponds
+/// to rows in the record batch after sorting by
+/// `arrow::compute::sort_to_indices(&id_col)`.
+///
+/// # Example
+///
+/// ```text
+/// Dictionary values array:  [0, 1, 2, 3, 4]   (indices 0..5)
+/// Dictionary keys array:    [0, 2, 4, 1]      (4 rows)
+/// Value redactions:         [3..5]            (values at indices 3,4 flagged)
+///
+/// ```
+///
+/// In this case:
+///
+/// Value index 3 was NOT referenced by any key (spurious).
+/// Value index 4 WAS referenced by key 4 (genuine) -> Output is [3..4)
+///
+fn map_value_redactions_to_key_redactions<K>(
+    id_col: &dyn Array,
+    value_redactions: &[Range<usize>],
+) -> Vec<Range<usize>>
+where
+    K: ArrowDictionaryKeyType,
+{
+    debug_assert!(
+        value_redactions.windows(2).all(|w| w[0].end <= w[1].start),
+        "value_redactions must be sorted and non-overlapping"
+    );
+
+    if value_redactions.is_empty() {
+        return Vec::new();
+    }
+
+    let dict = id_col.as_dictionary::<K>();
+
+    // Keys are indices into the values array - directly comparable to the
+    // redaction ranges which are also value-array indices.
+    let mut sorted_keys: Vec<usize> = dict.keys().values().iter().map(|k| k.as_usize()).collect();
+    sorted_keys.sort_unstable();
+
+    // Merge-scan sorted keys against value redaction ranges.
+    let mut key_redactions = Vec::new();
+    let mut key_idx = 0;
+    let mut redaction_idx = 0;
+    let mut current_start: Option<usize> = None;
+
+    while key_idx < sorted_keys.len() && redaction_idx < value_redactions.len() {
+        let key = sorted_keys[key_idx];
+        let redaction = &value_redactions[redaction_idx];
+
+        // Key is before this redaction range - not a violation.
+        if key < redaction.start {
+            if let Some(start) = current_start.take() {
+                key_redactions.push(start..key_idx);
+            }
+
+            key_idx += 1;
+            continue;
+        }
+
+        // Key is past this redaction range - advance to the next range.
+        if key >= redaction.end {
+            if let Some(start) = current_start.take() {
+                key_redactions.push(start..key_idx);
+            }
+
+            redaction_idx += 1;
+            continue;
+        }
+
+        // Key is inside the redaction range - genuine violation.
+        if current_start.is_none() {
+            current_start = Some(key_idx);
+        }
+        key_idx += 1;
+    }
+
+    if let Some(start) = current_start {
+        key_redactions.push(start..key_idx);
+    }
+
+    key_redactions
 }
 
 fn replace_id_column<T>(
@@ -463,7 +597,7 @@ fn sort_vec_to_indices<T: Ord>(values: &[T]) -> Vec<u32> {
 /// For dictionary arrays, returns the VALUES array (unique dictionary entries), not the per-row
 /// logical values. This is intentional: callers remap just the dictionary values, and the
 /// dictionary keys preserve the per-row structure automatically.
-fn materialize_id_column<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
+fn materialize_id_values<T>(array: &dyn Array) -> Result<&PrimitiveArray<T>>
 where
     T: ArrowPrimitiveType,
 {
