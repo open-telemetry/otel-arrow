@@ -32,7 +32,7 @@ type SplitResult<const N: usize> = Result<Vec<[Option<RecordBatch>; N]>>;
 /// Logs and Traces are relatively trivial to plan because every entry in the
 /// root record batch represents a single item. To chunk a record batch into
 /// items of at most `max_items`, we simply chunk the range 0..len into `max_items`
-/// sized pieces.
+/// sized pieces with some offset for the first chunk to make it fit evenly.
 ///
 /// For metrics we need to handle the fact that each metric row corresponds to
 /// multiple data points in one of four data point tables.
