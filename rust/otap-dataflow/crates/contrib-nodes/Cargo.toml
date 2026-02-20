@@ -48,14 +48,15 @@ reqwest = { workspace = true, optional = true, features = ["rustls"] }
 sysinfo = { workspace = true, optional = true }
 
 [features]
-contrib-exporters = []
+contrib-exporters = [
+    "geneva-exporter",
+    "azure-monitor-exporter",
+]
 geneva-exporter = [
-    "contrib-exporters",
     "dep:geneva-uploader",
     "dep:opentelemetry-proto",
 ]
 azure-monitor-exporter = [
-    "contrib-exporters",
     "dep:opentelemetry-proto",
     "dep:azure_identity",
     "dep:reqwest",
@@ -68,15 +69,18 @@ azure-monitor-exporter = [
     "dep:rand",
 ]
 
-contrib-processors = []
-condense-attributes-processor = ["contrib-processors"]
+contrib-processors = [
+    "condense-attributes-processor",
+    "recordset-kql-processor",
+    "resource-validator-processor",
+]
+condense-attributes-processor = []
 recordset-kql-processor = [
-    "contrib-processors",
     "dep:data_engine_recordset_otlp_bridge",
     "dep:data_engine_recordset",
     "dep:chrono",
 ]
-resource-validator-processor = ["contrib-processors"]
+resource-validator-processor = []
 
 [dev-dependencies]
 otap-df-engine = { path = "../engine", features = ["test-utils"] }
