@@ -569,11 +569,11 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
 
-    use otap_df_otap::testing::TestCallData;
     use bytes::Bytes;
     use otap_df_engine::Interests;
     use otap_df_engine::control::PipelineControlMsg;
     use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
+    use otap_df_otap::testing::TestCallData;
     use std::time::{Duration, Instant};
 
     // TODO: Re-enable these imports when zero-copy view tests are uncommented

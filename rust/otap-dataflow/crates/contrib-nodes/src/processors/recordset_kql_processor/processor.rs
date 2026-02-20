@@ -298,12 +298,12 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use otap_df_otap::pdata::OtapPdata;
     use bytes::BytesMut;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
+    use otap_df_otap::pdata::OtapPdata;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
