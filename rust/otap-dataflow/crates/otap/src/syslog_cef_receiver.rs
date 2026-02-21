@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
+use std::num::{NonZeroU16, NonZeroU64};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,8 +47,8 @@ pub mod parser;
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
-/// Default maximum time to wait before building an Arrow batch.
-const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
+/// Default maximum time to wait before flushing an Arrow batch.
+const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
 /// Default maximum number of messages to build an Arrow batch.
 const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 
@@ -97,14 +98,14 @@ enum Protocol {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct BatchConfig {
-    /// Maximum time in milliseconds to wait before building an Arrow batch.
-    /// Defaults to 100 ms when not specified.
+    /// Maximum time in milliseconds to wait before flushing an Arrow batch.
+    /// Defaults to 100 ms when not specified. Must be greater than zero.
     #[serde(default)]
-    timeout_ms: Option<u64>,
+    flush_timeout_ms: Option<NonZeroU64>,
     /// Maximum number of messages to accumulate before building an Arrow batch.
-    /// Defaults to 100 when not specified.
+    /// Defaults to 100 when not specified. Must be greater than zero.
     #[serde(default)]
-    max_size: Option<u16>,
+    max_size: Option<NonZeroU16>,
 }
 
 /// Config for a syslog cef receiver
@@ -144,13 +145,13 @@ impl Config {
         }
     }
 
-    /// Returns the effective batch timeout, using the configured value or the default.
-    fn batch_timeout(&self) -> Duration {
+    /// Returns the effective flush timeout, using the configured value or the default.
+    fn flush_timeout(&self) -> Duration {
         self.batch
             .as_ref()
-            .and_then(|b| b.timeout_ms)
-            .map(Duration::from_millis)
-            .unwrap_or(DEFAULT_BATCH_TIMEOUT)
+            .and_then(|b| b.flush_timeout_ms)
+            .map(|ms| Duration::from_millis(ms.get()))
+            .unwrap_or(DEFAULT_FLUSH_TIMEOUT)
     }
 
     /// Returns the effective max batch size, using the configured value or the default.
@@ -158,6 +159,7 @@ impl Config {
         self.batch
             .as_ref()
             .and_then(|b| b.max_size)
+            .map(|s| s.get())
             .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
     }
 }
@@ -263,7 +265,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 }
 
                 // Resolve effective batching settings from config
-                let batch_timeout = self.config.batch_timeout();
+                let flush_timeout = self.config.flush_timeout();
                 let max_batch_size = self.config.max_batch_size();
 
                 // Flag to signal spawned connection tasks to flush and exit on shutdown
@@ -390,8 +392,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        let start = tokio::time::Instant::now() + batch_timeout;
-                                        let mut interval = tokio::time::interval_at(start, batch_timeout);
+                                        let start = tokio::time::Instant::now() + flush_timeout;
+                                        let mut interval = tokio::time::interval_at(start, flush_timeout);
 
                                         loop {
                                             // Check for shutdown signal (simple bool check - very cheap)
@@ -597,11 +599,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                let batch_timeout = self.config.batch_timeout();
+                let flush_timeout = self.config.flush_timeout();
                 let max_batch_size = self.config.max_batch_size();
 
-                let start = tokio::time::Instant::now() + batch_timeout;
-                let mut interval = tokio::time::interval_at(start, batch_timeout);
+                let start = tokio::time::Instant::now() + flush_timeout;
+                let mut interval = tokio::time::interval_at(start, flush_timeout);
 
                 loop {
                     tokio::select! {
@@ -1458,12 +1460,12 @@ mod config_tests {
                 }
             },
             "batch": {
-                "timeout_ms": 50,
+                "flush_timeout_ms": 50,
                 "max_size": 200
             }
         });
         let config: Config = serde_json::from_value(json).expect("should parse");
-        assert_eq!(config.batch_timeout(), Duration::from_millis(50));
+        assert_eq!(config.flush_timeout(), Duration::from_millis(50));
         assert_eq!(config.max_batch_size(), 200);
     }
 
@@ -1476,11 +1478,11 @@ mod config_tests {
                 }
             },
             "batch": {
-                "timeout_ms": 25
+                "flush_timeout_ms": 25
             }
         });
         let config: Config = serde_json::from_value(json).expect("should parse");
-        assert_eq!(config.batch_timeout(), Duration::from_millis(25));
+        assert_eq!(config.flush_timeout(), Duration::from_millis(25));
         assert_eq!(
             config.max_batch_size(),
             DEFAULT_MAX_BATCH_SIZE,
@@ -1498,7 +1500,7 @@ mod config_tests {
             }
         });
         let config: Config = serde_json::from_value(json).expect("should parse");
-        assert_eq!(config.batch_timeout(), DEFAULT_BATCH_TIMEOUT);
+        assert_eq!(config.flush_timeout(), DEFAULT_FLUSH_TIMEOUT);
         assert_eq!(config.max_batch_size(), DEFAULT_MAX_BATCH_SIZE);
     }
 
@@ -1511,7 +1513,7 @@ mod config_tests {
                 }
             },
             "batch": {
-                "timeout_ms": 50,
+                "flush_timeout_ms": 50,
                 "unknown_field": true
             }
         });
@@ -1520,6 +1522,38 @@ mod config_tests {
             config.is_err(),
             "Batch config with unknown field should be rejected"
         );
+    }
+
+    #[test]
+    fn batch_zero_flush_timeout_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "flush_timeout_ms": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_err(), "flush_timeout_ms of 0 should be rejected");
+    }
+
+    #[test]
+    fn batch_zero_max_size_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_size": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_err(), "max_size of 0 should be rejected");
     }
 }
 
