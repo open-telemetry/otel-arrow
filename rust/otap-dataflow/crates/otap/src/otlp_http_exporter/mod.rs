@@ -139,9 +139,30 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let logs_endpoint = Rc::new(
+            self.config
+                .logs_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, LOGS_PATH)),
+        );
+        let metrics_endpoint = Rc::new(
+            self.config
+                .metrics_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, METRICS_PATH)),
+        );
+        let traces_endpoint = Rc::new(
+            self.config
+                .traces_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, TRACES_PATH)),
+        );
+
         otel_info!(
             "otlp.exporter.http.start",
-            http_endpoint = self.config.endpoint.as_str()
+            logs_endpoint = logs_endpoint.as_str(),
+            metrics_endpoint = metrics_endpoint.as_str(),
+            traces_endpoint = traces_endpoint.as_str(),
         );
 
         let telemetry_timer_cancel = effect_handler
@@ -165,25 +186,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-
-        let logs_endpoint = Rc::new(
-            self.config
-                .logs_endpoint
-                .clone()
-                .unwrap_or(format!("{}{}", self.config.endpoint, LOGS_PATH)),
-        );
-        let metrics_endpoint = Rc::new(
-            self.config
-                .metrics_endpoint
-                .clone()
-                .unwrap_or(format!("{}{}", self.config.endpoint, METRICS_PATH)),
-        );
-        let traces_endpoint = Rc::new(
-            self.config
-                .traces_endpoint
-                .clone()
-                .unwrap_or(format!("{}{}", self.config.endpoint, TRACES_PATH)),
-        );
 
         loop {
             // Opportunistically drain completions before we park on a recv.
