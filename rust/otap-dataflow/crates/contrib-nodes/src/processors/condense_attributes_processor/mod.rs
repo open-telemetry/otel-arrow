@@ -33,6 +33,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -156,7 +157,13 @@ impl Config {
 /// Processor that condenses multiple attributes into a single attribute based on predefined rules.
 pub struct CondenseAttributesProcessor {
     config: Config,
-    rows_to_preserve: Vec<usize>,
+}
+
+enum CachedAttributeValue {
+    Str(String),
+    Int(i64),
+    Double(f64),
+    Bool(bool),
 }
 
 fn engine_err(msg: &str) -> Error {
@@ -174,7 +181,7 @@ pub fn create_condense_attributes_processor(
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let processor = CondenseAttributesProcessor::from_config(&node_config.config)?;
 
-    otap_df_telemetry::otel_info!("condense_attributes_processor.ready");
+    otel_info!("condense_attributes_processor.ready");
 
     Ok(ProcessorWrapper::local(
         processor,
@@ -203,10 +210,7 @@ impl CondenseAttributesProcessor {
     /// Creates a new CondenseAttributesProcessor instance
     #[must_use]
     pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            rows_to_preserve: Vec::new(),
-        }
+        Self { config }
     }
 
     /// Creates a new CondenseAttributesProcessor instance from configuration
@@ -219,7 +223,10 @@ impl CondenseAttributesProcessor {
     fn condense(&mut self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
-            None => return Ok(0),
+            None => {
+                otel_debug!("condense_attributes_processor.no_log_attrs_payload");
+                return Ok(0);
+            }
         };
 
         let num_rows = rb.num_rows();
@@ -347,11 +354,13 @@ impl CondenseAttributesProcessor {
             }
         };
 
-        // Reuse rows_to_preserve buffer to avoid reallocation on each call
-        self.rows_to_preserve.clear();
         // parent_to_attrs uses borrowed &str keys from Arrow arrays, so cannot be easily reused across calls.
         // TODO: is reusing a HashMap<u16, Vec<(String, String)>> worth it?
         let mut parent_to_attrs: HashMap<u16, Vec<(&str, String)>> = HashMap::new();
+        let mut preserved_attrs: Vec<(u16, &str, CachedAttributeValue)> =
+            Vec::with_capacity(num_rows);
+        let mut removed_existing_destination = false;
+        let mut removed_existing_destination_count = 0u64;
 
         for i in 0..num_rows {
             if parent_id_arr.is_null(i) {
@@ -366,7 +375,8 @@ impl CondenseAttributesProcessor {
 
             // Always skip attributes that match the destination_key to prevent circular references
             if key == self.config.destination_key {
-                // TODO: Add proper instrumentation/logging
+                removed_existing_destination = true;
+                removed_existing_destination_count += 1;
                 continue;
             }
 
@@ -378,7 +388,45 @@ impl CondenseAttributesProcessor {
             };
 
             if !should_condense {
-                self.rows_to_preserve.push(i);
+                if type_arr.is_null(i) {
+                    continue;
+                }
+
+                let value_type = type_arr.value(i);
+                if let Ok(value_type_enum) = AttributeValueType::try_from(value_type) {
+                    let cached_value = match value_type_enum {
+                        AttributeValueType::Str => str_col.and_then(|col| {
+                            Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
+                                arr.value(index).to_string()
+                            })
+                            .map(CachedAttributeValue::Str)
+                        }),
+                        AttributeValueType::Int => int_col.and_then(|col| {
+                            Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
+                                arr.value(index)
+                            })
+                            .map(CachedAttributeValue::Int)
+                        }),
+                        AttributeValueType::Double => double_col.and_then(|col| {
+                            Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
+                                arr.value(index)
+                            })
+                            .map(CachedAttributeValue::Double)
+                        }),
+                        AttributeValueType::Bool => bool_col.and_then(|col| {
+                            Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
+                                arr.value(index)
+                            })
+                            .map(CachedAttributeValue::Bool)
+                        }),
+                        _ => None,
+                    };
+
+                    if let Some(cached_value) = cached_value {
+                        preserved_attrs.push((parent_id, key, cached_value));
+                    }
+                }
+
                 continue;
             }
 
@@ -395,6 +443,22 @@ impl CondenseAttributesProcessor {
                         .push((key, val));
                 }
             }
+        }
+
+        // No-op fast path: no rows condensed and no destination rows removed.
+        if parent_to_attrs.is_empty() && !removed_existing_destination {
+            otel_debug!(
+                "condense_attributes_processor.no_condensing_needed",
+                num_rows
+            );
+            return Ok(0);
+        }
+
+        if removed_existing_destination_count > 0 {
+            otel_debug!(
+                "condense_attributes_processor.destination_key_replaced",
+                dropped_existing_destination_items = removed_existing_destination_count
+            );
         }
 
         // Build new record batch
@@ -431,64 +495,35 @@ impl CondenseAttributesProcessor {
         }
 
         // Add preserved attributes
-        for &i in &self.rows_to_preserve {
-            let parent_id = parent_id_arr.value(i);
-            let key = get_key(i).expect("key was validated as non-null");
-            let value_type = type_arr.value(i);
-
+        for (parent_id, key, value) in preserved_attrs {
             builder.append_parent_id(&parent_id);
             builder.append_key(key);
 
-            if let Ok(value_type) = AttributeValueType::try_from(value_type) {
-                match value_type {
-                    AttributeValueType::Str => {
-                        if let Some(val) = str_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
-                                arr.value(index).to_string()
-                            })
-                        }) {
-                            builder.any_values_builder.append_str(val.as_bytes());
-                        }
-                    }
-                    AttributeValueType::Int => {
-                        if let Some(val) = int_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
-                                arr.value(index)
-                            })
-                        }) {
-                            builder.any_values_builder.append_int(val);
-                        }
-                    }
-                    AttributeValueType::Double => {
-                        if let Some(val) = double_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
-                                arr.value(index)
-                            })
-                        }) {
-                            builder.any_values_builder.append_double(val);
-                        }
-                    }
-                    AttributeValueType::Bool => {
-                        if let Some(val) = bool_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
-                                arr.value(index)
-                            })
-                        }) {
-                            builder.any_values_builder.append_bool(val);
-                        }
-                    }
-                    // If needed, add handling for Map, Slice, and Bytes?
-                    _ => {}
+            match value {
+                CachedAttributeValue::Str(val) => {
+                    builder.any_values_builder.append_str(val.as_bytes());
+                }
+                CachedAttributeValue::Int(val) => {
+                    builder.any_values_builder.append_int(val);
+                }
+                CachedAttributeValue::Double(val) => {
+                    builder.any_values_builder.append_double(val);
+                }
+                CachedAttributeValue::Bool(val) => {
+                    builder.any_values_builder.append_bool(val);
                 }
             }
         }
 
-        // TODO: It seems wasteful to build a new batch and copy preserved attributes.
-        // Once https://github.com/open-telemetry/otel-arrow/issues/1035 is resolved, should instead modify the original batch in-place.
-        // - Inserting the new condensed attribute
-        // - Removing the original attributes that were condensed
-        // This would cut down on a lot of the copying currently happening.
-        // This work is tracked in https://github.com/open-telemetry/otel-arrow/issues/1694
+        // TODO: This rebuild path is copy-heavy.
+        // `RecordBatch` is immutable, so true in-place mutation is not possible today.
+        // A more efficient approach could be:
+        // - filter/delete condensed source rows from the existing batch,
+        // - append computed condensed rows,
+        // - concatenate/reconcile schemas as needed.
+        // Note: `transform.rs` insert only supports predefined literal values; condense requires
+        // per-parent computed values, so we cannot reuse that insert path directly.
+        // Follow-up optimization tracked in https://github.com/open-telemetry/otel-arrow/issues/1694
         let new_batch = builder.finish().map_err(|e| {
             engine_err(&format!(
                 "Failed to build condensed attributes batch: {}",
@@ -550,13 +585,11 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     NodeControlMsg::Config { config } => {
                         match Config::from_config(&config) {
                             Ok(new_config) => {
-                                otap_df_telemetry::otel_info!(
-                                    "condense_attributes_processor.reconfigured"
-                                );
+                                otel_info!("condense_attributes_processor.reconfigured");
                                 self.config = new_config;
                             }
                             Err(e) => {
-                                otap_df_telemetry::otel_warn!(
+                                otel_warn!(
                                     "condense_attributes_processor.reconfigure_error",
                                     message = %e
                                 );
@@ -570,15 +603,17 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
                 let (context, payload) = pdata.into_parts();
+                let saved_payload = if context.may_return_payload() {
+                    payload.clone()
+                } else {
+                    OtapPayload::empty(signal)
+                };
 
                 let mut records: OtapArrowRecords = payload.try_into()?;
 
                 let input_items = records.num_items() as u64;
 
-                otap_df_telemetry::otel_debug!(
-                    "condense_attributes_processor.processing",
-                    input_items
-                );
+                otel_debug!("condense_attributes_processor.processing", input_items);
 
                 let result = match signal {
                     SignalType::Logs => self.condense(&mut records),
@@ -590,10 +625,12 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 match result {
                     Ok(condensed) => {
-                        otap_df_telemetry::otel_debug!(
+                        let output_items = records.num_items() as u64;
+                        otel_debug!(
                             "condense_attributes_processor.success",
                             input_items,
-                            output_items = condensed
+                            output_items,
+                            condensed_items = condensed
                         );
                         effect_handler
                             .send_message(OtapPdata::new(context, records.into()))
@@ -602,16 +639,17 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     }
                     Err(e) => {
                         let message = e.to_string();
-                        otap_df_telemetry::otel_error!(
+                        otel_error!(
                             "condense_attributes_processor.failure",
                             input_items,
+                            signal = ?signal,
                             message,
                         );
 
                         effect_handler
                             .notify_nack(NackMsg::new(
                                 message,
-                                OtapPdata::new(context, OtapPayload::empty(SignalType::Logs)),
+                                OtapPdata::new(context, saved_payload),
                             ))
                             .await?;
                         Err(e)
@@ -626,13 +664,20 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 mod condense_tests {
     use super::*;
     use bytes::BytesMut;
+    use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::control::PipelineControlMsg;
+    use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
+    use otap_df_otap::testing::TestCallData;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::{
         collector::logs::v1::ExportLogsServiceRequest,
+        collector::metrics::v1::ExportMetricsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
@@ -802,7 +847,7 @@ mod condense_tests {
     }
 
     #[test]
-    fn test_condense_no_attributes_matching_source_keys() {
+    fn test_condense_no_op_fast_path_keeps_log_attrs_batch() {
         let input = build_log_with_attrs(vec![
             KeyValue::new("attr1", AnyValue::new_string("value1")),
             KeyValue::new("attr2", AnyValue::new_int(42)),
@@ -815,13 +860,48 @@ mod condense_tests {
             "source_keys": ["nonexistent1", "nonexistent2"]
         });
 
-        let expected_attrs = vec![
-            KeyValue::new("attr1", AnyValue::new_string("value1")),
-            KeyValue::new("attr2", AnyValue::new_int(42)),
-            KeyValue::new("attr3", AnyValue::new_bool(true)),
-        ];
+        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
 
-        test_condense_single_log(input, cfg, expected_attrs);
+        let mut bytes = BytesMut::new();
+        input.encode(&mut bytes).expect("encode input");
+        let payload: OtapPayload = OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into();
+        let mut records: OtapArrowRecords = payload.try_into().expect("convert to records");
+
+        let before_batch = records
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("log attrs batch present");
+        let before_num_rows = before_batch.num_rows();
+        let before_num_items = records.num_items();
+
+        let condensed_count = processor
+            .condense(&mut records)
+            .expect("no-op condense should succeed");
+
+        assert_eq!(condensed_count, 0);
+        assert_eq!(records.num_items(), before_num_items);
+
+        let after_batch = records
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("log attrs batch present after condense");
+        assert_eq!(after_batch.num_rows(), before_num_rows);
+    }
+
+    #[test]
+    fn test_condense_no_log_attrs_payload_returns_zero() {
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+        let mut processor = CondenseAttributesProcessor::from_config(&cfg).expect("valid config");
+        let mut records = OtapArrowRecords::from(Logs::default());
+
+        let condensed_count = processor
+            .condense(&mut records)
+            .expect("condense should succeed without log attrs payload");
+
+        assert_eq!(condensed_count, 0);
+        assert!(records.get(ArrowPayloadType::LogAttrs).is_none());
+        assert_eq!(records.num_items(), 0);
     }
 
     #[test]
@@ -1076,6 +1156,186 @@ mod condense_tests {
             );
             assert!(has_attr(log4_attrs, "hit"), "Log 4 should preserve hit");
         });
+    }
+
+    #[test]
+    fn test_nack_preserves_original_payload_for_unsupported_signal() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("condense-attributes-processor-nack-preserve-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config =
+            NodeUserConfig::new_processor_config(CONDENSE_ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+
+        let proc = create_condense_attributes_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+        )
+        .expect("create processor");
+
+        rt.set_processor(proc)
+            .run_test(|mut ctx| async move {
+                let (pipeline_ctrl_tx, mut pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(10);
+                ctx.set_pipeline_ctrl_sender(pipeline_ctrl_tx);
+
+                let mut bytes = BytesMut::new();
+                ExportMetricsServiceRequest::default()
+                    .encode(&mut bytes)
+                    .expect("encode metrics request");
+
+                let pdata_in = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into(),
+                )
+                .test_subscribe_to(
+                    Interests::NACKS,
+                    TestCallData::default().into(),
+                    777,
+                );
+
+                let result = ctx.process(Message::PData(pdata_in)).await;
+                assert!(result.is_err(), "unsupported signal should return error");
+
+                match pipeline_ctrl_rx.recv().await.expect("pipeline msg") {
+                    PipelineControlMsg::DeliverNack { nack, node_id } => {
+                        assert_eq!(node_id, 777);
+                        assert_eq!(nack.refused.signal_type(), SignalType::Metrics);
+                    }
+                    other => panic!("expected DeliverNack, got: {other:?}"),
+                }
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_control_reconfigure_applies_valid_and_ignores_invalid_config() {
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("condense-attributes-processor-reconfigure-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config =
+            NodeUserConfig::new_processor_config(CONDENSE_ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = json!({
+            "destination_key": "condensed",
+            "delimiter": ";",
+            "source_keys": ["attr1", "attr2"]
+        });
+
+        let proc = create_condense_attributes_processor(
+            pipeline_ctx,
+            node,
+            Arc::new(node_config),
+            rt.config(),
+        )
+        .expect("create processor");
+
+        rt.set_processor(proc)
+            .run_test(|mut ctx| async move {
+                let input = build_log_with_attrs(vec![
+                    KeyValue::new("attr1", AnyValue::new_string("value1")),
+                    KeyValue::new("attr2", AnyValue::new_int(42)),
+                    KeyValue::new("attr3", AnyValue::new_bool(true)),
+                ]);
+
+                // Valid reconfiguration should update destination key and delimiter.
+                ctx.process(Message::Control(NodeControlMsg::Config {
+                    config: json!({
+                        "destination_key": "merged",
+                        "delimiter": "|",
+                        "source_keys": ["attr1", "attr2"]
+                    }),
+                }))
+                .await
+                .expect("valid reconfig control message should succeed");
+
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode first input");
+                let pdata_in = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
+                );
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process after valid reconfig");
+
+                let out = ctx.drain_pdata().await;
+                let (_, first_payload) = out.into_iter().next().expect("one output").into_parts();
+                let otlp_bytes: OtlpProtoBytes = first_payload.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+                let attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                let merged = attrs
+                    .iter()
+                    .find(|kv| kv.key == "merged")
+                    .expect("merged attribute should exist after valid reconfig");
+                let merged_val = merged
+                    .value
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(any_value::Value::StringValue(s)) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .expect("merged should be a string value");
+                assert_eq!(merged_val, "attr1=value1|attr2=42");
+
+                // Invalid reconfiguration should be ignored, keeping previous valid config.
+                ctx.process(Message::Control(NodeControlMsg::Config {
+                    config: json!({
+                        "destination_key": "ignored",
+                        "source_keys": ["attr1", "attr2"]
+                    }),
+                }))
+                .await
+                .expect("invalid reconfig control message should not fail processing");
+
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode second input");
+                let pdata_in = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
+                );
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process after invalid reconfig");
+
+                let out = ctx.drain_pdata().await;
+                let (_, second_payload) = out.into_iter().next().expect("one output").into_parts();
+                let otlp_bytes: OtlpProtoBytes =
+                    second_payload.try_into().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+                let attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                let merged_after_invalid = attrs
+                    .iter()
+                    .find(|kv| kv.key == "merged")
+                    .expect("previous valid config should remain active after invalid reconfig");
+                let merged_after_invalid_val = merged_after_invalid
+                    .value
+                    .as_ref()
+                    .and_then(|v| match &v.value {
+                        Some(any_value::Value::StringValue(s)) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .expect("merged should be a string value");
+                assert_eq!(merged_after_invalid_val, "attr1=value1|attr2=42");
+                assert!(attrs.iter().all(|kv| kv.key != "ignored"));
+            })
+            .validate(|_| async move {});
     }
 }
 
