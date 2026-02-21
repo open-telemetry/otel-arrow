@@ -124,7 +124,7 @@ impl Config {
     /// Creates a new Config for TCP.
     #[must_use]
     #[allow(dead_code)]
-    pub const fn new_tcp(listening_addr: SocketAddr) -> Self {
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
         Self {
             protocol: Protocol::Tcp(TcpConfig {
                 listening_addr,
@@ -138,7 +138,7 @@ impl Config {
     /// Creates a new Config for UDP.
     #[must_use]
     #[allow(dead_code)]
-    pub const fn new_udp(listening_addr: SocketAddr) -> Self {
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
         Self {
             protocol: Protocol::Udp(UdpConfig { listening_addr }),
             batch: None,
