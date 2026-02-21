@@ -33,7 +33,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn, otel_error};
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -224,9 +224,7 @@ impl CondenseAttributesProcessor {
         let rb = match records.get(ArrowPayloadType::LogAttrs) {
             Some(rb) => rb,
             None => {
-                otel_debug!(
-                    "condense_attributes_processor.no_log_attrs_payload"
-                );
+                otel_debug!("condense_attributes_processor.no_log_attrs_payload");
                 return Ok(0);
             }
         };
@@ -587,9 +585,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
                     NodeControlMsg::Config { config } => {
                         match Config::from_config(&config) {
                             Ok(new_config) => {
-                                otel_info!(
-                                    "condense_attributes_processor.reconfigured"
-                                );
+                                otel_info!("condense_attributes_processor.reconfigured");
                                 self.config = new_config;
                             }
                             Err(e) => {
@@ -617,10 +613,7 @@ impl local::Processor<OtapPdata> for CondenseAttributesProcessor {
 
                 let input_items = records.num_items() as u64;
 
-                otel_debug!(
-                    "condense_attributes_processor.processing",
-                    input_items
-                );
+                otel_debug!("condense_attributes_processor.processing", input_items);
 
                 let result = match signal {
                     SignalType::Logs => self.condense(&mut records),
@@ -672,19 +665,19 @@ mod condense_tests {
     use super::*;
     use bytes::BytesMut;
     use otap_df_engine::Interests;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NodeControlMsg;
     use otap_df_engine::control::PipelineControlMsg;
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
-    use otap_df_engine::context::ControllerContext;
     use otap_df_engine::message::Message;
     use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::TestCallData;
-    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::otap::Logs;
     use otap_df_pdata::proto::opentelemetry::{
-        collector::metrics::v1::ExportMetricsServiceRequest,
         collector::logs::v1::ExportLogsServiceRequest,
+        collector::metrics::v1::ExportMetricsServiceRequest,
         common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value},
         logs::v1::{LogRecord, ResourceLogs, ScopeLogs, SeverityNumber},
         resource::v1::Resource,
@@ -1202,7 +1195,11 @@ mod condense_tests {
                 let pdata_in = OtapPdata::new_default(
                     OtlpProtoBytes::ExportMetricsRequest(bytes.freeze()).into(),
                 )
-                .test_subscribe_to(Interests::NACKS, TestCallData::default().into(), 777);
+                .test_subscribe_to(
+                    Interests::NACKS,
+                    TestCallData::default().into(),
+                    777,
+                );
 
                 let result = ctx.process(Message::PData(pdata_in)).await;
                 assert!(result.is_err(), "unsupported signal should return error");
@@ -1264,8 +1261,9 @@ mod condense_tests {
 
                 let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode first input");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+                let pdata_in = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
+                );
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process after valid reconfig");
@@ -1305,15 +1303,17 @@ mod condense_tests {
 
                 let mut bytes = BytesMut::new();
                 input.encode(&mut bytes).expect("encode second input");
-                let pdata_in =
-                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into());
+                let pdata_in = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportLogsRequest(bytes.freeze()).into(),
+                );
                 ctx.process(Message::PData(pdata_in))
                     .await
                     .expect("process after invalid reconfig");
 
                 let out = ctx.drain_pdata().await;
                 let (_, second_payload) = out.into_iter().next().expect("one output").into_parts();
-                let otlp_bytes: OtlpProtoBytes = second_payload.try_into().expect("convert to otlp");
+                let otlp_bytes: OtlpProtoBytes =
+                    second_payload.try_into().expect("convert to otlp");
                 let bytes = match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(b) => b,
                     _ => panic!("unexpected otlp variant"),
