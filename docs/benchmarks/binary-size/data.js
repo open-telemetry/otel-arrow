@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771633413994,
+  "lastUpdate": 1771719743030,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1941,6 +1941,33 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/d747115a1de764f930503e015747a437aad3916b"
         },
         "date": 1771633409798,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.26,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d747115a1de764f930503e015747a437aad3916b",
+          "message": "Refactor otap/experimental to new contrib-nodes crate (#2084)\n\n# Change Summary\n\nFirst step towards the goal state mentioned in #1847. I chose to start\nwith the experimental subfolder as it has a limited number of nodes to\nconfirm methodology.\n\nI tried to also clean up the `Cargo.toml` dependencies in both\n`otap-df/otap` and `otap-df/contrib-nodes` to separate concerns, but it\nis always possible there are more unused that should be removed.\n\n## What issue does this PR close?\n\n* Progress towards #1847\n* Closes #2085 \n\n## How are these changes tested?\n\nUnit tests and ran `main.rs` with nodes from `contrib-nodes` enabled.\n\n## Are there any user-facing changes?\n\nNo, only developer-facing.",
+          "timestamp": "2026-02-20T23:38:12Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/d747115a1de764f930503e015747a437aad3916b"
+        },
+        "date": 1771719738829,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
