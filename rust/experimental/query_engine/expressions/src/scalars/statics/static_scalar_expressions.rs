@@ -247,6 +247,12 @@ impl BooleanScalarExpression {
             value,
         }
     }
+
+    // TODO - I think these methods should be removed. They were added by Agent but the thing
+    // didn't know about the traits available for this.
+    pub fn get_value(&self) -> bool {
+        self.value
+    }
 }
 
 impl Expression for BooleanScalarExpression {
@@ -356,6 +362,10 @@ impl DoubleScalarExpression {
             value,
         }
     }
+
+    pub fn get_value(&self) -> f64 {
+        self.value
+    }
 }
 
 impl Expression for DoubleScalarExpression {
@@ -386,6 +396,10 @@ impl IntegerScalarExpression {
             query_location,
             value,
         }
+    }
+
+    pub fn get_value(&self) -> i64 {
+        self.value
     }
 }
 
@@ -479,6 +493,10 @@ impl StringScalarExpression {
             query_location,
             value: value.into(),
         }
+    }
+
+    pub fn get_value(&self) -> &str {
+        &self.value
     }
 }
 
