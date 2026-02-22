@@ -489,7 +489,7 @@ impl PhysicalDomainExpr {
             },
             (Some(input), None) => {
                 // Only parent domain has data (most common case)
-                // TODO: Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
+                // Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
                 // PhysicalExpr::evaluate() returns ColumnarValue directly.
                 //
                 // Examples:
@@ -499,7 +499,8 @@ impl PhysicalDomainExpr {
                 //
                 // The returned ColumnarValue preserves whether the result is scalar or array,
                 // allowing efficient composition in parent expressions.
-                todo!()
+                let result = self.physical_expr.as_ref().unwrap().evaluate(&input)?;
+                Ok(Some(result))
             },
             (None, Some(child)) => {
                 // Parent domain has no data but child does
@@ -595,13 +596,24 @@ mod test {
         let session_ctx = datafusion::execution::context::SessionContext::new();
         let session_state = session_ctx.state();
 
-        // Execute the expression - will hit todo!() for now
+        // Execute the expression
         let result = physical_expr.execute(&otap_batch, &session_state);
         
-        // Once execute() is implemented for StaticScalar, this should return:
-        // - Ok(ColumnarValue::Scalar(...)) for constant values
-        // For now, we just verify the structure is set up correctly
-        assert!(result.is_err());
+        // Should successfully evaluate the static scalar
+        assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+        
+        // Verify it's a scalar value
+        match columnar_value.unwrap() {
+            ColumnarValue::Scalar(scalar) => {
+                // Should be the literal value 42
+                assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(42)));
+            }
+            ColumnarValue::Array(_) => {
+                panic!("Expected scalar, got array");
+            }
+        }
     }
 
     // TODO - this test can be thrown away later once we actually invoke the physical expr
@@ -730,7 +742,19 @@ mod test {
         
         let result = physical_expr.execute(&otap_batch, &session_state);
         
-        // For now, will hit todo!() but structure is correct
-        assert!(result.is_err());
+        // Should successfully evaluate
+        assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+        
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap() {
+            ColumnarValue::Scalar(scalar) => {
+                assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(99)));
+            }
+            ColumnarValue::Array(_) => {
+                panic!("Expected scalar, got array");
+            }
+        }
     }
 }
