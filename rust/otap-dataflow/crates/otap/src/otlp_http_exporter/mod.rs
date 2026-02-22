@@ -117,6 +117,23 @@ impl OtlpHttpExporter {
             error: format!("invalid endpoint URL: {e}"),
         })?;
 
+        // validate the endpoint overrides if supplied
+        if let Some(endpoint) = config.logs_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid logs endpoint URL: {e}"),
+            })?;
+        }
+        if let Some(endpoint) = config.metrics_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid metrics endpoint URL: {e}"),
+            })?;
+        }
+        if let Some(endpoint) = config.traces_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid traces endpoint URL: {e}"),
+            })?;
+        }
+
         Ok(Self {
             config,
             pdata_metrics,
@@ -931,7 +948,9 @@ mod test {
     #[test]
     fn test_from_config_validates_endpoint() {
         let invalid_config = serde_json::json!({
-            "endpoint": "not a valid url"
+            "endpoint": "not a valid url",
+            "http": {},
+            "client_pool_size": 5
         });
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -947,10 +966,63 @@ mod test {
 
         let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
         assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            ConfigError::InvalidUserConfig { .. }
-        ));
+        let err = result.err().unwrap();
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+        assert!(err.to_string().contains("invalid endpoint URL"))
+    }
+
+    #[test]
+    fn test_from_config_validates_endpoint_overrides() {
+        let test_cases = [
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "logs_endpoint": "invalid endpoint"
+                }),
+                "logs",
+            ),
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "metrics_endpoint": "invalid endpoint"
+                }),
+                "metrics",
+            ),
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "traces_endpoint": "invalid endpoint"
+                }),
+                "traces",
+            ),
+        ];
+        for (invalid_config, signal_name) in test_cases {
+            let test_runtime = TestRuntime::<OtapPdata>::new();
+            let telemetry_registry_handle = test_runtime.metrics_registry();
+            let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+            let pipeline_ctx = controller_ctx.pipeline_context_with(
+                "test_group".into(),
+                "test_pipeline".into(),
+                0,
+                1,
+                0,
+            );
+
+            let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+            assert!(result.is_err());
+            let err = result.err().unwrap();
+            assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+            assert!(
+                err.to_string()
+                    .contains(&format!("invalid {signal_name} endpoint URL"))
+            )
+        }
     }
 
     #[test]
