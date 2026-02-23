@@ -20,7 +20,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.39.0
 	go.uber.org/mock v0.6.0
 	golang.org/x/exp v0.0.0-20260209203927-2842357ff358
-	google.golang.org/grpc v1.78.0
+	google.golang.org/grpc v1.79.1
 	google.golang.org/protobuf v1.36.11
 )
 
