@@ -4,7 +4,7 @@
 //! Metrics for the Azure Monitor Exporter node.
 
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Mmsc, MmscSnapshot};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
@@ -31,9 +31,9 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of messages that failed to export.
     #[metric(unit = "{message}")]
     pub failed_messages: Counter<u64>,
-    /// Average client latency in milliseconds.
+    /// Client HTTP latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub laclient_http_avglatency: Gauge<f64>,
+    pub laclient_http_latency: Mmsc,
     /// Number of HTTP 2xx (success) responses.
     #[metric(unit = "{response}")]
     pub laclient_http_2xx: Counter<u64>,
@@ -56,9 +56,9 @@ pub struct AzureMonitorExporterMetrics {
     pub auth_success: Counter<u64>,
     /// Number of failed authentication attempts.
     pub auth_failure: Counter<u64>,
-    /// Average authentication latency in milliseconds.
+    /// Authentication latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub auth_avglatency: Gauge<f64>,
+    pub auth_latency: Mmsc,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
@@ -67,10 +67,6 @@ pub struct AzureMonitorExporterMetrics {
 /// telemetry system for automatic collection).
 pub struct AzureMonitorExporterMetricsTracker {
     metrics: MetricSet<AzureMonitorExporterMetrics>,
-    /// Internal counter for running-average client latency calculation.
-    la_client_latency_request_count: f64,
-    /// Internal counter for running-average auth latency calculation.
-    auth_latency_request_count: f64,
 }
 
 impl std::fmt::Debug for AzureMonitorExporterMetricsTracker {
@@ -84,11 +80,7 @@ impl AzureMonitorExporterMetricsTracker {
     /// Create a new stats tracker wrapping a registered metric set.
     #[must_use]
     pub fn new(metrics: MetricSet<AzureMonitorExporterMetrics>) -> Self {
-        Self {
-            metrics,
-            la_client_latency_request_count: 0.0,
-            auth_latency_request_count: 0.0,
-        }
+        Self { metrics }
     }
 
     /// Report metrics to the telemetry system.
@@ -157,18 +149,18 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.failed_messages.get()
     }
 
-    /// Get the average client latency in milliseconds.
+    /// Get the client HTTP latency snapshot (min/max/sum/count).
     #[inline]
     #[must_use]
-    pub fn client_avg_latency_ms(&self) -> f64 {
-        self.metrics.laclient_http_avglatency.get()
+    pub fn client_latency(&self) -> MmscSnapshot {
+        self.metrics.laclient_http_latency.get()
     }
 
-    /// Get the average auth latency in milliseconds.
+    /// Get the auth latency snapshot (min/max/sum/count).
     #[inline]
     #[must_use]
-    pub fn auth_avg_latency_ms(&self) -> f64 {
-        self.metrics.auth_avglatency.get()
+    pub fn auth_latency(&self) -> MmscSnapshot {
+        self.metrics.auth_latency.get()
     }
 
     // ── Mutation helpers ────────────────────────────────────────────
@@ -209,26 +201,16 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.failed_messages.add(msg_count);
     }
 
-    /// Update average client latency with a new measurement in milliseconds.
-    /// Uses a running average calculation.
+    /// Record a client HTTP latency observation in milliseconds.
+    #[inline]
     pub fn add_client_latency(&mut self, latency_ms: f64) {
-        self.la_client_latency_request_count += 1.0;
-        let avg = ((self.metrics.laclient_http_avglatency.get()
-            * (self.la_client_latency_request_count - 1.0))
-            + latency_ms)
-            / self.la_client_latency_request_count;
-        self.metrics.laclient_http_avglatency.set(avg);
+        self.metrics.laclient_http_latency.record(latency_ms);
     }
 
-    /// Update average auth latency with a new measurement in milliseconds.
-    /// Uses a running average calculation.
+    /// Record an auth latency observation in milliseconds.
+    #[inline]
     pub fn add_auth_latency(&mut self, latency_ms: f64) {
-        self.auth_latency_request_count += 1.0;
-        let avg = ((self.metrics.auth_avglatency.get()
-            * (self.auth_latency_request_count - 1.0))
-            + latency_ms)
-            / self.auth_latency_request_count;
-        self.metrics.auth_avglatency.set(avg);
+        self.metrics.auth_latency.record(latency_ms);
     }
 
     /// Record a successful authentication attempt.
@@ -246,7 +228,7 @@ impl AzureMonitorExporterMetricsTracker {
     /// Record an HTTP response status code.
     ///
     /// Increments the appropriate status-class counter.
-    pub fn record_status_code(&mut self, status: u16) {
+    pub fn record_laclient_status_code(&mut self, status: u16) {
         match status {
             200..=299 => self.metrics.laclient_http_2xx.inc(),
             401 => self.metrics.laclient_http_401.inc(),
@@ -302,20 +284,32 @@ mod tests {
     }
 
     #[test]
-    fn test_latency_calculation() {
+    fn test_client_latency_histogram() {
         let mut stats = new_test_tracker();
 
-        // First request: 100ms
         stats.add_client_latency(100.0);
-        assert_eq!(stats.client_avg_latency_ms(), 100.0);
-
-        // Second request: 200ms -> avg 150ms
         stats.add_client_latency(200.0);
-        assert_eq!(stats.client_avg_latency_ms(), 150.0);
+        stats.add_client_latency(50.0);
 
-        // Third request: 0ms -> avg 100ms
-        stats.add_client_latency(0.0);
-        assert_eq!(stats.client_avg_latency_ms(), 100.0);
+        let snap = stats.client_latency();
+        assert_eq!(snap.count, 3);
+        assert_eq!(snap.min, 50.0);
+        assert_eq!(snap.max, 200.0);
+        assert_eq!(snap.sum, 350.0);
+    }
+
+    #[test]
+    fn test_auth_latency_histogram() {
+        let mut stats = new_test_tracker();
+
+        stats.add_auth_latency(10.0);
+        stats.add_auth_latency(30.0);
+
+        let snap = stats.auth_latency();
+        assert_eq!(snap.count, 2);
+        assert_eq!(snap.min, 10.0);
+        assert_eq!(snap.max, 30.0);
+        assert_eq!(snap.sum, 40.0);
     }
 
     #[test]

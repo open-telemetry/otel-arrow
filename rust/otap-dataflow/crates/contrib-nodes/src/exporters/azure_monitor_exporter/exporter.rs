@@ -6,6 +6,7 @@ use azure_core::credentials::AccessToken;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
@@ -549,16 +550,29 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_stats_print) => {
                     next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
 
+                    let client_lat = self.metrics.client_latency();
+                    let auth_lat = self.metrics.auth_latency();
+                    let client_avg = if client_lat.count > 0 { client_lat.sum / client_lat.count as f64 } else { 0.0 };
+                    let auth_avg = if auth_lat.count > 0 { auth_lat.sum / auth_lat.count as f64 } else { 0.0 };
+
                     println!(
                         "\n\
 ─────────────── AzureMonitorExporter ──────────────────────────
-perf    │ avg_lat={:.2}ms
+client  │ avg={:.2}ms  min={:.2}ms  max={:.2}ms  n={}
+auth    │ avg={:.2}ms  min={:.2}ms  max={:.2}ms  n={}
 success │ rows={}  batches={}  msgs={}
 fail    │ rows={}  batches={}  msgs={}
 state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
 exports | in_flight={}
 ───────────────────────────────────────────────────────────────\n",
-                        self.metrics.client_avg_latency_ms(),
+                        client_avg,
+                        if client_lat.count > 0 { client_lat.min } else { 0.0 },
+                        if client_lat.count > 0 { client_lat.max } else { 0.0 },
+                        client_lat.count,
+                        auth_avg,
+                        if auth_lat.count > 0 { auth_lat.min } else { 0.0 },
+                        if auth_lat.count > 0 { auth_lat.max } else { 0.0 },
+                        auth_lat.count,
                         self.metrics.successful_row_count(),
                         self.metrics.successful_batch_count(),
                         self.metrics.successful_msg_count(),
@@ -587,6 +601,7 @@ mod tests {
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::node::NodeId;
     use otap_df_otap::pdata::Context;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use std::collections::HashMap;
 
