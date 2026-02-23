@@ -13,8 +13,8 @@ use otap_df_config::policy::{CoreAllocation, CoreRange};
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib processors/exporters) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
-use otap_df_contrib_nodes as _;
 use otap_df_config::{PipelineGroupId, PipelineId};
+use otap_df_contrib_nodes as _;
 // Keep this side-effect import so the crate is linked and its `linkme`
 // distributed-slice registrations (contrib processors/exporters) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
