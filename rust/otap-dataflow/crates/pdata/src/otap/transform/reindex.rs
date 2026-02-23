@@ -20,7 +20,7 @@ use crate::otap::transform::util::{
 };
 use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::consts::PARENT_ID;
+use crate::schema::consts::{ID, PARENT_ID};
 
 use super::util::{PrimaryIdInfo, payload_relations};
 
@@ -629,7 +629,7 @@ where
         }
         _ => {
             return Err(Error::ColumnDataTypeMismatch {
-                name: "id".to_string(),
+                name: ID.to_string(),
                 expect: T::DATA_TYPE,
                 actual: array.data_type().clone(),
             });
