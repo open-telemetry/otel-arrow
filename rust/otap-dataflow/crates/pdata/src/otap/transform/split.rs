@@ -165,8 +165,11 @@ fn plan_metrics_split(
     let mut range_start = 0;
     let mut item_count: usize = 0;
 
-    for (row, (_id, _payload_type, dp_range)) in scan.enumerate() {
-        let points = dp_range.len();
+    for (row, (_payload_type, data_points)) in scan.enumerate() {
+        let points = match data_points {
+            Some(dp) => dp.range.len(),
+            None => 0,
+        };
 
         // If adding this metric would exceed the limit, cut the current range
         // and start a new one.
@@ -320,40 +323,53 @@ impl<'a> MetricDataPointsIter<'a> {
     }
 }
 
+struct DataPointRange {
+    // Knowing what payload this joined to is probably nice information to track
+    #[allow(unused)]
+    payload_type: ArrowPayloadType,
+    range: Range<usize>,
+}
+
 impl<'a> Iterator for MetricDataPointsIter<'a> {
-    type Item = (u16, ArrowPayloadType, Range<usize>);
+    type Item = (u16, Option<DataPointRange>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.pos < self.metric_ids.len() {
-            let pos = self.pos;
-            let id = self.metric_ids[pos];
-            let mt = self.metric_types[pos];
-            self.pos += 1;
-
-            let Ok(metric_type) = MetricType::try_from(mt) else {
-                continue;
-            };
-
-            let Ok(payload_type) = payload_from_metric_type(mt) else {
-                continue;
-            };
-
-            // Null id rows are sorted to the front and have no data points.
-            if pos < self.null_count {
-                return Some((id, payload_type, 0..0));
-            }
-
-            // safety: payload_from_metric_type only returns Ok() if that metric
-            // type is valid and not empty.
-            let slot = Self::dp_idx(metric_type).expect("Valid metric type");
-            let Some(cursor) = &mut self.datapoints[slot] else {
-                return Some((id, payload_type, 0..0));
-            };
-
-            let range = cursor.advance_to(id);
-            return Some((id, payload_type, range));
+        if self.pos >= self.metric_ids.len() {
+            return None;
         }
-        None
+
+        let pos = self.pos;
+        let id = self.metric_ids[pos];
+        let mt = self.metric_types[pos];
+        self.pos += 1;
+
+        let Ok(metric_type) = MetricType::try_from(mt) else {
+            return Some((id, None));
+        };
+
+        let Ok(payload_type) = payload_from_metric_type(mt) else {
+            return Some((id, None));
+        };
+
+        // Null id rows are sorted to the front and have no data points.
+        if pos < self.null_count {
+            return Some((id, None));
+        }
+
+        // safety: payload_from_metric_type only returns Ok() if that metric
+        // type is valid and not empty.
+        let slot = Self::dp_idx(metric_type).expect("Valid metric type");
+        let Some(cursor) = &mut self.datapoints[slot] else {
+            return Some((id, None));
+        };
+
+        let range = cursor.advance_to(id);
+        let data_points = DataPointRange {
+            payload_type,
+            range,
+        };
+
+        Some((id, Some(data_points)))
     }
 }
 
