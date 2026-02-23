@@ -1,16 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests that every registered plugin's `validate_config` function correctly
+//! Tests that every registered component's `validate_config` function correctly
 //! rejects invalid configuration input.
 //!
 //! These tests iterate over all factories registered in `OTAP_PIPELINE_FACTORY`
 //! and call `validate_config` with clearly invalid JSON values to ensure:
-//! 1. Every plugin's validator is wired up and callable.
+//! 1. Every component's validator is wired up and callable.
 //! 2. Invalid configs produce `Err`, not silent acceptance.
 //!
 //! Valid-config paths are already covered by the CI `validate-configs.sh` script
-//! which runs `--validate-config-only` against every example YAML in the repo.
+//! which runs `--validate-and-exit` against every example YAML in the repo.
 
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use serde_json::json;

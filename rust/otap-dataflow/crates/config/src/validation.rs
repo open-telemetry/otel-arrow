@@ -18,12 +18,12 @@ use crate::error::Error;
 /// configuration type `T`.
 ///
 /// This is the most common validator: pass it as a monomorphised function
-/// pointer and the compiler ensures every plugin with a typed `Config`
+/// pointer and the compiler ensures every component with a typed `Config`
 /// struct gets deserialization-level validation for free.
 ///
 /// # Example
 /// ```ignore
-/// validate_config: validate_typed_config::<MyPluginConfig>,
+/// validate_config: validate_typed_config::<MyComponentConfig>,
 /// ```
 pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     config: &serde_json::Value,
@@ -34,7 +34,7 @@ pub fn validate_typed_config<T: serde::de::DeserializeOwned>(
     Ok(())
 }
 
-/// Validator for plugins that accept **no** user configuration.
+/// Validator for components that accept **no** user configuration.
 ///
 /// Accepts `Value::Null` (config key omitted / set to `null`) and empty
 /// objects `{}`. Rejects anything else so that typos or misplaced config
@@ -50,7 +50,7 @@ pub fn no_config(config: &serde_json::Value) -> Result<(), Error> {
         serde_json::Value::Object(map) if map.is_empty() => Ok(()),
         _ => Err(Error::InvalidUserConfig {
             error: format!(
-                "This plugin does not accept configuration, but received: {}",
+                "This component does not accept configuration, but received: {}",
                 config
             ),
         }),

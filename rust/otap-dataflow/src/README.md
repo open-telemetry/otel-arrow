@@ -15,7 +15,7 @@ cargo run --release -- --config configs/otlp-otlp.yaml
 cargo run --release -- -c configs/otlp-otlp.yaml
 
 # Validate configuration without starting the engine
-cargo run --release -- --config configs/otlp-otlp.yaml --validate-config-only
+cargo run --release -- --config configs/otlp-otlp.yaml --validate-and-exit
 
 # Get help
 cargo run --release -- --help

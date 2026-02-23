@@ -91,10 +91,10 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
-    /// Validates the node-specific config statically, without creating the plugin.
+    /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
@@ -130,10 +130,10 @@ pub struct ProcessorFactory<PData> {
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
-    /// Validates the node-specific config statically, without creating the plugin.
+    /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
@@ -169,10 +169,10 @@ pub struct ExporterFactory<PData> {
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
-    /// Validates the node-specific config statically, without creating the plugin.
+    /// Validates the node-specific config statically, without creating the component.
     ///
-    /// Use [`otap_df_config::validation::validate_typed_config`] for plugins with a
-    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for plugins
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
     /// that accept no user configuration.
     pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
