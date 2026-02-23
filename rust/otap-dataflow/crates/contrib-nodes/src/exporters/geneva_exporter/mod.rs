@@ -134,6 +134,14 @@ pub enum AuthConfig {
         /// MSI resource identifier
         msi_resource: String,
     },
+    /// User-assigned managed identity (by ARM resource ID)
+    /// Used on Azure Arc where msi-adapter resolves identity by extension resource ID.
+    UserManagedIdentityByResourceId {
+        /// ARM resource ID of the extension identity
+        resource_id: String,
+        /// MSI resource identifier
+        msi_resource: String,
+    },
     /// Workload identity (Kubernetes)
     WorkloadIdentity {
         /// MSI resource identifier
@@ -188,6 +196,11 @@ impl GenevaExporter {
             AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
                 client_id: client_id.clone(),
             },
+            AuthConfig::UserManagedIdentityByResourceId { resource_id, .. } => {
+                AuthMethod::UserManagedIdentityByResourceId {
+                    resource_id: resource_id.clone(),
+                }
+            }
             AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
                 resource: msi_resource.clone(),
             },
@@ -197,6 +210,7 @@ impl GenevaExporter {
         let msi_resource = match &config.auth {
             AuthConfig::SystemManagedIdentity { msi_resource }
             | AuthConfig::UserManagedIdentity { msi_resource, .. }
+            | AuthConfig::UserManagedIdentityByResourceId { msi_resource, .. }
             | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
             AuthConfig::Certificate { .. } => None,
         };
@@ -872,13 +886,50 @@ mod tests {
             "path": "/path/to/cert.p12",
             "password": "secret"
         });
-        let _cert_auth: AuthConfig = serde_json::from_value(cert_json).unwrap();
+        let cert_auth: AuthConfig = serde_json::from_value(cert_json).unwrap();
+        assert!(matches!(cert_auth, AuthConfig::Certificate { .. }));
 
         let system_mi_json = serde_json::json!({
             "type": "systemmanagedidentity",
             "msi_resource": "https://resource"
         });
-        let _system_mi: AuthConfig = serde_json::from_value(system_mi_json).unwrap();
+        let system_mi: AuthConfig = serde_json::from_value(system_mi_json).unwrap();
+        assert!(matches!(
+            system_mi,
+            AuthConfig::SystemManagedIdentity { .. }
+        ));
+
+        let user_mi_json = serde_json::json!({
+            "type": "usermanagedidentity",
+            "client_id": "my-client-id",
+            "msi_resource": "https://resource"
+        });
+        let user_mi: AuthConfig = serde_json::from_value(user_mi_json).unwrap();
+        assert!(matches!(user_mi, AuthConfig::UserManagedIdentity { .. }));
+
+        let user_mi_resid_json = serde_json::json!({
+            "type": "usermanagedidentitybyresourceid",
+            "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Kubernetes/extensions/ext1",
+            "msi_resource": "https://monitor.core.windows.net"
+        });
+        let user_mi_resid: AuthConfig = serde_json::from_value(user_mi_resid_json).unwrap();
+        match user_mi_resid {
+            AuthConfig::UserManagedIdentityByResourceId {
+                resource_id,
+                msi_resource,
+            } => {
+                assert!(resource_id.contains("sub1"));
+                assert_eq!(msi_resource, "https://monitor.core.windows.net");
+            }
+            _ => panic!("Expected UserManagedIdentityByResourceId auth variant"),
+        }
+
+        let workload_json = serde_json::json!({
+            "type": "workloadidentity",
+            "msi_resource": "https://resource"
+        });
+        let workload: AuthConfig = serde_json::from_value(workload_json).unwrap();
+        assert!(matches!(workload, AuthConfig::WorkloadIdentity { .. }));
     }
 
     #[test]
