@@ -15,7 +15,8 @@ use arrow::datatypes::{
 use crate::error::{Error, Result};
 use crate::otap::transform::transport_optimize::remove_transport_optimized_encodings;
 use crate::otap::transform::util::{
-    extract_id_column, remove_record_batch_ranges, replace_column, sort_record_batch_by_indices,
+    extract_id_column, payload_to_idx, remove_record_batch_ranges, replace_column,
+    sort_record_batch_by_indices,
 };
 use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -830,12 +831,6 @@ fn untake_vec<T: Copy>(src: &[T], dst: &mut [T], indices: &[u32]) {
     }
 }
 
-fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
-    let pos = POSITION_LOOKUP[payload_type as usize];
-    assert_ne!(pos, UNUSED_INDEX);
-    pos
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,7 +844,7 @@ mod tests {
         metrics, traces,
     };
     use crate::otap::transform::transport_optimize::apply_transport_optimized_encodings;
-    use crate::otap::transform::util::{IdColumnType, payload_relations};
+    use crate::otap::transform::util::{IdColumnType, payload_relations, payload_to_idx};
     use crate::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
     use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use crate::record_batch;

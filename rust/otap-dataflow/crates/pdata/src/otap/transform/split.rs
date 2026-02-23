@@ -7,7 +7,6 @@ use std::ops::{Range, RangeInclusive};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
 };
-use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
@@ -15,9 +14,9 @@ use crate::otap::transform::util::{id_column_dispatch, sort_otap_batch_by_parent
 use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, num_items};
 use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use crate::schema::consts::{METRIC_TYPE, PARENT_ID};
+use crate::schema::consts::{ID, METRIC_TYPE, PARENT_ID};
 
-use super::util::{access_column, extract_id_column, payload_relations, take_record_batch_ranges};
+use super::util::{access_column, payload_relations, payload_to_idx, take_record_batch_ranges};
 
 type SplitResult<const N: usize> = Result<Vec<[Option<RecordBatch>; N]>>;
 
@@ -68,7 +67,7 @@ pub fn split<const N: usize>(
         Traces::COUNT => ArrowPayloadType::Spans,
         _ => unreachable!(),
     };
-    let root_idx = POSITION_LOOKUP[root_type as usize];
+    let root_idx = payload_to_idx(root_type);
 
     let original_len = batches.len();
     let mut output = Vec::with_capacity(original_len);
@@ -154,171 +153,20 @@ fn plan_metrics_split(
     batch: &[Option<RecordBatch>],
     max_items: NonZeroU32,
 ) -> Result<Vec<Range<usize>>> {
-    let id_col = extract_id_column(root_rb, "id")?;
-
-    match id_col.data_type() {
-        DataType::UInt16 => {
-            plan_metrics_split_impl::<UInt16Type>(root_rb, &id_col, batch, max_items)
-        }
-        DataType::UInt32 => {
-            plan_metrics_split_impl::<UInt32Type>(root_rb, &id_col, batch, max_items)
-        }
-        other => Err(Error::ColumnDataTypeMismatch {
-            name: "id".to_string(),
-            expect: DataType::UInt16,
-            actual: other.clone(),
-        }),
-    }
-}
-
-struct DataPointIterator {
-    state: [Option<TableScanState>; 4],
-}
-
-struct TableScanState {
-    offset: u32,
-    ids: ScalarBuffer<u16>,
-}
-
-impl DataPointIterator {
-    fn new(batch: &[Option<RecordBatch>]) -> Result<Self> {
-        let mut ret = Self {
-            state: [const { None }; 4],
-        };
-
-        let metric_types = [
-            MetricType::Gauge,
-            MetricType::Sum,
-            MetricType::Histogram,
-            MetricType::Summary,
-            MetricType::ExponentialHistogram,
-        ];
-
-        for m_type in metric_types {
-            let dp_type = payload_from_metric_type(m_type as u8)?;
-            let dp_idx = POSITION_LOOKUP[dp_type as usize];
-
-            let Some(ref dp_rb) = batch[dp_idx] else {
-                continue;
-            };
-
-            // TODO: Need to account for nulls here
-            let parent_id_col = dp_rb
-                .column_by_name(PARENT_ID)
-                .ok_or_else(|| Error::ColumnNotFound {
-                    name: PARENT_ID.to_string(),
-                })?
-                .as_any()
-                .downcast_ref::<PrimitiveArray<UInt16Type>>()
-                .expect("Metrics have u16 ids")
-                .values()
-                .clone();
-
-            ret.state[DataPointIterator::idx(m_type)] = Some(TableScanState {
-                offset: 0,
-                ids: parent_id_col,
-            });
-        }
-
-        Ok(ret)
-    }
-
-    fn get_points(&mut self, m_type: MetricType, id: u16) -> usize {
-        let Some(state) = self.get_mut(m_type) else {
-            return 0;
-        };
-
-        // Skip over the non-matching ids
-        let position = state.ids.iter().position(|x| *x == id);
-        match position {
-            Some(position) => {
-                state.offset += position as u32;
-                state.ids = state.ids.slice(position, state.ids.len() - position);
-            }
-            None => {
-                state.ids = state.ids.slice(0, 0);
-                return 0;
-            }
-        };
-
-        // Count the matching ids
-        let count = state.ids.iter().take_while(|x| **x == id).count();
-        assert!(count > 0);
-
-        state.ids = state.ids.slice(count, state.ids.len() - count);
-        state.offset += count as u32;
-
-        count
-    }
-
-    fn get_mut(&mut self, m_type: MetricType) -> Option<&mut TableScanState> {
-        self.state[DataPointIterator::idx(m_type)].as_mut()
-    }
-
-    fn idx(m_type: MetricType) -> usize {
-        match m_type {
-            MetricType::Empty => unreachable!(),
-            MetricType::Gauge | MetricType::Sum => 0,
-            _ => m_type as usize - 2,
-        }
-    }
-}
-
-/// Type-specialized implementation of [plan_metrics_split]
-fn plan_metrics_split_impl<T>(
-    root_rb: &RecordBatch,
-    id_col: &ArrayRef,
-    batch: &[Option<RecordBatch>],
-    max_items: NonZeroU32,
-) -> Result<Vec<Range<usize>>>
-where
-    T: ArrowPrimitiveType,
-    T::Native: Into<u32> + Copy,
-{
     let row_count = root_rb.num_rows();
     if row_count == 0 {
         return Ok(vec![]);
     }
 
     let max_items = max_items.get() as usize;
-
-    // safety: metrics can only have UInt16 columns
-    let id_values = id_col
-        .as_any()
-        .downcast_ref::<PrimitiveArray<UInt16Type>>()
-        .expect("id column type verified by caller")
-        .values();
-
-    let metric_types =
-        root_rb
-            .column_by_name(METRIC_TYPE)
-            .ok_or_else(|| Error::ColumnNotFound {
-                name: METRIC_TYPE.to_string(),
-            })?;
-
-    // safety: Assuming this property will be uphelp in the future by OtapBatchStore
-    // guarantees of being spec compliant.
-    let metric_types = metric_types
-        .as_any()
-        .downcast_ref::<PrimitiveArray<UInt8Type>>()
-        .expect("metric_type is UInt8")
-        .values();
+    let scan = MetricDataPointsIter::new(batch)?;
 
     let mut ranges = Vec::new();
     let mut range_start = 0;
     let mut item_count: usize = 0;
 
-    let mut scan_state = DataPointIterator::new(batch)?;
-    for row in 0..row_count {
-        let metric_id = id_values[row];
-        let metric_type = metric_types[row];
-
-        let Ok(metric_type) = MetricType::try_from(metric_type) else {
-            continue;
-        };
-
-        // Count data points for this metric.
-        let points = scan_state.get_points(metric_type, metric_id);
+    for (row, (_id, _payload_type, dp_range)) in scan.enumerate() {
+        let points = dp_range.len();
 
         // If adding this metric would exceed the limit, cut the current range
         // and start a new one.
@@ -343,6 +191,175 @@ where
     }
 
     Ok(ranges)
+}
+
+/// Cursor over sorted `parent_id` values in a data points table.
+/// Tracks scan position for efficient merge-join with the metrics table.
+struct DpCursor<'a> {
+    /// All `parent_id` values (including undefined values at null positions).
+    parent_ids: &'a [u16],
+    /// Current scan position; initialized past null rows at the front.
+    pos: usize,
+}
+
+impl DpCursor<'_> {
+    /// Advance the cursor to find all rows where `parent_id == id`.
+    ///
+    /// Returns the half-open row range in the **full** table (accounting for
+    /// the null rows at the front). Since both the metric ids and the
+    /// parent_ids are sorted ascending, the caller must supply ids in
+    /// non-decreasing order.
+    fn advance_to(&mut self, id: u16) -> Range<usize> {
+        let pids = self.parent_ids;
+
+        // Skip past any parent_ids that are less than the target id.
+        while self.pos < pids.len() && pids[self.pos] < id {
+            self.pos += 1;
+        }
+
+        // Count consecutive matching parent_ids.
+        let start = self.pos;
+        while self.pos < pids.len() && pids[self.pos] == id {
+            self.pos += 1;
+        }
+
+        start..self.pos
+    }
+}
+
+/// Iterator performing a merge-join between the sorted `UnivariateMetrics`
+/// id column and each data points table's sorted `parent_id` column.
+///
+/// Yields `(metric_id, payload_type, dp_row_range)` for every metric row.
+/// Null-id rows (sorted to front) yield an empty range. The `dp_row_range`
+/// is a half-open range into the full data points record batch (i.e. it
+/// accounts for the null `parent_id` rows that sort to the front).
+struct MetricDataPointsIter<'a> {
+    metric_ids: &'a [u16],
+    metric_types: &'a [u8],
+    null_count: usize,
+    pos: usize,
+    datapoints: [Option<DpCursor<'a>>; 4],
+}
+
+impl<'a> MetricDataPointsIter<'a> {
+    fn new(batch: &'a [Option<RecordBatch>]) -> Result<Self> {
+        let metrics_idx = payload_to_idx(ArrowPayloadType::UnivariateMetrics);
+        let Some(ref metrics_rb) = batch[metrics_idx] else {
+            return Err(Error::MetricRecordNotFound);
+        };
+
+        let id_col = metrics_rb
+            .column_by_name(ID)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: ID.to_string(),
+            })?
+            .as_any()
+            .downcast_ref::<PrimitiveArray<UInt16Type>>()
+            .expect("Metrics have u16 ids");
+
+        let metric_type_col = metrics_rb
+            .column_by_name(METRIC_TYPE)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: METRIC_TYPE.to_string(),
+            })?
+            .as_any()
+            .downcast_ref::<PrimitiveArray<UInt8Type>>()
+            .expect("metric_type is UInt8");
+
+        let mut ret = Self {
+            metric_ids: id_col.values(),
+            metric_types: metric_type_col.values(),
+            null_count: id_col.null_count(),
+            pos: 0,
+            datapoints: [const { None }; 4],
+        };
+
+        let metric_types = [
+            MetricType::Gauge,
+            MetricType::Sum,
+            MetricType::Histogram,
+            MetricType::ExponentialHistogram,
+            MetricType::Summary,
+        ];
+
+        for m_type in metric_types {
+            // safety: the metric types defined above are the "valid" ones
+            let slot = Self::dp_idx(m_type).expect("Valid metrics types");
+            if ret.datapoints[slot].is_some() {
+                // Gauge and Sum share slot 0 (both use NumberDataPoints).
+                continue;
+            }
+
+            let dp_payload = payload_from_metric_type(m_type as u8)?;
+            let dp_idx = payload_to_idx(dp_payload);
+            let Some(ref dp_rb) = batch[dp_idx] else {
+                continue;
+            };
+
+            let parent_id_col = dp_rb
+                .column_by_name(PARENT_ID)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: PARENT_ID.to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<PrimitiveArray<UInt16Type>>()
+                .expect("Data points have u16 parent_ids");
+
+            ret.datapoints[slot] = Some(DpCursor {
+                parent_ids: parent_id_col.values(),
+                pos: parent_id_col.null_count(),
+            });
+        }
+
+        Ok(ret)
+    }
+
+    /// Map a [`MetricType`] to the data-points cursor slot (0..4).
+    fn dp_idx(m_type: MetricType) -> Result<usize> {
+        match m_type {
+            MetricType::Empty => Err(Error::EmptyMetricType),
+            MetricType::Gauge | MetricType::Sum => Ok(0),
+            _ => Ok(m_type as usize - 2),
+        }
+    }
+}
+
+impl<'a> Iterator for MetricDataPointsIter<'a> {
+    type Item = (u16, ArrowPayloadType, Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.pos < self.metric_ids.len() {
+            let pos = self.pos;
+            let id = self.metric_ids[pos];
+            let mt = self.metric_types[pos];
+            self.pos += 1;
+
+            let Ok(metric_type) = MetricType::try_from(mt) else {
+                continue;
+            };
+
+            let Ok(payload_type) = payload_from_metric_type(mt) else {
+                continue;
+            };
+
+            // Null id rows are sorted to the front and have no data points.
+            if pos < self.null_count {
+                return Some((id, payload_type, 0..0));
+            }
+
+            // safety: payload_from_metric_type only returns Ok() if that metric
+            // type is valid and not empty.
+            let slot = Self::dp_idx(metric_type).expect("Valid metric type");
+            let Some(cursor) = &mut self.datapoints[slot] else {
+                return Some((id, payload_type, 0..0));
+            };
+
+            let range = cursor.advance_to(id);
+            return Some((id, payload_type, range));
+        }
+        None
+    }
 }
 
 /// Execute a split according to the given ranges.
@@ -432,7 +449,7 @@ fn slice_children<const N: usize>(
 /// `ArrowPayloadType`.
 fn payload_from_metric_type(metric_type: u8) -> Result<ArrowPayloadType> {
     let mt = MetricType::try_from(metric_type).map_err(|e| Error::UnrecognizedMetricType {
-        metric_type: metric_type as i32,
+        metric_type,
         error: e,
     })?;
     match mt {

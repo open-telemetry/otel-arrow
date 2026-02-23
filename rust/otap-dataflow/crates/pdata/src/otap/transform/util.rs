@@ -9,6 +9,7 @@ use arrow::compute::SortColumn;
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
+use crate::otap::{POSITION_LOOKUP, UNUSED_INDEX};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 use crate::schema::{FieldExt, consts};
@@ -519,4 +520,10 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
             relations: &[],
         },
     }
+}
+
+pub(crate) fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
+    let pos = POSITION_LOOKUP[payload_type as usize];
+    assert_ne!(pos, UNUSED_INDEX);
+    pos
 }

@@ -51,7 +51,7 @@ pub enum Error {
 
     #[error("Cannot recognize metric type: {metric_type}: {error}")]
     UnrecognizedMetricType {
-        metric_type: i32,
+        metric_type: u8,
         error: TryFromPrimitiveError<MetricType>,
     },
 
