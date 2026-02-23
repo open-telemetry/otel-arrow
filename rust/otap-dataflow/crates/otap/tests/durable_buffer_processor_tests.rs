@@ -176,7 +176,7 @@ impl TestConfigBuilder {
         let mut buffer_config = json!({
             "path": self.buffer_path.to_string_lossy(),
             "poll_interval": "20ms",
-            "retention_size_cap": "100MB",
+            "retention_size_cap": "256MB",
             "size_cap_policy": self.size_cap_policy,
             "max_segment_open_duration": "50ms"
         });

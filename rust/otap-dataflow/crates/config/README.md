@@ -169,6 +169,8 @@ See also:
 - `outputs: Vec<PortName>` (optional declaration for named output ports)
 - `default_output: Option<PortName>` (optional default output port)
 - `config: serde_json::Value` (node-specific payload)
+- `telemetry_attributes: Map<String, AttributeValue>` (optional attributes for
+  telemetry instrumentation scope).
 
 `config` is intentionally untyped in this crate so node implementations can own
 their own schema and compatibility policy.

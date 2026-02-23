@@ -16,22 +16,24 @@ groups:
             type: traffic_generator:receiver
             config:
               traffic_config:
-                max_batch_size: 1000
-                signals_per_second: 30
+                max_batch_size: 100
+                signals_per_second: 10
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
             type: parquet:exporter
             config:
               storage:
-                file:
-                  base_uri: /tmp
+                s3:
+                  base_uri: s3://my-bucket/telemetry
+                  region: us-east-1
+                  auth:
+                    type: default
               partitioning_strategies:
-                - schema_metadata: [ "_part_id" ]
+                - schema_metadata: ["_part_id"]
               writer_options:
                 flush_when_older_than: 10s
 
         connections:
           - from: receiver
             to: exporter
-

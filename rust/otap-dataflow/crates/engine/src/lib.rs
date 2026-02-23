@@ -479,8 +479,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx =
-                pipeline_ctx.with_node_context(name.clone(), node_config.r#type.clone(), node_kind);
+            let base_ctx = pipeline_ctx.with_node_context(
+                name.clone(),
+                node_config.r#type.clone(),
+                node_kind,
+                node_config.telemetry_attributes.clone(),
+            );
 
             match node_kind {
                 otap_df_config::node::NodeKind::Receiver => {
