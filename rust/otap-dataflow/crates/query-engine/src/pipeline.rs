@@ -23,8 +23,8 @@ use crate::pipeline::planner::PipelinePlanner;
 use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
-mod assign;
 mod attributes;
+mod expr;
 mod conditional;
 mod filter;
 mod functions;

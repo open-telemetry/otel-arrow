@@ -105,8 +105,11 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
+use crate::pipeline::expr::join::join;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::FilterProjection;
+
+mod join;
 
 /// Column name used when referencing child expression results in cross-domain operations.
 /// For example, if Root domain needs to add a value from Attributes domain, the parent
@@ -410,6 +413,12 @@ struct PhysicalDomainExpr {
     child: Option<Box<PhysicalDomainExpr>>,
 }
 
+pub(crate) struct PhysicalExprEvalResult {
+    values: ColumnarValue,
+    ids: Option<ArrayRef>,
+    parent_ids: Option<ArrayRef>,
+}
+
 impl PhysicalDomainExpr {
     /// Executes the expression on an OTAP batch and returns the result as a ColumnarValue.
     ///
@@ -453,15 +462,21 @@ impl PhysicalDomainExpr {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_context: &SessionContext,
-    ) -> Result<Option<ColumnarValue>> {
+        include_ids: bool,
+    ) -> Result<Option<PhysicalExprEvalResult>> {
         // Step 1: Get the input RecordBatch based on the data domain
-        let input_rb = match &self.data_domain {
+        let mut input_rb = match &self.data_domain {
             DataDomainId::Root => otap_batch
                 .root_record_batch()
                 .map(|rb| {
                     // Project to only the columns needed by this expression
                     // TODO: Handle case where projection fails (missing columns)
-                    self.projection.project(rb)
+                    let rb = self.projection.project(rb);
+
+                    // TODO need to stick the ID column back onto this thing if there's
+                    // a child to execute b/c we'll need to join it
+
+                    rb
                 })
                 .flatten(),
             DataDomainId::Attributes(attrs_id, key) => {
@@ -489,78 +504,153 @@ impl PhysicalDomainExpr {
             }
         };
 
+        let mut input_rb = match input_rb {
+            Some(input_rb) => input_rb,
+            None => {
+                todo!()
+            }
+        };
+
         // Step 2: Recursively execute child expression if present
-        let child_arr = match &mut self.child {
-            Some(child) => Some(child.execute(otap_batch, session_context)?),
-            None => None,
+        if let Some(child) = &mut self.child {
+            let child_exec_result = child.execute(otap_batch, session_context, true)?;
+            match child_exec_result {
+                Some(child_exec_result) => {
+                    input_rb = join(
+                        &input_rb,
+                        &self.data_domain,
+                        &child_exec_result,
+                        &child.data_domain,
+                    )?;
+
+                    println!("implementing Some(input), Some(child): {:?}", self.physical_expr);
+                }
+                None => {
+                    todo!()
+                }
+            }
         };
 
         // Step 3: Lazily create the physical expression if not already cached.
         // We need the actual batch schema to convert logical Expr -> PhysicalExpr.
         // Once created, it's cached and reused for subsequent batches.
+        //
+        // TODO - there might be a pattern where we can do this up front without data, since we
+        // are always projecting to a schema with columns in the correct order, we _should_ be able
+        // to produce a representative schema if we know the logical types for each column
         if self.physical_expr.is_none() {
-            if let Some(ref rb) = input_rb {
-                let session_state = session_context.state();
-                let df_schema = DFSchema::try_from(rb.schema_ref().as_ref().clone())?;
-                let physical_expr = create_physical_expr(
-                    &self.logical_expr,
-                    &df_schema,
-                    session_state.execution_props(),
-                )?;
-                self.physical_expr = Some(physical_expr);
-            } else {
-                // If there's no input batch, return None (missing data)
-                return Ok(None);
-            }
+            let session_state = session_context.state();
+            let df_schema = DFSchema::try_from(input_rb.schema_ref().as_ref().clone())?;
+            let physical_expr = create_physical_expr(
+                &self.logical_expr,
+                &df_schema,
+                session_state.execution_props(),
+            )?;
+            self.physical_expr = Some(physical_expr);
+
         }
 
-        // Step 4: Evaluate the physical expression and combine with child if needed
-        // TODO: Implement the actual evaluation logic for each case:
-        match (input_rb, child_arr) {
-            (Some(input), Some(child)) => {
-                // Both parent and child domains have data
-                // TODO: Add child result as a column named "child" to input batch.
-                // Steps:
-                // 1. Convert child Option<ColumnarValue> to array matching input.num_rows():
-                //    - If child is None: return error (child expression failed)
-                //    - If child is Some(Array): verify row count matches or error
-                //    - If child is Some(Scalar): expand to input.num_rows() using into_array()
-                // 2. Add child array as new column to input batch with name "child"
-                // 3. Evaluate self.physical_expr on the extended batch
-                // 4. Return Some(resulting ColumnarValue)
-                //
-                // Example: log.severity_number + attributes["http.status"]
-                // - input batch has severity_number column (N rows)
-                // - child is Some(Array) of http.status values (should be N rows after join)
-                // - parent expr is: col("severity_number") + col("child")
-                todo!()
-            }
-            (Some(input), None) => {
-                // Only parent domain has data (most common case)
-                // Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
-                // PhysicalExpr::evaluate() returns ColumnarValue directly.
-                //
-                // Examples:
-                // - lit(42): Returns Some(Scalar(42, N)) where N = input.num_rows()
-                // - col("severity_number"): Returns Some(Array(severity_number_array))
-                // - col("severity_number") + lit(1): Returns Some(Array) (DataFusion expands scalar)
-                //
-                // The returned ColumnarValue preserves whether the result is scalar or array,
-                // allowing efficient composition in parent expressions.
-                let result = self.physical_expr.as_ref().unwrap().evaluate(&input)?;
-                Ok(Some(result))
-            }
-            (None, Some(child)) => {
-                // Parent domain has no data but child does
-                // Could happen if root batch is missing but attributes exist (unlikely)
-                // Return the child result directly
-                Ok(child)
-            }
-            (None, None) => {
-                // Neither parent nor child has data - return None
-                Ok(None)
-            }
+        let mut result = PhysicalExprEvalResult {
+            values: self.physical_expr.as_ref().unwrap().evaluate(&input_rb)?,
+            ids: None,
+            parent_ids: None,
+        };
+
+        // TODO test this is returned
+        if include_ids {
+            result.ids = input_rb.column_by_name(consts::ID).cloned();
+            result.parent_ids = input_rb.column_by_name(consts::PARENT_ID).cloned();
         }
+        Ok(Some(result))
+
+        // // Step 4: Evaluate the physical expression and combine with child if needed
+        // // TODO: Implement the actual evaluation logic for each case:
+        // match (input_rb, child_eval_result) {
+        //     (Some(input), Some(child)) => {
+        //         // Both parent and child domains have data
+        //         // TODO: Add child result as a column named "child" to input batch.
+        //         // Steps:
+        //         // 1. Convert child Option<ColumnarValue> to array matching input.num_rows():
+        //         //    - If child is None: return error (child expression failed)
+        //         //    - If child is Some(Array): verify row count matches or error
+        //         //    - If child is Some(Scalar): expand to input.num_rows() using into_array()
+        //         // 2. Add child array as new column to input batch with name "child"
+        //         // 3. Evaluate self.physical_expr on the extended batch
+        //         // 4. Return Some(resulting ColumnarValue)
+        //         //
+        //         // Example: log.severity_number + attributes["http.status"]
+        //         // - input batch has severity_number column (N rows)
+        //         // - child is Some(Array) of http.status values (should be N rows after join)
+        //         // - parent expr is: col("severity_number") + col("child")
+
+        //         let join_result = join(
+        //             &input,
+        //             &self.data_domain,
+        //             &child,
+        //             &self.child.as_ref().unwrap().data_domain,
+        //         )?;
+
+        //         println!("implementing Some(input), Some(child): {:?}", self.physical_expr);
+
+        //         let mut result = PhysicalExprEvalResult {
+        //             values: self
+        //                 .physical_expr
+        //                 .as_ref()
+        //                 .unwrap()
+        //                 .evaluate(&join_result)?,
+        //             ids: None,
+        //             parent_ids: None,
+        //         };
+
+        //         // TODO test this is returned
+        //         if include_ids {
+        //             result.ids = join_result.column_by_name(consts::ID).cloned();
+        //             result.parent_ids = join_result.column_by_name(consts::PARENT_ID).cloned();
+        //         }
+
+        //         Ok(Some(result))
+        //     }
+        //     (Some(input), None) => {
+        //         // Only parent domain has data (most common case)
+        //         // Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
+        //         // PhysicalExpr::evaluate() returns ColumnarValue directly.
+        //         //
+        //         // Examples:
+        //         // - lit(42): Returns Some(Scalar(42, N)) where N = input.num_rows()
+        //         // - col("severity_number"): Returns Some(Array(severity_number_array))
+        //         // - col("severity_number") + lit(1): Returns Some(Array) (DataFusion expands scalar)
+        //         //
+        //         // The returned ColumnarValue preserves whether the result is scalar or array,
+        //         // allowing efficient composition in parent expressions.
+
+        //         println!("implementing Some(input), None: {:?}", self.physical_expr);
+
+        //         let mut result = PhysicalExprEvalResult {
+        //             values: self.physical_expr.as_ref().unwrap().evaluate(&input)?,
+        //             ids: None,
+        //             parent_ids: None,
+        //         };
+
+        //         // TODO test this is returned
+        //         if include_ids {
+        //             result.ids = input.column_by_name(consts::ID).cloned();
+        //             result.parent_ids = input.column_by_name(consts::PARENT_ID).cloned();
+        //         }
+        //         Ok(Some(result))
+        //     }
+        //     (None, Some(child)) => {
+        //         // Parent domain has no data but child does
+        //         // Could happen if root batch is missing but attributes exist (unlikely)
+        //         // Return the child result directly
+        //         // Ok(child)
+        //         todo!()
+        //     }
+        //     (None, None) => {
+        //         // Neither parent nor child has data - return None
+        //         // Ok(None)
+        //         todo!()
+        //     }
+        // }
     }
 
     /// Projects an attributes RecordBatch to only rows matching the specified key.
@@ -640,7 +730,7 @@ impl PhysicalDomainExpr {
                 ),
             })?;
 
-        // TODO - we're making two big and potentially invalid assumptions here:
+        // TODO - we're making two big (and potentially invalid) assumptions here:
         // 1. if a type is present for some key, then all attributes for this key have the same
         // type. Normally this would be the case and this is definitely best practice, but some
         // users might just choose to do something bizarre so we'll need to handle that
@@ -809,10 +899,9 @@ mod test {
 
         // Create a session state for execution
         let session_ctx = Pipeline::create_session_context();
-        let session_state = session_ctx.state();
 
         // Execute the expression
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // Should successfully evaluate the static scalar
         assert!(result.is_ok());
@@ -820,7 +909,7 @@ mod test {
         assert!(columnar_value.is_some());
 
         // Verify it's a scalar value
-        match columnar_value.unwrap() {
+        match columnar_value.unwrap().values {
             ColumnarValue::Scalar(scalar) => {
                 // Should be the literal value 42
                 assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(42)));
@@ -971,7 +1060,7 @@ mod test {
         // Execute
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // Should successfully evaluate
         assert!(result.is_ok());
@@ -979,7 +1068,7 @@ mod test {
         assert!(columnar_value.is_some());
 
         // Verify it's a scalar value of 99
-        match columnar_value.unwrap() {
+        match columnar_value.unwrap().values {
             ColumnarValue::Scalar(scalar) => {
                 assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(99)));
             }
@@ -1015,7 +1104,7 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
@@ -1027,7 +1116,7 @@ mod test {
         assert!(columnar_value.is_some());
 
         // Verify it's a scalar value of 99
-        match columnar_value.unwrap() {
+        match columnar_value.unwrap().values {
             ColumnarValue::Scalar(_) => {
                 panic!("Expected scalar, got array");
             }
@@ -1079,7 +1168,7 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
@@ -1097,7 +1186,7 @@ mod test {
         assert!(columnar_value.is_some());
 
         // Verify it's a scalar value of 99
-        match columnar_value.unwrap() {
+        match columnar_value.unwrap().values {
             ColumnarValue::Scalar(_) => {
                 panic!("Expected scalar, got array");
             }
@@ -1149,7 +1238,7 @@ mod test {
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx);
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
@@ -1162,7 +1251,96 @@ mod test {
         assert!(columnar_value.is_some());
 
         // Verify it's a scalar value of 99
-        match columnar_value.unwrap() {
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_same_attributes() {
+        let mut planner = AssignmentLogicalPlanner {};
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                    KeyValue::new("k1", AnyValue::new_int(9)),
+                ])
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+
+                ])
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        let expected_col = Arc::new(Int64Array::from(vec![4, 12, 9]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
             ColumnarValue::Scalar(_) => {
                 panic!("Expected scalar, got array");
             }
