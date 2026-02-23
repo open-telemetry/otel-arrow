@@ -23,7 +23,7 @@ if [ $# -ge 1 ]; then
 else
     echo "Building df_engine with all component features..."
     cargo build --release \
-        --features experimental-tls,contrib-exporters,contrib-processors,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor \
+        --features experimental-tls,contrib-exporters,contrib-processors,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor,azure,aws \
         --manifest-path "$REPO_ROOT/Cargo.toml"
     BINARY="$REPO_ROOT/target/release/df_engine"
 fi
