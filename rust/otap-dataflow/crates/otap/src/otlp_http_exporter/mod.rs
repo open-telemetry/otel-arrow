@@ -117,6 +117,23 @@ impl OtlpHttpExporter {
             error: format!("invalid endpoint URL: {e}"),
         })?;
 
+        // validate the endpoint overrides if supplied
+        if let Some(endpoint) = config.logs_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid logs endpoint URL: {e}"),
+            })?;
+        }
+        if let Some(endpoint) = config.metrics_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid metrics endpoint URL: {e}"),
+            })?;
+        }
+        if let Some(endpoint) = config.traces_endpoint.as_ref() {
+            _ = reqwest::Url::parse(endpoint).map_err(|e| ConfigError::InvalidUserConfig {
+                error: format!("invalid traces endpoint URL: {e}"),
+            })?;
+        }
+
         Ok(Self {
             config,
             pdata_metrics,
@@ -139,9 +156,30 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        let logs_endpoint = Rc::new(
+            self.config
+                .logs_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, LOGS_PATH)),
+        );
+        let metrics_endpoint = Rc::new(
+            self.config
+                .metrics_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, METRICS_PATH)),
+        );
+        let traces_endpoint = Rc::new(
+            self.config
+                .traces_endpoint
+                .clone()
+                .unwrap_or(format!("{}{}", self.config.endpoint, TRACES_PATH)),
+        );
+
         otel_info!(
             "otlp.exporter.http.start",
-            http_endpoint = self.config.endpoint.as_str()
+            logs_endpoint = logs_endpoint.as_str(),
+            metrics_endpoint = metrics_endpoint.as_str(),
+            traces_endpoint = traces_endpoint.as_str(),
         );
 
         let telemetry_timer_cancel = effect_handler
@@ -165,10 +203,6 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
         let mut traces_proto_encoder = TracesProtoBytesEncoder::new();
         let mut proto_buffer = ProtoBuffer::with_capacity(8 * 1024);
-
-        let logs_endpoint = Rc::new(format!("{}{}", self.config.endpoint, LOGS_PATH));
-        let metrics_endpoint = Rc::new(format!("{}{}", self.config.endpoint, METRICS_PATH));
-        let traces_endpoint = Rc::new(format!("{}{}", self.config.endpoint, TRACES_PATH));
 
         loop {
             // Opportunistically drain completions before we park on a recv.
@@ -898,10 +932,25 @@ mod test {
             .collect()
     }
 
+    fn default_test_config(endpoint: String) -> Config {
+        Config {
+            http: HttpClientSettings::default(),
+            endpoint,
+            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
+            max_response_body_length: 1024,
+            max_in_flight: 10,
+            traces_endpoint: None,
+            metrics_endpoint: None,
+            logs_endpoint: None,
+        }
+    }
+
     #[test]
     fn test_from_config_validates_endpoint() {
         let invalid_config = serde_json::json!({
-            "endpoint": "not a valid url"
+            "endpoint": "not a valid url",
+            "http": {},
+            "client_pool_size": 5
         });
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -917,10 +966,63 @@ mod test {
 
         let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
         assert!(result.is_err());
-        assert!(matches!(
-            result.err().unwrap(),
-            ConfigError::InvalidUserConfig { .. }
-        ));
+        let err = result.err().unwrap();
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+        assert!(err.to_string().contains("invalid endpoint URL"))
+    }
+
+    #[test]
+    fn test_from_config_validates_endpoint_overrides() {
+        let test_cases = [
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "logs_endpoint": "invalid endpoint"
+                }),
+                "logs",
+            ),
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "metrics_endpoint": "invalid endpoint"
+                }),
+                "metrics",
+            ),
+            (
+                serde_json::json!({
+                    "endpoint": "http://127.0.0.1",
+                    "http": {},
+                    "client_pool_size": 5,
+                    "traces_endpoint": "invalid endpoint"
+                }),
+                "traces",
+            ),
+        ];
+        for (invalid_config, signal_name) in test_cases {
+            let test_runtime = TestRuntime::<OtapPdata>::new();
+            let telemetry_registry_handle = test_runtime.metrics_registry();
+            let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+            let pipeline_ctx = controller_ctx.pipeline_context_with(
+                "test_group".into(),
+                "test_pipeline".into(),
+                0,
+                1,
+                0,
+            );
+
+            let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+            assert!(result.is_err());
+            let err = result.err().unwrap();
+            assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+            assert!(
+                err.to_string()
+                    .contains(&format!("invalid {signal_name} endpoint URL"))
+            )
+        }
     }
 
     #[test]
@@ -929,13 +1031,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1062,13 +1158,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1159,13 +1249,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
@@ -1244,13 +1328,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
@@ -1349,12 +1427,9 @@ mod test {
         let endpoint = format!("http://{endpoint_addr}");
 
         let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
             // smaller than expected response body
             max_response_body_length: 2,
-            max_in_flight: 10,
+            ..default_test_config(endpoint)
         };
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1441,13 +1516,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
@@ -1537,13 +1606,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1630,13 +1693,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1725,13 +1782,7 @@ mod test {
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
-        let config = Config {
-            http: HttpClientSettings::default(),
-            endpoint: endpoint.clone(),
-            client_pool_size: NonZeroUsize::try_from(2).unwrap(),
-            max_response_body_length: 1024,
-            max_in_flight: 10,
-        };
+        let config = default_test_config(endpoint);
 
         let tokio_rt = Runtime::new().unwrap();
         let test_runtime = TestRuntime::<OtapPdata>::new();
@@ -1838,6 +1889,103 @@ mod test {
                         }
                     }
                     assert_eq!(ack_count, num_expected_pdatas);
+                })
+            })
+    }
+
+    #[test]
+    pub fn test_uses_endpoint_overrides_if_provided() {
+        let logs_port = pick_unused_port().unwrap();
+        let logs_endpoint_addr = format!("127.0.0.1:{}", logs_port);
+        let logs_endpoint = format!("http://{logs_endpoint_addr}/v1/logs");
+
+        let metrics_port = pick_unused_port().unwrap();
+        let metrics_endpoint_addr = format!("127.0.0.1:{}", metrics_port);
+        let metrics_endpoint = format!("http://{metrics_endpoint_addr}/v1/metrics");
+
+        let traces_port = pick_unused_port().unwrap();
+        let traces_endpoint_addr = format!("127.0.0.1:{}", traces_port);
+        let traces_endpoint = format!("http://{traces_endpoint_addr}/v1/traces");
+
+        let config = Config {
+            logs_endpoint: Some(logs_endpoint),
+            metrics_endpoint: Some(metrics_endpoint),
+            traces_endpoint: Some(traces_endpoint),
+            ..default_test_config("http://placeholder".to_string())
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+
+        let (mut logs_pdata_rx, logs_server_cancellation_token) =
+            run_server(&tokio_rt, &pipeline_ctx, &logs_endpoint_addr);
+        let (mut metrics_pdata_rx, metrics_server_cancellation_token) =
+            run_server(&tokio_rt, &pipeline_ctx, &metrics_endpoint_addr);
+        let (mut traces_pdata_rx, traces_server_cancellation_token) =
+            run_server(&tokio_rt, &pipeline_ctx, &traces_endpoint_addr);
+
+        let (logs_batch, metrics_batch, traces_batch) = gen_batches_for_each_signal_type();
+
+        let pdatas = vec![
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Logs(logs_batch.clone()),
+            ))),
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Metrics(metrics_batch.clone()),
+            ))),
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Traces(traces_batch.clone()),
+            ))),
+        ];
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    // ensure we got back all the signals we expected, from the correct servers.
+
+                    let mut pdata = logs_pdata_rx.recv().await.unwrap();
+                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let pdata_decoded = LogsData::decode(otlp_bytes.as_bytes()).unwrap();
+                    assert_equivalent(
+                        &[OtlpProtoMessage::Logs(pdata_decoded)],
+                        &[OtlpProtoMessage::Logs(logs_batch.clone())],
+                    );
+
+                    let mut pdata = metrics_pdata_rx.recv().await.unwrap();
+                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let pdata_decoded = MetricsData::decode(otlp_bytes.as_bytes()).unwrap();
+                    assert_equivalent(
+                        &[OtlpProtoMessage::Metrics(pdata_decoded)],
+                        &[OtlpProtoMessage::Metrics(metrics_batch.clone())],
+                    );
+
+                    let mut pdata = traces_pdata_rx.recv().await.unwrap();
+                    let otlp_bytes: OtlpProtoBytes = pdata.take_payload().try_into().unwrap();
+                    let pdata_decoded = TracesData::decode(otlp_bytes.as_bytes()).unwrap();
+                    assert_equivalent(
+                        &[OtlpProtoMessage::Traces(pdata_decoded)],
+                        &[OtlpProtoMessage::Traces(traces_batch.clone())],
+                    );
+
+                    logs_server_cancellation_token.cancel();
+                    metrics_server_cancellation_token.cancel();
+                    traces_server_cancellation_token.cancel();
                 })
             })
     }

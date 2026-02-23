@@ -21,6 +21,24 @@ pub struct Config {
     /// Example: "http://localhost:4318" or "https://otel-collector:4318"
     pub endpoint: String,
 
+    /// The target URL to send trace data to, including the path. If this setting is present the
+    /// endpoint setting is ignored for traces.
+    ///
+    /// Example: https://example.com:4318/v1/traces
+    pub traces_endpoint: Option<String>,
+
+    /// The target URL to send metric data to, including the path. If this setting is present the
+    /// endpoint setting is ignored for metrics.
+    ///
+    /// Example: https://example.com:4318/v1/metrics
+    pub metrics_endpoint: Option<String>,
+
+    /// The target URL to send log data to, including the path. If this setting is present the
+    /// endpoint setting is ignored for logs.
+    ///
+    /// Example: https://example.com:4318/v1/logs
+    pub logs_endpoint: Option<String>,
+
     /// Maximum allowed size for the body of OTLP HTTP responses. This is used to prevent unbounded
     /// memory usage when receiving responses from the OTLP server. If a response exceeds this size,
     /// the exporter will consider processing of the batch to be unsuccessful. default = 10 MiB
