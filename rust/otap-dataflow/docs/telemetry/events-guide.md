@@ -185,6 +185,9 @@ guide for naming:
   attributes.
 - Avoid synonyms that fragment cardinality across names (`finish` vs `complete`,
   `error` vs `fail`). Pick one verb set and stick to it.
+- Use **distinct event names** for different outcomes of the same operation
+  (e.g. `otlp.exporter.start.complete` and `otlp.exporter.start.fail`). Do not rely
+  solely on severity to distinguish success from failure.
 
 More precisely, in this project, event names SHOULD follow this pattern:
 `otelcol.<entity>[.<thing>].<verb>`
@@ -225,11 +228,10 @@ Optionally, add occurrence-specific attributes (dynamic context):
 
 When events are exported as logs, set an appropriate severity.
 
-Regarding severity, some events may be logged at different levels depending on
-their severity or impact. For example, a `node.shutdown` event may be logged at
-INFO level during a graceful shutdown, but at ERROR level if the shutdown is due
-to a critical failure. When exporting events as logs, choose the log level that
-best reflects the significance of the event.
+Regarding severity, choose the log level that best reflects the significance of
+the event. For example, `node.shutdown.complete` at INFO for a graceful
+shutdown and `node.shutdown.fail` at ERROR for a critical failure -- these are
+distinct events, not the same event at different severity levels.
 
 ## Stages
 

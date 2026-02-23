@@ -162,6 +162,8 @@ pub(crate) fn with_node_telemetry_handle<T>(
     })
 }
 
+/// Handle for per-node telemetry state, including entity keys, metric sets,
+/// channel associations, and custom log record attributes.
 #[derive(Clone)]
 pub(crate) struct NodeTelemetryHandle {
     registry: TelemetryRegistryHandle,
@@ -336,6 +338,7 @@ mod tests {
     use otap_df_config::node::NodeKind;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::borrow::Cow;
+    use std::collections::HashMap;
 
     #[test]
     fn pipeline_cleanup_unregisters_entities() {
@@ -353,11 +356,13 @@ mod tests {
             "source".into(),
             "urn:test:example:receiver".into(),
             NodeKind::Receiver,
+            HashMap::new(),
         );
         let dest_ctx = pipeline_ctx.with_node_context(
             "dest".into(),
             "urn:test:example:processor".into(),
             NodeKind::Processor,
+            HashMap::new(),
         );
 
         let source_entity_key = source_ctx.register_node_entity();

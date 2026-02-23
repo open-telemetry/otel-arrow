@@ -117,7 +117,7 @@ mod tests {
     impl MockMetricSet {
         fn new() -> Self {
             Self {
-                values: vec![MetricValue::U64(0), MetricValue::U64(0)],
+                values: vec![MetricValue::from(0u64), MetricValue::from(0u64)],
             }
         }
     }
@@ -258,14 +258,14 @@ mod tests {
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![MetricValue::U64(10), MetricValue::U64(20)],
+                vec![MetricValue::from(10u64), MetricValue::from(20u64)],
             ))
             .await
             .unwrap();
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![MetricValue::U64(5), MetricValue::U64(15)],
+                vec![MetricValue::from(5u64), MetricValue::from(15u64)],
             ))
             .await
             .unwrap();
@@ -284,9 +284,9 @@ mod tests {
         assert_eq!(collected.len(), 2);
         // Order follows descriptor order
         assert_eq!(collected[0].0, "counter1");
-        assert_eq!(collected[0].1, MetricValue::U64(15));
+        assert_eq!(collected[0].1, MetricValue::from(15u64));
         assert_eq!(collected[1].0, "counter2");
-        assert_eq!(collected[1].1, MetricValue::U64(35));
+        assert_eq!(collected[1].1, MetricValue::from(35u64));
 
         // Close the channel and ensure loop ends returning None
         drop(reporter);
@@ -307,7 +307,7 @@ mod tests {
         reporter
             .report_snapshot(create_test_snapshot(
                 key,
-                vec![MetricValue::U64(7), MetricValue::U64(0)],
+                vec![MetricValue::from(7u64), MetricValue::from(0u64)],
             ))
             .await
             .unwrap();
@@ -323,8 +323,8 @@ mod tests {
         assert_eq!(
             first,
             vec![
-                ("counter1", MetricValue::U64(7)),
-                ("counter2", MetricValue::U64(0))
+                ("counter1", MetricValue::from(7u64)),
+                ("counter2", MetricValue::from(0u64))
             ]
         );
 
