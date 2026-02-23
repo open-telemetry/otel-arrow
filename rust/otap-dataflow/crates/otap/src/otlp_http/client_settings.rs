@@ -3,10 +3,17 @@
 
 //! Shared configuration for HTTP-based clients.
 
+// TODO there's a more idiomatic way to do these imports
+#[cfg(feature = "experimental-tls")]
+use otap_df_config::tls::TlsClientConfig;
+#[cfg(feature = "experimental-tls")]
+use reqwest::Certificate;
+
 use reqwest::ClientBuilder;
 use serde::Deserialize;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
+
 
 use crate::otap_grpc::client_settings::{
     default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
@@ -42,6 +49,12 @@ pub struct HttpClientSettings {
     /// Timeout for HTTP requests. If not specified, no timeout is applied.
     #[serde(default, with = "humantime_serde")]
     pub timeout: Option<Duration>,
+
+    /// Client-side TLS/mTLS configuration.
+    /// Requires the `experimental-tls` feature to be enabled.
+    #[cfg(feature = "experimental-tls")]
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>
 }
 
 impl HttpClientSettings {
@@ -51,7 +64,7 @@ impl HttpClientSettings {
         self.concurrency_limit.max(1)
     }
 
-    /// Returns a configured client-bulder
+    /// Returns a configured client-builder
     pub fn client_builder(&self) -> ClientBuilder {
         let mut client_builder = ClientBuilder::new()
             .connect_timeout(self.connect_timeout)
@@ -72,6 +85,24 @@ impl HttpClientSettings {
             client_builder = client_builder.timeout(timeout)
         }
 
+        #[cfg(feature = "experimental-tls")]
+        if let Some(tls) = &self.tls {
+            // TODO - technically there's a way to avoid vec heap allocation here
+            let mut certs = vec![];
+
+            if let Some(ca_pem) = &tls.ca_pem {
+                // TODO no unwrap
+                let cert = Certificate::from_pem(ca_pem.as_bytes()).unwrap();
+                certs.push(cert);
+            }
+
+            if tls.include_system_ca_certs_pool.unwrap_or(true) {
+                client_builder = client_builder.tls_certs_merge(certs);
+            } else {
+                client_builder = client_builder.tls_certs_only(certs);
+            }
+        }
+
         client_builder
     }
 }
@@ -85,6 +116,8 @@ impl Default for HttpClientSettings {
             tcp_keepalive: default_tcp_keepalive(),
             tcp_keepalive_interval: None,
             timeout: None,
+            #[cfg(feature = "experimental-tls")]
+            tls: None,
         }
     }
 }

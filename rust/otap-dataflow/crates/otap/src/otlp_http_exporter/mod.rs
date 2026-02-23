@@ -439,6 +439,9 @@ impl ServiceRequestError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::RequestError { err: req_err } => {
+
+                println!("req_err = {req_err:?}");
+
                 match req_err.status() {
                     Some(status) => {
                         // we received a non-200 response. The OTLP HTTP spec defines certain
@@ -664,6 +667,7 @@ mod test {
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
     use otap_df_config::PortName;
+    use otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig};
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -684,10 +688,14 @@ mod test {
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
+    use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
     use parking_lot::lock_api::Mutex;
     use portpicker::pick_unused_port;
     use prost::Message;
+    use tempfile::TempDir;
+    use tokio::net::TcpStream;
     use tokio::runtime::Runtime;
+    use tokio_rustls::TlsAcceptor;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
@@ -698,6 +706,7 @@ mod test {
     use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use crate::otlp_receiver::OtlpReceiverMetrics;
     use crate::testing::TestCallData;
+    use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -853,6 +862,168 @@ mod test {
 
         let _ = tracker.close();
     }
+
+    // TODO TLS feature flags ...
+
+
+    /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
+    /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
+    /// the test is finished), and a receiver that will emit any pdata that the server produces.
+    fn run_tls_server(
+        tokio_rt: &Runtime,
+        pipeline_ctx: &PipelineContext,
+        endpoint_addr: &str,
+        tls_server_config: TlsServerConfig,
+
+    ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
+        let server_node_id = test_node("test-server");
+        let port_name = PortName::from("server_out");
+        let mut msg_senders = HashMap::new();
+        let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
+        _ = msg_senders.insert(port_name.clone(), SharedSender::mpsc(pdata_tx));
+
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
+        let server_effect_handler =
+            otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
+                server_node_id,
+                msg_senders,
+                Some(port_name),
+                pipeline_ctrl_msg_tx,
+                metrics_reporter,
+            );
+
+        let mut server_settings = HttpServerSettings {
+            listening_addr: endpoint_addr.parse().unwrap(),
+            tls: Some(tls_server_config),
+            ..Default::default()
+        };
+        tune_max_concurrent_requests(&mut server_settings, 1);
+
+        let ack_registry = AckRegistry::new(None, None, None);
+        let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+
+        _ = tokio_rt.spawn(async move {
+            let result = serve(
+                server_effect_handler,
+                server_settings,
+                ack_registry,
+                Arc::new(Mutex::new(server_metrics)),
+                None,
+                server_cancellation_token,
+            )
+            .await;
+
+            // TODO remove this println
+            println!("serve result {:?}", result)
+        });
+
+        (pdata_rx, server_cancellation_token2)
+    }
+
+
+    /// run an http server that serves requests using TLS
+    // fn run_tls_server(
+    //     tokio_rt: &Runtime,
+    //     endpoint_addr: &str,
+    // ) -> CancellationToken {
+    //     let server_cancellation_token = CancellationToken::new();
+    //     let server_cancellation_token2 = server_cancellation_token.clone();
+    //     let endpoint_addr = endpoint_addr.to_string();
+    //     _ = tokio_rt.spawn(async move {
+    //         serve_with_tls(endpoint_addr, server_cancellation_token).await
+    //     });
+
+    //     server_cancellation_token2
+    // }
+
+    // async fn serve_with_tls(endpoint_addr: String, shutdown_token: CancellationToken) {
+    //     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    //     let path = temp_dir.path();
+    //     let ca = generate_ca("Test CA");
+    //     ca.write_cert_to_dir(path, "server.crt");
+    //     let server = ca.issue_leaf(
+    //         "localhost",
+    //         Some("localhost"),
+    //         Some(ExtendedKeyUsage::ServerAuth),
+    //     );
+    //     server.write_to_dir(path, "server.key");
+
+    //     let server_config = TlsServerConfig {
+    //         config: TlsConfig {
+    //             cert_file: Some(path.join("server.crt")),
+    //             key_file: Some(path.join("server.key")),
+    //             cert_pem: None,
+    //             key_pem: None,
+    //             reload_interval: None,
+    //         },
+    //         client_ca_file: None,
+    //         client_ca_pem: None,
+    //         include_system_ca_certs_pool: None,
+    //         watch_client_ca: false,
+    //         handshake_timeout: Some(Duration::from_secs(10)),
+    //     };
+    //     let tls_acceptor = build_tls_acceptor(Some(&server_config))
+    //         .await
+    //         .unwrap()
+    //         .unwrap();
+
+    //     let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+    //     let tracker = TaskTracker::new();
+
+    //     loop {
+    //         tokio::select! {
+    //             _ = shutdown_token.cancelled() => break,
+    //             accept_result = listener.accept() => {
+    //                 let (stream, _) = accept_result.unwrap();
+    //                 let shutdown_token = shutdown_token.clone();
+    //                 handle_tls_connect(stream, &tls_acceptor, &tracker, shutdown_token).await;
+    //             }
+    //         }
+    //     };
+
+    //     let _ = tracker.close();
+    // }
+
+    // async fn handle_tls_connect(
+    //     stream: TcpStream,
+    //     tls_acceptor: &TlsAcceptor,
+    //     tracker: &TaskTracker,
+    //     shutdown_token: CancellationToken,
+    // ) {
+    //     let tls_stream = accept_tls_connection(stream, &tls_acceptor, Duration::from_secs(10))
+    //         .await
+    //         .unwrap();
+    //     drop(tracker.spawn(async move {
+    //         let io = TokioIo::new(tls_stream);
+    //         let conn = http1::Builder::new().serve_connection(
+    //             io,
+    //             service_fn(|_req| async move {
+    //                 Ok::<_, hyper::Error>(
+    //                     Response::builder()
+    //                         .status(200)
+    //                         .body(Full::new(Bytes::from("".as_bytes().to_vec())))
+    //                         .unwrap(),
+    //                 )
+    //             }),
+    //         );
+    //         let mut conn = std::pin::pin!(conn);
+
+    //         tokio::select! {
+    //             _ = shutdown_token.cancelled() => {
+    //                 conn.as_mut().graceful_shutdown();
+    //                 let _ = conn.await;
+    //             },
+    //             conn_result = &mut conn => {
+    //                 if let Err(e) = conn_result {
+    //                     eprintln!("Error serving TLS connection: {e}");
+    //                 }
+    //             }
+    //         }
+    //     }));
+    // }
 
     fn setup_exporter(
         test_runtime: &TestRuntime<OtapPdata>,
@@ -1833,6 +2004,8 @@ mod test {
                     }
                     server_cancellation_token.cancel();
 
+                    // TODO assert we received 3 pdatas
+
                     for mut pdata in pdatas_received {
                         match pdata.signal_type() {
                             SignalType::Logs => {
@@ -1986,6 +2159,131 @@ mod test {
                     logs_server_cancellation_token.cancel();
                     metrics_server_cancellation_token.cancel();
                     traces_server_cancellation_token.cancel();
+                })
+            })
+    }
+
+    #[test]
+    fn test_server_tls_only() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let port = pick_unused_port().unwrap();
+        // TODO remove printlns
+        println!("using port {port}");
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("https://localhost:{port}");
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        println!("path = {path:?}");
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(path, "server");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        let config = Config {
+            http: HttpClientSettings{
+                tls: Some(TlsClientConfig {
+                    config: TlsConfig {
+                        cert_file: None,
+                        cert_pem: None,
+                        key_file: None,
+                        key_pem: None,
+                        reload_interval: None
+                    },
+                    // TODO test load from file ...
+                    ca_file: None, //Some(path.join("server.crt")),
+                    ca_pem: Some(ca.cert_pem.clone()),
+                    include_system_ca_certs_pool: None,
+                    server_name: None,
+                    insecure: None,
+                    insecure_skip_verify: None,
+                }),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+
+
+        let server_tls_config = TlsServerConfig {
+            config: TlsConfig {
+                cert_file: Some(path.join("server.crt")),
+                key_file: Some(path.join("server.key")),
+                cert_pem: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            client_ca_file: None,
+            client_ca_pem: None,
+            include_system_ca_certs_pool: None,
+            watch_client_ca: false,
+            handshake_timeout: Some(Duration::from_secs(10)),
+        };
+
+        let (mut pdata_rx, server_cancellation_token) =
+            run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let pdatas = vec![
+            OtapPdata::new_default(OtapPayload::OtapArrowRecords(otlp_to_otap(
+                &OtlpProtoMessage::Logs(logs_batch.clone()),
+            ))),
+        ];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    let num_expected_pdatas = 1;
+                    let mut pdatas_received = Vec::new();
+                    while let Some(pdata) = pdata_rx.recv().await {
+                        pdatas_received.push(pdata);
+                        if pdatas_received.len() >= num_expected_pdatas {
+                            break;
+                        }
+                    }
+
+                    // TODO actual assertions inc. that we received 3 pdatas
+
+                    // println!("pdatas received {pdatas_received:?}");
+                    // server_cancellation_token.cancel();
+
+
+                    let mut ack_count = 0;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        // TODO assert messages
+                        println!("msg = {:?}", msg);
+                    }
                 })
             })
     }

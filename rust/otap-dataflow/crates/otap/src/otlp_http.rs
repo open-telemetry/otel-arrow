@@ -510,7 +510,8 @@ struct HttpHandler {
 
 impl HttpHandler {
     async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-        let Some(signal) = map_path_to_signal(req.uri().path()) else {
+    println!("here");
+    let Some(signal) = map_path_to_signal(req.uri().path()) else {
             return Ok(not_found());
         };
 
@@ -856,6 +857,7 @@ pub async fn serve(
                             tokio::select! {
                                 res = &mut conn => {
                                     if let Err(err) = res {
+                                        println!("CONNECTION ERR {err:?}");
                                         otap_df_telemetry::otel_debug!("http.connection_error", error = err.to_string());
                                     }
                                 },
