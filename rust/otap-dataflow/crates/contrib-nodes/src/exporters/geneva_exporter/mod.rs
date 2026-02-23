@@ -135,7 +135,7 @@ pub enum AuthConfig {
         msi_resource: String,
     },
     /// User-assigned managed identity (by ARM resource ID)
-    /// Used on Azure Arc where msi-adapter resolves identity by extension resource ID.
+    /// Identifies the managed identity by its Azure Resource Manager resource ID.
     UserManagedIdentityByResourceId {
         /// ARM resource ID of the extension identity
         resource_id: String,
