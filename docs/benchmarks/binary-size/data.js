@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771719743030,
+  "lastUpdate": 1771806289519,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -1973,6 +1973,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 86.26,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "a4a96cf872b41fe44de4f25badc23db1aceeb575",
+          "message": "Add endpoint override config options for OTLP HTTP exporter (#2089)\n\n# Change Summary\n\n<!--\nReplace with a brief summary of the change in this PR\n-->\n\nsmall followup from\nhttps://github.com/open-telemetry/otel-arrow/pull/2070.\n\nAdds new config options for each signal type to override the endpoint to\nwhich the OTLP HTTP exporter sends data.\n\nThis is to aid with parity between this implementation and the analogous\nGo collector component, which also has these options:\nhttps://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlphttpexporter#otlp-http-exporter\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* Part of #1145 \n\n## How are these changes tested?\n\nA new unit test is added.\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n \n Users can configure the component with these new options.",
+          "timestamp": "2026-02-22T19:49:16Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/a4a96cf872b41fe44de4f25badc23db1aceeb575"
+        },
+        "date": 1771806284435,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.3,
             "unit": "MB"
           }
         ]
