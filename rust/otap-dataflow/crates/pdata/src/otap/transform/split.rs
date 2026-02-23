@@ -171,7 +171,7 @@ fn plan_metrics_split(
 }
 
 /// Type-specialized implementation of [`plan_split_metrics`]. Works directly
-/// with the native id values buffer — no allocation or conversion.
+/// with the native id values buffer - no allocation or conversion.
 fn plan_metrics_split_impl<T>(
     root_rb: &RecordBatch,
     id_col: &ArrayRef,
@@ -311,6 +311,7 @@ fn slice_children<const N: usize>(
     for relation in parent_relations.relations {
         let key_col = relation.key_col;
 
+        let key_ranges = get_contiguous_id_ranges(parent_slice, key_col)?;
         for &child_type in relation.child_types {
             let child_idx = POSITION_LOOKUP[child_type as usize];
 
@@ -318,7 +319,6 @@ fn slice_children<const N: usize>(
                 continue;
             };
 
-            let key_ranges = get_contiguous_id_ranges(parent_slice, key_col)?;
             let child_slice = take_child_rows(child_rb, &key_ranges)?;
 
             // Recurse before placing into `out` so we can borrow child_slice
