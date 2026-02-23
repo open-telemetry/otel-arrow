@@ -24,8 +24,8 @@ use crate::pipeline::state::ExecutionState;
 use crate::table::RecordBatchPartitionStream;
 
 mod attributes;
-mod expr;
 mod conditional;
+mod expr;
 mod filter;
 mod functions;
 mod planner;

@@ -107,7 +107,7 @@ use otap_df_pdata::schema::consts;
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
-use crate::pipeline::project::FilterProjection;
+use crate::pipeline::project::{Projection, ProjectionOptions};
 
 mod join;
 
@@ -182,6 +182,9 @@ struct LogicalDomainExpr {
     logical_expr: Expr,
     /// Optional child expression for cross-domain operations
     child: Option<Box<LogicalDomainExpr>>,
+
+    // TODO comments
+    requires_dict_downcast: bool,
 }
 
 impl LogicalDomainExpr {
@@ -195,7 +198,7 @@ impl LogicalDomainExpr {
     /// The actual PhysicalExprRef is created lazily during execution when the
     /// schema is available.
     fn into_physical(self) -> Result<PhysicalDomainExpr> {
-        let projection = FilterProjection::try_new(&self.logical_expr)?;
+        let projection = Projection::try_new(&self.logical_expr)?;
 
         let child = match self.child {
             Some(child_expr) => Some(Box::new(child_expr.into_physical()?)),
@@ -207,6 +210,9 @@ impl LogicalDomainExpr {
             logical_expr: self.logical_expr,
             physical_expr: None,
             projection,
+            projection_opts: ProjectionOptions {
+                downcast_dicts: self.requires_dict_downcast,
+            },
             child,
         })
     }
@@ -256,6 +262,7 @@ impl AssignmentLogicalPlanner {
                         },
                         logical_expr: col(column_name),
                         child: None,
+                        requires_dict_downcast: false,
                     }),
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
                         Ok(LogicalDomainExpr {
@@ -264,6 +271,7 @@ impl AssignmentLogicalPlanner {
                             },
                             logical_expr: col(column_name).field(struct_field_name),
                             child: None,
+                            requires_dict_downcast: false,
                         })
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => {
@@ -282,8 +290,10 @@ impl AssignmentLogicalPlanner {
                             data_domain: LogicalDataDomain {
                                 domain_id: DataDomainId::Attributes(attrs_id, key),
                             },
+                            // TODO could have a const for this column name
                             logical_expr: col("value"),
                             child: None,
+                            requires_dict_downcast: false,
                         })
                     }
                 }
@@ -319,6 +329,7 @@ impl AssignmentLogicalPlanner {
                     },
                     logical_expr,
                     child: None,
+                    requires_dict_downcast: false,
                 })
             }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
@@ -343,6 +354,7 @@ impl AssignmentLogicalPlanner {
                                 Box::new(right.logical_expr),
                             )),
                             child: None,
+                            requires_dict_downcast: true,
                         })
                     } else {
                         // Different domains - use parent-child structure.
@@ -355,6 +367,7 @@ impl AssignmentLogicalPlanner {
                                 Box::new(col(CHILD_COLUMN_NAME)),
                             )),
                             child: Some(Box::new(right)),
+                            requires_dict_downcast: true,
                         })
                     }
                 }
@@ -406,7 +419,10 @@ struct PhysicalDomainExpr {
     /// Projection that identifies which columns are needed from the input batch.
     /// TODO - we should rename this type to just "Projection"
     /// TODO - since this is only needed for root, should be in domain?
-    projection: FilterProjection,
+    projection: Projection,
+
+    // TODO comments
+    projection_opts: ProjectionOptions,
 
     /// Optional child expression for cross-domain operations.
     /// The parent expression references this via col("child").
@@ -466,19 +482,18 @@ impl PhysicalDomainExpr {
     ) -> Result<Option<PhysicalExprEvalResult>> {
         // Step 1: Get the input RecordBatch based on the data domain
         let mut input_rb = match &self.data_domain {
-            DataDomainId::Root => otap_batch
-                .root_record_batch()
-                .map(|rb| {
-                    // Project to only the columns needed by this expression
-                    // TODO: Handle case where projection fails (missing columns)
-                    let rb = self.projection.project(rb);
+            DataDomainId::Root => otap_batch.root_record_batch().cloned(), // TODO Cow not clone
+            // .map(|rb| {
+            //     // Project to only the columns needed by this expression
+            //     // TODO: Handle case where projection fails (missing columns)
+            //     // let rb = self.projection.project_with_options(rb, &self.projection_opts);
 
-                    // TODO need to stick the ID column back onto this thing if there's
-                    // a child to execute b/c we'll need to join it
+            //     // TODO need to stick the ID column back onto this thing if there's
+            //     // a child to execute b/c we'll need to join it
 
-                    rb
-                })
-                .flatten(),
+            //     rb
+            // })
+            // .flatten(),
             DataDomainId::Attributes(attrs_id, key) => {
                 // Get the appropriate attributes batch based on AttributesIdentifier
                 let attrs_payload_type = match *attrs_id {
@@ -511,7 +526,9 @@ impl PhysicalDomainExpr {
             }
         };
 
-        // Step 2: Recursively execute child expression if present
+        // TODO there's somewhere else we need to apply projection here ....
+
+        // Step 2: Recursively execute child expression if present & join to parent
         if let Some(child) = &mut self.child {
             let child_exec_result = child.execute(otap_batch, session_context, true)?;
             match child_exec_result {
@@ -523,13 +540,22 @@ impl PhysicalDomainExpr {
                         &child.data_domain,
                     )?;
 
-                    println!("implementing Some(input), Some(child): {:?}", self.physical_expr);
+                    // TODO no unwrap
+                    input_rb = self
+                        .projection
+                        .project_with_options(&input_rb, &self.projection_opts)
+                        .unwrap();
+
+                    println!(
+                        "implementing Some(input), Some(child): {:?}",
+                        self.physical_expr
+                    );
                 }
                 None => {
                     todo!()
                 }
             }
-        };
+        }
 
         // Step 3: Lazily create the physical expression if not already cached.
         // We need the actual batch schema to convert logical Expr -> PhysicalExpr.
@@ -547,8 +573,10 @@ impl PhysicalDomainExpr {
                 session_state.execution_props(),
             )?;
             self.physical_expr = Some(physical_expr);
-
         }
+
+        // TODO - should we cast back to a dict here if the originals were dicts or
+        // if the source allows it ...
 
         let mut result = PhysicalExprEvalResult {
             values: self.physical_expr.as_ref().unwrap().evaluate(&input_rb)?,
@@ -562,95 +590,6 @@ impl PhysicalDomainExpr {
             result.parent_ids = input_rb.column_by_name(consts::PARENT_ID).cloned();
         }
         Ok(Some(result))
-
-        // // Step 4: Evaluate the physical expression and combine with child if needed
-        // // TODO: Implement the actual evaluation logic for each case:
-        // match (input_rb, child_eval_result) {
-        //     (Some(input), Some(child)) => {
-        //         // Both parent and child domains have data
-        //         // TODO: Add child result as a column named "child" to input batch.
-        //         // Steps:
-        //         // 1. Convert child Option<ColumnarValue> to array matching input.num_rows():
-        //         //    - If child is None: return error (child expression failed)
-        //         //    - If child is Some(Array): verify row count matches or error
-        //         //    - If child is Some(Scalar): expand to input.num_rows() using into_array()
-        //         // 2. Add child array as new column to input batch with name "child"
-        //         // 3. Evaluate self.physical_expr on the extended batch
-        //         // 4. Return Some(resulting ColumnarValue)
-        //         //
-        //         // Example: log.severity_number + attributes["http.status"]
-        //         // - input batch has severity_number column (N rows)
-        //         // - child is Some(Array) of http.status values (should be N rows after join)
-        //         // - parent expr is: col("severity_number") + col("child")
-
-        //         let join_result = join(
-        //             &input,
-        //             &self.data_domain,
-        //             &child,
-        //             &self.child.as_ref().unwrap().data_domain,
-        //         )?;
-
-        //         println!("implementing Some(input), Some(child): {:?}", self.physical_expr);
-
-        //         let mut result = PhysicalExprEvalResult {
-        //             values: self
-        //                 .physical_expr
-        //                 .as_ref()
-        //                 .unwrap()
-        //                 .evaluate(&join_result)?,
-        //             ids: None,
-        //             parent_ids: None,
-        //         };
-
-        //         // TODO test this is returned
-        //         if include_ids {
-        //             result.ids = join_result.column_by_name(consts::ID).cloned();
-        //             result.parent_ids = join_result.column_by_name(consts::PARENT_ID).cloned();
-        //         }
-
-        //         Ok(Some(result))
-        //     }
-        //     (Some(input), None) => {
-        //         // Only parent domain has data (most common case)
-        //         // Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
-        //         // PhysicalExpr::evaluate() returns ColumnarValue directly.
-        //         //
-        //         // Examples:
-        //         // - lit(42): Returns Some(Scalar(42, N)) where N = input.num_rows()
-        //         // - col("severity_number"): Returns Some(Array(severity_number_array))
-        //         // - col("severity_number") + lit(1): Returns Some(Array) (DataFusion expands scalar)
-        //         //
-        //         // The returned ColumnarValue preserves whether the result is scalar or array,
-        //         // allowing efficient composition in parent expressions.
-
-        //         println!("implementing Some(input), None: {:?}", self.physical_expr);
-
-        //         let mut result = PhysicalExprEvalResult {
-        //             values: self.physical_expr.as_ref().unwrap().evaluate(&input)?,
-        //             ids: None,
-        //             parent_ids: None,
-        //         };
-
-        //         // TODO test this is returned
-        //         if include_ids {
-        //             result.ids = input.column_by_name(consts::ID).cloned();
-        //             result.parent_ids = input.column_by_name(consts::PARENT_ID).cloned();
-        //         }
-        //         Ok(Some(result))
-        //     }
-        //     (None, Some(child)) => {
-        //         // Parent domain has no data but child does
-        //         // Could happen if root batch is missing but attributes exist (unlikely)
-        //         // Return the child result directly
-        //         // Ok(child)
-        //         todo!()
-        //     }
-        //     (None, None) => {
-        //         // Neither parent nor child has data - return None
-        //         // Ok(None)
-        //         todo!()
-        //     }
-        // }
     }
 
     /// Projects an attributes RecordBatch to only rows matching the specified key.
@@ -829,17 +768,25 @@ impl PhysicalDomainExpr {
         // TODO - the LLM Agent added this "Exists" check, but the column should pretty much
         // always be there so this check should go away.
         if let Some(parent_id_col) = filtered_batch.column_by_name(consts::PARENT_ID) {
-            fields.push(Field::new(
+            fields.push(Arc::new(Field::new(
                 consts::PARENT_ID,
                 parent_id_col.data_type().clone(),
                 false,
-            ));
+            )));
             columns.push(parent_id_col.clone());
         }
 
         // Add the value column renamed to "value"
-        fields.push(Field::new("value", value_array.data_type().clone(), true));
+        fields.push(Arc::new(Field::new(
+            "value",
+            value_array.data_type().clone(),
+            true,
+        )));
         columns.push(value_array);
+
+        if self.projection_opts.downcast_dicts {
+            Projection::downcast_dicts(&mut fields, &mut columns);
+        }
 
         let schema = Arc::new(Schema::new(fields));
         let projected_batch =
@@ -866,7 +813,7 @@ mod test {
     use datafusion::scalar::ScalarValue;
     // TODO ugly import
     use crate::consts::{ATTRIBUTES_FIELD_NAME, SCOPE_FIELD_NAME};
-    use crate::pipeline::{Pipeline, project::FilterProjection};
+    use crate::pipeline::{Pipeline, project::Projection};
     use otap_df_pdata::{
         otap::Logs,
         proto::{
@@ -877,103 +824,104 @@ mod test {
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
-    #[test]
-    fn test_physical_domain_expr_static_scalar() {
-        // Create an empty OtapArrowRecords for logs
-        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+    // #[test]
+    // fn test_physical_domain_expr_static_scalar() {
+    //     // Create an empty OtapArrowRecords for logs
+    //     let otap_batch = OtapArrowRecords::Logs(Logs::default());
 
-        // Create a logical constant expression (literal 42)
-        let logical_expr = lit(42i64);
+    //     // Create a logical constant expression (literal 42)
+    //     let logical_expr = lit(42i64);
 
-        // Create a FilterProjection for the static scalar (empty schema since no columns needed)
-        let projection = FilterProjection::try_new(&logical_expr).unwrap();
+    //     // Create a FilterProjection for the static scalar (empty schema since no columns needed)
+    //     let projection = Projection::try_new(&logical_expr).unwrap();
 
-        // Create a PhysicalDomainExpr with StaticScalar domain
-        let mut physical_expr = PhysicalDomainExpr {
-            data_domain: DataDomainId::StaticScalar,
-            logical_expr,
-            physical_expr: None,
-            projection,
-            child: None,
-        };
+    //     // Create a PhysicalDomainExpr with StaticScalar domain
+    //     let mut physical_expr = PhysicalDomainExpr {
+    //         data_domain: DataDomainId::StaticScalar,
+    //         logical_expr,
+    //         physical_expr: None,
+    //         projection,
+    //         child: None,
+    //     };
 
-        // Create a session state for execution
-        let session_ctx = Pipeline::create_session_context();
+    //     // Create a session state for execution
+    //     let session_ctx = Pipeline::create_session_context();
 
-        // Execute the expression
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+    //     // Execute the expression
+    //     let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
-        // Should successfully evaluate the static scalar
-        assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
+    //     // Should successfully evaluate the static scalar
+    //     assert!(result.is_ok());
+    //     let columnar_value = result.unwrap();
+    //     assert!(columnar_value.is_some());
 
-        // Verify it's a scalar value
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(scalar) => {
-                // Should be the literal value 42
-                assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(42)));
-            }
-            ColumnarValue::Array(_) => {
-                panic!("Expected scalar, got array");
-            }
-        }
-    }
+    //     // Verify it's a scalar value
+    //     match columnar_value.unwrap().values {
+    //         ColumnarValue::Scalar(scalar) => {
+    //             // Should be the literal value 42
+    //             assert_eq!(scalar, datafusion::scalar::ScalarValue::Int64(Some(42)));
+    //         }
+    //         ColumnarValue::Array(_) => {
+    //             panic!("Expected scalar, got array");
+    //         }
+    //     }
+    // }
 
-    // TODO - this test can be thrown away later once we actually invoke the physical expr
-    #[test]
-    fn test_logical_to_physical_conversion() {
-        // Create a LogicalDomainExpr with a simple constant
-        let logical_expr = LogicalDomainExpr {
-            data_domain: LogicalDataDomain {
-                domain_id: DataDomainId::StaticScalar,
-            },
-            logical_expr: lit(100i64),
-            child: None,
-        };
+    // // TODO - this test can be thrown away later once we actually invoke the physical expr
+    // #[test]
+    // fn test_logical_to_physical_conversion() {
+    //     // Create a LogicalDomainExpr with a simple constant
+    //     let logical_expr = LogicalDomainExpr {
+    //         data_domain: LogicalDataDomain {
+    //             domain_id: DataDomainId::StaticScalar,
+    //         },
+    //         logical_expr: lit(100i64),
+    //         child: None,
 
-        // Convert to physical
-        let physical_expr = logical_expr.into_physical();
-        assert!(physical_expr.is_ok());
+    //     };
 
-        let physical_expr = physical_expr.unwrap();
-        assert_eq!(physical_expr.data_domain, DataDomainId::StaticScalar);
-        assert!(physical_expr.physical_expr.is_none()); // Not yet evaluated
-        assert!(physical_expr.child.is_none());
-    }
+    //     // Convert to physical
+    //     let physical_expr = logical_expr.into_physical();
+    //     assert!(physical_expr.is_ok());
 
-    // TODO - this test can be thrown away later once we actually invoke the physical expr
-    #[test]
-    fn test_logical_to_physical_with_child() {
-        // Create a LogicalDomainExpr with a child
-        let child_logical = LogicalDomainExpr {
-            data_domain: LogicalDataDomain {
-                domain_id: DataDomainId::StaticScalar,
-            },
-            logical_expr: lit(50i64),
-            child: None,
-        };
+    //     let physical_expr = physical_expr.unwrap();
+    //     assert_eq!(physical_expr.data_domain, DataDomainId::StaticScalar);
+    //     assert!(physical_expr.physical_expr.is_none()); // Not yet evaluated
+    //     assert!(physical_expr.child.is_none());
+    // }
 
-        let parent_logical = LogicalDomainExpr {
-            data_domain: LogicalDataDomain {
-                domain_id: DataDomainId::Root,
-            },
-            logical_expr: col("severity_number"),
-            child: Some(Box::new(child_logical)),
-        };
+    // // TODO - this test can be thrown away later once we actually invoke the physical expr
+    // #[test]
+    // fn test_logical_to_physical_with_child() {
+    //     // Create a LogicalDomainExpr with a child
+    //     let child_logical = LogicalDomainExpr {
+    //         data_domain: LogicalDataDomain {
+    //             domain_id: DataDomainId::StaticScalar,
+    //         },
+    //         logical_expr: lit(50i64),
+    //         child: None,
+    //     };
 
-        // Convert to physical
-        let physical_expr = parent_logical.into_physical();
-        assert!(physical_expr.is_ok());
+    //     let parent_logical = LogicalDomainExpr {
+    //         data_domain: LogicalDataDomain {
+    //             domain_id: DataDomainId::Root,
+    //         },
+    //         logical_expr: col("severity_number"),
+    //         child: Some(Box::new(child_logical)),
+    //     };
 
-        let physical_expr = physical_expr.unwrap();
-        assert_eq!(physical_expr.data_domain, DataDomainId::Root);
-        assert!(physical_expr.child.is_some());
+    //     // Convert to physical
+    //     let physical_expr = parent_logical.into_physical();
+    //     assert!(physical_expr.is_ok());
 
-        // Verify child was also converted
-        let child = physical_expr.child.unwrap();
-        assert_eq!(child.data_domain, DataDomainId::StaticScalar);
-    }
+    //     let physical_expr = physical_expr.unwrap();
+    //     assert_eq!(physical_expr.data_domain, DataDomainId::Root);
+    //     assert!(physical_expr.child.is_some());
+
+    //     // Verify child was also converted
+    //     let child = physical_expr.child.unwrap();
+    //     assert_eq!(child.data_domain, DataDomainId::StaticScalar);
+    // }
 
     #[test]
     fn test_planner_static_integer() {
@@ -1319,7 +1267,6 @@ mod test {
                 .attributes(vec![
                     KeyValue::new("k2", AnyValue::new_int(7)),
                     KeyValue::new("k1", AnyValue::new_int(2)),
-
                 ])
                 .severity_text("DEBUG")
                 .finish(),

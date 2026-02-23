@@ -44,7 +44,7 @@ use crate::pipeline::planner::{
     AttributesIdentifier, BinaryArg, ColumnAccessor, try_attrs_value_filter_from_literal,
     try_static_scalar_to_attr_literal, try_static_scalar_to_literal_for_column,
 };
-use crate::pipeline::project::FilterProjection;
+use crate::pipeline::project::Projection;
 use crate::pipeline::state::ExecutionState;
 
 pub mod optimize;
@@ -1116,7 +1116,7 @@ pub struct AdaptivePhysicalExprExec {
 
     /// Definition for how the input record batch should be projected so that it's schema is
     /// compatible with what is expected by the physical_expr
-    projection: FilterProjection,
+    projection: Projection,
 
     /// Determines the behaviour of the predicate when some columns are missing from the batch.
     ///
@@ -1128,7 +1128,7 @@ pub struct AdaptivePhysicalExprExec {
 
 impl AdaptivePhysicalExprExec {
     fn try_new(logical_expr: Expr) -> Result<Self> {
-        let projection = FilterProjection::try_new(&logical_expr)?;
+        let projection = Projection::try_new(&logical_expr)?;
 
         // TODO eventually we may want more sophisticated logic here to handle when the column
         // is a default value. Cases like `dropped_attribute_count == 0`, in this case should
@@ -1218,7 +1218,6 @@ impl AdaptivePhysicalExprExec {
 }
 
 /// This attempts to project the record batch to known schema schema that
-
 
 /// This trait makes some helper functions for filtering child [`RecordBatch`]s generic over the
 /// type of ID (u16/u32) that are used to make the relationship between parent and child
@@ -1538,7 +1537,6 @@ impl PipelineStage for FilterPipelineStage {
 #[cfg(test)]
 mod test {
     use crate::pipeline::Pipeline;
-    use crate::pipeline::project::test::ProjectedSchemaColumn;
 
     use super::*;
 
@@ -4653,7 +4651,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: FilterProjection::new_for_test(vec!["x".into()]),
+                projection: Projection::new_for_test(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4680,7 +4678,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: FilterProjection::new_for_test(vec!["x".into()]),
+                projection: Projection::new_for_test(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4712,7 +4710,7 @@ mod test {
                 filter: AdaptivePhysicalExprExec {
                     logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                     physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                    projection: FilterProjection::new_for_test(vec!["x".into()]),
+                    projection: Projection::new_for_test(vec!["x".into()]),
                     missing_data_passes: false,
                 },
             },

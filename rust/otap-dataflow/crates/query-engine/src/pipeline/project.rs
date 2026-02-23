@@ -5,8 +5,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, RecordBatch, StructArray};
-use arrow::datatypes::Schema;
+use arrow::array::{Array, ArrayRef, RecordBatch, StructArray};
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::common::{HashMap, HashSet};
 use datafusion::error::DataFusionError;
@@ -16,12 +17,26 @@ use datafusion::scalar::ScalarValue;
 
 use crate::error::Result;
 
+pub struct ProjectionOptions {
+    /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
+    /// arithmetic operations for example, do not work on dictionary encoded columns.
+    pub downcast_dicts: bool,
+}
+
+impl Default for ProjectionOptions {
+    fn default() -> Self {
+        Self {
+            downcast_dicts: false,
+        }
+    }
+}
+
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
-pub struct FilterProjection {
+pub struct Projection {
     schema: ProjectedSchema,
 }
 
-impl FilterProjection {
+impl Projection {
     /// Attempt to create a new instance of [`FilterProjection`]. It will return an error if
     /// there is some form of [`Expr`] tree which is not recognized
     pub(crate) fn try_new(logical_expr: &Expr) -> Result<Self> {
@@ -35,6 +50,14 @@ impl FilterProjection {
     /// Project the record batch to the expected schema. If there are some expected columns in
     /// the passed [`RecordBatch`] which are missing, this will return `None`.
     pub fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
+        self.project_with_options(record_batch, &ProjectionOptions::default())
+    }
+
+    pub fn project_with_options(
+        &self,
+        record_batch: &RecordBatch,
+        options: &ProjectionOptions,
+    ) -> Option<RecordBatch> {
         let original_schema = record_batch.schema_ref();
 
         // TODO - if the heap allocations here have significant perf overhead, we could try reusing
@@ -86,6 +109,11 @@ impl FilterProjection {
             }
         }
 
+        // TODO - might reduce a few heap allocations to do this inline while projecting
+        if options.downcast_dicts {
+            Self::downcast_dicts(&mut fields, &mut columns);
+        }
+
         // safety: `try_new` should not return an error here unless the columns do not match the
         // fields in the schema, or if the columns are different lengths. Based on how we've
         // constructed the inputs, this should not happen because we've taken them from the input
@@ -93,6 +121,19 @@ impl FilterProjection {
             .expect("can project record batch");
 
         Some(rb)
+    }
+
+    pub fn downcast_dicts(fields: &mut Vec<Arc<Field>>, columns: &mut Vec<ArrayRef>) {
+        for i in 0..fields.len() {
+            let field = &fields[i];
+            if let DataType::Dictionary(_, v) = field.data_type() {
+                let new_field = Arc::new(field.as_ref().clone().with_data_type(v.as_ref().clone()));
+                // TODO no unwrap
+                let new_column = cast(&columns[i], v.as_ref()).unwrap();
+                fields[i] = new_field;
+                columns[i] = new_column;
+            }
+        }
     }
 }
 
@@ -209,7 +250,7 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
 pub(crate) mod test {
     use super::*;
 
-    impl FilterProjection {
+    impl Projection {
         /// Test helper to create a FilterProjection with a specific schema
         pub(crate) fn new_for_test(columns: Vec<String>) -> Self {
             Self {
