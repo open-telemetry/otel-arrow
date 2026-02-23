@@ -490,9 +490,6 @@ fn payload_from_metric_type(metric_type: u8) -> Result<ArrowPayloadType> {
 ///
 /// Note: id columns are never dictionary-encoded; this dispatches on plain
 /// UInt16/UInt32 only.
-///
-/// See [`test_split_traces_non_unique_child_ids`] for the exact scenario
-/// that exercises this path.
 fn get_contiguous_id_ranges(rb: &RecordBatch, id_path: &str) -> Result<Vec<RangeInclusive<u32>>> {
     let Some(col) = access_column(id_path, rb.schema_ref(), rb.columns()) else {
         return Ok(vec![]);
