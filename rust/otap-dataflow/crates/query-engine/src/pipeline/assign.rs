@@ -100,6 +100,7 @@ use datafusion::physical_plan::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_array;
+use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -262,9 +263,13 @@ impl AssignmentLogicalPlanner {
                             child: None,
                         })
                     }
-                    _ => {
-                        todo!()
-                    }
+                    ColumnAccessor::Attributes(attrs_id, key) => Ok(LogicalDomainExpr {
+                        data_domain: LogicalDataDomain {
+                            domain_id: DataDomainId::Attributes(attrs_id, key),
+                        },
+                        logical_expr: col("value"),
+                        child: None,
+                    }),
                 }
             }
             ScalarExpression::Static(static_scalar_expr) => {
@@ -580,15 +585,148 @@ impl PhysicalDomainExpr {
         let key_mask = eq(key_col, &StringArray::new_scalar(key))?;
         let filtered_batch = filter_record_batch(record_batch, &key_mask)?;
 
-        // TODO: Implement type detection and value projection
-        // Steps needed:
-        // 1. Look at the 'type' column to find the first non-null row
-        // 2. Based on the type value (0-8), determine which value column to use:
-        //    - str, int, float, bytes, bool, or ser
-        // 3. Project that column and rename it to "value"
-        // 4. If filtered_batch is empty (no matching key), return Ok(None)
-        // 5. If other side of operation has different type, return error
-        todo!()
+        // If no rows match the key, handle empty case
+        if filtered_batch.num_rows() == 0 {
+            // TODO: Decide if this should be Ok(None) or an error
+            todo!("Handle empty filtered batch - no matching attribute key")
+        }
+
+        // Get the type column to determine which value column to use
+        let type_arr =
+            get_required_array(&filtered_batch, consts::ATTRIBUTE_TYPE).map_err(|e| {
+                Error::ExecutionError {
+                    cause: e.to_string(),
+                }
+            })?;
+
+        let type_col = type_arr
+            .as_any()
+            .downcast_ref::<arrow::array::UInt8Array>()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: format!(
+                    "Expected UInt8 for type column, got {:?}",
+                    type_arr.data_type()
+                ),
+            })?;
+
+        // TODO - we're making two big and potentially invalid assumptions here:
+        // 1. if a type is present for some key, then all attributes for this key have the same
+        // type. Normally this would be the case and this is definitely best practice, but some
+        // users might just choose to do something bizarre so we'll need to handle that
+        // 2. we're assuming that if the type column indicates some value type, that the values
+        // column is supposed to be present. This isn't necessarily the case, because we might
+        // have a case where all the attribute values are either null or default value. This is
+        // actually a problem because when we relax this assumption, we still won't know whether
+        // it's null or default value, and won't be able to just guess either way w/out sometimes
+        // guessing wrong. For now, just punting the problem ...
+
+        // Find the first non-null type value
+        let type_value = type_col
+            .iter()
+            .find_map(|v| v)
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "No non-null type value found in filtered attributes".to_string(),
+            })?;
+
+        // TODO no unwrap
+        let type_value = AttributeValueType::try_from(type_value).unwrap();
+
+        // Based on type value, select the appropriate value column
+
+        // TODO - we could use helper functions to cut down on all this repeated error handling
+        // code -- although, see the TODO above about whethere we _actually_ want this error
+        // handling code or whether we just return None ...
+        // (it's LLM generated so needs cleaned up)
+        let value_array = match type_value {
+            AttributeValueType::Str => {
+                // Str type
+                let arr = filtered_batch
+                    .column_by_name(consts::ATTRIBUTE_STR)
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("Missing {} column for str type", consts::ATTRIBUTE_STR),
+                    })?;
+                arr.clone()
+            }
+            AttributeValueType::Int => {
+                // Int type
+                let arr = filtered_batch
+                    .column_by_name(consts::ATTRIBUTE_INT)
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("Missing {} column for int type", consts::ATTRIBUTE_INT),
+                    })?;
+                arr.clone()
+            }
+            AttributeValueType::Double => {
+                // Double type
+                let arr = filtered_batch
+                    .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!(
+                            "Missing {} column for double type",
+                            consts::ATTRIBUTE_DOUBLE
+                        ),
+                    })?;
+                arr.clone()
+            }
+            AttributeValueType::Bool => {
+                // Bool type
+                let arr = filtered_batch
+                    .column_by_name(consts::ATTRIBUTE_BOOL)
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("Missing {} column for bool type", consts::ATTRIBUTE_BOOL),
+                    })?;
+                arr.clone()
+            }
+            AttributeValueType::Bytes => {
+                // Bytes type
+                let arr = filtered_batch
+                    .column_by_name(consts::ATTRIBUTE_BYTES)
+                    .ok_or_else(|| Error::ExecutionError {
+                        cause: format!("Missing {} column for bytes type", consts::ATTRIBUTE_BYTES),
+                    })?;
+                arr.clone()
+            }
+            AttributeValueType::Empty => {
+                // Empty type
+                todo!("Handle Empty attribute type")
+            }
+            AttributeValueType::Map => {
+                // Map type
+                todo!("Handle Map attribute type")
+            }
+            AttributeValueType::Slice => {
+                // Slice type
+                todo!("Handle Slice attribute type")
+            }
+        };
+
+        // Build new schema with parent_id (if present) and value column renamed to "value"
+        let mut fields = Vec::new();
+        let mut columns = Vec::new();
+
+        // Keep parent_id column if it exists
+        // TODO - the LLM Agent added this "Exists" check, but the column should pretty much
+        // always be there so this check should go away.
+        if let Some(parent_id_col) = filtered_batch.column_by_name(consts::PARENT_ID) {
+            fields.push(Field::new(
+                consts::PARENT_ID,
+                parent_id_col.data_type().clone(),
+                false,
+            ));
+            columns.push(parent_id_col.clone());
+        }
+
+        // Add the value column renamed to "value"
+        fields.push(Field::new("value", value_array.data_type().clone(), true));
+        columns.push(value_array);
+
+        let schema = Arc::new(Schema::new(fields));
+        let projected_batch =
+            RecordBatch::try_new(schema, columns).map_err(|e| Error::ExecutionError {
+                cause: format!("Failed to create projected batch: {}", e),
+            })?;
+
+        Ok(Some(projected_batch))
     }
 }
 
@@ -943,18 +1081,13 @@ mod test {
         let mut planner = AssignmentLogicalPlanner {};
         let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    ATTRIBUTES_FIELD_NAME,
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
                 )),
-            ),
-            ScalarExpression::Static(
-                StaticScalarExpression::String(StringScalarExpression::new(
-                    QueryLocation::new_fake(),
-                    "k2",
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
                 )),
-            )
             ]),
         ));
 
@@ -978,10 +1111,9 @@ mod test {
                 .severity_text("INFO")
                 .finish(),
             LogRecord::build()
-                .attributes(vec![
-                    KeyValue::new("k2", AnyValue::new_string("x")),
-                ])
-                .severity_text("DEBUG").finish(),
+                .attributes(vec![KeyValue::new("k2", AnyValue::new_string("x"))])
+                .severity_text("DEBUG")
+                .finish(),
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
@@ -1004,7 +1136,7 @@ mod test {
                 panic!("Expected scalar, got array");
             }
             ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), input_col.as_ref())
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
             }
         }
     }
