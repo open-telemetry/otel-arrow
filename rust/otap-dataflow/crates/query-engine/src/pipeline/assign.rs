@@ -263,13 +263,26 @@ impl AssignmentLogicalPlanner {
                             child: None,
                         })
                     }
-                    ColumnAccessor::Attributes(attrs_id, key) => Ok(LogicalDomainExpr {
-                        data_domain: LogicalDataDomain {
-                            domain_id: DataDomainId::Attributes(attrs_id, key),
-                        },
-                        logical_expr: col("value"),
-                        child: None,
-                    }),
+                    ColumnAccessor::Attributes(attrs_id, key) => {
+                        // Attribute access like attributes["http.status"] creates a logical expression
+                        // that operates on the Attributes domain. The key is stored in the domain_id
+                        // so that during physical execution, we can:
+                        // 1. Filter the attribute batch to rows matching this key
+                        // 2. Detect the attribute's type from the 'type' column
+                        // 3. Project the appropriate value column (str/int/double/bool/bytes)
+                        // 4. Rename it to "value"
+                        //
+                        // The logical expression is simply col("value") because after projection,
+                        // the attribute batch will have a column named "value" containing the
+                        // attribute values of the correct type.
+                        Ok(LogicalDomainExpr {
+                            data_domain: LogicalDataDomain {
+                                domain_id: DataDomainId::Attributes(attrs_id, key),
+                            },
+                            logical_expr: col("value"),
+                            child: None,
+                        })
+                    }
                 }
             }
             ScalarExpression::Static(static_scalar_expr) => {
@@ -571,6 +584,24 @@ impl PhysicalDomainExpr {
     /// * `Ok(None)` - No rows matched the key
     /// * `Err(...)` - Error during filtering
 
+    /// Projects an attribute batch to extract values for a specific key.
+    ///
+    /// # Attribute Batch Structure
+    /// Attribute batches have a columnar structure where each row represents one attribute:
+    /// - `key`: The attribute key (e.g., "http.status", "service.name")
+    /// - `type`: A u8 indicating the value type (1=Str, 2=Int, 3=Double, 4=Bool, 7=Bytes, etc.)
+    /// - `str`, `int`, `double`, `bool`, `bytes`: Value columns (only one contains actual data per row)
+    /// - `parent_id`: Links back to the parent record (e.g., log record, span)
+    ///
+    /// # Projection Strategy
+    /// Since we don't know the type at planning time, we:
+    /// 1. Filter rows to only those matching the specified key
+    /// 2. Look at the 'type' column to determine which value column to use
+    /// 3. Project just the parent_id and the appropriate value column
+    /// 4. Rename the value column to "value" so the logical expression can reference it uniformly
+    ///
+    /// This allows expressions like `attributes["http.status"] + 200` to work without knowing
+    /// at planning time whether http.status is an int, string, etc.
     fn try_project_attrs(
         &self,
         record_batch: &RecordBatch,
