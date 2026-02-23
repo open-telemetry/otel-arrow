@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
+use std::num::{NonZeroU16, NonZeroU64};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,9 +47,10 @@ pub mod parser;
 /// URN for the syslog cef receiver
 pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
 
-/// Maximum time to wait before building an Arrow batch
-const BATCH_TIMEOUT: Duration = Duration::from_millis(100);
-const MAX_BATCH_SIZE: u16 = 100; // Maximum number of messages to build an Arrow batch
+/// Default maximum time to wait before flushing an Arrow batch.
+const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
+/// Default maximum number of messages to build an Arrow batch.
+const DEFAULT_MAX_BATCH_SIZE: u16 = 100;
 
 /// Maximum time to wait for spawned TCP tasks to drain during shutdown.
 const MAX_TASK_DRAIN_WAIT: Duration = Duration::from_secs(1);
@@ -87,35 +89,78 @@ enum Protocol {
     Udp(UdpConfig),
 }
 
+/// Optional batching configuration for the syslog CEF receiver.
+///
+/// Controls how incoming log records are accumulated into Arrow batches
+/// before being forwarded downstream. Reducing these values can limit
+/// the scope of data loss for in-memory records that have not yet been
+/// sent to the next node.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+struct BatchConfig {
+    /// Maximum time in milliseconds to wait before flushing an Arrow batch.
+    /// Defaults to 100 ms when not specified. Must be greater than zero.
+    #[serde(default)]
+    flush_timeout_ms: Option<NonZeroU64>,
+    /// Maximum number of messages to accumulate before building an Arrow batch.
+    /// Defaults to 100 when not specified. Must be greater than zero.
+    #[serde(default)]
+    max_size: Option<NonZeroU16>,
+}
+
 /// Config for a syslog cef receiver
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
     /// Protocol-specific configuration.
     protocol: Protocol,
+    /// Optional batching configuration.
+    /// When omitted, sensible defaults are used.
+    #[serde(default)]
+    batch: Option<BatchConfig>,
 }
 
 impl Config {
     /// Creates a new Config for TCP.
     #[must_use]
     #[allow(dead_code)]
-    pub const fn new_tcp(listening_addr: SocketAddr) -> Self {
+    const fn new_tcp(listening_addr: SocketAddr) -> Self {
         Self {
             protocol: Protocol::Tcp(TcpConfig {
                 listening_addr,
                 #[cfg(feature = "experimental-tls")]
                 tls: None,
             }),
+            batch: None,
         }
     }
 
     /// Creates a new Config for UDP.
     #[must_use]
     #[allow(dead_code)]
-    pub const fn new_udp(listening_addr: SocketAddr) -> Self {
+    const fn new_udp(listening_addr: SocketAddr) -> Self {
         Self {
             protocol: Protocol::Udp(UdpConfig { listening_addr }),
+            batch: None,
         }
+    }
+
+    /// Returns the effective flush timeout, using the configured value or the default.
+    fn flush_timeout(&self) -> Duration {
+        self.batch
+            .as_ref()
+            .and_then(|b| b.flush_timeout_ms)
+            .map(|ms| Duration::from_millis(ms.get()))
+            .unwrap_or(DEFAULT_FLUSH_TIMEOUT)
+    }
+
+    /// Returns the effective max batch size, using the configured value or the default.
+    fn max_batch_size(&self) -> u16 {
+        self.batch
+            .as_ref()
+            .and_then(|b| b.max_size)
+            .map(|s| s.get())
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
     }
 }
 
@@ -218,6 +263,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                         message = "TLS enabled for Syslog/CEF TCP receiver"
                     );
                 }
+
+                // Resolve effective batching settings from config
+                let flush_timeout = self.config.flush_timeout();
+                let max_batch_size = self.config.max_batch_size();
 
                 // Flag to signal spawned connection tasks to flush and exit on shutdown
                 let shutdown_flag = Rc::new(Cell::new(false));
@@ -343,8 +392,8 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                        let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                                        let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                                        let start = tokio::time::Instant::now() + flush_timeout;
+                                        let mut interval = tokio::time::interval_at(start, flush_timeout);
 
                                         loop {
                                             // Check for shutdown signal (simple bool check - very cheap)
@@ -453,7 +502,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // Clear the bytes for the next iteration
                                                             line_bytes.clear();
 
-                                                            if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                                            if arrow_records_builder.len() >= max_batch_size {
                                                                 let items = u64::from(arrow_records_builder.len());
 
                                                                 // Build the Arrow records to send them
@@ -550,8 +599,11 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 let mut buf = [0u8; 1024]; // ToDo: Find out the maximum allowed size for syslog messages
                 let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
-                let start = tokio::time::Instant::now() + BATCH_TIMEOUT;
-                let mut interval = tokio::time::interval_at(start, BATCH_TIMEOUT);
+                let flush_timeout = self.config.flush_timeout();
+                let max_batch_size = self.config.max_batch_size();
+
+                let start = tokio::time::Instant::now() + flush_timeout;
+                let mut interval = tokio::time::interval_at(start, flush_timeout);
 
                 loop {
                     tokio::select! {
@@ -613,7 +665,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     arrow_records_builder.append_syslog(parsed_message);
 
-                                    if arrow_records_builder.len() >= MAX_BATCH_SIZE {
+                                    if arrow_records_builder.len() >= max_batch_size {
                                         // Build the Arrow records to send them
                                         let items = u64::from(arrow_records_builder.len());
                                         let arrow_records = arrow_records_builder.build().expect("Failed to build Arrow records");
@@ -1397,6 +1449,111 @@ mod config_tests {
             config.is_err(),
             "UDP config with TLS should be rejected (TLS is TCP-only)"
         );
+    }
+
+    #[test]
+    fn valid_tcp_with_batch_config() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "flush_timeout_ms": 50,
+                "max_size": 200
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.flush_timeout(), Duration::from_millis(50));
+        assert_eq!(config.max_batch_size(), 200);
+    }
+
+    #[test]
+    fn valid_udp_with_partial_batch_config() {
+        let json = serde_json::json!({
+            "protocol": {
+                "udp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "flush_timeout_ms": 25
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.flush_timeout(), Duration::from_millis(25));
+        assert_eq!(
+            config.max_batch_size(),
+            DEFAULT_MAX_BATCH_SIZE,
+            "max_batch_size should fall back to default when not specified"
+        );
+    }
+
+    #[test]
+    fn batch_defaults_when_omitted() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            }
+        });
+        let config: Config = serde_json::from_value(json).expect("should parse");
+        assert_eq!(config.flush_timeout(), DEFAULT_FLUSH_TIMEOUT);
+        assert_eq!(config.max_batch_size(), DEFAULT_MAX_BATCH_SIZE);
+    }
+
+    #[test]
+    fn batch_unknown_field_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "flush_timeout_ms": 50,
+                "unknown_field": true
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(
+            config.is_err(),
+            "Batch config with unknown field should be rejected"
+        );
+    }
+
+    #[test]
+    fn batch_zero_flush_timeout_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "flush_timeout_ms": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_err(), "flush_timeout_ms of 0 should be rejected");
+    }
+
+    #[test]
+    fn batch_zero_max_size_rejected() {
+        let json = serde_json::json!({
+            "protocol": {
+                "tcp": {
+                    "listening_addr": "127.0.0.1:5140"
+                }
+            },
+            "batch": {
+                "max_size": 0
+            }
+        });
+        let config: Result<Config, _> = serde_json::from_value(json);
+        assert!(config.is_err(), "max_size of 0 should be rejected");
     }
 }
 
