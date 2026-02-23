@@ -194,21 +194,16 @@ fn plan_metrics_split(
 }
 
 /// Cursor over sorted `parent_id` values in a data points table.
-/// Tracks scan position for efficient merge-join with the metrics table.
 struct DpCursor<'a> {
-    /// All `parent_id` values (including undefined values at null positions).
     parent_ids: &'a [u16],
-    /// Current scan position; initialized past null rows at the front.
     pos: usize,
 }
 
 impl DpCursor<'_> {
     /// Advance the cursor to find all rows where `parent_id == id`.
     ///
-    /// Returns the half-open row range in the **full** table (accounting for
-    /// the null rows at the front). Since both the metric ids and the
-    /// parent_ids are sorted ascending, the caller must supply ids in
-    /// non-decreasing order.
+    /// Returns the row range in the full table (accounting for
+    /// the null rows at the front).
     fn advance_to(&mut self, id: u16) -> Range<usize> {
         let pids = self.parent_ids;
 
