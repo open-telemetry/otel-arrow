@@ -15,6 +15,58 @@ use crate::schema::{FieldExt, consts};
 
 use super::transport_optimize::{Encoding, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH};
 
+/// Dispatches on the `DataType` of an Arrow column, binding type parameters for
+/// the concrete Arrow numeric types supported by ID columns.
+///
+/// # Expression Duplication
+/// `$native_expr` is emitted once per native type arm (UInt16, UInt32), and
+/// `$dict_expr` once per dictionary key/value combination. `$fallback` is emitted
+/// for both the native and dictionary fallthrough arms.
+macro_rules! id_column_dispatch {
+    (
+        $col:expr,
+        Native[$T:ident] => $native_expr:expr,
+        Dictionary[$KType:ident, $VType:ident] => $dict_expr:expr,
+        _ => $fallback:expr $(,)?
+    ) => {
+        match $col.data_type() {
+            ::arrow::datatypes::DataType::UInt16 => {
+                type $T = ::arrow::datatypes::UInt16Type;
+                $native_expr
+            }
+            ::arrow::datatypes::DataType::UInt32 => {
+                type $T = ::arrow::datatypes::UInt32Type;
+                $native_expr
+            }
+            ::arrow::datatypes::DataType::Dictionary(key_dt, val_dt) => {
+                match (key_dt.as_ref(), val_dt.as_ref()) {
+                    (::arrow::datatypes::DataType::UInt8, ::arrow::datatypes::DataType::UInt16) => {
+                        type $KType = ::arrow::datatypes::UInt8Type;
+                        type $VType = ::arrow::datatypes::UInt16Type;
+                        $dict_expr
+                    }
+                    (::arrow::datatypes::DataType::UInt8, ::arrow::datatypes::DataType::UInt32) => {
+                        type $KType = ::arrow::datatypes::UInt8Type;
+                        type $VType = ::arrow::datatypes::UInt32Type;
+                        $dict_expr
+                    }
+                    (
+                        ::arrow::datatypes::DataType::UInt16,
+                        ::arrow::datatypes::DataType::UInt32,
+                    ) => {
+                        type $KType = ::arrow::datatypes::UInt16Type;
+                        type $VType = ::arrow::datatypes::UInt32Type;
+                        $dict_expr
+                    }
+                    _ => $fallback,
+                }
+            }
+            _ => $fallback,
+        }
+    };
+}
+pub(crate) use id_column_dispatch;
+
 /// Create a new record batch by taking the specified ranges from the provided record batch.
 pub(crate) fn take_record_batch_ranges(
     rb: &RecordBatch,
@@ -462,7 +514,6 @@ pub(crate) fn payload_relations(parent_type: ArrowPayloadType) -> PayloadRelatio
                 child_types: &[ArrowPayloadType::ExpHistogramDpExemplarAttrs],
             }],
         },
-
         _ => PayloadRelationInfo {
             primary_id: None,
             relations: &[],

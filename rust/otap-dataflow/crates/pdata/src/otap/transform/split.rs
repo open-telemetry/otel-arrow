@@ -7,10 +7,11 @@ use std::ops::{Range, RangeInclusive};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, PrimitiveArray, RecordBatch,
 };
+use arrow::buffer::ScalarBuffer;
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type, UInt32Type};
 
 use crate::error::{Error, Result};
-use crate::otap::transform::util::sort_otap_batch_by_parent_then_id;
+use crate::otap::transform::util::{id_column_dispatch, sort_otap_batch_by_parent_then_id};
 use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, num_items};
 use crate::otlp::metrics::MetricType;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -170,8 +171,100 @@ fn plan_metrics_split(
     }
 }
 
-/// Type-specialized implementation of [`plan_split_metrics`]. Works directly
-/// with the native id values buffer - no allocation or conversion.
+struct DataPointIterator {
+    state: [Option<TableScanState>; 4],
+}
+
+struct TableScanState {
+    offset: u32,
+    ids: ScalarBuffer<u16>,
+}
+
+impl DataPointIterator {
+    fn new(batch: &[Option<RecordBatch>]) -> Result<Self> {
+        let mut ret = Self {
+            state: [const { None }; 4],
+        };
+
+        let metric_types = [
+            MetricType::Gauge,
+            MetricType::Sum,
+            MetricType::Histogram,
+            MetricType::Summary,
+            MetricType::ExponentialHistogram,
+        ];
+
+        for m_type in metric_types {
+            let dp_type = payload_from_metric_type(m_type as u8)?;
+            let dp_idx = POSITION_LOOKUP[dp_type as usize];
+
+            let Some(ref dp_rb) = batch[dp_idx] else {
+                continue;
+            };
+
+            // TODO: Need to account for nulls here
+            let parent_id_col = dp_rb
+                .column_by_name(PARENT_ID)
+                .ok_or_else(|| Error::ColumnNotFound {
+                    name: PARENT_ID.to_string(),
+                })?
+                .as_any()
+                .downcast_ref::<PrimitiveArray<UInt16Type>>()
+                .expect("Metrics have u16 ids")
+                .values()
+                .clone();
+
+            ret.state[DataPointIterator::idx(m_type)] = Some(TableScanState {
+                offset: 0,
+                ids: parent_id_col,
+            });
+        }
+
+        Ok(ret)
+    }
+
+    fn get_points(&mut self, m_type: MetricType, id: u16) -> usize {
+        let Some(state) = self.get_mut(m_type) else {
+            return 0;
+        };
+
+        // Skip over the non-matching ids
+        let position = state.ids.iter().position(|x| *x == id);
+        match position {
+            Some(position) => {
+                state.offset += position as u32;
+                state.ids = state.ids.slice(position, state.ids.len() - position);
+            }
+            None => {
+                state.ids = state.ids.slice(0, 0);
+                return 0;
+            }
+        };
+
+        // Count the matching ids
+        let count = state.ids.iter().take_while(|x| **x == id).count();
+        assert!(count > 0);
+
+        state.ids = state.ids.slice(count, state.ids.len() - count);
+        state.offset += count as u32;
+
+        count
+    }
+
+    fn get_mut(&mut self, m_type: MetricType) -> Option<&mut TableScanState> {
+        self.state[DataPointIterator::idx(m_type)].as_mut()
+    }
+
+    fn idx(m_type: MetricType) -> usize {
+        match m_type {
+            MetricType::Empty => unreachable!(),
+            MetricType::Gauge | MetricType::Sum => 0,
+            _ => m_type as usize - 2,
+        }
+    }
+}
+
+/// Type-specialized implementation of [plan_metrics_split]
 fn plan_metrics_split_impl<T>(
     root_rb: &RecordBatch,
     id_col: &ArrayRef,
@@ -189,10 +282,10 @@ where
 
     let max_items = max_items.get() as usize;
 
-    // safety: id column type verified by caller
+    // safety: metrics can only have UInt16 columns
     let id_values = id_col
         .as_any()
-        .downcast_ref::<PrimitiveArray<T>>()
+        .downcast_ref::<PrimitiveArray<UInt16Type>>()
         .expect("id column type verified by caller")
         .values();
 
@@ -215,19 +308,17 @@ where
     let mut range_start = 0;
     let mut item_count: usize = 0;
 
+    let mut scan_state = DataPointIterator::new(batch)?;
     for row in 0..row_count {
-        let metric_id: u32 = id_values[row].into();
+        let metric_id = id_values[row];
         let metric_type = metric_types[row];
 
-        let dp_type = payload_from_metric_type(metric_type)?;
-        let dp_idx = POSITION_LOOKUP[dp_type as usize];
+        let Ok(metric_type) = MetricType::try_from(metric_type) else {
+            continue;
+        };
 
         // Count data points for this metric.
-        let mut points = 0;
-        if let Some(dp_rb) = &batch[dp_idx] {
-            let range = find_rows_by_parent_id_range(dp_rb, &(metric_id..=metric_id))?;
-            points = range.end - range.start;
-        }
+        let points = scan_state.get_points(metric_type, metric_id);
 
         // If adding this metric would exceed the limit, cut the current range
         // and start a new one.
@@ -319,7 +410,7 @@ fn slice_children<const N: usize>(
                 continue;
             };
 
-            let child_slice = take_child_rows(child_rb, &key_ranges)?;
+            let child_slice = take_matching_child_rows(child_rb, &key_ranges)?;
 
             // Recurse before placing into `out` so we can borrow child_slice
             // without conflicting with the mutable borrow of `out`.
@@ -400,8 +491,8 @@ fn get_contiguous_id_ranges(rb: &RecordBatch, id_path: &str) -> Result<Vec<Range
     }
 
     match col.data_type() {
-        DataType::UInt16 => Ok(chunk_contiguous_generic::<UInt16Type>(&col)),
-        DataType::UInt32 => Ok(chunk_contiguous_generic::<UInt32Type>(&col)),
+        DataType::UInt16 => Ok(get_contiguous_id_ranges_impl::<UInt16Type>(&col)),
+        DataType::UInt32 => Ok(get_contiguous_id_ranges_impl::<UInt32Type>(&col)),
         _ => Err(Error::UnsupportedParentIdType {
             actual: col.data_type().clone(),
         }),
@@ -410,7 +501,7 @@ fn get_contiguous_id_ranges(rb: &RecordBatch, id_path: &str) -> Result<Vec<Range
 
 /// Type-specialized implementation of [`get_contiguous_ranges`]. The caller
 /// must have verified that the column's `DataType` matches `T`.
-fn chunk_contiguous_generic<T>(col: &ArrayRef) -> Vec<RangeInclusive<u32>>
+fn get_contiguous_id_ranges_impl<T>(col: &ArrayRef) -> Vec<RangeInclusive<u32>>
 where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Into<u32> + std::ops::Add<Output = T::Native> + From<u8>,
@@ -490,17 +581,28 @@ where
 /// Given a child table and a set of contiguous key ranges from the parent,
 /// extract the matching rows. Uses `slice` for a single contiguous range
 /// and `take_ranges` for multiple non-contiguous ranges.
-fn take_child_rows(
+fn take_matching_child_rows(
     child_rb: &RecordBatch,
-    key_ranges: &[RangeInclusive<u32>],
+    parent_id_ranges: &[RangeInclusive<u32>],
 ) -> Result<Option<RecordBatch>> {
-    if key_ranges.is_empty() {
+    if parent_id_ranges.is_empty() {
         return Ok(None);
     }
 
-    let mut row_ranges: Vec<Range<usize>> = Vec::with_capacity(key_ranges.len());
-    for key_range in key_ranges {
-        let r = find_rows_by_parent_id_range(child_rb, key_range)?;
+    let parent_id_col =
+        child_rb
+            .column_by_name(PARENT_ID)
+            .ok_or_else(|| Error::ColumnNotFound {
+                name: PARENT_ID.to_string(),
+            })?;
+
+    let mut row_ranges: Vec<Range<usize>> = Vec::with_capacity(parent_id_ranges.len());
+    for key_range in parent_id_ranges {
+        // TODO: Siince the parent_id column and the key_ranges are both sorted,
+        // We could optimize this a bit by reducing the parent_id range that we
+        // search in each time by slicing off the range that we already
+        // looked through for the previous id ranges.
+        let r = find_rows_by_parent_id_range(parent_id_col, key_range)?;
         if !r.is_empty() {
             row_ranges.push(r);
         }
@@ -528,40 +630,14 @@ fn take_child_rows(
 /// For dictionary arrays the rows are still sorted by logical value, so binary
 /// search is performed using the logical comparison via `row_partition_point`.
 fn find_rows_by_parent_id_range(
-    child_rb: &RecordBatch,
+    parent_id_col: &ArrayRef,
     key_range: &RangeInclusive<u32>,
 ) -> Result<Range<usize>> {
-    let parent_id_col =
-        child_rb
-            .column_by_name(PARENT_ID)
-            .ok_or_else(|| Error::ColumnNotFound {
-                name: PARENT_ID.to_string(),
-            })?;
-
-    match parent_id_col.data_type() {
-        DataType::UInt16 => find_rows::<UInt16Type>(parent_id_col, key_range),
-        DataType::UInt32 => find_rows::<UInt32Type>(parent_id_col, key_range),
-        DataType::Dictionary(key_dt, val_dt) => match (key_dt.as_ref(), val_dt.as_ref()) {
-            (DataType::UInt8, DataType::UInt16) => {
-                find_rows_dict::<UInt8Type, UInt16Type>(parent_id_col, key_range)
-            }
-            (DataType::UInt8, DataType::UInt32) => {
-                find_rows_dict::<UInt8Type, UInt32Type>(parent_id_col, key_range)
-            }
-            (DataType::UInt16, DataType::UInt32) => {
-                find_rows_dict::<UInt16Type, UInt32Type>(parent_id_col, key_range)
-            }
-            _ => Err(Error::ColumnDataTypeMismatch {
-                name: PARENT_ID.to_string(),
-                expect: DataType::UInt32,
-                actual: parent_id_col.data_type().clone(),
-            }),
-        },
-        other => Err(Error::ColumnDataTypeMismatch {
-            name: PARENT_ID.to_string(),
-            expect: DataType::UInt32,
-            actual: other.clone(),
-        }),
+    id_column_dispatch! {
+        parent_id_col,
+        Native[T] => find_rows::<T>(parent_id_col, key_range),
+        Dictionary[K, V] => find_rows_dict::<K, V>(parent_id_col, key_range),
+        _ => Err(Error::InvalidIdColumnType {data_type: parent_id_col.data_type().clone()}),
     }
 }
 
