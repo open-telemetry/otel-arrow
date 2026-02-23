@@ -32,6 +32,7 @@ impl Default for ProjectionOptions {
 }
 
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
+#[derive(Debug)]
 pub struct Projection {
     schema: ProjectedSchema,
 }

@@ -104,6 +104,10 @@ pub fn join(
                 todo!()
             }
         }
+        (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
+            // TODO do something with attr ID
+            RootToAttribtuesJoin::join(left, right)
+        }
         _ => {
             todo!()
         }
@@ -127,6 +131,51 @@ fn insert_joined_column(left: &RecordBatch, col: ArrayRef) -> RecordBatch {
 
 trait JoinExec {
     fn join(left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch>;
+}
+
+// TODO this is almost xactly the same as AttributeToSameAttributeJoin
+struct RootToAttribtuesJoin {}
+
+impl JoinExec for RootToAttribtuesJoin {
+    fn join(left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch> {
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return error if unexpected type
+        let right_lookup = IdJoinLookup::new(right_parent_ids.values());
+
+        // TODO need to inspect the attr ID to figure out the right column to join on
+        let left_parent_ids = left
+            .column_by_name(consts::ID)
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return err if unexpected type
+
+        let mut to_take = Int32Array::builder(left_parent_ids.len());
+
+        left_parent_ids.iter().for_each(|id| {
+            // TODO test if this null handling works ...
+            if id.is_none() {
+                to_take.append_null();
+            } else {
+                // TODO crappy option handling
+                let left_id = id.unwrap();
+                let right_index = right_lookup.lookup(left_id).map(|i| i as i32);
+                to_take.append_option(right_index);
+            }
+        });
+
+        // TODO no unwrap
+        let right_values = right.values.to_array(right_parent_ids.len()).unwrap();
+        // TODO no unwrap
+        let joined_arr = take(&right_values, &to_take.finish(), None).unwrap();
+
+        Ok(insert_joined_column(left, joined_arr))
+    }
 }
 
 struct AttributeToSameAttributeJoin {}
