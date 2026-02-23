@@ -477,9 +477,9 @@ fn payload_from_metric_type(metric_type: u8) -> Result<ArrowPayloadType> {
 ///   +-----------+----+
 /// ```
 ///
-/// In this case we'll initially produce two ranges, one for `[1, 2]` and one
-/// for `[0, 3]`, which are overlapping. We need to reduce these to a single range
-/// of `[0, 3]`.
+/// In this case we'll initially produce two id ranges - One for `[1, 2]`, one for
+/// `[0, 0]` and one for `[3, 3]` which are overlapping. We need to reduce these
+/// to a single range of `[0, 3]`.
 ///
 /// # General Algorithm
 ///
@@ -1475,5 +1475,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_get_contiguous_id_ranges_with_restart() {
+        let rb = record_batch!(
+            ("parent_id", UInt16, vec![0u16, 0, 1, 1]),
+            ("id", UInt16, vec![1u16, 2, 0, 3])
+        )
+        .unwrap();
+
+        let ranges = get_contiguous_id_ranges(&rb, "id").unwrap();
+        assert_eq!(ranges, vec![0..=3]);
     }
 }

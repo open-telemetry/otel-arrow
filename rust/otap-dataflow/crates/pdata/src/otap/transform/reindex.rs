@@ -18,7 +18,7 @@ use crate::otap::transform::util::{
     extract_id_column, payload_to_idx, remove_record_batch_ranges, replace_column,
     sort_record_batch_by_indices,
 };
-use crate::otap::{Logs, Metrics, OtapBatchStore, POSITION_LOOKUP, Traces, UNUSED_INDEX};
+use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::PARENT_ID;
 
@@ -516,6 +516,7 @@ where
         return Vec::new();
     }
 
+    // safety: Caller checks the type before
     let dict = id_col.as_dictionary::<K>();
 
     // Keys are indices into the values array — directly comparable to the
