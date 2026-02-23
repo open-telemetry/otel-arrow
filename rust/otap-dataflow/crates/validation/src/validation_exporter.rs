@@ -29,6 +29,7 @@ use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::collections::HashSet;
 use tokio::time::{Duration, Instant};
 
 /// URN that identifies the validation exporter within OTAP pipelines.
@@ -37,7 +38,7 @@ pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 #[derive(Debug, Deserialize)]
 struct ValidationExporterConfig {
     suv_input: NodeName,
-    control_input: NodeName,
+    control_inputs: Vec<NodeName>,
     /// Validation rules to run. Defaults to a single equivalence check.
     #[serde(default = "ValidationExporterConfig::default_validations")]
     validations: Vec<ValidationInstructions>,
@@ -68,7 +69,7 @@ struct ValidationExporterMetrics {
 /// Exporter that compares control and suv pipeline outputs and reports equivalence metrics.
 pub struct ValidationExporter {
     suv_index: usize,
-    control_index: usize,
+    control_indices: HashSet<usize>,
     validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<OtlpProtoMessage>,
@@ -132,17 +133,18 @@ impl ValidationExporter {
             .ok_or_else(|| ConfigError::InvalidUserConfig {
                 error: format!("unknown node name for suv_input: {}", config.suv_input),
             })?;
-        let control_node = pipeline_ctx
-            .node_by_name(&config.control_input)
-            .ok_or_else(|| ConfigError::InvalidUserConfig {
-                error: format!(
-                    "unknown node name for control_input: {}",
-                    config.control_input
-                ),
+        let mut control_indices = HashSet::new();
+        for ctrl in config.control_inputs.iter() {
+            let ctrl_node = pipeline_ctx.node_by_name(ctrl).ok_or_else(|| {
+                ConfigError::InvalidUserConfig {
+                    error: format!("unknown node name for control_input: {ctrl}"),
+                }
             })?;
+            let _ = control_indices.insert(ctrl_node.index);
+        }
         Ok(Self {
             suv_index: suv_node.index,
-            control_index: control_node.index,
+            control_indices,
             validations: config.validations,
             metrics,
             control_msgs: Vec::new(),
@@ -187,7 +189,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                             self.suv_msgs.push(msg.clone());
                             self.validate_and_record(msg, time_elapsed);
                             time = Instant::now();
-                        } else if node_index == self.control_index {
+                        } else if self.control_indices.contains(&node_index) {
                             self.control_msgs.push(msg);
                         }
                     } else {

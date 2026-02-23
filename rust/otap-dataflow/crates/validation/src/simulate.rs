@@ -17,7 +17,8 @@ const VALIDATION_METRIC_NAME: &str = "valid";
 pub(crate) async fn run_pipelines_with_timeout(
     rendered_group: String,
     admin_base: String,
-    max_signals_sent: u64,
+    expected_generator_signals: Vec<u64>,
+    expected_validations: usize,
     timeout: Duration,
     ready_max_attempts: usize,
     ready_backoff: Duration,
@@ -36,9 +37,16 @@ pub(crate) async fn run_pipelines_with_timeout(
     )
     .await?;
     tokio::time::timeout(timeout, async {
-        wait_for_loadgen(&admin_client, &admin_base, max_signals_sent, metrics_poll).await?;
+        wait_for_loadgen(
+            &admin_client,
+            &admin_base,
+            &expected_generator_signals,
+            metrics_poll,
+        )
+        .await?;
         sleep(propagation_delay).await;
-        let result = ensure_validation_passed(&admin_client, &admin_base).await;
+        let result =
+            ensure_validation_passed(&admin_client, &admin_base, expected_validations).await;
         shutdown_pipeline(&admin_client, &admin_base).await?;
         result
     })
@@ -109,21 +117,25 @@ async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, V
 async fn wait_for_loadgen(
     client: &Client,
     base: &str,
-    max_signals_sent: u64,
+    expected_generator_signals: &[u64],
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
     loop {
         let snapshot = fetch_metrics(client, base).await?;
-        if loadgen_reached_limit(&snapshot, max_signals_sent) {
+        if loadgen_reached_limit(&snapshot, expected_generator_signals) {
             return Ok(());
         }
         sleep(metrics_poll).await;
     }
 }
 
-async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), ValidationError> {
+async fn ensure_validation_passed(
+    client: &Client,
+    base: &str,
+    expected_validations: usize,
+) -> Result<(), ValidationError> {
     let snapshot = fetch_metrics(client, base).await?;
-    if validation_from_metrics(&snapshot) {
+    if validation_from_metrics(&snapshot, expected_validations) {
         Ok(())
     } else {
         Err(ValidationError::Validation(
@@ -143,26 +155,41 @@ async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), Validation
     Ok(())
 }
 
-fn metric_value(snapshot: &MetricsSnapshot, set_name: &str, metric_name: &str) -> Option<u64> {
+fn metric_values(snapshot: &MetricsSnapshot, set_name: &str, metric_name: &str) -> Vec<u64> {
     snapshot
         .metric_sets
         .iter()
-        .find(|set| set.name == set_name)
-        .and_then(|set| {
+        .filter(|set| set.name == set_name)
+        .flat_map(|set| {
             set.metrics
                 .iter()
-                .find(|m| m.name == metric_name)
+                .filter(|m| m.name == metric_name)
                 .map(|m| m.value.to_u64_lossy())
         })
+        .collect()
 }
 
-fn loadgen_reached_limit(snapshot: &MetricsSnapshot, max_signals: u64) -> bool {
-    metric_value(snapshot, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME)
-        .is_some_and(|v| v >= max_signals)
+fn loadgen_reached_limit(
+    snapshot: &MetricsSnapshot,
+    expected_per_gen: &[u64],
+) -> bool {
+    let mut observed: Vec<u64> = metric_values(snapshot, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME);
+    if observed.len() < expected_per_gen.len() {
+        return false;
+    }
+    observed.sort_unstable();
+    let mut expected = expected_per_gen.to_vec();
+    expected.sort_unstable();
+    expected
+        .iter()
+        .zip(observed.iter())
+        .all(|(exp, obs)| obs >= exp)
 }
 
-fn validation_from_metrics(snapshot: &MetricsSnapshot) -> bool {
-    metric_value(snapshot, VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME).is_some_and(|v| v >= 1)
+fn validation_from_metrics(snapshot: &MetricsSnapshot, expected_validations: usize) -> bool {
+    let values = metric_values(snapshot, VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME);
+    values.len() >= expected_validations
+        && values.iter().filter(|v| **v >= 1).count() >= expected_validations
 }
 
 #[cfg(test)]
@@ -206,26 +233,29 @@ mod tests {
             ],
         };
 
+        let values = metric_values(&snap, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME);
+        assert_eq!(values.iter().sum::<u64>(), 7);
         assert_eq!(
-            metric_value(&snap, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME),
-            Some(7)
+            metric_values(&snap, "missing", "metric")
+                .iter()
+                .sum::<u64>(),
+            0
         );
-        assert_eq!(metric_value(&snap, "missing", "metric"), None);
     }
 
     #[test]
     fn loadgen_reached_limit_checks_threshold() {
         let snap = snapshot(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 10);
-        assert!(loadgen_reached_limit(&snap, 5));
-        assert!(!loadgen_reached_limit(&snap, 15));
+        assert!(loadgen_reached_limit(&snap, &[5]));
+        assert!(!loadgen_reached_limit(&snap, &[15]));
     }
 
     #[test]
     fn validation_from_metrics_requires_positive_value() {
-        let success = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 1);
+        let success = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 2);
         let failure = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 0);
 
-        assert!(validation_from_metrics(&success));
-        assert!(!validation_from_metrics(&failure));
+        assert!(validation_from_metrics(&success, 1));
+        assert!(!validation_from_metrics(&failure, 1));
     }
 }

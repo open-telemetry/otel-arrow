@@ -3,11 +3,12 @@
 {% if suv_receiver_type == "otap" -%}
   {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
 {% endif -%}
-{% set suv_addr = suv_addr | default("127.0.0.1:4318") -%}
+{% set suv_port = suv_port | default(4318) -%}
 {% set validate = validate | default("- equivalence") -%}
 {% set control_ports = control_ports | default([]) -%}
 {% set capture_index = capture_index | default(1) -%}
-{% set capture_core = capture_core | default(1) -%}
+{% set capture_core_start = capture_core_start | default(1) -%}
+{% set capture_core_end = capture_core_end | default(1) -%}
 
 validate{{capture_index}}:
   quota:
@@ -15,8 +16,8 @@ validate{{capture_index}}:
       type: core_set
       set:
         - type: CoreRange
-          start: {{ capture_core }}
-          end: {{ capture_core }}
+          start: {{ capture_core_start }}
+          end: {{ capture_core_end }}
   nodes:
     suv_receiver:
       type: "{{ suv_receiver_plugin_urn }}"
@@ -24,10 +25,10 @@ validate{{capture_index}}:
         {% if suv_receiver_type == "otlp" -%}
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
-            listening_addr: "{{ suv_addr }}"
+            listening_addr: "127.0.0.1:{{ suv_port }}"
         {% endif %}
         {% if suv_receiver_type == "otap" -%}
-        listening_addr: "{{ suv_addr }}"
+        listening_addr: "127.0.0.1:{{ suv_port }}"
         response_stream_channel_size: 256
         {% endif %}
     {% for control_port in control_ports -%}

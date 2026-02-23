@@ -21,8 +21,8 @@ pipeline_groups:
             type: core_set
             set:
               - type: CoreRange
-                start: 0
-                end: 0
+                start: {{ suv_core_start | default(0) }}
+                end: {{ suv_core_end | default(0) }}
 {{ suv_pipeline | indent(8, true)}}
 
       # ======================================================================

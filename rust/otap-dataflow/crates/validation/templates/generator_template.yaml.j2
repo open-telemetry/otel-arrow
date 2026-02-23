@@ -11,9 +11,10 @@
 {% set metric_weight = metric_weight | default(0) -%}
 {% set trace_weight = trace_weight | default(0) -%}
 {% set log_weight = log_weight | default(100) -%}
-{% set suv_endpoint = suv_endpoint | default("http://127.0.0.1:4317") -%}
+{% set suv_port = suv_port | default(4317) -%}
 {% set generator_index = generator_index | default(1) -%}
-{% set generator_core = geneerator_core | default(2) -%}
+{% set generator_core_start = generator_core_start | default(2) -%}
+{% set generator_core_end = generator_core_end | default(2) -%}
 
 
 traffic_gen{{ generator_index }}:
@@ -22,8 +23,8 @@ traffic_gen{{ generator_index }}:
       type: core_set
       set:
         - type: CoreRange
-          start: {{ generator_core }}
-          end: {{ generator_core }}
+          start: {{ generator_core_start }}
+          end: {{ generator_core_end }}
 
   nodes:
     receiver:
@@ -49,7 +50,7 @@ traffic_gen{{ generator_index }}:
     suv_exporter:
       type: "{{ suv_exporter_plugin_urn }}"
       config:
-        grpc_endpoint: "{{ suv_endpoint }}"
+        grpc_endpoint: "http://127.0.0.1:{{ suv_port }}"
         {% if suv_exporter_type == "otap" -%}
         compression_method: none
         arrow:

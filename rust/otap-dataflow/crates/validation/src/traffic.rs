@@ -9,10 +9,8 @@ use crate::ValidationInstructions;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 
-const DEFAULT_SUV_ADDR: &str = "127.0.0.1:4318";
-const DEFAULT_SUV_ENDPOINT: &str = "http://127.0.0.1:4317";
-const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:4316";
-const DEFAULT_CONTROL_ENDPOINT: &str = "http://127.0.0.1:4316";
+const DEFAULT_SUV_PORT: u16 = 4318;
+const DEFAULT_SUV_ENDPOINT_PORT: u16 = 4317;
 const DEFAULT_MAX_SIGNAL_COUNT: usize = 2000;
 const DEFAULT_MAX_BATCH_SIZE: usize = 100;
 const DEFAULT_SIGNALS_PER_SECOND: usize = 100;
@@ -34,10 +32,16 @@ pub enum MessageType {
 pub struct Generator {
     /// Type to use for the system-under-validation exporter.
     pub(crate) suv_exporter_type: MessageType,
-    /// Endpoint the system-under-validation exporter should target.
-    pub(crate) suv_endpoint: String,
-    /// Endpoint the control exporter should target.
-    pub(crate) control_endpoint: String,
+    /// Node name in the SUV pipeline to rewrite for exporter endpoint.
+    pub(crate) suv_exporter_node: String,
+    /// Core range start for this generator pipeline.
+    pub(crate) core_start: u16,
+    /// Core range end for this generator pipeline.
+    pub(crate) core_end: u16,
+    /// Port the system-under-validation exporter should target.
+    pub(crate) suv_port: u16,
+    /// Control ports the exporter should target (one per connected capture).
+    pub(crate) control_ports: Vec<u16>,
     /// Maximum number of signals the load generator should emit.
     pub(crate) max_signal_count: usize,
     /// Maximum batch size emitted by the load generator.
@@ -57,10 +61,16 @@ pub struct Generator {
 pub struct Capture {
     /// Type to use for the system-under-validation receiver.
     pub(crate) suv_receiver_type: MessageType,
-    /// Listening address for the system-under-validation receiver.
-    pub(crate) suv_listening_addr: String,
-    /// Listening address for the control receiver.
-    pub(crate) control_listening_addr: String,
+    /// Node name in the SUV pipeline to rewrite for receiver listen addr.
+    pub(crate) suv_receiver_node: String,
+    /// Core range start for this capture pipeline.
+    pub(crate) core_start: u16,
+    /// Core range end for this capture pipeline.
+    pub(crate) core_end: u16,
+    /// Listening port for the system-under-validation receiver.
+    pub(crate) suv_port: u16,
+    /// Listening ports for control receivers (one per connected generator).
+    pub(crate) control_ports: Vec<u16>,
     /// List of validations to make with the captured data
     pub(crate) validate: Vec<ValidationInstructions>,
 }
@@ -115,15 +125,25 @@ impl Generator {
 
     /// Emit over OTLP gRPC.
     #[must_use]
-    pub fn otlp_grpc(mut self) -> Self {
+    pub fn otlp_grpc(mut self, exporter_node: impl Into<String>) -> Self {
         self.suv_exporter_type = MessageType::Otlp;
+        self.suv_exporter_node = exporter_node.into();
         self
     }
 
     /// Emit over OTAP gRPC.
     #[must_use]
-    pub fn otap_grpc(mut self) -> Self {
+    pub fn otap_grpc(mut self, exporter_node: impl Into<String>) -> Self {
         self.suv_exporter_type = MessageType::Otap;
+        self.suv_exporter_node = exporter_node.into();
+        self
+    }
+
+    /// Set the core range for this generator pipeline.
+    #[must_use]
+    pub fn core_range(mut self, start: u16, end: u16) -> Self {
+        self.core_start = start;
+        self.core_end = end;
         self
     }
 }
@@ -132,8 +152,11 @@ impl Default for Generator {
     fn default() -> Self {
         Self {
             suv_exporter_type: MessageType::Otlp,
-            suv_endpoint: DEFAULT_SUV_ENDPOINT.to_string(),
-            control_endpoint: DEFAULT_CONTROL_ENDPOINT.to_string(),
+            suv_exporter_node: String::new(),
+            core_start: 2,
+            core_end: 2,
+            suv_port: DEFAULT_SUV_ENDPOINT_PORT,
+            control_ports: vec![],
             max_signal_count: DEFAULT_MAX_SIGNAL_COUNT,
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             signals_per_second: DEFAULT_SIGNALS_PER_SECOND,
@@ -147,15 +170,17 @@ impl Default for Generator {
 impl Capture {
     /// Capture OTLP gRPC traffic.
     #[must_use]
-    pub fn otlp_grpc(mut self) -> Self {
+    pub fn otlp_grpc(mut self, receiver_node: impl Into<String>) -> Self {
         self.suv_receiver_type = MessageType::Otlp;
+        self.suv_receiver_node = receiver_node.into();
         self
     }
 
     /// Capture OTAP gRPC traffic.
     #[must_use]
-    pub fn otap_grpc(mut self) -> Self {
+    pub fn otap_grpc(mut self, receiver_node: impl Into<String>) -> Self {
         self.suv_receiver_type = MessageType::Otap;
+        self.suv_receiver_node = receiver_node.into();
         self
     }
 
@@ -163,6 +188,14 @@ impl Capture {
     #[must_use]
     pub fn validate(mut self, validations: Vec<ValidationInstructions>) -> Self {
         self.validate = validations;
+        self
+    }
+
+    /// Set the core range for this capture pipeline.
+    #[must_use]
+    pub fn core_range(mut self, start: u16, end: u16) -> Self {
+        self.core_start = start;
+        self.core_end = end;
         self
     }
 
@@ -177,8 +210,11 @@ impl Default for Capture {
     fn default() -> Self {
         Self {
             suv_receiver_type: MessageType::Otlp,
-            suv_listening_addr: DEFAULT_SUV_ADDR.to_string(),
-            control_listening_addr: DEFAULT_CONTROL_ADDR.to_string(),
+            suv_receiver_node: String::new(),
+            core_start: 1,
+            core_end: 1,
+            suv_port: DEFAULT_SUV_PORT,
+            control_ports: vec![],
             validate: vec![ValidationInstructions::Equivalence],
         }
     }
@@ -192,8 +228,8 @@ mod tests {
     fn generator_defaults_match_expected() {
         let g = Generator::default();
         assert_eq!(g.suv_exporter_type, MessageType::Otlp);
-        assert_eq!(g.suv_endpoint, "http://127.0.0.1:4317");
-        assert_eq!(g.control_endpoint, "http://127.0.0.1:4316");
+        assert_eq!(g.suv_port, DEFAULT_SUV_ENDPOINT_PORT);
+        assert_eq!(g.control_ports, Vec::<u16>::new());
         assert_eq!(g.max_signal_count, 2000);
         assert_eq!(g.max_batch_size, 100);
         assert_eq!(g.signals_per_second, 100);
@@ -206,13 +242,16 @@ mod tests {
     fn capture_defaults_match_expected() {
         let c = Capture::default();
         assert_eq!(c.suv_receiver_type, MessageType::Otlp);
-        assert_eq!(c.suv_listening_addr, "127.0.0.1:4318");
-        assert_eq!(c.control_listening_addr, "127.0.0.1:4316");
+        assert_eq!(c.suv_port, DEFAULT_SUV_PORT);
+        assert_eq!(c.control_ports, Vec::<u16>::new());
     }
 
     #[test]
     fn generator_fixed_count_and_protocols() {
-        let g = Generator::default().fixed_count(42).otap_grpc().otlp_grpc(); // last call wins
+        let g = Generator::default()
+            .fixed_count(42)
+            .otap_grpc("exporter")
+            .otlp_grpc("exporter"); // last call wins
         assert_eq!(g.max_signal_count, 42);
         assert_eq!(g.suv_exporter_type, MessageType::Otlp);
     }
@@ -244,7 +283,7 @@ mod tests {
 
     #[test]
     fn capture_otap_sets_type() {
-        let c = Capture::default().otap_grpc();
+        let c = Capture::default().otap_grpc("receiver");
         assert_eq!(c.suv_receiver_type, MessageType::Otap);
     }
 }
