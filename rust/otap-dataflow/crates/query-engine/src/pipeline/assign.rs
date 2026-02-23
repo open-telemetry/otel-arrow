@@ -93,17 +93,19 @@ use data_engine_expressions::{
 };
 use datafusion::common::DFSchema;
 use datafusion::execution::context::SessionState;
+use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::physical_plan::PhysicalExpr;
+use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
+use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::FilterProjection;
-use crate::pipeline::planner::AttributesIdentifier;
 
 /// Column name used when referencing child expression results in cross-domain operations.
 /// For example, if Root domain needs to add a value from Attributes domain, the parent
@@ -240,26 +242,42 @@ impl AssignmentLogicalPlanner {
                 // TODO: Implement source scalar planning
                 // This will handle column references like log.severity_number,
                 // attribute access like attributes["http.method"], etc.
-                todo!()
+                let value_accessor = source_scalar_expr.get_value_accessor();
+                let column_accessor = ColumnAccessor::try_from(value_accessor)?;
+
+                match column_accessor {
+                    ColumnAccessor::ColumnName(column_name) => Ok(LogicalDomainExpr {
+                        data_domain: LogicalDataDomain {
+                            domain_id: DataDomainId::Root,
+                        },
+                        logical_expr: col(column_name),
+                        child: None,
+                    }),
+                    ColumnAccessor::StructCol(column_name, struct_field_name) => {
+                        Ok(LogicalDomainExpr {
+                            data_domain: LogicalDataDomain {
+                                domain_id: DataDomainId::Root,
+                            },
+                            logical_expr: col(column_name).field(struct_field_name),
+                            child: None,
+                        })
+                    }
+                    _ => {
+                        todo!()
+                    }
+                }
             }
             ScalarExpression::Static(static_scalar_expr) => {
                 // Convert static scalar constants to DataFusion literals.
                 // All static scalars belong to the StaticScalar domain.
+                // TODO - don't like how this is imported
                 use data_engine_expressions::StaticScalarExpression as SSE;
-                
+
                 let logical_expr = match static_scalar_expr {
-                    SSE::Integer(int_expr) => {
-                        lit(int_expr.get_value())
-                    }
-                    SSE::Double(double_expr) => {
-                        lit(double_expr.get_value())
-                    }
-                    SSE::Boolean(bool_expr) => {
-                        lit(bool_expr.get_value())
-                    }
-                    SSE::String(string_expr) => {
-                        lit(string_expr.get_value())
-                    }
+                    SSE::Integer(int_expr) => lit(int_expr.get_value()),
+                    SSE::Double(double_expr) => lit(double_expr.get_value()),
+                    SSE::Boolean(bool_expr) => lit(bool_expr.get_value()),
+                    SSE::String(string_expr) => lit(string_expr.get_value()),
                     SSE::Null(_) => {
                         // Create a null literal of unknown type
                         lit(datafusion::scalar::ScalarValue::Null)
@@ -413,14 +431,21 @@ impl PhysicalDomainExpr {
     /// * `Ok(Some(ColumnarValue))` - Successful evaluation as Array or Scalar
     /// * `Ok(None)` - No input data available (e.g., optional attribute batch missing)
     /// * `Err(...)` - Evaluation error
-    fn execute(&mut self, otap_batch: &OtapArrowRecords, session_state: &SessionState) -> Result<Option<ColumnarValue>> {
+    fn execute(
+        &mut self,
+        otap_batch: &OtapArrowRecords,
+        session_context: &SessionContext,
+    ) -> Result<Option<ColumnarValue>> {
         // Step 1: Get the input RecordBatch based on the data domain
         let input_rb = match &self.data_domain {
-            DataDomainId::Root => otap_batch.root_record_batch().map(|rb| {
-                // Project to only the columns needed by this expression
-                // TODO: Handle case where projection fails (missing columns)
-                self.projection.project(rb).unwrap()
-            }),
+            DataDomainId::Root => otap_batch
+                .root_record_batch()
+                .map(|rb| {
+                    // Project to only the columns needed by this expression
+                    // TODO: Handle case where projection fails (missing columns)
+                    self.projection.project(rb)
+                })
+                .flatten(),
             DataDomainId::Attributes(attrs_id, key) => {
                 // Get the appropriate attributes batch based on AttributesIdentifier
                 let attrs_payload_type = match *attrs_id {
@@ -448,7 +473,7 @@ impl PhysicalDomainExpr {
 
         // Step 2: Recursively execute child expression if present
         let child_arr = match &mut self.child {
-            Some(child) => Some(child.execute(otap_batch, session_state)?),
+            Some(child) => Some(child.execute(otap_batch, session_context)?),
             None => None,
         };
 
@@ -457,8 +482,13 @@ impl PhysicalDomainExpr {
         // Once created, it's cached and reused for subsequent batches.
         if self.physical_expr.is_none() {
             if let Some(ref rb) = input_rb {
+                let session_state = session_context.state();
                 let df_schema = DFSchema::try_from(rb.schema_ref().as_ref().clone())?;
-                let physical_expr = create_physical_expr(&self.logical_expr, &df_schema, session_state.execution_props())?;
+                let physical_expr = create_physical_expr(
+                    &self.logical_expr,
+                    &df_schema,
+                    session_state.execution_props(),
+                )?;
                 self.physical_expr = Some(physical_expr);
             } else {
                 // If there's no input batch, return None (missing data)
@@ -486,7 +516,7 @@ impl PhysicalDomainExpr {
                 // - child is Some(Array) of http.status values (should be N rows after join)
                 // - parent expr is: col("severity_number") + col("child")
                 todo!()
-            },
+            }
             (Some(input), None) => {
                 // Only parent domain has data (most common case)
                 // Evaluate self.physical_expr.evaluate(&input) and wrap in Some().
@@ -501,13 +531,13 @@ impl PhysicalDomainExpr {
                 // allowing efficient composition in parent expressions.
                 let result = self.physical_expr.as_ref().unwrap().evaluate(&input)?;
                 Ok(Some(result))
-            },
+            }
             (None, Some(child)) => {
                 // Parent domain has no data but child does
                 // Could happen if root batch is missing but attributes exist (unlikely)
                 // Return the child result directly
                 Ok(child)
-            },
+            }
             (None, None) => {
                 // Neither parent nor child has data - return None
                 Ok(None)
@@ -542,13 +572,14 @@ impl PhysicalDomainExpr {
         key: &str,
     ) -> Result<Option<RecordBatch>> {
         // Get the key column and create a mask for rows matching the specified key
-        let key_col =
-            get_required_array(record_batch, consts::ATTRIBUTE_KEY).map_err(|e| Error::ExecutionError {
+        let key_col = get_required_array(record_batch, consts::ATTRIBUTE_KEY).map_err(|e| {
+            Error::ExecutionError {
                 cause: e.to_string(),
-            })?;
+            }
+        })?;
         let key_mask = eq(key_col, &StringArray::new_scalar(key))?;
         let filtered_batch = filter_record_batch(record_batch, &key_mask)?;
-        
+
         // TODO: Implement type detection and value projection
         // Steps needed:
         // 1. Look at the 'type' column to find the first non-null row
@@ -564,13 +595,28 @@ impl PhysicalDomainExpr {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::Int64Array;
+    use arrow::array::{Int32Array, Int64Array, StructArray};
+    use arrow::compute::take;
     use arrow::datatypes::DataType;
+    use data_engine_expressions::{
+        IntegerScalarExpression, QueryLocation, StaticScalarExpression, StringScalarExpression,
+        ValueAccessor,
+    };
     use datafusion::logical_expr::lit;
     use datafusion::physical_expr::expressions::Literal;
     use datafusion::scalar::ScalarValue;
-    use otap_df_pdata::otap::Logs;
-    use crate::pipeline::project::FilterProjection;
+    // TODO ugly import
+    use crate::consts::{ATTRIBUTES_FIELD_NAME, SCOPE_FIELD_NAME};
+    use crate::pipeline::{Pipeline, project::FilterProjection};
+    use otap_df_pdata::{
+        otap::Logs,
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue},
+            opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+        },
+        testing::round_trip::{otlp_to_otap, to_logs_data},
+    };
 
     #[test]
     fn test_physical_domain_expr_static_scalar() {
@@ -593,17 +639,17 @@ mod test {
         };
 
         // Create a session state for execution
-        let session_ctx = datafusion::execution::context::SessionContext::new();
+        let session_ctx = Pipeline::create_session_context();
         let session_state = session_ctx.state();
 
         // Execute the expression
-        let result = physical_expr.execute(&otap_batch, &session_state);
-        
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
+
         // Should successfully evaluate the static scalar
         assert!(result.is_ok());
         let columnar_value = result.unwrap();
         assert!(columnar_value.is_some());
-        
+
         // Verify it's a scalar value
         match columnar_value.unwrap() {
             ColumnarValue::Scalar(scalar) => {
@@ -673,80 +719,96 @@ mod test {
 
     #[test]
     fn test_planner_static_integer() {
-        use data_engine_expressions::{IntegerScalarExpression, QueryLocation, StaticScalarExpression};
-        
+        use data_engine_expressions::{
+            IntegerScalarExpression, QueryLocation, StaticScalarExpression,
+        };
+
         let mut planner = AssignmentLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 42)
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 42),
         ));
-        
+
         let result = planner.plan_scalar_expr(&static_expr);
         assert!(result.is_ok());
-        
+
         let logical_expr = result.unwrap();
-        assert_eq!(logical_expr.data_domain.domain_id, DataDomainId::StaticScalar);
+        assert_eq!(
+            logical_expr.data_domain.domain_id,
+            DataDomainId::StaticScalar
+        );
         assert!(logical_expr.child.is_none());
     }
 
     #[test]
     fn test_planner_static_string() {
-        use data_engine_expressions::{QueryLocation, StaticScalarExpression, StringScalarExpression};
-        
+        use data_engine_expressions::{
+            QueryLocation, StaticScalarExpression, StringScalarExpression,
+        };
+
         let mut planner = AssignmentLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::String(
-            StringScalarExpression::new(QueryLocation::new_fake(), "hello")
+            StringScalarExpression::new(QueryLocation::new_fake(), "hello"),
         ));
-        
+
         let result = planner.plan_scalar_expr(&static_expr);
         assert!(result.is_ok());
-        
+
         let logical_expr = result.unwrap();
-        assert_eq!(logical_expr.data_domain.domain_id, DataDomainId::StaticScalar);
+        assert_eq!(
+            logical_expr.data_domain.domain_id,
+            DataDomainId::StaticScalar
+        );
     }
 
     #[test]
     fn test_planner_static_boolean() {
-        use data_engine_expressions::{BooleanScalarExpression, QueryLocation, StaticScalarExpression};
-        
+        // TODO - don't like these local imports
+        use data_engine_expressions::{
+            BooleanScalarExpression, QueryLocation, StaticScalarExpression,
+        };
+
         let mut planner = AssignmentLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::Boolean(
-            BooleanScalarExpression::new(QueryLocation::new_fake(), true)
+            BooleanScalarExpression::new(QueryLocation::new_fake(), true),
         ));
-        
+
         let result = planner.plan_scalar_expr(&static_expr);
         assert!(result.is_ok());
-        
+
         let logical_expr = result.unwrap();
-        assert_eq!(logical_expr.data_domain.domain_id, DataDomainId::StaticScalar);
+        assert_eq!(
+            logical_expr.data_domain.domain_id,
+            DataDomainId::StaticScalar
+        );
     }
+
+    // TODO the name the LLM generated for these tests is a bit hokey ...
+    // "_to_physical_expr" ugh
+    // I think we can
 
     #[test]
     fn test_planner_static_to_physical_execute() {
-        use data_engine_expressions::{IntegerScalarExpression, QueryLocation, StaticScalarExpression};
-        
         // Plan the scalar expression
         let mut planner = AssignmentLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
-            IntegerScalarExpression::new(QueryLocation::new_fake(), 99)
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 99),
         ));
-        
+
         let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
-        
+
         // Convert to physical
         let mut physical_expr = logical_expr.into_physical().unwrap();
-        
+
         // Execute
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
-        let session_ctx = datafusion::execution::context::SessionContext::new();
-        let session_state = session_ctx.state();
-        
-        let result = physical_expr.execute(&otap_batch, &session_state);
-        
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
+
         // Should successfully evaluate
         assert!(result.is_ok());
         let columnar_value = result.unwrap();
         assert!(columnar_value.is_some());
-        
+
         // Verify it's a scalar value of 99
         match columnar_value.unwrap() {
             ColumnarValue::Scalar(scalar) => {
@@ -754,6 +816,195 @@ mod test {
             }
             ColumnarValue::Array(_) => {
                 panic!("Expected scalar, got array");
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_root_source_to_physical_execute() {
+        let mut planner = AssignmentLogicalPlanner {};
+        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().severity_text("ERROR").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
+
+        // get the expected column
+        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let input_col = logs.column_by_name(consts::SEVERITY_TEXT).unwrap();
+
+        // Should successfully evaluate
+        assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap() {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), input_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_root_struct_to_physical_execute() {
+        let mut planner = AssignmentLogicalPlanner {};
+        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), SCOPE_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), consts::NAME),
+                )),
+            ]),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = LogsData::new(vec![ResourceLogs {
+            scope_logs: vec![
+                ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![LogRecord::build().severity_text("INFO").finish()],
+                ),
+                ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope2".into(),
+                        ..Default::default()
+                    },
+                    vec![LogRecord::build().severity_text("INFO").finish()],
+                ),
+            ],
+            ..Default::default()
+        }]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
+
+        // get the expected column
+        let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        let scope_col = logs.column_by_name(consts::SCOPE).unwrap();
+        let input_col = scope_col
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap()
+            .column_by_name(consts::NAME)
+            .unwrap();
+
+        // Should successfully evaluate
+        assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap() {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), input_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_attribute_source_to_physical_execute() {
+        let mut planner = AssignmentLogicalPlanner {};
+        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ATTRIBUTES_FIELD_NAME,
+                )),
+            ),
+            ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    "k2",
+                )),
+            )
+            ]),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_string("x")),
+                    KeyValue::new("k2", AnyValue::new_string("y")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_string("x")),
+                    KeyValue::new("k3", AnyValue::new_string("y")),
+                ])
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_string("x")),
+                ])
+                .severity_text("DEBUG").finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
+
+        // get the expected column
+        let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        let expected_col = take(input_col, &Int32Array::from(vec![1, 2, 4]), None).unwrap();
+
+        // Should successfully evaluate
+        assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap() {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), input_col.as_ref())
             }
         }
     }
