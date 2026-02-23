@@ -26,13 +26,16 @@ use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
-use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
+use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
@@ -51,7 +54,7 @@ pub struct AzureMonitorExporter {
     transformer: Transformer,
     gzip_batcher: GzipBatcher,
     state: AzureMonitorExporterState,
-    metrics: AzureMonitorExporterMetricsTracker,
+    metrics: AzureMonitorExporterMetricsRc,
     client_pool: LogsIngestionClientPool,
     in_flight_exports: InFlightExports,
     last_batch_queued_at: tokio::time::Instant,
@@ -79,15 +82,17 @@ impl AzureMonitorExporter {
 
         // Register metrics with the telemetry system
         let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
-        let metrics = AzureMonitorExporterMetricsTracker::new(metric_set);
+        let metrics: AzureMonitorExporterMetricsRc = Rc::new(RefCell::new(
+            super::metrics::AzureMonitorExporterMetricsTracker::new(metric_set),
+        ));
 
         Ok(Self {
             config,
             transformer,
             gzip_batcher,
             state: AzureMonitorExporterState::new(),
-            metrics,
-            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1),
+            metrics: metrics.clone(),
+            client_pool: LogsIngestionClientPool::new(MAX_IN_FLIGHT_EXPORTS + 1, metrics),
             in_flight_exports: InFlightExports::new(MAX_IN_FLIGHT_EXPORTS),
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
@@ -130,10 +135,12 @@ impl AzureMonitorExporter {
     ) -> Result<(), EngineError> {
         // Export succeeded - Ack only fully-completed messages
         let completed_messages = self.state.remove_batch_success(batch_id);
-        self.metrics.add_messages(completed_messages.len() as u64);
-        self.metrics.add_rows(row_count as u64);
-        self.metrics.add_batch();
-        self.metrics.add_client_latency(duration.as_millis() as f64);
+        {
+            let mut m = self.metrics.borrow_mut();
+            m.add_messages(completed_messages.len() as u64);
+            m.add_rows(row_count as u64);
+            m.add_batch();
+        }
 
         otel_debug!(
             "azure_monitor_exporter.export.success",
@@ -159,9 +166,12 @@ impl AzureMonitorExporter {
     ) -> Result<(), EngineError> {
         // Export failed - Nack ALL messages in this batch, remove entirely
         let failed_messages = self.state.remove_batch_failure(batch_id);
-        self.metrics.add_failed_messages(failed_messages.len() as u64);
-        self.metrics.add_failed_rows(row_count as u64);
-        self.metrics.add_failed_batch();
+        {
+            let mut m = self.metrics.borrow_mut();
+            m.add_failed_messages(failed_messages.len() as u64);
+            m.add_failed_rows(row_count as u64);
+            m.add_failed_batch();
+        }
 
         otel_error!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
 
@@ -440,7 +450,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         let mut msg_id = 0;
 
-        let mut auth = Auth::new(&self.config.auth).map_err(|e| {
+        let mut auth = Auth::new(&self.config.auth, self.metrics.clone()).map_err(|e| {
             let error = Error::AuthHandlerCreation(Box::new(e));
             EngineError::InternalError {
                 message: error.to_string(),
@@ -532,13 +542,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 msg = msg_chan.recv(), if !at_capacity => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
-                            let _ = self.metrics.report(&mut metrics_reporter);
+                            let _ = self.metrics.borrow_mut().report(&mut metrics_reporter);
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                             self.handle_shutdown(&effect_handler).await?;
+                            let snapshot = self.metrics.borrow().metrics().snapshot();
                             return Ok(TerminalState::new(
                                 deadline,
-                                [self.metrics.metrics().snapshot()],
+                                [snapshot],
                             ));
                         }
                         other => {
@@ -550,8 +561,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 _ = tokio::time::sleep_until(next_stats_print) => {
                     next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
 
-                    let client_lat = self.metrics.client_latency();
-                    let auth_lat = self.metrics.auth_latency();
+                    let m = self.metrics.borrow();
+                    let client_lat = m.client_latency();
+                    let auth_lat = m.auth_latency();
                     let client_avg = if client_lat.count > 0 { client_lat.sum / client_lat.count as f64 } else { 0.0 };
                     let auth_avg = if auth_lat.count > 0 { auth_lat.sum / auth_lat.count as f64 } else { 0.0 };
 
@@ -573,12 +585,12 @@ exports | in_flight={}
                         if auth_lat.count > 0 { auth_lat.min } else { 0.0 },
                         if auth_lat.count > 0 { auth_lat.max } else { 0.0 },
                         auth_lat.count,
-                        self.metrics.successful_row_count(),
-                        self.metrics.successful_batch_count(),
-                        self.metrics.successful_msg_count(),
-                        self.metrics.failed_row_count(),
-                        self.metrics.failed_batch_count(),
-                        self.metrics.failed_msg_count(),
+                        m.successful_row_count(),
+                        m.successful_batch_count(),
+                        m.successful_msg_count(),
+                        m.failed_row_count(),
+                        m.failed_batch_count(),
+                        m.failed_msg_count(),
                         self.state.batch_to_msg.len(),
                         self.state.msg_to_batch.len(),
                         self.state.msg_to_data.len(),
@@ -694,9 +706,11 @@ mod tests {
             .await;
 
         // Verify stats
-        assert_eq!(exporter.metrics.successful_batch_count(), 1);
-        assert_eq!(exporter.metrics.successful_msg_count(), 1);
-        assert_eq!(exporter.metrics.successful_row_count(), 10);
+        let m = exporter.metrics.borrow();
+        assert_eq!(m.successful_batch_count(), 1);
+        assert_eq!(m.successful_msg_count(), 1);
+        assert_eq!(m.successful_row_count(), 10);
+        drop(m);
 
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());
@@ -738,9 +752,11 @@ mod tests {
             .await;
 
         // Verify stats
-        assert_eq!(exporter.metrics.failed_batch_count(), 1);
-        assert_eq!(exporter.metrics.failed_msg_count(), 1);
-        assert_eq!(exporter.metrics.failed_row_count(), 10);
+        let m = exporter.metrics.borrow();
+        assert_eq!(m.failed_batch_count(), 1);
+        assert_eq!(m.failed_msg_count(), 1);
+        assert_eq!(m.failed_row_count(), 10);
+        drop(m);
 
         // Verify state cleared
         assert!(exporter.state.batch_to_msg.is_empty());

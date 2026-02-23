@@ -3,11 +3,20 @@
 
 //! Metrics for the Azure Monitor Exporter node.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Mmsc, MmscSnapshot};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+
+/// Shared handle to the metrics tracker.
+///
+/// The exporter runs on a single-threaded runtime (`#[async_trait(?Send)]`),
+/// so `Rc<RefCell<…>>` is sufficient—no `Arc`/`Mutex` overhead needed.
+pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
 /// Telemetry metrics for the Azure Monitor Exporter.
 #[metric_set(name = "azure_monitor_exporter.metrics")]

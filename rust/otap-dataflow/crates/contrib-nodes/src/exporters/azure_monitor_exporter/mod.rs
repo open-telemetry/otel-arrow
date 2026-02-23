@@ -26,16 +26,16 @@ mod exporter;
 mod gzip_batcher;
 mod heartbeat;
 mod in_flight_exports;
+mod metrics;
 mod state;
 mod transformer;
-mod metrics;
 
 pub use client::LogsIngestionClient;
 pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureMonitorExporter;
 pub use heartbeat::Heartbeat;
-pub use metrics::{AzureMonitorExporterMetricsTracker, AzureMonitorExporterMetrics};
+pub use metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
