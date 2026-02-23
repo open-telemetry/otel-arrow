@@ -66,11 +66,11 @@ traffic_gen{{ generator_index }}:
 
 
   connections:
-    - from: receiver
-      to: fanout
-    - from: fanout["suv_port"]
-      to: suv_exporter
-    {% for _ in control_ports -%}
-    - from: fanout["control_port{{ loop.index }}"]
-      to: control_exporter{{ loop.index }}
-    {% endfor %}
+  - from: receiver
+    to: fanout
+  - from: fanout["suv_port"]
+    to: suv_exporter
+  {% for _ in control_ports -%}
+  - from: fanout["control_port{{ loop.index }}"]
+    to: control_exporter{{ loop.index }}
+  {% endfor %}

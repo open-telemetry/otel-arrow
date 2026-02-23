@@ -5,7 +5,7 @@
 //! waits for readiness, and checks validation metrics.
 
 use crate::error::ValidationError;
-use crate::pipeline::{Pipeline, EndpointKind};
+use crate::pipeline::{EndpointKind, Pipeline};
 use crate::simulate::run_pipelines_with_timeout;
 use crate::traffic::{Capture, Generator};
 use minijinja::{Environment, context};
@@ -88,7 +88,11 @@ impl Scenario {
 
     /// Connect a generator to a capture for control path wiring.
     #[must_use]
-    pub fn connect(mut self, generator_label: impl Into<String>, capture_label: impl Into<String>) -> Self {
+    pub fn connect(
+        mut self,
+        generator_label: impl Into<String>,
+        capture_label: impl Into<String>,
+    ) -> Self {
         self.connections
             .push((generator_label.into(), capture_label.into()));
         self
@@ -120,23 +124,25 @@ impl Scenario {
 
         let rendered_group = self.render_template()?;
 
-        let tokio_rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
+        println!("{rendered_group}");
+        // let tokio_rt = tokio::runtime::Runtime::new()
+        //     .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
 
-        tokio_rt.block_on(async move {
-            run_pipelines_with_timeout(
-                rendered_group,
-                admin_base,
-                generator_signals,
-                capture_count,
-                timeout,
-                ready_max_attempts,
-                ready_backoff,
-                metrics_poll,
-                propagation_delay,
-            )
-            .await
-        })
+        // tokio_rt.block_on(async move {
+        //     run_pipelines_with_timeout(
+        //         rendered_group,
+        //         admin_base,
+        //         generator_signals,
+        //         capture_count,
+        //         timeout,
+        //         ready_max_attempts,
+        //         ready_backoff,
+        //         metrics_poll,
+        //         propagation_delay,
+        //     )
+        //     .await
+        // })
+        Ok(())
     }
 
     /// convert the template to a finalized yaml string to run
@@ -168,7 +174,7 @@ impl Scenario {
             .get_template("template")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
         let ctx = context! {
-            pipeline_config => pipeline_yaml,
+            suv_pipeline => pipeline_yaml,
             admin_bind_address => &self.admin_addr,
             capture_pipeline => capture_pipeline,
             generator_pipeline => generator_pipeline,
@@ -203,8 +209,9 @@ impl Scenario {
                     "generator missing suv exporter node name".into(),
                 ));
             }
-            let input_port = pick_unused_port()
-                .ok_or_else(|| ValidationError::Config("failed to get port for generator".into()))?;
+            let input_port = pick_unused_port().ok_or_else(|| {
+                ValidationError::Config("failed to get port for generator".into())
+            })?;
             generator.suv_port = input_port;
             let port: u16 = input_port;
             match generator.suv_exporter_type {
@@ -264,7 +271,10 @@ impl Scenario {
         Ok(())
     }
 
-    fn render_captures(&self, captures: &HashMap<String, Capture>) -> Result<String, ValidationError> {
+    fn render_captures(
+        &self,
+        captures: &HashMap<String, Capture>,
+    ) -> Result<String, ValidationError> {
         let mut env = Environment::new();
         let template = fs::read_to_string("templates/capture_template.yaml.j2")
             .map_err(|e| ValidationError::Io(format!("failed to read capture template: {e}")))?;

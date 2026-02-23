@@ -10,7 +10,7 @@ pipeline_groups:
       # ======================================================================
       # Validation pipeline to validate equivalence
       # ======================================================================
-{{ capture_pipeline | indent(8, true)}}
+{{ capture_pipeline | indent(6, true)}}
 
       # ======================================================================
       # System Under Validation pipeline
@@ -28,4 +28,4 @@ pipeline_groups:
       # ======================================================================
       # Pipeline generating traffic
       # ======================================================================
-{{ generator_pipeline | indent(8, true)}}
+{{ generator_pipeline | indent(6, true)}}

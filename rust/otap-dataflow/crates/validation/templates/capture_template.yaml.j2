@@ -50,9 +50,9 @@ validate{{capture_index}}:
         validations:
 {{ validate | indent(10, true)}}
   connections:
-    - from: suv_receiver
-      to: validation_exporter
-    {% for _ in control_ports -%}
-    - from: control_receiver{{ loop.index }}
-      to: validation_exporter
-    {% endfor %}
+  - from: suv_receiver
+    to: validation_exporter
+  {% for _ in control_ports -%}
+  - from: control_receiver{{ loop.index }}
+    to: validation_exporter
+  {% endfor %}

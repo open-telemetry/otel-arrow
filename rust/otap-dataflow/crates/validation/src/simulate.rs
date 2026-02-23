@@ -169,10 +169,7 @@ fn metric_values(snapshot: &MetricsSnapshot, set_name: &str, metric_name: &str) 
         .collect()
 }
 
-fn loadgen_reached_limit(
-    snapshot: &MetricsSnapshot,
-    expected_per_gen: &[u64],
-) -> bool {
+fn loadgen_reached_limit(snapshot: &MetricsSnapshot, expected_per_gen: &[u64]) -> bool {
     let mut observed: Vec<u64> = metric_values(snapshot, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME);
     if observed.len() < expected_per_gen.len() {
         return false;

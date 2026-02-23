@@ -28,8 +28,8 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_error;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
-use std::sync::Arc;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
 /// URN that identifies the validation exporter within OTAP pipelines.
@@ -135,11 +135,12 @@ impl ValidationExporter {
             })?;
         let mut control_indices = HashSet::new();
         for ctrl in config.control_inputs.iter() {
-            let ctrl_node = pipeline_ctx.node_by_name(ctrl).ok_or_else(|| {
-                ConfigError::InvalidUserConfig {
-                    error: format!("unknown node name for control_input: {ctrl}"),
-                }
-            })?;
+            let ctrl_node =
+                pipeline_ctx
+                    .node_by_name(ctrl)
+                    .ok_or_else(|| ConfigError::InvalidUserConfig {
+                        error: format!("unknown node name for control_input: {ctrl}"),
+                    })?;
             let _ = control_indices.insert(ctrl_node.index);
         }
         Ok(Self {

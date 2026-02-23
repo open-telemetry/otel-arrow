@@ -8,7 +8,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::error::ValidationError;
-use serde_yaml::{Value, Mapping};
+use serde_yaml::{Mapping, Value};
 use std::fs;
 
 /// Pipeline configuration wrapper that supports rewiring logical endpoints.
@@ -98,10 +98,7 @@ impl EndpointKind {
     }
 }
 
-fn node_config_map<'a>(
-    doc: &'a mut Value,
-    node: &str,
-) -> Result<&'a mut Mapping, ValidationError> {
+fn node_config_map<'a>(doc: &'a mut Value, node: &str) -> Result<&'a mut Mapping, ValidationError> {
     let nodes = doc
         .get_mut("nodes")
         .and_then(Value::as_mapping_mut)
@@ -113,9 +110,9 @@ fn node_config_map<'a>(
     let config = node_cfg
         .entry(Value::from("config"))
         .or_insert_with(|| Value::Mapping(Default::default()));
-    config
-        .as_mapping_mut()
-        .ok_or_else(|| ValidationError::Config(format!("config section for node {node} is not a mapping")))
+    config.as_mapping_mut().ok_or_else(|| {
+        ValidationError::Config(format!("config section for node {node} is not a mapping"))
+    })
 }
 
 fn set_otlp_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
@@ -150,11 +147,7 @@ fn set_otap_receiver_addr(doc: &mut Value, node: &str, port: u16) -> Result<(), 
     Ok(())
 }
 
-fn set_exporter_endpoint(
-    doc: &mut Value,
-    node: &str,
-    port: u16,
-) -> Result<(), ValidationError> {
+fn set_exporter_endpoint(doc: &mut Value, node: &str, port: u16) -> Result<(), ValidationError> {
     let config_map = node_config_map(doc, node)?;
     let _ = config_map.insert(
         Value::from("grpc_endpoint"),

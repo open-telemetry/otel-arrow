@@ -30,58 +30,39 @@ pub use validation_types::ValidationInstructions;
 mod tests {
     use crate::ValidationInstructions;
     use crate::pipeline::Pipeline;
+    use crate::scenario::Scenario;
     use crate::traffic::{Capture, Generator};
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
+    use std::time::Duration;
 
     #[test]
     fn no_processor() {
-        let mut pipeline = Pipeline::from_file("./validation_pipelines/no-processor.yaml")
-            .expect("failed to read in pipeline yaml");
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtlpGrpcReceiver("receiver".into()),
-                50051,
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+                    .expect("failed to read in pipeline yaml")
             )
-            .unwrap();
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtlpGrpcExporter("exporter".into()),
-                50052,
-            )
-            .unwrap();
-
-        let generator = Generator::logs()
-            .fixed_count(500)
-            .otlp_grpc("receiver");
-        assert_eq!(generator.suv_exporter_node, "receiver");
-
-        let capture = Capture::default().otlp_grpc("exporter");
-        assert_eq!(capture.suv_receiver_node, "exporter");
+            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+            .add_capture("output", Capture::default().otlp_grpc("exporter"))
+            .connect("input", "output")
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("validation scenario failed");
     }
 
     #[test]
     fn debug_processor() {
-        let mut pipeline = Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
-            .expect("failed to read in pipeline yaml");
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtlpGrpcReceiver("receiver".into()),
-                50053,
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
+                    .expect("failed to read in pipeline yaml")
             )
-            .unwrap();
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtapGrpcExporter("exporter".into()),
-                50054,
-            )
-            .unwrap();
-
-        let generator = Generator::logs()
-            .fixed_count(500)
-            .otlp_grpc("receiver");
-        assert_eq!(generator.suv_exporter_node, "receiver");
-        let capture = Capture::default().otap_grpc("exporter");
-        assert_eq!(capture.suv_receiver_node, "exporter");
+            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+            .add_capture("output", Capture::default().otap_grpc("exporter"))
+            .connect("input", "output")
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("validation scenario failed");
     }
 
     #[test]
@@ -94,30 +75,16 @@ mod tests {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["ios.app.state2".into()],
         };
-        let mut pipeline = Pipeline::from_file("./validation_pipelines/attribute-processor.yaml")
-            .expect("failed to read pipeline yaml");
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtlpGrpcReceiver("receiver".into()),
-                50055,
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/attribute-processor.yaml")
+                    .expect("failed to read pipeline yaml")
             )
-            .unwrap();
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtapGrpcExporter("exporter".into()),
-                50056,
-            )
-            .unwrap();
-
-        let generator = Generator::logs()
-            .fixed_count(500)
-            .otlp_grpc("receiver");
-        assert_eq!(generator.suv_exporter_node, "receiver");
-
-        let capture = Capture::default()
-            .otap_grpc("exporter")
-            .validate(vec![deny, require]);
-        assert_eq!(capture.suv_receiver_node, "exporter");
+            .add_generator("input",Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+            .add_capture("output", Capture::default().otap_grpc("exporter").validate(vec![deny, require]))
+            .expect_within(Duration::from_secs(500))
+            .run()
+            .expect("attribute processor validation failed");
     }
 
     #[test]
@@ -130,33 +97,43 @@ mod tests {
             )],
         };
 
-        let mut pipeline = Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
-            .expect("failed to read pipeline yaml");
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtlpGrpcReceiver("receiver".into()),
-                50057,
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
+                    .expect("failed to read pipeline yaml")
             )
-            .unwrap();
-        pipeline
-            .apply_endpoint(
-                crate::pipeline::EndpointKind::OtapGrpcExporter("exporter".into()),
-                50058,
+            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+            .add_capture("output", Capture::default().otap_grpc("exporter").validate(vec![
+                ValidationInstructions::SignalDrop {
+                    min_drop_ratio: None,
+                    max_drop_ratio: None,
+                },
+                attr_check,
+            ]))
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("filter processor validation failed");
+    }
+
+    #[test]
+    fn multiple_input_output() {
+        Scenario::new()
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
+                    .expect("failed to read in pipeline yaml")
             )
-            .unwrap();
-
-        let generator = Generator::logs()
-            .fixed_count(500)
-            .otlp_grpc("receiver");
-        assert_eq!(generator.suv_exporter_node, "receiver");
-
-        let capture = Capture::default().otap_grpc("exporter").validate(vec![
-            ValidationInstructions::SignalDrop {
-                min_drop_ratio: None,
-                max_drop_ratio: None,
-            },
-            attr_check,
-        ]);
-        assert_eq!(capture.suv_receiver_node, "exporter");
+            .add_generator("input1", Generator::logs().fixed_count(500).otlp_grpc("receiver1"))
+            .add_generator("input2", Generator::logs().fixed_count(500).otlp_grpc("receiver2"))
+            .add_generator("input3", Generator::logs().fixed_count(500).otlp_grpc("receiver3"))
+            .add_generator("input4", Generator::logs().fixed_count(500).otlp_grpc("receiver4"))
+            .add_capture("output1", Capture::default().otlp_grpc("exporter1"))
+            .add_capture("output2", Capture::default().otlp_grpc("exporter2"))
+            .connect("input1", "output1")
+            .connect("input2", "output1")
+            .connect("input3", "output1")
+            .connect("input4", "output2")
+            .expect_within(Duration::from_secs(140))
+            .run()
+            .expect("validation scenario failed");
     }
 }
