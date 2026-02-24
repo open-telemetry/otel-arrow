@@ -111,7 +111,7 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
@@ -207,28 +207,28 @@ pub struct DurableBufferMetrics {
     /// Total segments force-dropped due to DropOldest retention policy.
     /// Non-zero values indicate data loss.
     #[metric(unit = "{segment}")]
-    pub dropped_segments: Gauge<u64>,
+    pub dropped_segments: ObserveCounter<u64>,
 
     /// Total bundles lost due to force-dropped segments (DropOldest policy).
     /// Non-zero values indicate data loss.
     #[metric(unit = "{bundle}")]
-    pub dropped_bundles: Gauge<u64>,
+    pub dropped_bundles: ObserveCounter<u64>,
 
     /// Total individual items (log records, data points, spans) lost due to
     /// force-dropped segments (DropOldest policy). Non-zero values indicate data loss.
     #[metric(unit = "{item}")]
-    pub dropped_items: Gauge<u64>,
+    pub dropped_items: ObserveCounter<u64>,
 
     /// Total bundles lost due to expired segments (max_age retention).
     /// Non-zero values indicate data aged out before delivery.
     #[metric(unit = "{bundle}")]
-    pub expired_bundles: Gauge<u64>,
+    pub expired_bundles: ObserveCounter<u64>,
 
     /// Total individual items (log records, data points, spans) lost due to
     /// expired segments (max_age retention). Non-zero values indicate data
     /// aged out before delivery.
     #[metric(unit = "{item}")]
-    pub expired_items: Gauge<u64>,
+    pub expired_items: ObserveCounter<u64>,
 
     // ─── Retry metrics ──────────────────────────────────────────────────────
     /// Number of retry attempts scheduled.
@@ -1695,11 +1695,11 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                     {
                         self.metrics.storage_bytes_used.set(used);
                         self.metrics.storage_bytes_cap.set(cap);
-                        self.metrics.dropped_segments.set(dropped_segs);
-                        self.metrics.dropped_bundles.set(dropped_buns);
-                        self.metrics.dropped_items.set(dropped_items);
-                        self.metrics.expired_bundles.set(expired_buns);
-                        self.metrics.expired_items.set(expired_items);
+                        self.metrics.dropped_segments.observe(dropped_segs);
+                        self.metrics.dropped_bundles.observe(dropped_buns);
+                        self.metrics.dropped_items.observe(dropped_items);
+                        self.metrics.expired_bundles.observe(expired_buns);
+                        self.metrics.expired_items.observe(expired_items);
                     }
 
                     metrics_reporter
