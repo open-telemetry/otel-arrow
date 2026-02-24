@@ -1,7 +1,7 @@
 {% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
-{% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% set suv_receiver_plugin_urn = "otlp:receiver" -%}
 {% if suv_receiver_type == "otap" -%}
-  {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
+  {% set suv_receiver_plugin_urn = "otap:receiver" -%}
 {% endif -%}
 {% set suv_port = suv_port | default(4318) -%}
 {% set validate = validate | default("- equivalence") -%}
@@ -9,7 +9,6 @@
 {% set capture_index = capture_index | default(1) -%}
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
-
 validate{{capture_index}}:
   quota:
     core_allocation:
@@ -20,32 +19,34 @@ validate{{capture_index}}:
           end: {{ capture_core_end }}
   nodes:
     suv_receiver:
-      type: "{{ suv_receiver_plugin_urn }}"
+      type: {{ suv_receiver_plugin_urn }}
       config:
         {% if suv_receiver_type == "otlp" -%}
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
-            listening_addr: "127.0.0.1:{{ suv_port }}"
-        {% endif %}
+            listening_addr: 127.0.0.1:{{ suv_port }}
+        {% endif -%}
         {% if suv_receiver_type == "otap" -%}
-        listening_addr: "127.0.0.1:{{ suv_port }}"
+        listening_addr: 127.0.0.1:{{ suv_port }}
         response_stream_channel_size: 256
-        {% endif %}
+        {% endif -%}
     {% for control_port in control_ports -%}
     control_receiver{{ loop.index }}:
-      type: "urn:otel:otlp:receiver"
+      type: otlp:receiver
       config:
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
-            listening_addr: "127.0.0.1:{{ control_port }}"
+            listening_addr: 127.0.0.1:{{ control_port }}
     {% endfor %}
     validation_exporter:
-      type: "urn:otel:validation:exporter"
+      type: validation:exporter
       config:
+      {% if control_ports| length > 0 -%}
         control_inputs: 
         {% for _ in control_ports -%}
           - control_receiver{{loop.index}}
-        {% endfor %}
+      {% endfor %}
+        {% endif %}
         suv_input: suv_receiver
         validations:
 {{ validate | indent(10, true)}}

@@ -11,7 +11,6 @@ pipeline_groups:
       # Validation pipeline to validate equivalence
       # ======================================================================
 {{ capture_pipeline | indent(6, true)}}
-
       # ======================================================================
       # System Under Validation pipeline
       # ======================================================================
@@ -24,7 +23,6 @@ pipeline_groups:
                 start: {{ suv_core_start | default(0) }}
                 end: {{ suv_core_end | default(0) }}
 {{ suv_pipeline | indent(8, true)}}
-
       # ======================================================================
       # Pipeline generating traffic
       # ======================================================================

@@ -7,6 +7,8 @@ use otap_df_config::engine::EngineConfig;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
+use serde_json::Value;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, sleep};
 
 const LOADGEN_METRIC_SET: &str = "fake_data_generator.receiver.metrics";
@@ -95,9 +97,45 @@ async fn wait_for_ready(
         sleep(retry_cooldown).await;
     }
 
+    _ = print_status_snapshot(client, base).await;
+    let mut writer = Box::new(tokio::io::stdout());
+    match client.get(&readyz_url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(body) => writer.write_all(format!("pipeline is not ready: {body}").as_bytes()).await.expect("fdafds"),
+            Err(err) => writer.write_all(format!("pipeline is not ready: {err}").as_bytes()).await.expect("fdsafds"),
+        },
+        Err(err) => {
+            last_error = Some(format!("pipeline is not ready: {err}"));
+        }
+    }
+
     Err(ValidationError::Ready(
         last_error.unwrap_or_else(|| "readyz timeout".to_string()),
     ))
+}
+
+async fn print_status_snapshot(client: &Client, base: &str) {
+    let mut writer = Box::new(tokio::io::stdout());
+    let status_url = format!("{base}/status");
+    match client.get(&status_url).send().await {
+        Ok(resp) => {
+            let code = resp.status();
+            match resp.text().await {
+                Ok(body) => {
+                    if let Ok(json) = serde_json::from_str::<Value>(&body) {
+                        match serde_json::to_string_pretty(&json) {
+                            Ok(pretty) => writer.write_all(format!("Status response ({code}):\n{pretty}").as_bytes()).await.expect("fsdafds"),
+                            Err(_) => writer.write_all(format!("Status response ({code}): {body}").as_bytes()).await.expect("fdsafs"),
+                        }
+                    } else {
+                        writer.write_all(format!("Status response ({code}): {body}").as_bytes()).await.expect("fdsafds");
+                    }
+                }
+                Err(err) => println!("Status response ({code}) could not be read: {err}"),
+            }
+        }
+        Err(err) => println!("Status endpoint unreachable: {err}"),
+    }
 }
 
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {

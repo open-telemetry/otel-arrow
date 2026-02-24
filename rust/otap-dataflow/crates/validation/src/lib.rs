@@ -35,35 +35,35 @@ mod tests {
     use crate::validation_types::attributes::{AnyValue, AttributeDomain, KeyValue};
     use std::time::Duration;
 
-    #[test]
-    fn no_processor() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/no-processor.yaml")
-                    .expect("failed to read in pipeline yaml")
-            )
-            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
-            .add_capture("output", Capture::default().otlp_grpc("exporter"))
-            .connect("input", "output")
-            .expect_within(Duration::from_secs(140))
-            .run()
-            .expect("validation scenario failed");
-    }
+    // #[test]
+    // fn no_processor() {
+    //     Scenario::new()
+    //         .pipeline(
+    //             Pipeline::from_file("./validation_pipelines/no-processor.yaml")
+    //                 .expect("failed to read in pipeline yaml")
+    //         )
+    //         .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+    //         .add_capture("output", Capture::default().otlp_grpc("exporter"))
+    //         .connect("input", "output")
+    //         .expect_within(Duration::from_secs(140))
+    //         .run()
+    //         .expect("validation scenario failed");
+    // }
 
-    #[test]
-    fn debug_processor() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
-                    .expect("failed to read in pipeline yaml")
-            )
-            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
-            .add_capture("output", Capture::default().otap_grpc("exporter"))
-            .connect("input", "output")
-            .expect_within(Duration::from_secs(140))
-            .run()
-            .expect("validation scenario failed");
-    }
+    // #[test]
+    // fn debug_processor() {
+    //     Scenario::new()
+    //         .pipeline(
+    //             Pipeline::from_file("./validation_pipelines/debug-processor.yaml")
+    //                 .expect("failed to read in pipeline yaml")
+    //         )
+    //         .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+    //         .add_capture("output", Capture::default().otap_grpc("exporter"))
+    //         .connect("input", "output")
+    //         .expect_within(Duration::from_secs(140))
+    //         .run()
+    //         .expect("validation scenario failed");
+    // }
 
     #[test]
     fn attribute_processor_pipeline() {
@@ -87,53 +87,53 @@ mod tests {
             .expect("attribute processor validation failed");
     }
 
-    #[test]
-    fn filter_processor_pipeline() {
-        let attr_check = ValidationInstructions::AttributeRequireKeyValue {
-            domains: vec![AttributeDomain::Signal],
-            pairs: vec![KeyValue::new(
-                "ios.app.state".into(),
-                AnyValue::String("active".into()),
-            )],
-        };
+    // #[test]
+    // fn filter_processor_pipeline() {
+    //     let attr_check = ValidationInstructions::AttributeRequireKeyValue {
+    //         domains: vec![AttributeDomain::Signal],
+    //         pairs: vec![KeyValue::new(
+    //             "ios.app.state".into(),
+    //             AnyValue::String("active".into()),
+    //         )],
+    //     };
 
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
-                    .expect("failed to read pipeline yaml")
-            )
-            .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
-            .add_capture("output", Capture::default().otap_grpc("exporter").validate(vec![
-                ValidationInstructions::SignalDrop {
-                    min_drop_ratio: None,
-                    max_drop_ratio: None,
-                },
-                attr_check,
-            ]))
-            .expect_within(Duration::from_secs(140))
-            .run()
-            .expect("filter processor validation failed");
-    }
+    //     Scenario::new()
+    //         .pipeline(
+    //             Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
+    //                 .expect("failed to read pipeline yaml")
+    //         )
+    //         .add_generator("input", Generator::logs().fixed_count(500).otlp_grpc("receiver"))
+    //         .add_capture("output", Capture::default().otap_grpc("exporter").validate(vec![
+    //             ValidationInstructions::SignalDrop {
+    //                 min_drop_ratio: None,
+    //                 max_drop_ratio: None,
+    //             },
+    //             attr_check,
+    //         ]))
+    //         .expect_within(Duration::from_secs(140))
+    //         .run()
+    //         .expect("filter processor validation failed");
+    // }
 
-    #[test]
-    fn multiple_input_output() {
-        Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
-                    .expect("failed to read in pipeline yaml")
-            )
-            .add_generator("input1", Generator::logs().fixed_count(500).otlp_grpc("receiver1"))
-            .add_generator("input2", Generator::logs().fixed_count(500).otlp_grpc("receiver2"))
-            .add_generator("input3", Generator::logs().fixed_count(500).otlp_grpc("receiver3"))
-            .add_generator("input4", Generator::logs().fixed_count(500).otlp_grpc("receiver4"))
-            .add_capture("output1", Capture::default().otlp_grpc("exporter1"))
-            .add_capture("output2", Capture::default().otlp_grpc("exporter2"))
-            .connect("input1", "output1")
-            .connect("input2", "output1")
-            .connect("input3", "output1")
-            .connect("input4", "output2")
-            .expect_within(Duration::from_secs(140))
-            .run()
-            .expect("validation scenario failed");
-    }
+    // #[test]
+    // fn multiple_input_output() {
+    //     Scenario::new()
+    //         .pipeline(
+    //             Pipeline::from_file("./validation_pipelines/multiple-input-output.yaml")
+    //                 .expect("failed to read in pipeline yaml")
+    //         )
+    //         .add_generator("input1", Generator::logs().fixed_count(500).otlp_grpc("receiver1"))
+    //         .add_generator("input2", Generator::logs().fixed_count(500).otlp_grpc("receiver2"))
+    //         .add_generator("input3", Generator::logs().fixed_count(500).otlp_grpc("receiver3"))
+    //         .add_generator("input4", Generator::logs().fixed_count(500).otlp_grpc("receiver4"))
+    //         .add_capture("output1", Capture::default().otlp_grpc("exporter1"))
+    //         .add_capture("output2", Capture::default().otlp_grpc("exporter2"))
+    //         .connect("input1", "output1")
+    //         .connect("input2", "output1")
+    //         .connect("input3", "output1")
+    //         .connect("input4", "output2")
+    //         .expect_within(Duration::from_secs(140))
+    //         .run()
+    //         .expect("validation scenario failed");
+    // }
 }

@@ -123,26 +123,24 @@ impl Scenario {
         let capture_count = self.captures.len();
 
         let rendered_group = self.render_template()?;
-
         println!("{rendered_group}");
-        // let tokio_rt = tokio::runtime::Runtime::new()
-        //     .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
+        let tokio_rt = tokio::runtime::Runtime::new()
+            .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
 
-        // tokio_rt.block_on(async move {
-        //     run_pipelines_with_timeout(
-        //         rendered_group,
-        //         admin_base,
-        //         generator_signals,
-        //         capture_count,
-        //         timeout,
-        //         ready_max_attempts,
-        //         ready_backoff,
-        //         metrics_poll,
-        //         propagation_delay,
-        //     )
-        //     .await
-        // })
-        Ok(())
+        tokio_rt.block_on(async move {
+            run_pipelines_with_timeout(
+                rendered_group,
+                admin_base,
+                generator_signals,
+                capture_count,
+                timeout,
+                ready_max_attempts,
+                ready_backoff,
+                metrics_poll,
+                propagation_delay,
+            )
+            .await
+        })
     }
 
     /// convert the template to a finalized yaml string to run
