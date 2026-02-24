@@ -8,6 +8,7 @@ use arrow::datatypes::DataType;
 use datafusion::logical_expr::cast;
 use otap_df_pdata::otap::filter::AnyValue;
 
+#[derive(Debug)]
 pub enum ExprLogicalType {
     AnyValue,
     AnyValueNumberic,
@@ -31,10 +32,10 @@ pub fn coerce_arithmetic(
     left: &mut LogicalDomainExpr,
     right: &mut LogicalDomainExpr,
 ) -> ExprLogicalType {
-    match left.expr_type {
-        ExprLogicalType::AnyValue => match right.expr_type {
+    match &left.expr_type {
+        ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => match right.expr_type {
             // just assume we're adding either int64 or float64
-            ExprLogicalType::AnyValue => ExprLogicalType::AnyValueNumberic,
+            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => ExprLogicalType::AnyValueNumberic,
 
             // TODO - should this be any int that gets coerced?
             ExprLogicalType::Int32 => {
@@ -93,8 +94,8 @@ pub fn coerce_arithmetic(
                 }
             }
         }
-        _ => {
-            todo!()
+        other_left => {
+            todo!("no type handler for left {:?}", other_left)
         }
     }
 }

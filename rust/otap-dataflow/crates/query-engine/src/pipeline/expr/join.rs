@@ -426,9 +426,6 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         ));
         new_columns.push(child_col);
 
-        println!("new cols = {new_columns:?}");
-        println!("new_fields = {new_fields:?}");
-
         Ok(RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap())
     }
 }

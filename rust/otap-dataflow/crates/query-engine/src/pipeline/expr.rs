@@ -145,6 +145,7 @@ enum DataDomainId {
 
 /// Wrapper around DataDomainId used during logical planning phase.
 /// Provides helper methods for determining if domains can be combined.
+#[derive(Debug)]
 struct LogicalDataDomain {
     domain_id: DataDomainId,
 }
@@ -179,6 +180,7 @@ impl LogicalDataDomain {
 /// This combines a DataFusion logical expression with domain information.
 /// When expressions span multiple domains (e.g., Root + Attributes), a parent-child
 /// structure is used where the parent references the child via col("child").
+#[derive(Debug)]
 struct LogicalDomainExpr {
     /// The data domain this expression operates on
     data_domain: LogicalDataDomain,
@@ -319,7 +321,9 @@ impl AssignmentLogicalPlanner {
                 use data_engine_expressions::StaticScalarExpression as SSE;
 
                 let (logical_expr, expr_type) = match static_scalar_expr {
-                    SSE::Integer(int_expr) => (lit(int_expr.get_value()), ExprLogicalType::ScalarInt),
+                    SSE::Integer(int_expr) => {
+                        (lit(int_expr.get_value()), ExprLogicalType::ScalarInt)
+                    }
                     SSE::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)
                     }
@@ -359,6 +363,9 @@ impl AssignmentLogicalPlanner {
                     let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
                     let mut right =
                         self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+
+                    println!("left = {:?}", left);
+                    println!("right = {:?}", right);
                     let expr_type = coerce_arithmetic(&mut left, &mut right);
 
                     // Check if both sides operate on compatible domains
@@ -546,12 +553,7 @@ impl PhysicalDomainExpr {
             }
         };
 
-        // TODO remove all this debug stuff
-        println!("data domain = {:?}", self.source_data_domain);
-        println!("projection = {:?}", self.projection);
-        println!("expr = {:?}", self.logical_expr);
-        println!("physical_expr = {:?}", self.physical_expr);
-        arrow::util::pretty::print_batches(&[source_rb.clone()]).unwrap();
+
         // println!("input rb = {:?}", input_rb);
 
         // TODO there's somewhere else we need to apply projection here ....
@@ -586,7 +588,9 @@ impl PhysicalDomainExpr {
             if self.source_data_domain == DataDomainId::Root {
                 // TODO no unwrap
                 (
-                    self.projection.project_with_options(&source_rb, &self.projection_opts).unwrap(),
+                    self.projection
+                        .project_with_options(&source_rb, &self.projection_opts)
+                        .unwrap(),
                     // TODO - find a way to avoid the clone here ... (Rc?)
                     self.source_data_domain.clone(),
                 )
@@ -595,6 +599,7 @@ impl PhysicalDomainExpr {
                 (source_rb.clone(), self.source_data_domain.clone())
             }
         };
+
 
         // Step 3: Lazily create the physical expression if not already cached.
         // We need the actual batch schema to convert logical Expr -> PhysicalExpr.
@@ -613,13 +618,27 @@ impl PhysicalDomainExpr {
             )?;
             self.physical_expr = Some(physical_expr);
         }
+        let result_vals = self.physical_expr.as_ref().unwrap().evaluate(&input_rb)?;
 
         // TODO - should we cast back to a dict here if the originals were dicts or
         // if the source allows it ...
 
+        // TODO remove all this debug stuff
+        println!("----");
+        println!("data domain = {:?}", self.source_data_domain);
+        println!("projection = {:?}", self.projection);
+        println!("expr = {:?}", self.logical_expr);
+        println!("physical_expr = {:?}", self.physical_expr);
+        println!("source rb:");
+        arrow::util::pretty::print_batches(&[source_rb.clone()]).unwrap();
+        println!("input rb:");
+        arrow::util::pretty::print_batches(&[input_rb.clone()]).unwrap();
+        println!("result vals = {result_vals:?}");
+
+
         // TODO this'd be cleaner as a constructor
         let mut result = PhysicalExprEvalResult {
-            values: self.physical_expr.as_ref().unwrap().evaluate(&input_rb)?,
+            values: result_vals,
             ids: None,
             parent_ids: None,
             scope_ids: None,
@@ -2091,6 +2110,155 @@ mod test {
 
         // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    // TODO - this is kind of just a smoke test, should we have it be more purposeful?
+    #[test]
+    fn test_planner_binary_expr_deeply_nested_expr() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let root_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), consts::SEVERITY_NUMBER),
+                )),
+            ]),
+        ));
+
+        // let scope_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
+        //     QueryLocation::new_fake(),
+        //     ValueAccessor::new_with_selectors(vec![
+        //         ScalarExpression::Static(StaticScalarExpression::String(
+        //             StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+        //         )),
+        //         ScalarExpression::Static(StaticScalarExpression::String(
+        //             StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+        //         )),
+        //         ScalarExpression::Static(StaticScalarExpression::String(
+        //             StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+        //         )),
+        //     ]),
+        // ));
+
+        // let
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        resource_attrs_expr,
+                        attrs_expr,
+                    ),
+                )),
+                root_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
+                            .severity_number(3)
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
+                            .severity_number(5)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
+                            .severity_number(7)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int64Array::from(vec![14, 17, 34]));
 
         // Should successfully evaluate
         // assert!(result.is_ok());
