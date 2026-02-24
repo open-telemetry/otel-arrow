@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Mmsc, MmscSnapshot};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
@@ -68,6 +68,21 @@ pub struct AzureMonitorExporterMetrics {
     /// Authentication latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
     pub auth_latency: Mmsc,
+    /// Batch size in bytes (min/max/sum/count).
+    #[metric(unit = "By")]
+    pub batch_size: Mmsc,
+    /// Current number of in-flight export requests.
+    #[metric(unit = "{export}")]
+    pub in_flight_exports: Gauge<u64>,
+    /// Current number of batch-to-message mappings (leak detector).
+    #[metric(unit = "{entry}")]
+    pub batch_to_msg_count: Gauge<u64>,
+    /// Current number of message-to-batch mappings (leak detector).
+    #[metric(unit = "{entry}")]
+    pub msg_to_batch_count: Gauge<u64>,
+    /// Current number of message-to-data mappings (leak detector).
+    #[metric(unit = "{entry}")]
+    pub msg_to_data_count: Gauge<u64>,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
@@ -172,6 +187,41 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.auth_latency.get()
     }
 
+    /// Get the batch size snapshot (min/max/sum/count) in bytes.
+    #[inline]
+    #[must_use]
+    pub fn batch_size(&self) -> MmscSnapshot {
+        self.metrics.batch_size.get()
+    }
+
+    /// Get the current in-flight exports gauge value.
+    #[inline]
+    #[must_use]
+    pub fn in_flight_exports(&self) -> u64 {
+        self.metrics.in_flight_exports.get()
+    }
+
+    /// Get the current batch_to_msg map size.
+    #[inline]
+    #[must_use]
+    pub fn batch_to_msg_count(&self) -> u64 {
+        self.metrics.batch_to_msg_count.get()
+    }
+
+    /// Get the current msg_to_batch map size.
+    #[inline]
+    #[must_use]
+    pub fn msg_to_batch_count(&self) -> u64 {
+        self.metrics.msg_to_batch_count.get()
+    }
+
+    /// Get the current msg_to_data map size.
+    #[inline]
+    #[must_use]
+    pub fn msg_to_data_count(&self) -> u64 {
+        self.metrics.msg_to_data_count.get()
+    }
+
     // ── Mutation helpers ────────────────────────────────────────────
 
     /// Increment successful row count.
@@ -232,6 +282,36 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn add_auth_failure(&mut self) {
         self.metrics.auth_failure.inc();
+    }
+
+    /// Record a batch size observation in bytes.
+    #[inline]
+    pub fn add_batch_size(&mut self, size_bytes: f64) {
+        self.metrics.batch_size.record(size_bytes);
+    }
+
+    /// Set the current number of in-flight exports.
+    #[inline]
+    pub fn set_in_flight_exports(&mut self, count: u64) {
+        self.metrics.in_flight_exports.set(count);
+    }
+
+    /// Set the current batch_to_msg map size.
+    #[inline]
+    pub fn set_batch_to_msg_count(&mut self, count: u64) {
+        self.metrics.batch_to_msg_count.set(count);
+    }
+
+    /// Set the current msg_to_batch map size.
+    #[inline]
+    pub fn set_msg_to_batch_count(&mut self, count: u64) {
+        self.metrics.msg_to_batch_count.set(count);
+    }
+
+    /// Set the current msg_to_data map size.
+    #[inline]
+    pub fn set_msg_to_data_count(&mut self, count: u64) {
+        self.metrics.msg_to_data_count.set(count);
     }
 
     /// Record an HTTP response status code.

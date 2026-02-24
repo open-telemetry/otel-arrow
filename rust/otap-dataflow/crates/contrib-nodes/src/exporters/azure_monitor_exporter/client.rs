@@ -220,6 +220,7 @@ impl LogsIngestionClient {
 
     /// Single export attempt without retry logic.
     async fn try_export(&mut self, body: Bytes) -> Result<Duration, Error> {
+        let body_len = body.len();
         let start = Instant::now();
 
         let response = self
@@ -236,11 +237,12 @@ impl LogsIngestionClient {
         let status_code = response.status().as_u16();
         let elapsed = start.elapsed();
 
-        // Record per-attempt latency and status code
+        // Record per-attempt latency, status code, and batch size
         {
             let mut m = self.metrics.borrow_mut();
             m.add_client_latency(elapsed.as_millis() as f64);
             m.record_laclient_status_code(status_code);
+            m.add_batch_size(body_len as f64);
         }
 
         if response.status().is_success() {

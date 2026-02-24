@@ -27,6 +27,7 @@ arrow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 bytes.workspace = true
 prost.workspace = true
 serde.workspace = true
@@ -43,6 +44,7 @@ azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
+humantime-serde = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
 sysinfo = { workspace = true, optional = true }
@@ -66,6 +68,7 @@ azure-monitor-exporter = [
     "dep:chrono",
     "dep:flate2",
     "dep:http",
+    "dep:humantime-serde",
     "dep:rand",
 ]
 

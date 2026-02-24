@@ -5,6 +5,7 @@ use super::Error;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -16,7 +17,34 @@ pub struct Config {
     /// Authentication configuration
     #[serde(default)]
     pub auth: AuthConfig,
+
+    /// Self-telemetry configuration for the exporter's own operational metrics
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
+
+/// Configuration for the exporter's self-telemetry
+#[derive(Debug, Deserialize, Clone)]
+pub struct TelemetryConfig {
+    /// Metrics reporting interval (default: "1s"). Accepts human-readable durations like "1s", "500ms", "5m".
+    #[serde(default = "default_metrics_report_interval", with = "humantime_serde")]
+    pub metrics_report_interval: Duration,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            metrics_report_interval: default_metrics_report_interval(),
+        }
+    }
+}
+
+fn default_metrics_report_interval() -> Duration {
+    Duration::from_secs(1)
+}
+
+const MIN_METRICS_REPORT_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_METRICS_REPORT_INTERVAL: Duration = Duration::from_secs(300);
 
 /// Authentication method for Azure
 #[derive(Debug, Deserialize, Clone, PartialEq, Default)]
@@ -125,6 +153,20 @@ impl Config {
 
         self.validate_schema_unique_columns()?;
 
+        // Validate telemetry configuration
+        if self.telemetry.metrics_report_interval < MIN_METRICS_REPORT_INTERVAL {
+            return Err(Error::Config(format!(
+                "Invalid configuration: telemetry.metrics_report_interval must be at least {}ms",
+                MIN_METRICS_REPORT_INTERVAL.as_millis()
+            )));
+        }
+        if self.telemetry.metrics_report_interval > MAX_METRICS_REPORT_INTERVAL {
+            return Err(Error::Config(format!(
+                "Invalid configuration: telemetry.metrics_report_interval must be at most {}s",
+                MAX_METRICS_REPORT_INTERVAL.as_secs()
+            )));
+        }
+
         Ok(())
     }
 
@@ -199,6 +241,7 @@ mod tests {
                 client_id: Some("myclientid".to_string()),
                 method: AuthMethod::ManagedIdentity,
             },
+            telemetry: TelemetryConfig::default(),
         };
 
         assert!(config.validate().is_ok());
@@ -214,6 +257,7 @@ mod tests {
                 schema: SchemaConfig::default(),
             },
             auth: AuthConfig::default(),
+            telemetry: TelemetryConfig::default(),
         };
 
         let result = config.validate();
@@ -242,6 +286,7 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
+            telemetry: TelemetryConfig::default(),
         };
 
         let result = config.validate();
@@ -282,6 +327,7 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
+            telemetry: TelemetryConfig::default(),
         };
 
         let result = config.validate();
@@ -311,6 +357,7 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
+            telemetry: TelemetryConfig::default(),
         };
 
         let result = config.validate();
@@ -319,5 +366,60 @@ mod tests {
             result.unwrap_err().to_string(),
             "Configuration error: Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed"
         );
+    }
+
+    /// Helper to create a valid config with a custom telemetry config.
+    fn config_with_telemetry(telemetry: TelemetryConfig) -> Config {
+        Config {
+            api: ApiConfig {
+                dcr_endpoint: "https://example.com".to_string(),
+                stream_name: "mystream".to_string(),
+                dcr: "mydcr".to_string(),
+                schema: SchemaConfig::default(),
+            },
+            auth: AuthConfig::default(),
+            telemetry,
+        }
+    }
+
+    #[test]
+    fn test_telemetry_interval_too_short() {
+        let config = config_with_telemetry(TelemetryConfig {
+            metrics_report_interval: Duration::from_millis(50),
+        });
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: telemetry.metrics_report_interval must be at least 100ms"
+        );
+    }
+
+    #[test]
+    fn test_telemetry_interval_too_long() {
+        let config = config_with_telemetry(TelemetryConfig {
+            metrics_report_interval: Duration::from_secs(600),
+        });
+        let result = config.validate();
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Configuration error: Invalid configuration: telemetry.metrics_report_interval must be at most 300s"
+        );
+    }
+
+    #[test]
+    fn test_telemetry_interval_at_boundaries() {
+        // Exactly at min
+        let config = config_with_telemetry(TelemetryConfig {
+            metrics_report_interval: Duration::from_millis(100),
+        });
+        assert!(config.validate().is_ok());
+
+        // Exactly at max
+        let config = config_with_telemetry(TelemetryConfig {
+            metrics_report_interval: Duration::from_secs(300),
+        });
+        assert!(config.validate().is_ok());
     }
 }

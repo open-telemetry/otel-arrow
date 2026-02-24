@@ -6,7 +6,7 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
@@ -76,7 +76,7 @@ impl Auth {
 
             match self.get_token_internal().await {
                 Ok(token) => {
-                    otel_info!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
+                    otel_debug!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
                     let mut m = self.metrics.borrow_mut();
                     m.add_auth_latency(start.elapsed().as_millis() as f64);
                     m.add_auth_success();
@@ -84,6 +84,7 @@ impl Auth {
                 }
                 Err(e) => {
                     otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
+                    self.metrics.borrow_mut().add_auth_failure();
                 }
             }
 

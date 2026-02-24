@@ -39,7 +39,6 @@ use std::rc::Rc;
 
 const MAX_IN_FLIGHT_EXPORTS: usize = 16;
 const PERIODIC_EXPORT_INTERVAL: u64 = 3;
-const STATS_PRINT_INTERVAL: u64 = 3;
 const HEARTBEAT_INTERVAL_SECONDS: u64 = 60;
 /// Minimum interval between token refresh attempts (10 seconds).
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
@@ -61,8 +60,6 @@ pub struct AzureMonitorExporter {
     heartbeat: Heartbeat,
 }
 
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 impl AzureMonitorExporter {
     /// Build a new exporter from configuration.
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Result<Self, Error> {
@@ -97,6 +94,16 @@ impl AzureMonitorExporter {
             last_batch_queued_at: tokio::time::Instant::now(),
             heartbeat,
         })
+    }
+
+    /// Update all gauges (in-flight exports + state map sizes).
+    #[inline]
+    fn sync_gauges(&self) {
+        let mut m = self.metrics.borrow_mut();
+        m.set_in_flight_exports(self.in_flight_exports.len() as u64);
+        m.set_batch_to_msg_count(self.state.batch_to_msg.len() as u64);
+        m.set_msg_to_batch_count(self.state.msg_to_batch.len() as u64);
+        m.set_msg_to_data_count(self.state.msg_to_data.len() as u64);
     }
 
     async fn finalize_export(
@@ -433,8 +440,6 @@ impl AzureMonitorExporter {
 }
 
 #[async_trait(?Send)]
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 impl Exporter<OtapPdata> for AzureMonitorExporter {
     async fn start(
         mut self: Box<Self>,
@@ -467,9 +472,17 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
             })?;
 
+        // Start periodic telemetry collection (every 1 second)
+        _ = effect_handler
+            .start_periodic_telemetry(
+                self.config.telemetry.metrics_report_interval,
+            )
+            .await
+            .map_err(|e| EngineError::InternalError {
+                message: format!("Failed to start telemetry timer: {e}"),
+            })?;
+
         let mut next_token_refresh = tokio::time::Instant::now();
-        let mut next_stats_print =
-            tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
         let mut next_periodic_export = tokio::time::Instant::now()
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
@@ -539,9 +552,36 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                     }
                 }
 
-                msg = msg_chan.recv(), if !at_capacity => {
+                msg = msg_chan.recv() => {
                     match msg {
                         Ok(Message::Control(NodeControlMsg::CollectTelemetry { mut metrics_reporter })) => {
+                            self.sync_gauges();
+                            if tracing::enabled!(tracing::Level::DEBUG) {
+                                let m = self.metrics.borrow();
+                                let cl = m.client_latency();
+                                let al = m.auth_latency();
+                                let bs = m.batch_size();
+                                otel_debug!(
+                                    "azure_monitor_exporter.metrics.collect",
+                                    successful_rows = m.successful_row_count(),
+                                    successful_batches = m.successful_batch_count(),
+                                    successful_messages = m.successful_msg_count(),
+                                    failed_rows = m.failed_row_count(),
+                                    failed_batches = m.failed_batch_count(),
+                                    failed_messages = m.failed_msg_count(),
+                                    client_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
+                                    client_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
+                                    client_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
+                                    client_latency_count = cl.count,
+                                    auth_latency_avg_ms = if al.count > 0 { al.sum / al.count as f64 } else { 0.0 },
+                                    auth_latency_count = al.count,
+                                    batch_size_avg_bytes = if bs.count > 0 { bs.sum / bs.count as f64 } else { 0.0 },
+                                    batch_size_min_bytes = if bs.count > 0 { bs.min } else { 0.0 },
+                                    batch_size_max_bytes = if bs.count > 0 { bs.max } else { 0.0 },
+                                    batch_size_count = bs.count,
+                                    in_flight = self.in_flight_exports.len()
+                                );
+                            }
                             let _ = self.metrics.borrow_mut().report(&mut metrics_reporter);
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
@@ -557,46 +597,6 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         }
                     }
                 }
-
-                _ = tokio::time::sleep_until(next_stats_print) => {
-                    next_stats_print = tokio::time::Instant::now() + tokio::time::Duration::from_secs(STATS_PRINT_INTERVAL);
-
-                    let m = self.metrics.borrow();
-                    let client_lat = m.client_latency();
-                    let auth_lat = m.auth_latency();
-                    let client_avg = if client_lat.count > 0 { client_lat.sum / client_lat.count as f64 } else { 0.0 };
-                    let auth_avg = if auth_lat.count > 0 { auth_lat.sum / auth_lat.count as f64 } else { 0.0 };
-
-                    println!(
-                        "\n\
-─────────────── AzureMonitorExporter ──────────────────────────
-client  │ avg={:.2}ms  min={:.2}ms  max={:.2}ms  n={}
-auth    │ avg={:.2}ms  min={:.2}ms  max={:.2}ms  n={}
-success │ rows={}  batches={}  msgs={}
-fail    │ rows={}  batches={}  msgs={}
-state   | batch_to_msg={}  msg_to_batch={}  msg_to_data={}
-exports | in_flight={}
-───────────────────────────────────────────────────────────────\n",
-                        client_avg,
-                        if client_lat.count > 0 { client_lat.min } else { 0.0 },
-                        if client_lat.count > 0 { client_lat.max } else { 0.0 },
-                        client_lat.count,
-                        auth_avg,
-                        if auth_lat.count > 0 { auth_lat.min } else { 0.0 },
-                        if auth_lat.count > 0 { auth_lat.max } else { 0.0 },
-                        auth_lat.count,
-                        m.successful_row_count(),
-                        m.successful_batch_count(),
-                        m.successful_msg_count(),
-                        m.failed_row_count(),
-                        m.failed_batch_count(),
-                        m.failed_msg_count(),
-                        self.state.batch_to_msg.len(),
-                        self.state.msg_to_batch.len(),
-                        self.state.msg_to_data.len(),
-                        self.in_flight_exports.len(),
-                    );
-                }
             }
         }
     }
@@ -604,7 +604,7 @@ exports | in_flight={}
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
+    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig, TelemetryConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
@@ -636,6 +636,7 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
+            telemetry: TelemetryConfig::default(),
         }
     }
 

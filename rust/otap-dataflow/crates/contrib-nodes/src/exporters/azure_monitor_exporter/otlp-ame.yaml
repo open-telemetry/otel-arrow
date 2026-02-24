@@ -57,9 +57,18 @@ groups:
                     "severity_text": "SeverityText"
                     "severity_number": "SeverityNumber"
                     "time_unix_nano": "TimeGenerated"
-                    "attributes": "Properties"
                     "trace_id": "TraceId"
                     "span_id": "SpanId"
+                    # Attribute mappings: map individual log record attributes
+                    # to dedicated DCR columns. Each key is an OTel attribute
+                    # name; each value is the destination column in your DCR.
+                    "attributes":
+                      "http.method": "HttpMethod"
+                      "http.status_code": "HttpStatusCode"
+                      "http.url": "HttpUrl"
+                      "exception.type": "ExceptionType"
+                      "exception.message": "ExceptionMessage"
+                      "user.id": "UserId"
 
               # Authentication configuration for AKS
               auth:
@@ -75,6 +84,13 @@ groups:
 
                 # OAuth scope for Azure Monitor
                 scope: "https://monitor.azure.com/.default"
+
+              # Self-telemetry configuration (optional, all fields have defaults)
+              telemetry:
+                # How often to report the exporter's own operational metrics.
+                # Accepts human-readable durations: "500ms", "1s", "5s", "1m", etc.
+                # Min: 100ms, Max: 5m, Default: 1s
+                metrics_report_interval: "1s"
 
         connections:
           - from: otlp-receiver
