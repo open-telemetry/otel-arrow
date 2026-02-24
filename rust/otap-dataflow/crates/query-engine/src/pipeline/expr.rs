@@ -99,7 +99,9 @@ use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
-use otap_df_pdata::arrays::get_required_array;
+use otap_df_pdata::arrays::{
+    get_optional_array_from_struct_array_from_record_batch, get_required_array,
+};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
@@ -453,10 +455,14 @@ struct PhysicalDomainExpr {
     child: Option<Box<PhysicalDomainExpr>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct PhysicalExprEvalResult {
     values: ColumnarValue,
     ids: Option<ArrayRef>,
     parent_ids: Option<ArrayRef>,
+
+    scope_ids: Option<ArrayRef>,
+    resource_ids: Option<ArrayRef>,
 }
 
 impl PhysicalDomainExpr {
@@ -505,20 +511,10 @@ impl PhysicalDomainExpr {
         include_ids: bool,
     ) -> Result<Option<PhysicalExprEvalResult>> {
         // Step 1: Get the input RecordBatch based on the data domain
-        let mut input_rb = match &self.data_domain {
+        let source_rb = match &self.data_domain {
             // TODO - how we're projecting here doesn't seem right ...
             DataDomainId::Root => otap_batch.root_record_batch().cloned(), // TODO Cow not clone
-            // .map(|rb| {
-            //     // Project to only the columns needed by this expression
-            //     // TODO: Handle case where projection fails (missing columns)
-            //     let rb = self.projection.project_with_options(rb, &self.projection_opts);
 
-            //     // TODO need to stick the ID column back onto this thing if there's
-            //     // a child to execute b/c we'll need to join it
-
-            //     rb
-            // })
-            // .flatten(),
             DataDomainId::Attributes(attrs_id, key) => {
                 // Get the appropriate attributes batch based on AttributesIdentifier
                 let attrs_payload_type = match *attrs_id {
@@ -544,7 +540,7 @@ impl PhysicalDomainExpr {
             }
         };
 
-        let mut input_rb = match input_rb {
+        let source_rb = match source_rb {
             Some(input_rb) => input_rb,
             None => {
                 todo!()
@@ -556,33 +552,27 @@ impl PhysicalDomainExpr {
         println!("projection = {:?}", self.projection);
         println!("expr = {:?}", self.logical_expr);
         println!("physical_expr = {:?}", self.physical_expr);
-        arrow::util::pretty::print_batches(&[input_rb.clone()]).unwrap();
+        arrow::util::pretty::print_batches(&[source_rb.clone()]).unwrap();
         // println!("input rb = {:?}", input_rb);
 
         // TODO there's somewhere else we need to apply projection here ....
 
         // Step 2: Recursively execute child expression if present & join to parent
-        if let Some(child) = &mut self.child {
+        let input_rb = if let Some(child) = &mut self.child {
             let child_exec_result = child.execute(otap_batch, session_context, true)?;
             match child_exec_result {
                 Some(child_exec_result) => {
-                    input_rb = join(
-                        &input_rb,
+                    let joined_rb = join(
+                        &source_rb,
                         &self.data_domain,
                         &child_exec_result,
                         &child.data_domain,
                     )?;
 
                     // TODO no unwrap
-                    input_rb = self
-                        .projection
-                        .project_with_options(&input_rb, &self.projection_opts)
-                        .unwrap();
-
-                    println!(
-                        "implementing Some(input), Some(child): {:?}",
-                        self.physical_expr
-                    );
+                    self.projection
+                        .project_with_options(&joined_rb, &self.projection_opts)
+                        .unwrap()
                 }
                 None => {
                     todo!()
@@ -591,9 +581,12 @@ impl PhysicalDomainExpr {
         } else {
             if self.data_domain == DataDomainId::Root {
                 // TODO no unwrap
-                input_rb = self.projection.project(&input_rb).unwrap()
+                self.projection.project(&source_rb).unwrap()
+            } else {
+                // TODO Cow not clone
+                source_rb.clone()
             }
-        }
+        };
 
         // Step 3: Lazily create the physical expression if not already cached.
         // We need the actual batch schema to convert logical Expr -> PhysicalExpr.
@@ -616,16 +609,40 @@ impl PhysicalDomainExpr {
         // TODO - should we cast back to a dict here if the originals were dicts or
         // if the source allows it ...
 
+        // TODO this'd be cleaner as a constructor
         let mut result = PhysicalExprEvalResult {
             values: self.physical_expr.as_ref().unwrap().evaluate(&input_rb)?,
             ids: None,
             parent_ids: None,
+            scope_ids: None,
+            resource_ids: None,
         };
+
+        // TODO -- need to coerce values back into the dict type?
 
         // TODO test this is returned
         if include_ids {
-            result.ids = input_rb.column_by_name(consts::ID).cloned();
-            result.parent_ids = input_rb.column_by_name(consts::PARENT_ID).cloned();
+            result.ids = source_rb.column_by_name(consts::ID).cloned();
+            result.parent_ids = source_rb.column_by_name(consts::PARENT_ID).cloned();
+
+            // TODO - having these IDs tacked onto everything is kind of hokey .. we might be able
+            // to just put original OTAP batch in and do a 2 way join? I guess that'd be slower
+            if self.data_domain == DataDomainId::Root {
+                result.scope_ids = get_optional_array_from_struct_array_from_record_batch(
+                    &source_rb,
+                    consts::SCOPE,
+                    consts::ID,
+                )
+                .unwrap()
+                .cloned();
+                result.resource_ids = get_optional_array_from_struct_array_from_record_batch(
+                    &source_rb,
+                    consts::SCOPE,
+                    consts::ID,
+                )
+                .unwrap()
+                .cloned();
+            }
         }
         Ok(Some(result))
     }
@@ -850,7 +867,7 @@ mod test {
     use datafusion::physical_expr::expressions::Literal;
     use datafusion::scalar::ScalarValue;
     // TODO ugly import
-    use crate::consts::{ATTRIBUTES_FIELD_NAME, SCOPE_FIELD_NAME};
+    use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
     use crate::pipeline::{Pipeline, project::Projection};
     use otap_df_pdata::{
         otap::Logs,
@@ -858,6 +875,7 @@ mod test {
             OtlpProtoMessage,
             opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue},
             opentelemetry::logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+            opentelemetry::resource::v1::Resource,
         },
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
@@ -1407,6 +1425,302 @@ mod test {
         // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_attribute_to_root() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .severity_number(10)
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                    KeyValue::new("k1", AnyValue::new_int(9)),
+                ])
+                .severity_number(20)
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                ])
+                .severity_text("DEBUG")
+                .severity_number(30)
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
+        let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_root_to_nonroot_attrs() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build().severity_number(3).finish(),
+                        LogRecord::build().severity_number(5).finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![LogRecord::build().severity_number(7).finish()],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_nonroot_attrs_to_root() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build().severity_number(3).finish(),
+                        LogRecord::build().severity_number(5).finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![LogRecord::build().severity_number(7).finish()],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
 
         // Should successfully evaluate
         // assert!(result.is_ok());

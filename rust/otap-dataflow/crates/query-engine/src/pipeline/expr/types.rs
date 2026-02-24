@@ -30,7 +30,20 @@ pub fn coerce_arithmetic(
 ) -> ExprLogicalType {
     match left.expr_type {
         ExprLogicalType::AnyValue => match right.expr_type {
+            // just assume we're adding either int64 or float64
             ExprLogicalType::AnyValue => ExprLogicalType::AnyValueNumberic,
+
+            // TODO - should this be any int that gets coerced?
+            ExprLogicalType::UInt32 => {
+                left.expr_type = ExprLogicalType::Int64;
+
+                // assume coerce to int64
+                right.logical_expr = cast(right.logical_expr.clone(), DataType::Int64);
+                right.expr_type = ExprLogicalType::Int64;
+
+                ExprLogicalType::Int64
+            }
+
             _ => {
                 todo!()
             }
