@@ -100,6 +100,7 @@ pub fn is_one_to_many(
 ) -> bool {
     match (left_attrs_id, right_attrs_id) {
         (AttributesIdentifier::Root, _) => false,
+        (AttributesIdentifier::NonRoot(_), AttributesIdentifier::Root) => true,
         _ => {
             todo!()
         }
@@ -125,7 +126,12 @@ pub fn join(
                 Ok((join_result, left_domain.clone()))
             } else {
                 if is_one_to_many(left_attrs_id, right_attrs_id) {
-                    todo!()
+                    let join_exec = AttributeToDifferentAttributeReverseJoin {
+                        left: left_attrs_id.clone(),
+                        right: right_attrs_id.clone(),
+                    };
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, right_domain.clone()))
                 } else {
                     let join_exec = AttributeToDifferentAttributeJoin {
                         left: left_attrs_id.clone(),
@@ -366,6 +372,8 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         });
         let to_take = to_take.finish();
 
+        // TODO - rename
+        // TODO - preallocate
         let mut new_fields = Vec::new();
         let mut new_columns = Vec::new();
 
@@ -432,7 +440,7 @@ impl JoinExec for AttributeToSameAttributeJoin {
         &self,
         left: &RecordBatch,
         right: &PhysicalExprEvalResult,
-        otap_batch: &OtapArrowRecords,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         // build the right join table
 
@@ -581,5 +589,102 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap(); // TODO no unwrap
 
         Ok(insert_joined_column(left, joined_arr))
+    }
+}
+
+struct AttributeToDifferentAttributeReverseJoin {
+    left: AttributesIdentifier,
+    right: AttributesIdentifier,
+}
+
+impl JoinExec for AttributeToDifferentAttributeReverseJoin {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // TODO these comments are copied from somewhere else so might not be super relevant
+        // Two-hop join through root batch
+        // Example: scope.attributes["x"] + resource.attributes["y"]
+        // Path: left.parent_id (scope id) -> log.scope.id -> log.resource.id -> right.parent_id (resource id)
+
+        let left_parent_ids = left
+            .column_by_name(consts::PARENT_ID)
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return error if unexpected type
+        let left_lookup = IdJoinLookup::new(left_parent_ids.values());
+
+        // Step 2: Get root batch and extract the id columns we need
+        let root_batch = otap_batch.root_record_batch().unwrap(); // TODO no unwrap - return error
+
+        // Step 3: Get the left and right id columns from root batch based on attribute identifiers
+        // TODO not sure I love the method name here ...
+        let left_root_col = get_attrs_id_values(root_batch, &self.left);
+        let right_root_col = get_attrs_id_values(root_batch, &self.right);
+
+        // // Step 4: Build mapping from left id -> right id using root batch as bridge
+        // // Collect right_ids indexed by position, then build IdJoinLookup with left_ids
+        let inter_join_lookup = IdJoinLookup::new(right_root_col.values());
+
+        // Step 5: For each left row, find corresponding right row
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return err if unexpected type
+
+        let mut to_take = Int32Array::builder(left_parent_ids.len());
+
+        right_parent_ids.iter().for_each(|right_parent_id_opt| {
+            // TODO - could be re-written in a way where there's not so much crappy null handling
+            // TODO - we should have unit tests covering all these append_null cases
+            if let Some(right_parent_id) = right_parent_id_opt {
+                if let Some(root_index) = inter_join_lookup.lookup(right_parent_id) {
+                    if left_root_col.is_valid(root_index) {
+                        let left_id = left_root_col.value(root_index);
+                        if let Some(left_index) = left_lookup.lookup(left_id) {
+                            to_take.append_value(left_index as i32);
+                        } else {
+                            to_take.append_null();
+                        }
+                    } else {
+                        to_take.append_null();
+                    }
+                } else {
+                    to_take.append_null();
+                }
+            } else {
+                to_take.append_null();
+            }
+        });
+        let to_take = to_take.finish();
+
+        let mut fields = Vec::with_capacity(3);
+        let mut columns = Vec::with_capacity(3);
+
+        fields.push(Field::new(consts::PARENT_ID, DataType::UInt16, false));
+        columns.push(right.parent_ids.as_ref().unwrap().clone());
+
+        let joined_vals = take(left.column_by_name("value").unwrap(), &to_take, None).unwrap();
+        fields.push(Field::new("value", joined_vals.data_type().clone(), true));
+        columns.push(joined_vals);
+
+        // TODO have a match, assert right.values is an array, and use the array instead of
+        // callling to_array wiht a random length (which will be ignored b/c we should know
+        // that this is an array at this point)
+        let child_col = right.values.to_array(100).unwrap();
+        fields.push(Field::new(
+            CHILD_COLUMN_NAME,
+            child_col.data_type().clone(),
+            true,
+        ));
+        columns.push(child_col);
+
+        Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
     }
 }
