@@ -271,7 +271,7 @@ impl AssignmentLogicalPlanner {
                         requires_dict_downcast: false,
 
                         // TODO - we should be able to resolve this from schema?
-                        expr_type: ExprLogicalType::UInt32,
+                        expr_type: ExprLogicalType::Int32,
                     }),
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
                         Ok(LogicalDomainExpr {
@@ -319,7 +319,7 @@ impl AssignmentLogicalPlanner {
                 use data_engine_expressions::StaticScalarExpression as SSE;
 
                 let (logical_expr, expr_type) = match static_scalar_expr {
-                    SSE::Integer(int_expr) => (lit(int_expr.get_value()), ExprLogicalType::Int64),
+                    SSE::Integer(int_expr) => (lit(int_expr.get_value()), ExprLogicalType::ScalarInt),
                     SSE::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)
                     }
@@ -359,13 +359,12 @@ impl AssignmentLogicalPlanner {
                     let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
                     let mut right =
                         self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
-
                     let expr_type = coerce_arithmetic(&mut left, &mut right);
 
                     // Check if both sides operate on compatible domains
                     if left.data_domain.can_combine(&right.data_domain) {
                         // Same domain or one is scalar - can combine into single expression
-                        let data_domain = if left.data_domain.is_scalar() {
+                        let data_domain = if !left.data_domain.is_scalar() {
                             left.data_domain
                         } else {
                             right.data_domain
@@ -587,7 +586,7 @@ impl PhysicalDomainExpr {
             if self.source_data_domain == DataDomainId::Root {
                 // TODO no unwrap
                 (
-                    self.projection.project(&source_rb).unwrap(),
+                    self.projection.project_with_options(&source_rb, &self.projection_opts).unwrap(),
                     // TODO - find a way to avoid the clone here ... (Rc?)
                     self.source_data_domain.clone(),
                 )
@@ -1261,6 +1260,70 @@ mod test {
 
         // Should successfully evaluate
         assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_column_to_scalar() {
+        let mut planner = AssignmentLogicalPlanner {};
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().severity_number(10).finish(),
+            LogRecord::build()
+                .severity_number(30)
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .severity_number(20)
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
+
+        // Should successfully evaluate
         let columnar_value = result.unwrap();
         assert!(columnar_value.is_some());
 

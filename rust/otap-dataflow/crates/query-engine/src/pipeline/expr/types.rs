@@ -18,6 +18,9 @@ pub enum ExprLogicalType {
     Int64,
     UInt32,
 
+    // TODO comment on what this is
+    ScalarInt,
+
     String,
     // TODO the rest
     // TODO - null?
@@ -34,7 +37,7 @@ pub fn coerce_arithmetic(
             ExprLogicalType::AnyValue => ExprLogicalType::AnyValueNumberic,
 
             // TODO - should this be any int that gets coerced?
-            ExprLogicalType::UInt32 => {
+            ExprLogicalType::Int32 => {
                 left.expr_type = ExprLogicalType::Int64;
 
                 // assume coerce to int64
@@ -49,7 +52,7 @@ pub fn coerce_arithmetic(
             }
         },
         // TODO this can probably be ExprLogicalType::UInt32 | ExprLogicalType::UInt64 ... etc.
-        ExprLogicalType::UInt32 => {
+        ExprLogicalType::Int32 => {
             match right.expr_type {
                 // TODO this can probably be ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic
                 ExprLogicalType::AnyValue => {
@@ -63,6 +66,14 @@ pub fn coerce_arithmetic(
                     // blow up at runtime if the type isn't int64 I guess ...
 
                     ExprLogicalType::Int64
+                }
+                ExprLogicalType::ScalarInt => {
+                    // TODO - we gotta check the value and see if it'll overflow or underflow
+                    // or at least test this ...
+                    right.logical_expr = cast(right.logical_expr.clone(), DataType::Int32);
+                    right.expr_type = ExprLogicalType::UInt32;
+
+                    ExprLogicalType::UInt32
                 }
                 _ => {
                     todo!()
