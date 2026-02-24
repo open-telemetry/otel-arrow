@@ -22,10 +22,12 @@ if [ $# -ge 1 ]; then
     BINARY="$1"
 else
     echo "Building df_engine with all component features..."
-    cargo build --release \
-        --features experimental-tls,contrib-exporters,contrib-processors,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor,azure,aws \
+    # Note: --all-features cannot be used because jemalloc and mimalloc are
+    # mutually exclusive (compile_error! in non-test builds).
+    cargo build \
+        --features azure,aws,experimental-tls,contrib-exporters,contrib-processors,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor \
         --manifest-path "$REPO_ROOT/Cargo.toml"
-    BINARY="$REPO_ROOT/target/release/df_engine"
+    BINARY="$REPO_ROOT/target/debug/df_engine"
 fi
 
 if [ ! -x "$BINARY" ]; then
