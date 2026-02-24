@@ -1,24 +1,32 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
 
-nodes:
-  receiver:
-    type: otlp:receiver
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4318"
-  perf:
-    type: perf:exporter
-    config:
-      frequency: 1000
-      cpu_usage: false
-      mem_usage: false
-      disk_usage: false
-      io_usage: false
+        nodes:
+          receiver:
+            type: otlp:receiver
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4318"
+          perf:
+            type: perf:exporter
+            config:
+              frequency: 1000
+              cpu_usage: false
+              mem_usage: false
+              disk_usage: false
+              io_usage: false
 
-connections:
-  - from: receiver
-    to: perf
+        connections:
+          - from: receiver
+            to: perf

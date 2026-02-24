@@ -21,7 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Policy controlling health checks for a pipeline instance.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HealthPolicy {
     /// Phases in which the system is considered alive.
     #[serde(default = "default_live_if")]

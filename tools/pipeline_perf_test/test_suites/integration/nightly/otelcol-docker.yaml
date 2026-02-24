@@ -20,7 +20,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
           - "--core-id-range"
           - "2-2"
@@ -45,10 +45,10 @@ components:
         command:
           - "--config"
           - "/tmp/config.yaml"
-        cpuset: "3"
+        cpuset: "3-3"
     monitoring:
       docker_component:
-        allocated_cores: 1  # Matches cpuset: 3
+        allocated_cores: 1  # Matches cpuset: 3-3
       prometheus:
         endpoint: http://localhost:8086/metrics
   backend-service:
@@ -61,7 +61,7 @@ components:
         volumes:
           - 'test_suites/integration/configs/backend/config.rendered.yaml:/home/dataflow/config.yaml:ro'
         command:
-          - "--pipeline"
+          - "--config"
           - "./config.yaml"
           - "--core-id-range"
           - "1-1"

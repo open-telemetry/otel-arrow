@@ -1,20 +1,5 @@
 {
-  "settings": {
-    "default_node_ctrl_msg_channel_size": 100,
-    "default_pipeline_ctrl_msg_channel_size": 100,
-    "default_pdata_channel_size": 100
-  },
-  "nodes": {
-    "receiver1": {
-      "type": "urn:test:example:receiver",
-      "config": null
-    },
-    "exporter1": {
-      "type": "urn:test:example:exporter",
-      "config": null
-    }
-  },
-  "service": {
+  "engine": {
     "telemetry": {
       "reporting_interval": "5s",
       "metrics": {
@@ -45,6 +30,25 @@
         "service.version": "1.0.0",
         "instance.id": 10
       }
+    }
+  },
+  "policies": {
+    "channel_capacity": {
+      "control": {
+        "node": 100,
+        "pipeline": 100
+      },
+      "pdata": 128
+    }
+  },
+  "nodes": {
+    "receiver1": {
+      "type": "urn:test:example:receiver",
+      "config": null
+    },
+    "exporter1": {
+      "type": "urn:test:example:exporter",
+      "config": null
     }
   }
 }

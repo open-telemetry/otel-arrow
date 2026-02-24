@@ -1,12 +1,19 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use data_engine_kql_parser::*;
+use std::fmt::Display;
 
-#[derive(Debug, Clone, PartialEq)]
+use data_engine_expressions::PipelineExpression;
+use data_engine_kql_parser::*;
+use data_engine_recordset::{RecordSetEngineDiagnostic, RecordSetEngineRecord, format_diagnostics};
+
+use crate::LogRecord;
+
+#[derive(Debug, Clone)]
 pub struct BridgeOptions {
     attributes_schema: Option<ParserMapSchema>,
     include_dropped_records: bool,
+    diagnostic_options: BridgeDiagnosticOptions,
 }
 
 impl Default for BridgeOptions {
@@ -20,6 +27,9 @@ impl BridgeOptions {
         Self {
             attributes_schema: None,
             include_dropped_records: true,
+            diagnostic_options: BridgeDiagnosticOptions::AddAttribute {
+                attribute_name: "query_engine.output".into(),
+            },
         }
     }
 
@@ -63,6 +73,14 @@ impl BridgeOptions {
         self
     }
 
+    pub fn set_diagnostic_options(
+        mut self,
+        diagnostic_options: BridgeDiagnosticOptions,
+    ) -> BridgeOptions {
+        self.diagnostic_options = diagnostic_options;
+        self
+    }
+
     pub fn get_attributes_schema(&self) -> Option<&ParserMapSchema> {
         self.attributes_schema.as_ref()
     }
@@ -71,8 +89,70 @@ impl BridgeOptions {
         self.include_dropped_records
     }
 
+    pub fn get_diagnostic_options(&self) -> &BridgeDiagnosticOptions {
+        &self.diagnostic_options
+    }
+
     pub fn take_attributes_schema(&mut self) -> Option<ParserMapSchema> {
         self.attributes_schema.take()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum BridgeDiagnosticOptions {
+    AddAttribute { attribute_name: Box<str> },
+    Callback(fn(BridgeLogRecordDiagnostics)),
+}
+
+pub struct BridgeLogRecordDiagnostics<'a, 'b> {
+    pipeline: &'a PipelineExpression,
+    log_record: &'b LogRecord,
+    diagnostics: &'b [RecordSetEngineDiagnostic<'a>],
+}
+
+impl<'a, 'b> BridgeLogRecordDiagnostics<'a, 'b> {
+    pub(crate) fn new(
+        pipeline: &'a PipelineExpression,
+        log_record: &'b LogRecord,
+        diagnostics: &'b [RecordSetEngineDiagnostic<'a>],
+    ) -> BridgeLogRecordDiagnostics<'a, 'b> {
+        Self {
+            pipeline,
+            log_record,
+            diagnostics,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.diagnostics.is_empty()
+    }
+
+    pub fn get_pipeline(&self) -> &'a PipelineExpression {
+        self.pipeline
+    }
+
+    pub fn get_log_record(&self) -> &LogRecord {
+        self.log_record
+    }
+
+    pub fn get_diagnostics(&self) -> &[RecordSetEngineDiagnostic<'a>] {
+        self.diagnostics
+    }
+}
+
+impl Display for BridgeLogRecordDiagnostics<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        format_diagnostics(self.pipeline.get_query(), self.diagnostics, f)
+    }
+}
+
+impl<'a, 'b> From<&'b RecordSetEngineRecord<'a, LogRecord>> for BridgeLogRecordDiagnostics<'a, 'b> {
+    fn from(value: &'b RecordSetEngineRecord<'a, LogRecord>) -> Self {
+        BridgeLogRecordDiagnostics::new(
+            value.get_pipeline(),
+            value.get_record(),
+            value.get_diagnostics(),
+        )
     }
 }
 
@@ -200,7 +280,10 @@ mod tests {
         let run_test = |json: &str, expected: BridgeOptions| {
             let actual = BridgeOptions::from_json(json).unwrap();
 
-            assert_eq!(expected, actual);
+            assert_eq!(
+                expected.get_attributes_schema(),
+                actual.get_attributes_schema()
+            );
         };
 
         run_test(
@@ -288,7 +371,10 @@ mod tests {
         let run_test = |json: &str, expected: BridgeOptions| {
             let actual = BridgeOptions::from_json(json).unwrap();
 
-            assert_eq!(expected, actual);
+            assert_eq!(
+                expected.get_attributes_schema(),
+                actual.get_attributes_schema()
+            );
         };
 
         run_test(

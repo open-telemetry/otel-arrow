@@ -81,7 +81,7 @@ mod tests {
                     .expect("failed to read pipeline yaml")
             )
             .add_generator("input",Generator::logs().fixed_count(500).otlp_grpc("receiver"))
-            .add_capture("output", Capture::default().otap_grpc("exporter").validate(vec![deny, require]))
+            .add_capture("output", Capture::default().otlp_grpc("exporter").validate(vec![deny, require]))
             .expect_within(Duration::from_secs(500))
             .run()
             .expect("attribute processor validation failed");

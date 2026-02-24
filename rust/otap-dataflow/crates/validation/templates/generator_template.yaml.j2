@@ -16,13 +16,13 @@
 {% set generator_core_start = generator_core_start | default(2) -%}
 {% set generator_core_end = generator_core_end | default(2) -%}
 traffic_gen{{ generator_index }}:
-  quota:
-    core_allocation:
-      type: core_set
-      set:
-        - type: CoreRange
-          start: {{ generator_core_start }}
-          end: {{ generator_core_end }}
+  policies:
+    resources:
+      core_allocation:
+        type: core_set
+        set:
+          - start: {{ generator_core_start }}
+            end: {{ generator_core_end }}
   nodes:
     receiver:
       type: traffic_generator:receiver
@@ -39,31 +39,31 @@ traffic_gen{{ generator_index }}:
       type: fanout_temp:processor
       outputs: 
         - "suv_port"
-        {% for _ in control_ports -%}
+{% for _ in control_ports %}
         - "control_port{{ loop.index }}"
-        {% endfor %}
+{% endfor %}
       config:
     suv_exporter:
       type: {{ suv_exporter_plugin_urn }}
       config:
         grpc_endpoint: http://127.0.0.1:{{ suv_port }}
-        {% if suv_exporter_type == "otap" -%}
+{% if suv_exporter_type == "otap" -%}
         compression_method: none
         arrow:
           payload_compression: none
-        {% endif %}
-    {% for control_port in control_ports -%}
+{% endif %}
+{% for control_port in control_ports %}
     control_exporter{{ loop.index }}:
       type: otlp:exporter
       config:
         grpc_endpoint: http://127.0.0.1:{{ control_port }}
-    {% endfor %}
+{% endfor %}
   connections:
   - from: receiver
     to: fanout
   - from: fanout["suv_port"]
     to: suv_exporter
-  {% for _ in control_ports -%}
+{% for _ in control_ports %}
   - from: fanout["control_port{{ loop.index }}"]
     to: control_exporter{{ loop.index }}
-  {% endfor %}
+{% endfor %}

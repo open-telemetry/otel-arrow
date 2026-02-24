@@ -10,50 +10,50 @@
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
 validate{{capture_index}}:
-  quota:
-    core_allocation:
-      type: core_set
-      set:
-        - type: CoreRange
-          start: {{ capture_core_start }}
-          end: {{ capture_core_end }}
+  policies:
+    resources:
+      core_allocation:
+        type: core_set
+        set:
+          - start: {{ capture_core_start }}
+            end: {{ capture_core_end }}
   nodes:
     suv_receiver:
       type: {{ suv_receiver_plugin_urn }}
       config:
-        {% if suv_receiver_type == "otlp" -%}
+{% if suv_receiver_type == "otlp" %}
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
             listening_addr: 127.0.0.1:{{ suv_port }}
-        {% endif -%}
-        {% if suv_receiver_type == "otap" -%}
+{% endif %}
+{% if suv_receiver_type == "otap" %}
         listening_addr: 127.0.0.1:{{ suv_port }}
         response_stream_channel_size: 256
-        {% endif -%}
-    {% for control_port in control_ports -%}
+{% endif %}
+{% for control_port in control_ports %}
     control_receiver{{ loop.index }}:
       type: otlp:receiver
       config:
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
             listening_addr: 127.0.0.1:{{ control_port }}
-    {% endfor %}
+{% endfor %}
     validation_exporter:
       type: validation:exporter
       config:
-      {% if control_ports| length > 0 -%}
+{% if control_ports| length > 0 %}
         control_inputs: 
-        {% for _ in control_ports -%}
+{% for _ in control_ports %}
           - control_receiver{{loop.index}}
-      {% endfor %}
-        {% endif %}
+{% endfor %}
+{% endif %}
         suv_input: suv_receiver
         validations:
 {{ validate | indent(10, true)}}
   connections:
   - from: suv_receiver
     to: validation_exporter
-  {% for _ in control_ports -%}
+{% for _ in control_ports %}
   - from: control_receiver{{ loop.index }}
     to: validation_exporter
-  {% endfor %}
+{% endfor %}

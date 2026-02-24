@@ -23,12 +23,9 @@ nodes:
           destination_key: "ios.app.state2"
           apply_to: ["signal"]
   exporter:
-    type: otap:exporter
+    type: otlp:exporter
     config:
       grpc_endpoint: http://127.0.0.1:4318
-      compression_method: none
-      arrow:
-        payload_compression: none
 connections:
   - from: receiver
     to: filter

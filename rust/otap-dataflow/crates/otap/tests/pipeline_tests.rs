@@ -12,6 +12,7 @@ use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{
     DispatchPolicy, PipelineConfig, PipelineConfigBuilder, PipelineType,
 };
+use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -36,7 +37,8 @@ fn test_telemetry_registries_cleanup() {
     let pipeline_id: PipelineId = "test-pipeline".into();
     let config = build_test_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
-    let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+    let telemetry_policy = TelemetryPolicy::default();
+    let channel_metrics_enabled = telemetry_policy.channel_metrics;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
@@ -57,17 +59,21 @@ fn test_telemetry_registries_cleanup() {
     );
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let channel_capacity_policy = ChannelCapacityPolicy::default();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx.clone(), config.clone(), None)
+        .build(
+            pipeline_ctx.clone(),
+            config.clone(),
+            channel_capacity_policy.clone(),
+            telemetry_policy,
+            None,
+        )
         .expect("failed to build runtime pipeline");
 
     assert_eq!(registry.entity_count(), expected_entities);
 
-    let (pipeline_ctrl_tx, pipeline_ctrl_rx) = pipeline_ctrl_msg_channel(
-        config
-            .pipeline_settings()
-            .default_pipeline_ctrl_msg_channel_size,
-    );
+    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
+        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -119,7 +125,8 @@ fn test_pipeline_fan_in_builds() {
     let pipeline_id: PipelineId = "fan-in-pipeline".into();
     let config = build_fan_in_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
-    let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+    let telemetry_policy = TelemetryPolicy::default();
+    let channel_metrics_enabled = telemetry_policy.channel_metrics;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
@@ -136,7 +143,13 @@ fn test_pipeline_fan_in_builds() {
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx, config, None)
+        .build(
+            pipeline_ctx,
+            config,
+            ChannelCapacityPolicy::default(),
+            telemetry_policy,
+            None,
+        )
         .expect("failed to build fan-in pipeline");
 
     assert_eq!(registry.entity_count(), expected_entities);
@@ -149,7 +162,8 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
     let config =
         build_mixed_receiver_pipeline_config(pipeline_group_id.clone(), pipeline_id.clone());
 
-    let channel_metrics_enabled = config.pipeline_settings().telemetry.channel_metrics;
+    let telemetry_policy = TelemetryPolicy::default();
+    let channel_metrics_enabled = telemetry_policy.channel_metrics;
     assert!(
         channel_metrics_enabled,
         "channel metrics should be enabled for this test"
@@ -166,7 +180,13 @@ fn test_pipeline_mixed_receivers_shared_channel_builds() {
 
     let _pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
     let _runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx, config, None)
+        .build(
+            pipeline_ctx,
+            config,
+            ChannelCapacityPolicy::default(),
+            telemetry_policy,
+            None,
+        )
         .expect("failed to build mixed receiver pipeline");
 
     assert_eq!(registry.entity_count(), expected_entities);

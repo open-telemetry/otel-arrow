@@ -52,8 +52,10 @@ use crate::tls_utils::build_tls_acceptor;
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsServerConfig;
 
+pub mod client_settings;
+
 /// OTLP protobuf content type
-const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
+pub(crate) const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 
 /// Settings for the OTLP/HTTP server.
 #[derive(Debug, Deserialize, Clone)]
@@ -321,11 +323,20 @@ fn internal_error() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
 }
 
+/// OTLP HTTP path for logs endpoint
+pub const LOGS_PATH: &str = "/v1/logs";
+
+/// OTLP HTTP path for metrics endpoint
+pub const METRICS_PATH: &str = "/v1/metrics";
+
+/// OTLP HTTP path for traces endpoint
+pub const TRACES_PATH: &str = "/v1/traces";
+
 fn map_path_to_signal(path: &str) -> Option<SignalType> {
     match path {
-        "/v1/logs" => Some(SignalType::Logs),
-        "/v1/metrics" => Some(SignalType::Metrics),
-        "/v1/traces" => Some(SignalType::Traces),
+        LOGS_PATH => Some(SignalType::Logs),
+        METRICS_PATH => Some(SignalType::Metrics),
+        TRACES_PATH => Some(SignalType::Traces),
         _ => None,
     }
 }
@@ -681,6 +692,7 @@ impl HttpHandler {
             } else {
                 None
             };
+
             if self
                 .effect_handler
                 .send_message_with_source_node(pdata)

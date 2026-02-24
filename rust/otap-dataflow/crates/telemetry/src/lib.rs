@@ -30,7 +30,7 @@ use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use otap_df_config::observed_state::SendPolicy;
-use otap_df_config::pipeline::service::telemetry::TelemetryConfig;
+use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
@@ -363,7 +363,7 @@ impl Default for InternalTelemetrySystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::pipeline::service::telemetry::{
+    use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
     };
     use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};

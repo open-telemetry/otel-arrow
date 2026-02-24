@@ -237,13 +237,8 @@ form of console logging (unlike the use of the `raw` provider mode, which
 is synchronous).
 
 ```yaml
-nodes:
-  # pipeline nodes
-
-internal:
-  # internal telemetry pipeline nodes
-
-service:
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: info
@@ -252,6 +247,14 @@ service:
         engine: console_async
         admin: console_direct
         internal: noop
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # pipeline nodes
+        connections:
+          # pipeline connections
 ```
 
 ## Internal Telemetry Receiver configuration
@@ -262,7 +265,8 @@ pipeline. The internal provider is configured to print directly to the
 console in case the internal telemetry pipeline experiences errors.
 
 ```yaml
-service:
+version: otel_dataflow/v1
+engine:
   telemetry:
     logs:
       level: info
@@ -271,21 +275,24 @@ service:
         engine: its
         admin: noop
         internal: console_direct
-
-# Normal pipeline node
-nodes:
-  ...
-
-# Internal telemetry pipeline nodes
-internal:
-  telemetry:
-    type: internal_telemetry:receiver
-    config: {}
-  otlp_exporter:
-    type: otlp:exporter
-    config: {}
-
-internal_connections:
-  - from: telemetry
-    to: otlp_exporter
+  observability:
+    pipeline:
+      nodes:
+        telemetry:
+          type: internal_telemetry:receiver
+          config: {}
+        otlp_exporter:
+          type: otlp:exporter
+          config: {}
+      connections:
+        - from: telemetry
+          to: otlp_exporter
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # normal pipeline nodes
+        connections:
+          # normal pipeline connections
 ```

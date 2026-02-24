@@ -1,75 +1,83 @@
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+              control:
+                node: 100
+                pipeline: 100
+              pdata: 128
 
-nodes:
-  otlp_recv:
-    type: otap:receiver
-    config:
-      listening_addr: "127.0.0.1:4327"
-      wait_for_result: true
-      response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
+        nodes:
+          otlp_recv:
+            type: otap:receiver
+            config:
+              listening_addr: "127.0.0.1:4327"
+              wait_for_result: true
+              response_stream_channel_size: 256 # Required: channel buffer capacity (number of messages)
 
-  otap_recv:
-    type: otap:receiver
-    config:
-      listening_addr: "127.0.0.1:4329"
-      response_stream_channel_size: 256
+          otap_recv:
+            type: otap:receiver
+            config:
+              listening_addr: "127.0.0.1:4329"
+              response_stream_channel_size: 256
 
-  router:
-    type: type_router:processor
-    outputs: ["logs", "metrics", "traces"]
-    config: {}
+          router:
+            type: type_router:processor
+            outputs: ["logs", "metrics", "traces"]
+            config: {}
 
-#  logs_filter:
-#    type: filter:processor
-#    config:
-#      logs:
-#        include:
-#          match_type: strict
-#          record_attributes:
-#            - key: gen_ai.system
-#              value: openai
-#            - key: ios.app.state
-#              value: active
-#
-# connections:
-#   - from: logs_filter
-#     to: logs_exporter
+        #  logs_filter:
+        #    type: filter:processor
+        #    config:
+        #      logs:
+        #        include:
+        #          match_type: strict
+        #          record_attributes:
+        #            - key: gen_ai.system
+        #              value: openai
+        #            - key: ios.app.state
+        #              value: active
+        #
+        # connections:
+        #   - from: logs_filter
+        #     to: logs_exporter
 
-  retry:
-    type: retry:processor
-    config:
-      multiplier: 1.5
+          retry:
+            type: retry:processor
+            config:
+              multiplier: 1.5
 
-  logs_exporter:
-    type: otap:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:4328"
+          logs_exporter:
+            type: otap:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:4328"
 
-  metrics_exporter:
-    type: noop:exporter
-    config:
+          metrics_exporter:
+            type: noop:exporter
+            config:
 
-  spans_exporter:
-    type: noop:exporter
-    config:
+          spans_exporter:
+            type: noop:exporter
+            config:
 
-  otap_exporter:
-    type: noop:exporter
-    config:
+          otap_exporter:
+            type: noop:exporter
+            config:
 
-connections:
-  - from: otlp_recv
-    to: router
-  - from: otap_recv
-    to: otap_exporter
-  - from: router["logs"]
-    to: retry
-  - from: router["metrics"]
-    to: metrics_exporter
-  - from: router["traces"]
-    to: spans_exporter
-  - from: retry
-    to: logs_exporter
+        connections:
+          - from: otlp_recv
+            to: router
+          - from: otap_recv
+            to: otap_exporter
+          - from: router["logs"]
+            to: retry
+          - from: router["metrics"]
+            to: metrics_exporter
+          - from: router["traces"]
+            to: spans_exporter
+          - from: retry
+            to: logs_exporter

@@ -184,7 +184,7 @@ impl OtapPdata {
     /// Construct new OtapData with payload using default context.
     /// This is a test-only form.
     #[must_use]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn new_default(payload: OtapPayload) -> Self {
         Self {
             context: Context::default(),
@@ -231,7 +231,7 @@ impl OtapPdata {
     /// only considered useful in testing.  Use into_parts() to split an
     /// OtapPdata into (Context, OtapPayload).
     #[must_use]
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn payload(self) -> OtapPayload {
         self.payload
     }
@@ -263,7 +263,7 @@ impl OtapPdata {
 
     /// Enable testing Ack/Nack without an effect handler. Consumes,
     /// modifies and returns self.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn test_subscribe_to(
         mut self,
@@ -276,7 +276,7 @@ impl OtapPdata {
     }
 
     /// Returns Context::has_subscribers()
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     #[must_use]
     pub fn has_subscribers(&self) -> bool {
         self.context.has_subscribers()

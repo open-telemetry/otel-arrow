@@ -1,42 +1,50 @@
-# Shows the batch processor.
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        # Shows the batch processor.
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
-nodes:
-  receiver:
-    type: traffic_generator:receiver
-    config:
-      traffic_config:
-        max_signal_count: 10000
-        max_batch_size: 100
-        signals_per_second: 100
-        log_weight: 100
-      registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
-  batch:
-    type: batch:processor
-    config:
-      otap:
-        # At the rate set above (100/s), min_size=1000 would emit a batch
-        # every 10 seconds.
-        min_size: 1000
-        sizer: items
-      # The timeout causes 100/s, so we produce around 300 signals/batch.
-      flush_timeout: 3s
-  debug:
-    type: debug:processor
-    config:
-      verbosity: detailed
-      mode: signal
-  noop:
-    type: noop:exporter
-    config:
+        nodes:
+          receiver:
+            type: traffic_generator:receiver
+            config:
+              traffic_config:
+                max_signal_count: 10000
+                max_batch_size: 100
+                signals_per_second: 100
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          batch:
+            type: batch:processor
+            config:
+              otap:
+                # At the rate set above (100/s), min_size=1000 would emit a batch
+                # every 10 seconds.
+                min_size: 1000
+                sizer: items
+              # The timeout causes 100/s, so we produce around 300 signals/batch.
+              flush_timeout: 3s
+          debug:
+            type: debug:processor
+            config:
+              verbosity: detailed
+              mode: signal
+          noop:
+            type: noop:exporter
+            config:
 
-connections:
-  - from: receiver
-    to: batch
-  - from: batch
-    to: debug
-  - from: debug
-    to: noop
+        connections:
+          - from: receiver
+            to: batch
+          - from: batch
+            to: debug
+          - from: debug
+            to: noop

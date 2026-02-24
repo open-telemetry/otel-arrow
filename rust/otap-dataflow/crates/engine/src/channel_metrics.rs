@@ -209,6 +209,7 @@ mod tests {
     use otap_df_telemetry::metrics::MetricSetHandler;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
+    use std::collections::HashMap;
 
     fn test_context() -> PipelineContext {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -219,6 +220,7 @@ mod tests {
                 "node".into(),
                 "urn:test:example:receiver".into(),
                 NodeKind::Receiver,
+                HashMap::new(),
             )
     }
 

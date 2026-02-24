@@ -1,46 +1,54 @@
-# OTAP -> Durable Buffer -> OTAP pipeline example
-#
-# This configuration demonstrates the durable buffer providing
-# crash-resilient buffering between an OTAP receiver and OTAP exporter.
-#
-# Build with: cargo build --release
-# Run with:   ./target/release/df_engine --pipeline configs/otap-durable-buffer-otap.yaml
-#
-# To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        # OTAP -> Durable Buffer -> OTAP pipeline example
+        #
+        # This configuration demonstrates the durable buffer providing
+        # crash-resilient buffering between an OTAP receiver and OTAP exporter.
+        #
+        # Build with: cargo build --release
+        # Run with:   ./target/release/df_engine --config configs/otap-durable-buffer-otap.yaml
+        #
+        # To test, run a backend OTAP receiver on port 1235, then send OTAP data to port 4317.
 
-settings:
-  default_pipeline_ctrl_msg_channel_size: 100
-  default_node_ctrl_msg_channel_size: 100
-  default_pdata_channel_size: 100
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
 
-nodes:
-  receiver:
-    type: otap:receiver
-    config:
-      listening_addr: "127.0.0.1:4317"
-      response_stream_channel_size: 256
+        nodes:
+          receiver:
+            type: otap:receiver
+            config:
+              listening_addr: "127.0.0.1:4317"
+              response_stream_channel_size: 256
 
-  durable_buffer:
-    type: durable_buffer:processor
-    config:
-      # Directory for WAL and segment files (created if not exists)
-      path: /var/lib/otap/otap-durable-buffer-otap-example/buffer
-      # How often to poll Quiver for available bundles (default: 100ms)
-      poll_interval: 100ms
-      # Maximum age of data to retain (e.g., "24h", "7d")
-      max_age: 72h
-      # Maximum disk usage for durable buffer storage
-      retention_size_cap: "10GB"
-      # What to do when size cap is exceeded: backpressure or drop_oldest
-      size_cap_policy: backpressure
+          durable_buffer:
+            type: durable_buffer:processor
+            config:
+              # Directory for WAL and segment files (created if not exists)
+              path: /var/lib/otap/otap-durable-buffer-otap-example/buffer
+              # How often to poll Quiver for available bundles (default: 100ms)
+              poll_interval: 100ms
+              # Maximum age of data to retain (e.g., "24h", "7d")
+              max_age: 72h
+              # Maximum disk usage for durable buffer storage
+              retention_size_cap: "10GB"
+              # What to do when size cap is exceeded: backpressure or drop_oldest
+              size_cap_policy: backpressure
 
-  exporter:
-    type: otap:exporter
-    config:
-      grpc_endpoint: "http://127.0.0.1:1235"
+          exporter:
+            type: otap:exporter
+            config:
+              grpc_endpoint: "http://127.0.0.1:1235"
 
-connections:
-  - from: receiver
-    to: durable_buffer
-  - from: durable_buffer
-    to: exporter
+        connections:
+          - from: receiver
+            to: durable_buffer
+          - from: durable_buffer
+            to: exporter

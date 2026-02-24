@@ -18,6 +18,7 @@ use common::counting_exporter::{self, COUNTING_EXPORTER_URN};
 use common::flaky_exporter::{self, FLAKY_EXPORTER_URN};
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
 use otap_df_config::pipeline::{PipelineConfig, PipelineConfigBuilder, PipelineType};
+use otap_df_config::policy::{ChannelCapacityPolicy, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineGroupId, PipelineId};
 use otap_df_engine::context::ControllerContext;
 use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -175,7 +176,7 @@ impl TestConfigBuilder {
         let mut buffer_config = json!({
             "path": self.buffer_path.to_string_lossy(),
             "poll_interval": "20ms",
-            "retention_size_cap": "100MB",
+            "retention_size_cap": "256MB",
             "size_cap_policy": self.size_cap_policy,
             "max_segment_open_duration": "50ms"
         });
@@ -287,13 +288,19 @@ fn run_pipeline_with_condition<F>(
     );
 
     let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let channel_capacity_policy = ChannelCapacityPolicy::default();
     let runtime_pipeline = OTAP_PIPELINE_FACTORY
-        .build(pipeline_ctx.clone(), config.clone(), None)
+        .build(
+            pipeline_ctx.clone(),
+            config.clone(),
+            channel_capacity_policy.clone(),
+            TelemetryPolicy::default(),
+            None,
+        )
         .expect("failed to build runtime pipeline");
 
-    let pipeline_settings = config.pipeline_settings().clone();
     let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
-        pipeline_ctrl_msg_channel(pipeline_settings.default_pipeline_ctrl_msg_channel_size);
+        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
     let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
