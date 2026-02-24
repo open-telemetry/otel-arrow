@@ -35,7 +35,9 @@ pub fn coerce_arithmetic(
     match &left.expr_type {
         ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => match right.expr_type {
             // just assume we're adding either int64 or float64
-            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => ExprLogicalType::AnyValueNumberic,
+            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => {
+                ExprLogicalType::AnyValueNumberic
+            }
 
             // TODO - should this be any int that gets coerced?
             ExprLogicalType::Int32 => {
@@ -81,19 +83,17 @@ pub fn coerce_arithmetic(
                 }
             }
         }
-        ExprLogicalType::ScalarInt => {
-            match right.expr_type {
-                ExprLogicalType::Int32 => {
-                    left.logical_expr = cast(left.logical_expr.clone(), DataType::Int32);
-                    left.expr_type = ExprLogicalType::Int32;
+        ExprLogicalType::ScalarInt => match right.expr_type {
+            ExprLogicalType::Int32 => {
+                left.logical_expr = cast(left.logical_expr.clone(), DataType::Int32);
+                left.expr_type = ExprLogicalType::Int32;
 
-                    ExprLogicalType::Int32
-                },
-                _ => {
-                    todo!()
-                }
+                ExprLogicalType::Int32
             }
-        }
+            _ => {
+                todo!()
+            }
+        },
         other_left => {
             todo!("no type handler for left {:?}", other_left)
         }
