@@ -1339,6 +1339,71 @@ mod test {
     }
 
     #[test]
+    fn test_planner_binary_expr_scalar_to_column() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let left_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().severity_number(10).finish(),
+            LogRecord::build()
+                .severity_number(30)
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .severity_number(20)
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
+
+        // Should successfully evaluate
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
     fn test_planner_binary_expr_same_attributes() {
         let mut planner = AssignmentLogicalPlanner {};
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(

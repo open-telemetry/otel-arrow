@@ -71,10 +71,23 @@ pub fn coerce_arithmetic(
                     // TODO - we gotta check the value and see if it'll overflow or underflow
                     // or at least test this ...
                     right.logical_expr = cast(right.logical_expr.clone(), DataType::Int32);
-                    right.expr_type = ExprLogicalType::UInt32;
+                    right.expr_type = ExprLogicalType::Int32;
 
-                    ExprLogicalType::UInt32
+                    ExprLogicalType::Int32
                 }
+                _ => {
+                    todo!()
+                }
+            }
+        }
+        ExprLogicalType::ScalarInt => {
+            match right.expr_type {
+                ExprLogicalType::Int32 => {
+                    left.logical_expr = cast(left.logical_expr.clone(), DataType::Int32);
+                    left.expr_type = ExprLogicalType::Int32;
+
+                    ExprLogicalType::Int32
+                },
                 _ => {
                     todo!()
                 }
