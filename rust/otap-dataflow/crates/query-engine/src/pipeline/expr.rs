@@ -106,10 +106,12 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
+use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 mod join;
+mod types;
 
 /// Column name used when referencing child expression results in cross-domain operations.
 /// For example, if Root domain needs to add a value from Attributes domain, the parent
@@ -182,6 +184,8 @@ struct LogicalDomainExpr {
     logical_expr: Expr,
     /// Optional child expression for cross-domain operations
     child: Option<Box<LogicalDomainExpr>>,
+
+    expr_type: ExprLogicalType,
 
     // TODO comments
     requires_dict_downcast: bool,
@@ -263,6 +267,9 @@ impl AssignmentLogicalPlanner {
                         logical_expr: col(column_name),
                         child: None,
                         requires_dict_downcast: false,
+
+                        // TODO - we should be able to resolve this from schema?
+                        expr_type: ExprLogicalType::UInt32
                     }),
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
                         Ok(LogicalDomainExpr {
@@ -272,6 +279,9 @@ impl AssignmentLogicalPlanner {
                             logical_expr: col(column_name).field(struct_field_name),
                             child: None,
                             requires_dict_downcast: false,
+
+                            // TODO - this isn't right, needs to be resolved from schema
+                            expr_type: ExprLogicalType::String
                         })
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => {
@@ -294,6 +304,8 @@ impl AssignmentLogicalPlanner {
                             logical_expr: col("value"),
                             child: None,
                             requires_dict_downcast: false,
+
+                            expr_type: ExprLogicalType::AnyValue,
                         })
                     }
                 }
@@ -304,15 +316,15 @@ impl AssignmentLogicalPlanner {
                 // TODO - don't like how this is imported
                 use data_engine_expressions::StaticScalarExpression as SSE;
 
-                let logical_expr = match static_scalar_expr {
-                    SSE::Integer(int_expr) => lit(int_expr.get_value()),
-                    SSE::Double(double_expr) => lit(double_expr.get_value()),
-                    SSE::Boolean(bool_expr) => lit(bool_expr.get_value()),
-                    SSE::String(string_expr) => lit(string_expr.get_value()),
-                    SSE::Null(_) => {
-                        // Create a null literal of unknown type
-                        lit(datafusion::scalar::ScalarValue::Null)
-                    }
+                let (logical_expr, expr_type) = match static_scalar_expr {
+                    SSE::Integer(int_expr) => (lit(int_expr.get_value()), ExprLogicalType::Int64),
+                    SSE::Double(double_expr) => (lit(double_expr.get_value()), ExprLogicalType::Float64),
+                    SSE::Boolean(bool_expr) => (lit(bool_expr.get_value()), ExprLogicalType::Boolean),
+                    SSE::String(string_expr) => (lit(string_expr.get_value()), ExprLogicalType::String),
+                    // SSE::Null(_) => {
+                    //     // Create a null literal of unknown type
+                    //     lit(datafusion::scalar::ScalarValue::Null)
+                    // }
                     _ => {
                         return Err(Error::ExecutionError {
                             cause: format!(
@@ -328,6 +340,7 @@ impl AssignmentLogicalPlanner {
                         domain_id: DataDomainId::StaticScalar,
                     },
                     logical_expr,
+                    expr_type,
                     child: None,
                     requires_dict_downcast: false,
                 })
@@ -335,8 +348,10 @@ impl AssignmentLogicalPlanner {
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
                     // Recursively plan left and right sub-expressions
-                    let left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
-                    let right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+                    let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
+                    let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+
+                    let expr_type = coerce_arithmetic(&mut left, &mut right);
 
                     // Check if both sides operate on compatible domains
                     if left.data_domain.can_combine(&right.data_domain) {
@@ -354,6 +369,7 @@ impl AssignmentLogicalPlanner {
                                 Box::new(right.logical_expr),
                             )),
                             child: None,
+                            expr_type,
                             requires_dict_downcast: true,
                         })
                     } else {
@@ -367,6 +383,7 @@ impl AssignmentLogicalPlanner {
                                 Box::new(col(CHILD_COLUMN_NAME)),
                             )),
                             child: Some(Box::new(right)),
+                            expr_type,
                             requires_dict_downcast: true,
                         })
                     }
