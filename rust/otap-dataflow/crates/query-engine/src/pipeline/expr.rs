@@ -567,6 +567,7 @@ impl PhysicalDomainExpr {
                         &self.source_data_domain,
                         &child_exec_result,
                         &child.source_data_domain,
+                        otap_batch,
                     )?;
 
                     // TODO no unwrap
@@ -575,7 +576,7 @@ impl PhysicalDomainExpr {
                         self.projection
                             .project_with_options(&joined_rb, &self.projection_opts)
                             .unwrap(),
-                        joined_data_domain
+                        joined_data_domain,
                     )
                 }
                 None => {
@@ -588,14 +589,11 @@ impl PhysicalDomainExpr {
                 (
                     self.projection.project(&source_rb).unwrap(),
                     // TODO - find a way to avoid the clone here ... (Rc?)
-                    self.source_data_domain.clone()
+                    self.source_data_domain.clone(),
                 )
             } else {
                 // TODO Cow not clone
-                (
-                    source_rb.clone(),
-                    self.source_data_domain.clone()
-                )
+                (source_rb.clone(), self.source_data_domain.clone())
             }
         };
 
@@ -1733,6 +1731,122 @@ mod test {
 
         // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
+
+        // Should successfully evaluate
+        // assert!(result.is_ok());
+        let columnar_value = result.unwrap();
+        assert!(columnar_value.is_some());
+
+        // Verify it's a scalar value of 99
+        match columnar_value.unwrap().values {
+            ColumnarValue::Scalar(_) => {
+                panic!("Expected scalar, got array");
+            }
+            ColumnarValue::Array(arr) => {
+                assert_eq!(arr.as_ref(), expected_col.as_ref())
+            }
+        }
+    }
+
+    #[test]
+    fn test_planner_binary_expr_attrs_to_nonroot_attrs() {
+        let mut planner = AssignmentLogicalPlanner {};
+
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+
+        // Convert to physical
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
+                            .severity_number(3)
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
+                            .severity_number(5)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
+                            .severity_number(7)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+
+        // get the expected column
+        let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
 
         // Should successfully evaluate
         // assert!(result.is_ok());

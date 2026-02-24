@@ -10,6 +10,7 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
+use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
 use otap_df_pdata::schema::consts;
@@ -93,21 +94,46 @@ impl IdJoinLookup {
     }
 }
 
+pub fn is_one_to_many(
+    left_attrs_id: &AttributesIdentifier,
+    right_attrs_id: &AttributesIdentifier,
+) -> bool {
+    match (left_attrs_id, right_attrs_id) {
+        (AttributesIdentifier::Root, _) => false,
+        _ => {
+            todo!()
+        }
+    }
+}
+
 pub fn join(
     left: &RecordBatch,
     left_domain: &DataDomainId,
     right: &PhysicalExprEvalResult,
     right_domain: &DataDomainId,
+    otap_batch: &OtapArrowRecords,
 ) -> Result<(RecordBatch, DataDomainId)> {
     // TODO - find a way to avoid cloning all the data domains here
     match (left_domain, right_domain) {
-        (DataDomainId::Attributes(attrs_id, _), DataDomainId::Attributes(attrs_id2, _)) => {
-            if attrs_id == attrs_id2 {
+        (
+            DataDomainId::Attributes(left_attrs_id, _),
+            DataDomainId::Attributes(right_attrs_id, _),
+        ) => {
+            if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin {};
-                let join_result = join_exec.join(left, right)?;
+                let join_result = join_exec.join(left, right, otap_batch)?;
                 Ok((join_result, left_domain.clone()))
             } else {
-                todo!()
+                if is_one_to_many(left_attrs_id, right_attrs_id) {
+                    todo!()
+                } else {
+                    let join_exec = AttributeToDifferentAttributeJoin {
+                        left: left_attrs_id.clone(),
+                        right: right_attrs_id.clone(),
+                    };
+                    let join_result = join_exec.join(left, right, otap_batch)?;
+                    Ok((join_result, left_domain.clone()))
+                }
             }
         }
         (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
@@ -117,21 +143,21 @@ pub fn join(
                 // TODO - constructor instead?
                 attrs_id: attr_id.clone(),
             };
-            let join_result = join_exec.join(left, right)?;
+            let join_result = join_exec.join(left, right, otap_batch)?;
             Ok((join_result, left_domain.clone()))
         }
         (DataDomainId::Attributes(attr_id, _), DataDomainId::Root) => {
             match attr_id {
                 AttributesIdentifier::Root => {
                     let join_exec = RootAttrsToRootJoin {};
-                    let join_result = join_exec.join(left, right).unwrap();
+                    let join_result = join_exec.join(left, right, otap_batch).unwrap();
                     Ok((join_result, left_domain.clone()))
                 }
                 AttributesIdentifier::NonRoot(payload_type) => {
                     let join_exec = NonRootAttrsToRootReverseJoin {
                         attrs_payload_type: *payload_type,
                     };
-                    let join_result = join_exec.join(left, right).unwrap();
+                    let join_result = join_exec.join(left, right, otap_batch).unwrap();
                     Ok((join_result, right_domain.clone()))
                 }
             }
@@ -162,7 +188,12 @@ fn insert_joined_column(left: &RecordBatch, col: ArrayRef) -> RecordBatch {
 }
 
 trait JoinExec {
-    fn join(&self, left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch>;
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch>;
 }
 
 // TODO this is almost xactly the same as AttributeToSameAttributeJoin
@@ -172,7 +203,12 @@ struct RootToAttribtuesJoin {
 
 // TODO - is there a world where we should join from the smaller side?
 impl JoinExec for RootToAttribtuesJoin {
-    fn join(&self, left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch> {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         let right_parent_ids = right
             .parent_ids
             .as_ref()
@@ -233,7 +269,12 @@ impl JoinExec for RootToAttribtuesJoin {
 struct RootAttrsToRootJoin {}
 
 impl JoinExec for RootAttrsToRootJoin {
-    fn join(&self, left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch> {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         let right_ids = right.ids.as_ref().unwrap(); // TODO no unwrap - return err
 
         // right.parent_ids actually contains the id values for root domain
@@ -280,7 +321,12 @@ struct NonRootAttrsToRootReverseJoin {
 }
 
 impl JoinExec for NonRootAttrsToRootReverseJoin {
-    fn join(&self, left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch> {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         let left_parent_ids = left
             .column_by_name(consts::PARENT_ID)
             .unwrap()
@@ -300,7 +346,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         let right_ids = right_ids
             // TODO no unwrap, handle case where ID column missing
             // although, if this were None, that means there would be no attributes
-            // which would mean that left recordbatch shouldn't exist ...
+            // which would mean that left record-batch shouldn't exist ...
             .unwrap()
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -382,7 +428,12 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
 struct AttributeToSameAttributeJoin {}
 
 impl JoinExec for AttributeToSameAttributeJoin {
-    fn join(&self, left: &RecordBatch, right: &PhysicalExprEvalResult) -> Result<RecordBatch> {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
         // build the right join table
 
         let right_parent_ids = right
@@ -414,6 +465,120 @@ impl JoinExec for AttributeToSameAttributeJoin {
         let right_values = right.values.to_array(right_parent_ids.len()).unwrap();
         // TODO no unwrap
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap();
+
+        Ok(insert_joined_column(left, joined_arr))
+    }
+}
+
+// Helper function to extract id column from root batch based on AttributesIdentifier
+// Returns owned Vec<u16> to avoid lifetime issues with temporary struct arrays
+fn get_attrs_id_values<'a>(
+    root_batch: &'a RecordBatch,
+    attrs_id: &'a AttributesIdentifier,
+) -> &'a UInt16Array {
+    match attrs_id {
+        AttributesIdentifier::Root => root_batch
+            .column_by_name(consts::ID)
+            .unwrap() // TODO no unwrap
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(), // TODO no unwrap
+        AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+            ArrowPayloadType::ResourceAttrs => {
+                get_required_struct_array(root_batch, consts::RESOURCE)
+                    .unwrap() // TODO no unwrap
+                    .column_by_name(consts::ID)
+                    .unwrap() // TODO no unwrap
+                    .as_any()
+                    .downcast_ref::<UInt16Array>()
+                    .unwrap()
+            } // TODO no unwrap
+            ArrowPayloadType::ScopeAttrs => get_required_struct_array(root_batch, consts::SCOPE)
+                .unwrap() // TODO no unwrap
+                .column_by_name(consts::ID)
+                .unwrap() // TODO no unwrap
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .unwrap(), // TODO no unwrap
+            _ => todo!("Unsupported attribute type"),
+        },
+    }
+}
+
+struct AttributeToDifferentAttributeJoin {
+    left: AttributesIdentifier,
+    right: AttributesIdentifier,
+}
+
+impl JoinExec for AttributeToDifferentAttributeJoin {
+    fn join(
+        &self,
+        left: &RecordBatch,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // Two-hop join through root batch
+        // Example: scope.attributes["x"] + resource.attributes["y"]
+        // Path: left.parent_id (scope id) -> log.scope.id -> log.resource.id -> right.parent_id (resource id)
+
+        // Step 1: Build lookup from right side (resource attributes)
+        let right_parent_ids = right
+            .parent_ids
+            .as_ref()
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return error if unexpected type
+        let right_lookup = IdJoinLookup::new(right_parent_ids.values());
+
+        // Step 2: Get root batch and extract the id columns we need
+        let root_batch = otap_batch.root_record_batch().unwrap(); // TODO no unwrap - return error
+
+        // Step 3: Get the left and right id columns from root batch based on attribute identifiers
+        // TODO not sure I love the method name here ...
+        let left_root_col = get_attrs_id_values(root_batch, &self.left);
+        let right_root_col = get_attrs_id_values(root_batch, &self.right);
+
+        // // Step 4: Build mapping from left id -> right id using root batch as bridge
+        // // Collect right_ids indexed by position, then build IdJoinLookup with left_ids
+        let inter_join_lookup = IdJoinLookup::new(left_root_col.values());
+
+        // Step 5: For each left row, find corresponding right row
+        let left_parent_ids = left
+            .column_by_name(consts::PARENT_ID)
+            .unwrap() // TODO no unwrap - return err
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap(); // TODO no unwrap - need return err if unexpected type
+
+        let mut to_take = Int32Array::builder(left_parent_ids.len());
+
+        left_parent_ids.iter().for_each(|left_parent_id_opt| {
+            // TODO - could be re-written in a way where there's not so much crappy null handling
+            // TODO - we should have unit tests covering all these append_null cases
+            if let Some(left_parent_id) = left_parent_id_opt {
+                if let Some(root_index) = inter_join_lookup.lookup(left_parent_id) {
+                    if right_root_col.is_valid(root_index) {
+                        let right_id = right_root_col.value(root_index);
+                        if let Some(right_index) = right_lookup.lookup(right_id) {
+                            to_take.append_value(right_index as i32);
+                        } else {
+                            to_take.append_null();
+                        }
+                    } else {
+                        to_take.append_null();
+                    }
+                } else {
+                    to_take.append_null();
+                }
+            } else {
+                to_take.append_null();
+            }
+        });
+
+        // Step 6: Take from right values
+        let right_values = right.values.to_array(right_parent_ids.len()).unwrap(); // TODO no unwrap
+        let joined_arr = take(&right_values, &to_take.finish(), None).unwrap(); // TODO no unwrap
 
         Ok(insert_joined_column(left, joined_arr))
     }
