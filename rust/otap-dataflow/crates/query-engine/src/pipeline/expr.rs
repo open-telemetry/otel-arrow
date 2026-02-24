@@ -269,7 +269,7 @@ impl AssignmentLogicalPlanner {
                         requires_dict_downcast: false,
 
                         // TODO - we should be able to resolve this from schema?
-                        expr_type: ExprLogicalType::UInt32
+                        expr_type: ExprLogicalType::UInt32,
                     }),
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
                         Ok(LogicalDomainExpr {
@@ -281,7 +281,7 @@ impl AssignmentLogicalPlanner {
                             requires_dict_downcast: false,
 
                             // TODO - this isn't right, needs to be resolved from schema
-                            expr_type: ExprLogicalType::String
+                            expr_type: ExprLogicalType::String,
                         })
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => {
@@ -318,9 +318,15 @@ impl AssignmentLogicalPlanner {
 
                 let (logical_expr, expr_type) = match static_scalar_expr {
                     SSE::Integer(int_expr) => (lit(int_expr.get_value()), ExprLogicalType::Int64),
-                    SSE::Double(double_expr) => (lit(double_expr.get_value()), ExprLogicalType::Float64),
-                    SSE::Boolean(bool_expr) => (lit(bool_expr.get_value()), ExprLogicalType::Boolean),
-                    SSE::String(string_expr) => (lit(string_expr.get_value()), ExprLogicalType::String),
+                    SSE::Double(double_expr) => {
+                        (lit(double_expr.get_value()), ExprLogicalType::Float64)
+                    }
+                    SSE::Boolean(bool_expr) => {
+                        (lit(bool_expr.get_value()), ExprLogicalType::Boolean)
+                    }
+                    SSE::String(string_expr) => {
+                        (lit(string_expr.get_value()), ExprLogicalType::String)
+                    }
                     // SSE::Null(_) => {
                     //     // Create a null literal of unknown type
                     //     lit(datafusion::scalar::ScalarValue::Null)
@@ -349,7 +355,8 @@ impl AssignmentLogicalPlanner {
                 MathScalarExpression::Add(binary_math_expr) => {
                     // Recursively plan left and right sub-expressions
                     let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
-                    let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+                    let mut right =
+                        self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
 
                     let expr_type = coerce_arithmetic(&mut left, &mut right);
 
@@ -537,14 +544,12 @@ impl PhysicalDomainExpr {
             }
         };
 
-
         let mut input_rb = match input_rb {
             Some(input_rb) => input_rb,
             None => {
                 todo!()
             }
         };
-
 
         // TODO remove all this debug stuff
         println!("data domain = {:?}", self.data_domain);
@@ -553,7 +558,6 @@ impl PhysicalDomainExpr {
         println!("physical_expr = {:?}", self.physical_expr);
         arrow::util::pretty::print_batches(&[input_rb.clone()]).unwrap();
         // println!("input rb = {:?}", input_rb);
-
 
         // TODO there's somewhere else we need to apply projection here ....
 
@@ -1336,11 +1340,12 @@ mod test {
         let mut planner = AssignmentLogicalPlanner {};
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
-            ValueAccessor::new_with_selectors(vec![
-                ScalarExpression::Static(StaticScalarExpression::String(
-                    StringScalarExpression::new(QueryLocation::new_fake(), consts::SEVERITY_NUMBER),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
                 )),
-            ]),
+            )]),
         ));
 
         let right_expr = ScalarExpression::Source(SourceScalarExpression::new(

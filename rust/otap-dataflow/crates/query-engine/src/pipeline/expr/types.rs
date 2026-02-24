@@ -3,11 +3,10 @@
 
 //! Utilities for dealing with the types of expressions
 
+use crate::pipeline::expr::LogicalDomainExpr;
 use arrow::datatypes::DataType;
 use datafusion::logical_expr::cast;
 use otap_df_pdata::otap::filter::AnyValue;
-use crate::pipeline::expr::LogicalDomainExpr;
-
 
 pub enum ExprLogicalType {
     AnyValue,
@@ -27,22 +26,19 @@ pub enum ExprLogicalType {
 // TODO comments on what this is doing
 pub fn coerce_arithmetic(
     left: &mut LogicalDomainExpr,
-    right: &mut LogicalDomainExpr
+    right: &mut LogicalDomainExpr,
 ) -> ExprLogicalType {
-
     match left.expr_type {
-        ExprLogicalType::AnyValue => {
-            match right.expr_type {
-                ExprLogicalType::AnyValue => {
-                    ExprLogicalType::AnyValueNumberic
-                }
-                _ => {
-                    todo!()
-                }
+        ExprLogicalType::AnyValue => match right.expr_type {
+            ExprLogicalType::AnyValue => ExprLogicalType::AnyValueNumberic,
+            _ => {
+                todo!()
             }
-        }
+        },
+        // TODO this can probably be ExprLogicalType::UInt32 | ExprLogicalType::UInt64 ... etc.
         ExprLogicalType::UInt32 => {
             match right.expr_type {
+                // TODO this can probably be ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic
                 ExprLogicalType::AnyValue => {
                     // cast to the bigger data_type
                     // TODO - crappy we gotta clone, can we use std::mem::replace?
@@ -50,7 +46,7 @@ pub fn coerce_arithmetic(
                     left.expr_type = ExprLogicalType::Int64;
 
                     right.expr_type = ExprLogicalType::Int64;
-                    // TODO - not sure if we need the cast? This will just
+                    // TODO - not sure if we need the cast right? This will just
                     // blow up at runtime if the type isn't int64 I guess ...
 
                     ExprLogicalType::Int64
@@ -59,7 +55,7 @@ pub fn coerce_arithmetic(
                     todo!()
                 }
             }
-        },
+        }
         _ => {
             todo!()
         }
