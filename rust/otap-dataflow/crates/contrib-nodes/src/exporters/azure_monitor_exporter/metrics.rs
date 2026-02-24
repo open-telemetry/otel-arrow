@@ -62,9 +62,9 @@ pub struct AzureMonitorExporterMetrics {
     #[metric(unit = "{response}")]
     pub laclient_http_5xx: Counter<u64>,
     /// Number of successful authentication attempts.
-    pub auth_success: Counter<u64>,
+    pub auth_successes: Counter<u64>,
     /// Number of failed authentication attempts.
-    pub auth_failure: Counter<u64>,
+    pub auth_failures: Counter<u64>,
     /// Authentication latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
     pub auth_latency: Mmsc,
@@ -85,7 +85,7 @@ pub struct AzureMonitorExporterMetrics {
     pub msg_to_data_count: Gauge<u64>,
     /// Number of log entries rejected for exceeding the batch size limit.
     #[metric(unit = "{entry}")]
-    pub log_entry_too_large: Counter<u64>,
+    pub log_entries_too_large: Counter<u64>,
     /// Number of successful heartbeat sends.
     #[metric(unit = "{heartbeat}")]
     pub heartbeats: Counter<u64>,
@@ -284,13 +284,13 @@ impl AzureMonitorExporterMetricsTracker {
     /// Record a successful authentication attempt.
     #[inline]
     pub fn add_auth_success(&mut self) {
-        self.metrics.auth_success.inc();
+        self.metrics.auth_successes.inc();
     }
 
     /// Record a failed authentication attempt.
     #[inline]
     pub fn add_auth_failure(&mut self) {
-        self.metrics.auth_failure.inc();
+        self.metrics.auth_failures.inc();
     }
 
     /// Record a batch size observation in bytes.
@@ -326,7 +326,7 @@ impl AzureMonitorExporterMetricsTracker {
     /// Increment the log-entry-too-large counter.
     #[inline]
     pub fn add_log_entry_too_large(&mut self) {
-        self.metrics.log_entry_too_large.inc();
+        self.metrics.log_entries_too_large.inc();
     }
 
     /// Increment the heartbeat success counter.
