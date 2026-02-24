@@ -131,7 +131,7 @@ pub struct AssignPipelineStage {}
 /// - Root: The main telemetry batch (Logs/Spans/Metrics)
 /// - Attributes: Attribute batches (LogAttrs, ResourceAttrs, etc.) filtered by key
 /// - StaticScalar: Constant values that don't come from any batch
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum DataDomainId {
     /// Main telemetry batch (e.g., Logs with columns like severity_number, severity_text)
     Root,
@@ -212,7 +212,7 @@ impl LogicalDomainExpr {
         };
 
         Ok(PhysicalDomainExpr {
-            data_domain: self.data_domain.domain_id,
+            source_data_domain: self.data_domain.domain_id,
             logical_expr: self.logical_expr,
             physical_expr: None,
             projection,
@@ -434,7 +434,7 @@ impl AssignmentPhysicalPlanner {
 /// Once created, it's cached for subsequent batches with the same schema.
 struct PhysicalDomainExpr {
     /// The data domain this expression operates on
-    data_domain: DataDomainId,
+    source_data_domain: DataDomainId,
     /// DataFusion logical expression (e.g., col("severity_number") + lit(1))
     logical_expr: Expr,
 
@@ -459,8 +459,8 @@ struct PhysicalDomainExpr {
 pub(crate) struct PhysicalExprEvalResult {
     values: ColumnarValue,
     ids: Option<ArrayRef>,
+    data_domain: DataDomainId,
     parent_ids: Option<ArrayRef>,
-
     scope_ids: Option<ArrayRef>,
     resource_ids: Option<ArrayRef>,
 }
@@ -511,7 +511,7 @@ impl PhysicalDomainExpr {
         include_ids: bool,
     ) -> Result<Option<PhysicalExprEvalResult>> {
         // Step 1: Get the input RecordBatch based on the data domain
-        let source_rb = match &self.data_domain {
+        let source_rb = match &self.source_data_domain {
             // TODO - how we're projecting here doesn't seem right ...
             DataDomainId::Root => otap_batch.root_record_batch().cloned(), // TODO Cow not clone
 
@@ -548,7 +548,7 @@ impl PhysicalDomainExpr {
         };
 
         // TODO remove all this debug stuff
-        println!("data domain = {:?}", self.data_domain);
+        println!("data domain = {:?}", self.source_data_domain);
         println!("projection = {:?}", self.projection);
         println!("expr = {:?}", self.logical_expr);
         println!("physical_expr = {:?}", self.physical_expr);
@@ -558,33 +558,44 @@ impl PhysicalDomainExpr {
         // TODO there's somewhere else we need to apply projection here ....
 
         // Step 2: Recursively execute child expression if present & join to parent
-        let input_rb = if let Some(child) = &mut self.child {
+        let (input_rb, input_data_domain) = if let Some(child) = &mut self.child {
             let child_exec_result = child.execute(otap_batch, session_context, true)?;
             match child_exec_result {
                 Some(child_exec_result) => {
-                    let joined_rb = join(
+                    let (joined_rb, joined_data_domain) = join(
                         &source_rb,
-                        &self.data_domain,
+                        &self.source_data_domain,
                         &child_exec_result,
-                        &child.data_domain,
+                        &child.source_data_domain,
                     )?;
 
                     // TODO no unwrap
-                    self.projection
-                        .project_with_options(&joined_rb, &self.projection_opts)
-                        .unwrap()
+
+                    (
+                        self.projection
+                            .project_with_options(&joined_rb, &self.projection_opts)
+                            .unwrap(),
+                        joined_data_domain
+                    )
                 }
                 None => {
                     todo!()
                 }
             }
         } else {
-            if self.data_domain == DataDomainId::Root {
+            if self.source_data_domain == DataDomainId::Root {
                 // TODO no unwrap
-                self.projection.project(&source_rb).unwrap()
+                (
+                    self.projection.project(&source_rb).unwrap(),
+                    // TODO - find a way to avoid the clone here ... (Rc?)
+                    self.source_data_domain.clone()
+                )
             } else {
                 // TODO Cow not clone
-                source_rb.clone()
+                (
+                    source_rb.clone(),
+                    self.source_data_domain.clone()
+                )
             }
         };
 
@@ -616,6 +627,7 @@ impl PhysicalDomainExpr {
             parent_ids: None,
             scope_ids: None,
             resource_ids: None,
+            data_domain: input_data_domain,
         };
 
         // TODO -- need to coerce values back into the dict type?
@@ -627,7 +639,7 @@ impl PhysicalDomainExpr {
 
             // TODO - having these IDs tacked onto everything is kind of hokey .. we might be able
             // to just put original OTAP batch in and do a 2 way join? I guess that'd be slower
-            if self.data_domain == DataDomainId::Root {
+            if self.source_data_domain == DataDomainId::Root {
                 result.scope_ids = get_optional_array_from_struct_array_from_record_batch(
                     &source_rb,
                     consts::SCOPE,
