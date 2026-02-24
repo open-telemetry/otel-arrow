@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771806289519,
+  "lastUpdate": 1771892641915,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2000,6 +2000,33 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 86.3,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cijo Thomas",
+            "username": "cijothomas",
+            "email": "cijo.thomas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7aff0cf9268d4f9dbc8afaca22d13879aa07a0cf",
+          "message": "Ability to validate config without engine start (#2065)\n\nOverrides https://github.com/open-telemetry/otel-arrow/pull/2057 and\nincludes validation of each node's config.\nAlso added a CI check to ensure all yaml configs in the repo is valid.\n(We had broken ones that was caught by this already and fixed in this\nPR)\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
+          "timestamp": "2026-02-23T23:57:56Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7aff0cf9268d4f9dbc8afaca22d13879aa07a0cf"
+        },
+        "date": 1771892637566,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 86.44,
             "unit": "MB"
           }
         ]
