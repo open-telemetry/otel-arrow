@@ -1321,6 +1321,7 @@ pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
             create_otap_batch_processor(pipeline_ctx, node, node_config, proc_cfg)
         },
         wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+        validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
 #[cfg(test)]

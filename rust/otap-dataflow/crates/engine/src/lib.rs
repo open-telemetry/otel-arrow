@@ -91,6 +91,12 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -100,6 +106,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }
@@ -123,6 +130,12 @@ pub struct ProcessorFactory<PData> {
     ) -> Result<ProcessorWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -132,6 +145,7 @@ impl<PData> Clone for ProcessorFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }
@@ -155,6 +169,12 @@ pub struct ExporterFactory<PData> {
     ) -> Result<ExporterWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Validates the node-specific config statically, without creating the component.
+    ///
+    /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
+    /// typed `Config` struct, or [`otap_df_config::validation::no_config`] for components
+    /// that accept no user configuration.
+    pub validate_config: fn(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error>,
 }
 
 // Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
@@ -164,6 +184,7 @@ impl<PData> Clone for ExporterFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            validate_config: self.validate_config,
         }
     }
 }

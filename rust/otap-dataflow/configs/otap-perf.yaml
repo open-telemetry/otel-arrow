@@ -22,7 +22,7 @@ groups:
             config:
               frequency: 5000
               cpu_usage: false
-              memory_usage: false
+              mem_usage: false
               disk_usage: false
               io_usage: false
 
