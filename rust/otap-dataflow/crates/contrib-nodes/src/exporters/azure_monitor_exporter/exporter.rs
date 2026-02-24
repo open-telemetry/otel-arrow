@@ -68,20 +68,20 @@ impl AzureMonitorExporter {
             .validate()
             .map_err(|e| Error::Config(e.to_string()))?;
 
+        // Register metrics with the telemetry system
+        let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
+        let metrics: AzureMonitorExporterMetricsRc = Rc::new(RefCell::new(
+            super::metrics::AzureMonitorExporterMetricsTracker::new(metric_set),
+        ));
+
         // Create log transformer
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, metrics.clone());
 
         // Create Gzip batcher
         let gzip_batcher = GzipBatcher::new();
 
         // Create heartbeat handler
         let heartbeat = Heartbeat::new(&config.api)?;
-
-        // Register metrics with the telemetry system
-        let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
-        let metrics: AzureMonitorExporterMetricsRc = Rc::new(RefCell::new(
-            super::metrics::AzureMonitorExporterMetricsTracker::new(metric_set),
-        ));
 
         Ok(Self {
             config,
@@ -253,6 +253,12 @@ impl AzureMonitorExporter {
                 }
                 Ok(gzip_batcher::PushResult::TooLarge) => {
                     let error = Error::LogEntryTooLarge;
+                    self.metrics.borrow_mut().add_log_entry_too_large();
+                    otel_warn!(
+                        "azure_monitor_exporter.message.log_entry_too_large",
+                        msg_id = msg_id,
+                        size_bytes = log_entry.len()
+                    );
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
@@ -266,6 +272,7 @@ impl AzureMonitorExporter {
                     });
                 }
                 Err(error) => {
+                    otel_error!("azure_monitor_exporter.message.batch_push_failed", msg_id = msg_id, error = %error);
                     if let Some((context, payload)) = self.state.remove_msg_to_data(msg_id) {
                         effect_handler
                             .notify_nack(NackMsg::new(
@@ -282,6 +289,10 @@ impl AzureMonitorExporter {
         }
 
         if let Some((context, payload)) = self.state.delete_msg_data_if_orphaned(msg_id) {
+            otel_debug!(
+                "azure_monitor_exporter.message.no_valid_entries",
+                msg_id = msg_id
+            );
             effect_handler
                 .notify_nack(NackMsg::new(
                     "No valid log entries produced",
@@ -377,33 +388,35 @@ impl AzureMonitorExporter {
                 let payload_to_match = payload.clone();
 
                 match payload_to_match {
-                    OtapPayload::OtapArrowRecords(otap_records) => {
-                        match otap_records {
-                            OtapArrowRecords::Logs(otap_records) => {
-                                let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
+                    OtapPayload::OtapArrowRecords(otap_records) => match otap_records {
+                        OtapArrowRecords::Logs(otap_records) => {
+                            let otap_arrow_records = OtapArrowRecords::Logs(otap_records);
 
-                                let logs_view = OtapLogsView::try_from(&otap_arrow_records)
-                                    .map_err(|e| {
-                                        let error = Error::LogsViewCreationFailed { source: e };
-                                        EngineError::InternalError {
-                                            message: error.to_string(),
-                                        }
-                                    })?;
+                            let logs_view =
+                                OtapLogsView::try_from(&otap_arrow_records).map_err(|e| {
+                                    let error = Error::LogsViewCreationFailed { source: e };
+                                    EngineError::InternalError {
+                                        message: error.to_string(),
+                                    }
+                                })?;
 
-                                self.handle_logs_view(
-                                    effect_handler,
-                                    context,
-                                    payload,
-                                    &logs_view,
-                                    *msg_id,
-                                )
-                                .await?;
-                            }
-                            OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
-                                // Unsupported signal types - silently drop
-                            }
+                            self.handle_logs_view(
+                                effect_handler,
+                                context,
+                                payload,
+                                &logs_view,
+                                *msg_id,
+                            )
+                            .await?;
                         }
-                    }
+                        OtapArrowRecords::Metrics(_) | OtapArrowRecords::Traces(_) => {
+                            otel_warn!(
+                                "azure_monitor_exporter.message.unsupported_signal",
+                                signal = "metrics_or_traces",
+                                format = "otap_arrow"
+                            );
+                        }
+                    },
 
                     OtapPayload::OtlpBytes(otlp_bytes) => match otlp_bytes {
                         OtlpProtoBytes::ExportLogsRequest(bytes) => {
@@ -420,7 +433,11 @@ impl AzureMonitorExporter {
                         }
                         OtlpProtoBytes::ExportMetricsRequest(_)
                         | OtlpProtoBytes::ExportTracesRequest(_) => {
-                            // Unsupported signal types - silently drop
+                            otel_warn!(
+                                "azure_monitor_exporter.message.unsupported_signal",
+                                signal = "metrics_or_traces",
+                                format = "otlp_proto"
+                            );
                         }
                     },
                 }
@@ -474,9 +491,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
         // Start periodic telemetry collection (every 1 second)
         _ = effect_handler
-            .start_periodic_telemetry(
-                self.config.telemetry.metrics_report_interval,
-            )
+            .start_periodic_telemetry(self.config.telemetry.metrics_report_interval)
             .await
             .map_err(|e| EngineError::InternalError {
                 message: format!("Failed to start telemetry timer: {e}"),
@@ -531,6 +546,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
                 _ = tokio::time::sleep_until(next_heartbeat_send) => {
                     next_heartbeat_send = tokio::time::Instant::now() + tokio::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+                    self.metrics.borrow_mut().add_heartbeat();
                     match self.heartbeat.send().await {
                         Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
                         Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = ?e),

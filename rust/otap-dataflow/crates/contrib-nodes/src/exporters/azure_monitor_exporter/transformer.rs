@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use super::config::{Config, SchemaConfig};
 use super::error::Error;
+use super::metrics::AzureMonitorExporterMetricsRc;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
@@ -124,6 +125,7 @@ impl ParsedSchema {
 #[derive(Debug)]
 pub struct Transformer {
     schema: ParsedSchema,
+    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl Transformer {
@@ -132,17 +134,19 @@ impl Transformer {
     /// # Panics
     /// Panics if the schema configuration contains invalid field names
     #[must_use]
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Self {
         Self {
             schema: ParsedSchema::from_config(&config.api.schema)
                 .expect("Invalid schema configuration"),
+            metrics,
         }
     }
 
     /// Create a new Transformer, returning an error if configuration is invalid
-    pub fn try_new(config: &Config) -> Result<Self, Error> {
+    pub fn try_new(config: &Config, metrics: AzureMonitorExporterMetricsRc) -> Result<Self, Error> {
         Ok(Self {
             schema: ParsedSchema::from_config(&config.api.schema)?,
+            metrics,
         })
     }
 
@@ -183,6 +187,7 @@ impl Transformer {
                             otel_warn!("azure_monitor_exporter.transform.serialize_failed",
                                 error = %e,
                                 message = "failed to serialize log record to JSON, skipping this record");
+                            self.metrics.borrow_mut().add_transform_failures(1);
                             continue;
                         }
                     }
@@ -384,9 +389,24 @@ mod tests {
         resource::v1::Resource,
     };
     use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::testing::EmptyAttributes;
     use prost::Message;
     use serde_json::json;
+    use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use super::super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
+
+    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
+        let registry = TelemetryRegistryHandle::new();
+        let metric_set =
+            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
+            metric_set,
+        )))
+    }
 
     fn create_test_config() -> Config {
         use super::super::config::{ApiConfig, AuthConfig, SchemaConfig, TelemetryConfig};
@@ -417,7 +437,7 @@ mod tests {
     #[test]
     fn test_schema_mapping() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -487,7 +507,7 @@ mod tests {
             ("severity_number".to_string(), json!("SeverityNum")),
         ]);
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -517,7 +537,7 @@ mod tests {
         let bytes = request.encode_to_vec();
         let logs_view = RawLogsData::new(&bytes);
 
-        let result: Vec<Bytes> = transformer.convert_to_log_analytics(&logs_view);
+        let result = transformer.convert_to_log_analytics(&logs_view);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
 
         assert!(json["Time"].as_str().unwrap().contains("1970"));
@@ -531,7 +551,7 @@ mod tests {
     #[test]
     fn test_any_value_types() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -569,7 +589,7 @@ mod tests {
     #[test]
     fn test_kvlist_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -621,7 +641,7 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!("Body"));
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -658,7 +678,7 @@ mod tests {
     #[test]
     fn test_try_new_success() {
         let config = create_test_config();
-        let result = Transformer::try_new(&config);
+        let result = Transformer::try_new(&config, create_test_metrics());
         assert!(result.is_ok());
     }
 
@@ -671,7 +691,7 @@ mod tests {
             .log_record_mapping
             .insert("invalid_field".into(), json!("Invalid"));
 
-        let result = Transformer::try_new(&config);
+        let result = Transformer::try_new(&config, create_test_metrics());
         assert!(result.is_err());
         assert!(
             result
@@ -691,7 +711,7 @@ mod tests {
             .log_record_mapping
             .insert("body".into(), json!({"nested": "object"}));
 
-        let result = Transformer::try_new(&config);
+        let result = Transformer::try_new(&config, create_test_metrics());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must be a string"));
     }
@@ -715,7 +735,7 @@ mod tests {
             telemetry: TelemetryConfig::default(),
         };
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -751,7 +771,7 @@ mod tests {
     #[test]
     fn test_attribute_with_no_value() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -801,7 +821,7 @@ mod tests {
     #[test]
     fn test_multiple_log_records() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -850,7 +870,7 @@ mod tests {
         let mut config = create_test_config();
         config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -897,7 +917,7 @@ mod tests {
             ("SEVERITY_TEXT".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -931,7 +951,7 @@ mod tests {
     #[test]
     fn test_double_nan_becomes_null() {
         let config = create_test_config();
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
@@ -971,7 +991,7 @@ mod tests {
             ("severity_text".into(), json!("Severity")),
         ]);
 
-        let transformer = Transformer::new(&config);
+        let transformer = Transformer::new(&config, create_test_metrics());
 
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {

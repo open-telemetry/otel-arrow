@@ -83,6 +83,15 @@ pub struct AzureMonitorExporterMetrics {
     /// Current number of message-to-data mappings (leak detector).
     #[metric(unit = "{entry}")]
     pub msg_to_data_count: Gauge<u64>,
+    /// Number of log entries rejected for exceeding the batch size limit.
+    #[metric(unit = "{entry}")]
+    pub log_entry_too_large: Counter<u64>,
+    /// Number of successful heartbeat sends.
+    #[metric(unit = "{heartbeat}")]
+    pub heartbeats: Counter<u64>,
+    /// Number of log records that failed to serialize during transformation.
+    #[metric(unit = "{record}")]
+    pub transform_failures: Counter<u64>,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
@@ -312,6 +321,24 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn set_msg_to_data_count(&mut self, count: u64) {
         self.metrics.msg_to_data_count.set(count);
+    }
+
+    /// Increment the log-entry-too-large counter.
+    #[inline]
+    pub fn add_log_entry_too_large(&mut self) {
+        self.metrics.log_entry_too_large.inc();
+    }
+
+    /// Increment the heartbeat success counter.
+    #[inline]
+    pub fn add_heartbeat(&mut self) {
+        self.metrics.heartbeats.inc();
+    }
+
+    /// Increment the transform failures counter.
+    #[inline]
+    pub fn add_transform_failures(&mut self, count: u64) {
+        self.metrics.transform_failures.add(count);
     }
 
     /// Record an HTTP response status code.
