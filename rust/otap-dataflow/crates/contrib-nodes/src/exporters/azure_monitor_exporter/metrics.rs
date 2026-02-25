@@ -272,7 +272,9 @@ impl AzureMonitorExporterMetricsTracker {
     /// Record a client HTTP success latency observation in milliseconds.
     #[inline]
     pub fn add_client_success_latency(&mut self, latency_ms: f64) {
-        self.metrics.laclient_http_success_latency.record(latency_ms);
+        self.metrics
+            .laclient_http_success_latency
+            .record(latency_ms);
     }
 
     /// Record an auth success latency observation in milliseconds.
