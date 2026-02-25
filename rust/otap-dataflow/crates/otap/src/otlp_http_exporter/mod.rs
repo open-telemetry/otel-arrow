@@ -52,7 +52,7 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
 
@@ -145,6 +145,36 @@ impl OtlpHttpExporter {
                         server_name_override."
                             .into(),
                     });
+                }
+
+                if let Some(true) = tls.insecure {
+                    // Keeping with the same behaviour in the golang collector: if this is
+                    // configured, but the endpoints are start with https, we still send the
+                    // request using https. Just warn about the ignored config mismatch.
+                    let wants_https = config.endpoint.starts_with("https://")
+                        | config
+                            .logs_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false)
+                        | config
+                            .metrics_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false)
+                        | config
+                            .traces_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false);
+                    if wants_https {
+                        otel_warn!(
+                            "otlp.exporter.http.validate_insecure_flag",
+                            message = "config setting http.tls.insecure = false is ignored. \
+                                requests will still be send with TLS to endpoints configured \
+                                with scheme https"
+                        )
+                    }
                 }
             }
         }

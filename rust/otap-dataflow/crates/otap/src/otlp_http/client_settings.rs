@@ -89,50 +89,55 @@ impl HttpClientSettings {
 
         #[cfg(feature = "experimental-tls")]
         if let Some(tls) = &self.tls {
-            let mut certs = vec![];
-
-            if let Some(ca_pem) = &tls.ca_pem {
-                let cert = Certificate::from_pem(ca_pem.as_bytes())?;
-                certs.push(cert);
-            }
-
-            if let Some(ca_file) = &tls.ca_file {
-                let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-                    otel_error!(
-                        "tls.ca_file.read_error",
-                        ca_file = ?ca_file,
-                        error = ?e,
-                        message = "Failed to read CA file"
-                    );
-                    e
-                })?;
-                let cert = Certificate::from_pem(&ca_pem)?;
-                certs.push(cert);
-            }
-
-            if tls.include_system_ca_certs_pool.unwrap_or(true) {
-                client_builder = client_builder.tls_certs_merge(certs);
+            let insecure = tls.insecure.unwrap_or(false);
+            if insecure {
+                // client_builder = client_builder.
             } else {
-                client_builder = client_builder.tls_certs_only(certs);
-            }
+                let mut certs = vec![];
 
-            if let Some(_server_name) = &tls.server_name {
-                // TODO - currently reqwest doesn't support custom server name validation. The only
-                // option is to skip all server name validation, which is not what we want. One
-                // option here would be to pass a configured rustls::ClientConfig to
-                // ClientBuilder::tls_backend_preconfigured, with a custom
-                // rustls::verify::ServerCertVerifier implementation, but then we need to manage
-                // the entire rustls configuration and can't rely on the ClientBuilder to help.
-                // This is a bit more complex, we'll delay implementing this until it's necessary.
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "TLS configuration error: server_name_override is not supported by the current \
-                    Rust OTLP HTTP client implementation (reqwest/rustls) remove server_name_override.",
-                ).into());
-            }
+                if let Some(ca_pem) = &tls.ca_pem {
+                    let cert = Certificate::from_pem(ca_pem.as_bytes())?;
+                    certs.push(cert);
+                }
 
-            if let Some(true) = &tls.insecure_skip_verify {
-                client_builder = client_builder.danger_accept_invalid_certs(true);
+                if let Some(ca_file) = &tls.ca_file {
+                    let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
+                        otel_error!(
+                            "tls.ca_file.read_error",
+                            ca_file = ?ca_file,
+                            error = ?e,
+                            message = "Failed to read CA file"
+                        );
+                        e
+                    })?;
+                    let cert = Certificate::from_pem(&ca_pem)?;
+                    certs.push(cert);
+                }
+
+                if tls.include_system_ca_certs_pool.unwrap_or(true) {
+                    client_builder = client_builder.tls_certs_merge(certs);
+                } else {
+                    client_builder = client_builder.tls_certs_only(certs);
+                }
+
+                if let Some(_server_name) = &tls.server_name {
+                    // TODO - currently reqwest doesn't support custom server name validation. The only
+                    // option is to skip all server name validation, which is not what we want. One
+                    // option here would be to pass a configured rustls::ClientConfig to
+                    // ClientBuilder::tls_backend_preconfigured, with a custom
+                    // rustls::verify::ServerCertVerifier implementation, but then we need to manage
+                    // the entire rustls configuration and can't rely on the ClientBuilder to help.
+                    // This is a bit more complex, we'll delay implementing this until it's necessary.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "TLS configuration error: server_name_override is not supported by the current \
+                        Rust OTLP HTTP client implementation (reqwest/rustls) remove server_name_override.",
+                    ).into());
+                }
+
+                if let Some(true) = &tls.insecure_skip_verify {
+                    client_builder = client_builder.danger_accept_invalid_certs(true);
+                }
             }
         }
 
