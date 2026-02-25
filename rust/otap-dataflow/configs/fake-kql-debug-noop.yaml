@@ -9,7 +9,7 @@ groups:
       main:
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_signal_count: 100
@@ -21,7 +21,7 @@ groups:
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
           kql:
-            type: urn:microsoft:recordset_kql:processor
+            type: urn:microsoft:processor:recordset_kql
             config:
               query: |
                 source
@@ -32,13 +32,13 @@ groups:
                 )
 
           debug:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               mode: signal
 
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config:
 
         connections:

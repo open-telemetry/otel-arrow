@@ -1201,8 +1201,8 @@ mod tests {
     #[test]
     fn test_duplicate_node_errors() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:example:receiver", None)
-            .add_processor("A", "urn:test:example:processor", None) // duplicate
+            .add_receiver("A", "urn:test:receiver:example", None)
+            .add_processor("A", "urn:test:processor:example", None) // duplicate
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
         match result {
@@ -1221,8 +1221,8 @@ mod tests {
     #[test]
     fn test_duplicate_output_port_errors() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:example:receiver", None)
-            .add_exporter("B", "urn:test:example:exporter", None)
+            .add_receiver("A", "urn:test:receiver:example", None)
+            .add_exporter("B", "urn:test:exporter:example", None)
             .one_of_output("A", "p", ["B"])
             .one_of_output("A", "p", ["B"]) // duplicate port on A
             .build(PipelineType::Otap, "pgroup", "pipeline");
@@ -1245,7 +1245,7 @@ mod tests {
     #[test]
     fn test_missing_source_error() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("B", "urn:test:example:receiver", None)
+            .add_receiver("B", "urn:test:receiver:example", None)
             .connect("X", "out", ["B"], DispatchPolicy::Broadcast) // X does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1271,7 +1271,7 @@ mod tests {
     #[test]
     fn test_missing_target_error() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:example:receiver", None)
+            .add_receiver("A", "urn:test:receiver:example", None)
             .connect("A", "out", ["Y"], DispatchPolicy::Broadcast) // Y does not exist
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1298,7 +1298,7 @@ mod tests {
     #[test]
     fn test_builder_rejects_empty_target_set() {
         let result = PipelineConfigBuilder::new()
-            .add_receiver("A", "urn:test:example:receiver", None)
+            .add_receiver("A", "urn:test:receiver:example", None)
             .connect(
                 "A",
                 "out",
@@ -1329,8 +1329,8 @@ mod tests {
     #[test]
     fn test_cycle_detection_error() {
         let result = PipelineConfigBuilder::new()
-            .add_processor("A", "urn:test:example:processor", None)
-            .add_processor("B", "urn:test:example:processor", None)
+            .add_processor("A", "urn:test:processor:example", None)
+            .add_processor("B", "urn:test:processor:example", None)
             .one_of_output("A", "p", ["B"])
             .one_of_output("B", "p", ["A"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
@@ -1358,10 +1358,10 @@ mod tests {
         let dag = PipelineConfigBuilder::new()
             .add_receiver(
                 "Start",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"foo": 1})),
             )
-            .add_exporter("End", "urn:test:example:exporter", None)
+            .add_exporter("End", "urn:test:exporter:example", None)
             .broadcast_output("Start", "out", ["End"])
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1400,10 +1400,10 @@ mod tests {
         let dag = PipelineConfigBuilder::new()
             .add_receiver(
                 "Start",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"foo": 1})),
             )
-            .add_exporter("End", "urn:test:example:exporter", None)
+            .add_exporter("End", "urn:test:exporter:example", None)
             .to("Start", "End")
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1431,10 +1431,10 @@ mod tests {
         let dag = PipelineConfigBuilder::new()
             .add_receiver(
                 "Start",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"foo": 1})),
             )
-            .add_exporter("End", "urn:test:example:exporter", None)
+            .add_exporter("End", "urn:test:exporter:example", None)
             .to_output("Start", "alt", "End")
             .build(PipelineType::Otap, "pgroup", "pipeline");
 
@@ -1463,27 +1463,27 @@ mod tests {
             // ----- TRACES pipeline -----
             .add_receiver(
                 "receiver_otlp_traces",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"desc": "OTLP trace receiver"})),
             )
             .add_processor(
                 "processor_batch_traces",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"name": "batch_traces"})),
             )
             .add_processor(
                 "processor_resource_traces",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"name": "resource_traces"})),
             )
             .add_processor(
                 "processor_traces_to_metrics",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"desc": "convert traces to metrics"})),
             )
             .add_exporter(
                 "exporter_otlp_traces",
-                "urn:test:example:exporter",
+                "urn:test:exporter:example",
                 Some(json!({"desc": "OTLP trace exporter"})),
             )
             .one_of("receiver_otlp_traces", ["processor_batch_traces"])
@@ -1497,27 +1497,27 @@ mod tests {
             // ----- METRICS pipeline -----
             .add_receiver(
                 "receiver_otlp_metrics",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"desc": "OTLP metric receiver"})),
             )
             .add_processor(
                 "processor_batch_metrics",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"name": "batch_metrics"})),
             )
             .add_processor(
                 "processor_metrics_to_events",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"desc": "convert metrics to events"})),
             )
             .add_exporter(
                 "exporter_prometheus",
-                "urn:test:example:exporter",
+                "urn:test:exporter:example",
                 Some(json!({"desc": "Prometheus exporter"})),
             )
             .add_exporter(
                 "exporter_otlp_metrics",
-                "urn:test:example:exporter",
+                "urn:test:exporter:example",
                 Some(json!({"desc": "OTLP metric exporter"})),
             )
             .one_of("receiver_otlp_metrics", ["processor_batch_metrics"])
@@ -1528,27 +1528,27 @@ mod tests {
             // ----- LOGS pipeline -----
             .add_receiver(
                 "receiver_filelog",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"desc": "file log receiver"})),
             )
             .add_receiver(
                 "receiver_syslog",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"desc": "syslog receiver"})),
             )
             .add_processor(
                 "processor_filter_logs",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"name": "filter_logs"})),
             )
             .add_processor(
                 "processor_logs_to_events",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"desc": "convert logs to events"})),
             )
             .add_exporter(
                 "exporter_otlp_logs",
-                "urn:test:example:exporter",
+                "urn:test:exporter:example",
                 Some(json!({"desc": "OTLP log exporter"})),
             )
             .one_of("receiver_filelog", ["processor_filter_logs"])
@@ -1558,17 +1558,17 @@ mod tests {
             // ----- EVENTS pipeline -----
             .add_receiver(
                 "receiver_some_events",
-                "urn:test:example:receiver",
+                "urn:test:receiver:example",
                 Some(json!({"desc": "custom event receiver"})),
             )
             .add_processor(
                 "processor_enrich_events",
-                "urn:test:example:processor",
+                "urn:test:processor:example",
                 Some(json!({"name": "enrich_events"})),
             )
             .add_exporter(
                 "exporter_queue_events",
-                "urn:test:example:exporter",
+                "urn:test:exporter:example",
                 Some(json!({"desc": "push events to queue"})),
             )
             .one_of("receiver_some_events", ["processor_enrich_events"])
@@ -1691,10 +1691,10 @@ mod tests {
         let nodes: super::PipelineNodes = serde_yaml::from_str(
             r#"
 itr:
-  type: "urn:otel:internal_telemetry:receiver"
+  type: "urn:otel:receiver:internal_telemetry"
   config: {}
 sink:
-  type: "urn:otel:console:exporter"
+  type: "urn:otel:exporter:console"
   config: {}
 "#,
         )
@@ -1718,13 +1718,13 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               processor:
-                type: "attribute:processor"
+                type: "processor:attribute"
                 config: {}
               exporter:
-                type: "urn:otel:otlp:exporter"
+                type: "urn:otel:exporter:otlp"
                 config: {}
             connections:
               - from: receiver
@@ -1737,15 +1737,15 @@ sink:
             .expect("should parse");
         assert_eq!(
             config.nodes["receiver"].r#type.as_ref(),
-            "urn:otel:otlp:receiver"
+            "urn:otel:receiver:otlp"
         );
         assert_eq!(
             config.nodes["processor"].r#type.as_ref(),
-            "urn:otel:attribute:processor"
+            "urn:otel:processor:attribute"
         );
         assert_eq!(
             config.nodes["exporter"].r#type.as_ref(),
-            "urn:otel:otlp:exporter"
+            "urn:otel:exporter:otlp"
         );
     }
 
@@ -1762,7 +1762,7 @@ sink:
             super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("invalid plugin urn"));
-        assert!(message.contains("urn:<namespace>:<id>:<kind>"));
+        assert!(message.contains("urn:<namespace>:<kind>:<id>"));
         assert!(message.contains("rust/otap-dataflow/docs/urns.md"));
     }
 
@@ -1771,13 +1771,13 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               processor:
-                type: "attribute:processor"
+                type: "processor:attribute"
                 config: {}
               exporter:
-                type: "urn:otel:otlp:exporter"
+                type: "urn:otel:exporter:otlp"
                 config: {}
             connections:
               - from: receiver
@@ -1801,15 +1801,15 @@ sink:
         }
         assert_eq!(
             config.nodes["receiver"].r#type.as_ref(),
-            "urn:otel:otlp:receiver"
+            "urn:otel:receiver:otlp"
         );
         assert_eq!(
             config.nodes["processor"].r#type.as_ref(),
-            "urn:otel:attribute:processor"
+            "urn:otel:processor:attribute"
         );
         assert_eq!(
             config.nodes["exporter"].r#type.as_ref(),
-            "urn:otel:otlp:exporter"
+            "urn:otel:exporter:otlp"
         );
     }
 
@@ -1818,13 +1818,13 @@ sink:
         let yaml = r#"
             nodes:
               receiver_a:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               receiver_b:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: [receiver_a, receiver_b]
@@ -1854,11 +1854,11 @@ sink:
         let yaml = r#"
             nodes:
               router:
-                type: "type_router:processor"
+                type: "processor:type_router"
                 outputs: ["logs", "metrics", "traces"]
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: router["logs"]
@@ -1885,11 +1885,11 @@ sink:
         let yaml = r#"
             nodes:
               router:
-                type: "type_router:processor"
+                type: "processor:type_router"
                 outputs: ["metrics"]
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: router["logs"]
@@ -1924,10 +1924,10 @@ sink:
         let yaml = r#"
             nodes:
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
               processor:
-                type: "attribute:processor"
+                type: "processor:attribute"
                 config: {}
             connections:
               - from: exporter
@@ -1967,13 +1967,13 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter_a:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
               exporter_b:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: receiver
@@ -1999,10 +1999,10 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: receiver
@@ -2028,13 +2028,13 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter_a:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
               exporter_b:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: receiver
@@ -2071,10 +2071,10 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: []
@@ -2107,10 +2107,10 @@ sink:
         let yaml = r#"
             nodes:
               receiver:
-                type: "otlp:receiver"
+                type: "receiver:otlp"
                 config: {}
               exporter:
-                type: "noop:exporter"
+                type: "exporter:noop"
                 config: {}
             connections:
               - from: receiver
@@ -2144,13 +2144,13 @@ sink:
         let yaml = r#"
             nodes:
               connected_recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               disconnected_recv:
-                type: "urn:test:b:receiver"
+                type: "urn:test:receiver:b"
                 config: {}
               exporter:
-                type: "urn:test:c:exporter"
+                type: "urn:test:exporter:c"
                 config: {}
             connections:
               - from: connected_recv
@@ -2175,16 +2175,16 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               connected_proc:
-                type: "urn:test:b:processor"
+                type: "urn:test:processor:b"
                 config: {}
               orphan_proc:
-                type: "urn:test:c:processor"
+                type: "urn:test:processor:c"
                 config: {}
               exporter:
-                type: "urn:test:d:exporter"
+                type: "urn:test:exporter:d"
                 config: {}
             connections:
               - from: recv
@@ -2213,13 +2213,13 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               connected_exp:
-                type: "urn:test:b:exporter"
+                type: "urn:test:exporter:b"
                 config: {}
               orphan_exp:
-                type: "urn:test:c:exporter"
+                type: "urn:test:exporter:c"
                 config: {}
             connections:
               - from: recv
@@ -2246,19 +2246,19 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               orphan_proc1:
-                type: "urn:test:b:processor"
+                type: "urn:test:processor:b"
                 config: {}
               orphan_proc2:
-                type: "urn:test:c:processor"
+                type: "urn:test:processor:c"
                 config: {}
               connected_exp:
-                type: "urn:test:d:exporter"
+                type: "urn:test:exporter:d"
                 config: {}
               orphan_exp:
-                type: "urn:test:e:exporter"
+                type: "urn:test:exporter:e"
                 config: {}
             connections:
               - from: recv
@@ -2299,13 +2299,13 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               proc:
-                type: "urn:test:b:processor"
+                type: "urn:test:processor:b"
                 config: {}
               exp:
-                type: "urn:test:c:exporter"
+                type: "urn:test:exporter:c"
                 config: {}
             connections:
               - from: recv
@@ -2331,13 +2331,13 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               proc:
-                type: "urn:test:b:processor"
+                type: "urn:test:processor:b"
                 config: {}
               exp:
-                type: "urn:test:c:exporter"
+                type: "urn:test:exporter:c"
                 config: {}
             connections:
               - from: proc
@@ -2372,13 +2372,13 @@ sink:
         let yaml = r#"
             nodes:
               recv:
-                type: "urn:test:a:receiver"
+                type: "urn:test:receiver:a"
                 config: {}
               orphan_proc:
-                type: "urn:test:b:processor"
+                type: "urn:test:processor:b"
                 config: {}
               exp:
-                type: "urn:test:c:exporter"
+                type: "urn:test:exporter:c"
                 config: {}
             connections:
               - from: orphan_proc

@@ -44,10 +44,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: internal_telemetry:receiver
+          type: receiver:internal_telemetry
           config: {}
         sink:
-          type: noop:exporter
+          type: exporter:noop
           config: null
       connections:
         - from: itr
@@ -84,7 +84,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               data_source: static
               generation_strategy: pre_generated
@@ -95,7 +95,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
 
@@ -115,7 +115,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 signals_per_second: 100000
@@ -125,7 +125,7 @@ groups:
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4337"
 
@@ -147,14 +147,14 @@ groups:
 
         nodes:
           otlp_recv1:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4327"
                   wait_for_result: true
           otlp_recv2:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -162,27 +162,27 @@ groups:
                   wait_for_result: true
 
           router:
-            type: type_router:processor
+            type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
 
           retry:
-            type: retry:processor
+            type: processor:retry
             config:
               multiplier: 1.5
 
           logs_exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4328"
               max_in_flight: 6
 
           metrics_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
           spans_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:
@@ -213,14 +213,14 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: 127.0.0.1:4328
 
           perf_noop:
-            type: noop:exporter
+            type: exporter:noop
             config: null
 
         connections:

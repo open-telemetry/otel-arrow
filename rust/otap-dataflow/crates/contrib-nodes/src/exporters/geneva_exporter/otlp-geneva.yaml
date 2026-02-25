@@ -40,7 +40,7 @@ groups:
         nodes:
           # OTLP gRPC Receiver - Accepts telemetry from instrumented apps
           otlp-receiver:
-            type: "urn:otel:otlp:receiver"
+            type: "urn:otel:receiver:otlp"
             config:
               protocols:
                 grpc:
@@ -49,7 +49,7 @@ groups:
 
           # Geneva exporter configuration
           geneva-exporter:
-            type: "urn:microsoft:geneva:exporter"
+            type: "urn:microsoft:exporter:geneva"
             config:
               # ============================================================
               # REQUIRED FIELDS - Replace with your Geneva deployment values

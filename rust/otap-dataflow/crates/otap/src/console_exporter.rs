@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// The URN for the console exporter
-pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:console:exporter";
+pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:exporter:console";
 
 /// Configuration for the console exporter
 #[derive(Debug, Clone, Default, serde::Deserialize)]

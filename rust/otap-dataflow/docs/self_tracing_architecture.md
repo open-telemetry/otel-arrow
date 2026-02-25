@@ -279,10 +279,10 @@ engine:
     pipeline:
       nodes:
         telemetry:
-          type: internal_telemetry:receiver
+          type: receiver:internal_telemetry
           config: {}
         otlp_exporter:
-          type: otlp:exporter
+          type: exporter:otlp
           config: {}
       connections:
         - from: telemetry
