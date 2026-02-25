@@ -38,6 +38,7 @@ pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
 #[derive(Debug, Deserialize)]
 struct ValidationExporterConfig {
     suv_input: NodeName,
+    #[serde(default)]
     control_inputs: Vec<NodeName>,
     /// Validation rules to run. Defaults to a single equivalence check.
     #[serde(default = "ValidationExporterConfig::default_validations")]
@@ -183,6 +184,10 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let msg = OtlpProtoBytes::try_from(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
+                    if source_node.is_none() {
+                        otel_error!("source.is.none");
+                    }
+
 
                     if let Some(msg) = msg
                         && let Some(node_index) = source_node

@@ -115,12 +115,11 @@ impl Scenario {
 
         self.update_configs()?;
         let admin_base = format!("http://{}", self.admin_addr);
-        let generator_signals: Vec<u64> = self
+        let generator_signals: HashMap<String, u64> = self
             .generators
-            .values()
-            .map(|g| g.max_signal_count as u64)
+            .iter()
+            .map(|(label, g)| (label.clone(), g.max_signal_count as u64))
             .collect();
-        let capture_count = self.captures.len();
 
         let rendered_group = self.render_template()?;
         println!("{rendered_group}");
@@ -132,7 +131,6 @@ impl Scenario {
                 rendered_group,
                 admin_base,
                 generator_signals,
-                capture_count,
                 timeout,
                 ready_max_attempts,
                 ready_backoff,
@@ -284,16 +282,16 @@ impl Scenario {
         let mut out = String::new();
         let mut labels: Vec<_> = captures.keys().cloned().collect();
         labels.sort();
-        for (idx, label) in labels.iter().enumerate() {
+        for label in labels.iter() {
             let cap = captures.get(label).expect("label exists");
             let ctx = context! {
                 suv_receiver_type => &cap.suv_receiver_type,
                 suv_port => cap.suv_port,
                 control_ports => cap.control_ports,
                 validate => &cap.validations_config(),
-                capture_index => idx + 1,
                 capture_core_start => cap.core_start,
                 capture_core_end => cap.core_end,
+                capture_label => label,
             };
             out.push_str(
                 &tmpl
@@ -320,7 +318,7 @@ impl Scenario {
         let mut out = String::new();
         let mut labels: Vec<_> = generators.keys().cloned().collect();
         labels.sort();
-        for (idx, label) in labels.iter().enumerate() {
+        for label in labels.iter() {
             let generator_cfg = generators.get(label).expect("label exists");
             let ctx = context! {
                 suv_exporter_type => &generator_cfg.suv_exporter_type,
@@ -332,9 +330,9 @@ impl Scenario {
                 trace_weight => generator_cfg.trace_weight,
                 log_weight => generator_cfg.log_weight,
                 suv_port => generator_cfg.suv_port,
-                generator_index => idx + 1,
                 generator_core_start => generator_cfg.core_start,
                 generator_core_end => generator_cfg.core_end,
+                generator_label => label,
             };
             out.push_str(
                 &tmpl

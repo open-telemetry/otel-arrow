@@ -12,10 +12,10 @@
 {% set trace_weight = trace_weight | default(0) -%}
 {% set log_weight = log_weight | default(100) -%}
 {% set suv_port = suv_port | default(4317) -%}
-{% set generator_index = generator_index | default(1) -%}
+{% set generator_label = generator_label | default("traffic_generator") -%}
 {% set generator_core_start = generator_core_start | default(2) -%}
 {% set generator_core_end = generator_core_end | default(2) -%}
-traffic_gen{{ generator_index }}:
+{{ generator_label }}:
   policies:
     resources:
       core_allocation:
@@ -24,7 +24,7 @@ traffic_gen{{ generator_index }}:
           - start: {{ generator_core_start }}
             end: {{ generator_core_end }}
   nodes:
-    receiver:
+{{ generator_label | indent(4, true)}}:
       type: traffic_generator:receiver
       config:
         traffic_config:
@@ -59,7 +59,7 @@ traffic_gen{{ generator_index }}:
         grpc_endpoint: http://127.0.0.1:{{ control_port }}
 {% endfor %}
   connections:
-  - from: receiver
+  - from: {{ generator_label }}
     to: fanout
   - from: fanout["suv_port"]
     to: suv_exporter

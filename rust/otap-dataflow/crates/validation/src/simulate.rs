@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error::ValidationError;
-use crate::metrics_types::MetricsSnapshot;
+use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
-use serde_json::Value;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::{Duration, sleep};
+use std::collections::HashMap;
 
 const LOADGEN_METRIC_SET: &str = "fake_data_generator.receiver.metrics";
 const LOADGEN_METRIC_NAME: &str = "logs.produced";
@@ -19,8 +19,7 @@ const VALIDATION_METRIC_NAME: &str = "valid";
 pub(crate) async fn run_pipelines_with_timeout(
     rendered_group: String,
     admin_base: String,
-    expected_generator_signals: Vec<u64>,
-    expected_validations: usize,
+    expected_generator_signals: HashMap<String, u64>,
     timeout: Duration,
     ready_max_attempts: usize,
     ready_backoff: Duration,
@@ -47,8 +46,7 @@ pub(crate) async fn run_pipelines_with_timeout(
         )
         .await?;
         sleep(propagation_delay).await;
-        let result =
-            ensure_validation_passed(&admin_client, &admin_base, expected_validations).await;
+        let result = ensure_validation_passed(&admin_client, &admin_base).await;
         shutdown_pipeline(&admin_client, &admin_base).await?;
         result
     })
@@ -97,51 +95,15 @@ async fn wait_for_ready(
         sleep(retry_cooldown).await;
     }
 
-    _ = print_status_snapshot(client, base).await;
-    let mut writer = Box::new(tokio::io::stdout());
-    match client.get(&readyz_url).send().await {
-        Ok(resp) => match resp.text().await {
-            Ok(body) => writer.write_all(format!("pipeline is not ready: {body}").as_bytes()).await.expect("fdafds"),
-            Err(err) => writer.write_all(format!("pipeline is not ready: {err}").as_bytes()).await.expect("fdsafds"),
-        },
-        Err(err) => {
-            last_error = Some(format!("pipeline is not ready: {err}"));
-        }
-    }
-
     Err(ValidationError::Ready(
         last_error.unwrap_or_else(|| "readyz timeout".to_string()),
     ))
 }
 
-async fn print_status_snapshot(client: &Client, base: &str) {
-    let mut writer = Box::new(tokio::io::stdout());
-    let status_url = format!("{base}/status");
-    match client.get(&status_url).send().await {
-        Ok(resp) => {
-            let code = resp.status();
-            match resp.text().await {
-                Ok(body) => {
-                    if let Ok(json) = serde_json::from_str::<Value>(&body) {
-                        match serde_json::to_string_pretty(&json) {
-                            Ok(pretty) => writer.write_all(format!("Status response ({code}):\n{pretty}").as_bytes()).await.expect("fsdafds"),
-                            Err(_) => writer.write_all(format!("Status response ({code}): {body}").as_bytes()).await.expect("fdsafs"),
-                        }
-                    } else {
-                        writer.write_all(format!("Status response ({code}): {body}").as_bytes()).await.expect("fdsafds");
-                    }
-                }
-                Err(err) => println!("Status response ({code}) could not be read: {err}"),
-            }
-        }
-        Err(err) => println!("Status endpoint unreachable: {err}"),
-    }
-}
-
 async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, ValidationError> {
     client
         .get(format!("{base}/telemetry/metrics"))
-        .query(&[("reset", false), ("keep_all_zeroes", false)])
+        .query(&[("reset", false), ("keep_all_zeroes", true)])
         .send()
         .await
         .map_err(|_| ValidationError::Http(format!("No Response from {base}/telemetry/metrics")))?
@@ -155,7 +117,7 @@ async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, V
 async fn wait_for_loadgen(
     client: &Client,
     base: &str,
-    expected_generator_signals: &[u64],
+    expected_generator_signals: &HashMap<String, u64>,
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
     loop {
@@ -170,15 +132,13 @@ async fn wait_for_loadgen(
 async fn ensure_validation_passed(
     client: &Client,
     base: &str,
-    expected_validations: usize,
 ) -> Result<(), ValidationError> {
     let snapshot = fetch_metrics(client, base).await?;
-    if validation_from_metrics(&snapshot, expected_validations) {
-        Ok(())
-    } else {
-        Err(ValidationError::Validation(
-            "validation metrics did not report success".into(),
-        ))
+    match validation_from_metrics(&snapshot) {
+        Ok(()) => Ok(()),
+        Err(failed) => Err(ValidationError::Validation(format!(
+            "validation exporters did not report success: {failed}",
+        ))),
     }
 }
 
@@ -193,39 +153,74 @@ async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), Validation
     Ok(())
 }
 
-fn metric_values(snapshot: &MetricsSnapshot, set_name: &str, metric_name: &str) -> Vec<u64> {
-    snapshot
+// get the value from a specific metric given the snapshot
+fn metric_value(set: &MetricSetSnapshot, metric_name: &str) -> Option<u64> {
+    set.metrics
+        .iter()
+        .find(|m| m.name == metric_name)
+        .map(|m| m.value.to_u64_lossy())
+}
+
+// get value from attribute with key node.id
+// basically gets the name of the node from metrics via metric attributes
+fn attribute_node_id(
+    attributes: &HashMap<String, otap_df_telemetry::attributes::AttributeValue>,
+) -> Option<String> {
+    use otap_df_telemetry::attributes::AttributeValue;
+    match attributes.get("node.id") {
+        Some(AttributeValue::String(v)) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+fn loadgen_reached_limit(
+    snapshot: &MetricsSnapshot,
+    expected_per_gen: &HashMap<String, u64>,
+) -> bool {
+    if expected_per_gen.is_empty() {
+        return true;
+    }
+
+    for set in snapshot
         .metric_sets
         .iter()
-        .filter(|set| set.name == set_name)
-        .flat_map(|set| {
-            set.metrics
-                .iter()
-                .filter(|m| m.name == metric_name)
-                .map(|m| m.value.to_u64_lossy())
-        })
-        .collect()
-}
-
-fn loadgen_reached_limit(snapshot: &MetricsSnapshot, expected_per_gen: &[u64]) -> bool {
-    let mut observed: Vec<u64> = metric_values(snapshot, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME);
-    if observed.len() < expected_per_gen.len() {
-        return false;
+        .filter(|set| set.name == LOADGEN_METRIC_SET)
+    {
+        if let Some(label) = attribute_node_id(&set.attributes) {
+            if let Some(value) = metric_value(set, LOADGEN_METRIC_NAME) {
+                if &value < expected_per_gen.get(&label).unwrap_or(&0u64) {
+                    return false;
+                }
+            }
+        }
     }
-    observed.sort_unstable();
-    let mut expected = expected_per_gen.to_vec();
-    expected.sort_unstable();
-    expected
-        .iter()
-        .zip(observed.iter())
-        .all(|(exp, obs)| obs >= exp)
+    true
 }
 
-fn validation_from_metrics(snapshot: &MetricsSnapshot, expected_validations: usize) -> bool {
-    let values = metric_values(snapshot, VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME);
-    values.len() >= expected_validations
-        && values.iter().filter(|v| **v >= 1).count() >= expected_validations
+fn validation_from_metrics(snapshot: &MetricsSnapshot) -> Result<(), String> {
+    let mut failed_validation_exporters = vec![];
+
+    for set in snapshot
+        .metric_sets
+        .iter()
+        .filter(|set: &&MetricSetSnapshot| set.name == VALIDATION_METRIC_SET)
+    {
+        // if validation failed detected
+        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
+            // track the node id
+            if let Some(label) = attribute_node_id(&set.attributes) {
+                failed_validation_exporters.push(label);
+            }
+        }
+    }
+
+    if failed_validation_exporters.is_empty() {
+        Ok(())
+    } else {
+        Err(failed_validation_exporters.join(", "))
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -235,62 +230,59 @@ mod tests {
     use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
 
-    fn snapshot(set: &str, metric: &str, value: u64) -> MetricsSnapshot {
-        MetricsSnapshot {
-            timestamp: "now".into(),
-            metric_sets: vec![MetricSetSnapshot {
-                name: set.into(),
-                brief: "test".into(),
-                attributes: HashMap::new(),
-                metrics: vec![MetricDataPoint {
-                    name: metric.into(),
-                    unit: "".into(),
-                    brief: "".into(),
-                    instrument: Instrument::Counter,
-                    temporality: Some(Temporality::Cumulative),
-                    value_type: MetricValueType::U64,
-                    value: MetricValue::U64(value),
-                }],
+    fn set_with_node(
+        set_name: &str,
+        metric: &str,
+        value: u64,
+        node_id: &str,
+    ) -> MetricSetSnapshot {
+        MetricSetSnapshot {
+            name: set_name.into(),
+            brief: "test".into(),
+            attributes: HashMap::from([(
+                "node.id".into(),
+                otap_df_telemetry::attributes::AttributeValue::String(node_id.into()),
+            )]),
+            metrics: vec![MetricDataPoint {
+                name: metric.into(),
+                unit: "".into(),
+                brief: "".into(),
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+                value: MetricValue::U64(value),
             }],
         }
     }
 
     #[test]
-    fn metric_value_extracts_matching_metric() {
+    fn loadgen_reached_limit_uses_labels() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![
-                snapshot("other.set", "other", 1).metric_sets.pop().unwrap(),
-                snapshot(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 7)
-                    .metric_sets
-                    .pop()
-                    .unwrap(),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 10, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 4, "genB"),
             ],
         };
+        let mut expected = HashMap::new();
+        _ = expected.insert("genA".into(), 5);
+        _ = expected.insert("genB".into(), 4);
+        assert!(loadgen_reached_limit(&snap, &expected));
 
-        let values = metric_values(&snap, LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME);
-        assert_eq!(values.iter().sum::<u64>(), 7);
-        assert_eq!(
-            metric_values(&snap, "missing", "metric")
-                .iter()
-                .sum::<u64>(),
-            0
-        );
+        _ = expected.insert("genB".into(), 5);
+        assert!(!loadgen_reached_limit(&snap, &expected));
     }
 
     #[test]
-    fn loadgen_reached_limit_checks_threshold() {
-        let snap = snapshot(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 10);
-        assert!(loadgen_reached_limit(&snap, &[5]));
-        assert!(!loadgen_reached_limit(&snap, &[15]));
-    }
-
-    #[test]
-    fn validation_from_metrics_requires_positive_value() {
-        let success = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 2);
-        let failure = snapshot(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 0);
-
-        assert!(validation_from_metrics(&success, 1));
-        assert!(!validation_from_metrics(&failure, 1));
+    fn validation_from_metrics_reports_failed_labels() {
+        let snap = MetricsSnapshot {
+            timestamp: "t".into(),
+            metric_sets: vec![
+                set_with_node(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 1, "cap1"),
+                set_with_node(VALIDATION_METRIC_SET, VALIDATION_METRIC_NAME, 0, "cap2"),
+            ],
+        };
+        let res = validation_from_metrics(&snap);
+        assert_eq!(res, Err("cap2".to_string()));
     }
 }

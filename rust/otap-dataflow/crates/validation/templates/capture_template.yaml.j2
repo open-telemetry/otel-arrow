@@ -6,10 +6,10 @@
 {% set suv_port = suv_port | default(4318) -%}
 {% set validate = validate | default("- equivalence") -%}
 {% set control_ports = control_ports | default([]) -%}
-{% set capture_index = capture_index | default(1) -%}
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
-validate{{capture_index}}:
+{% set capture_label = capture_label | default("validation_exporter") -%}
+{{ capture_label }}:
   policies:
     resources:
       core_allocation:
@@ -38,7 +38,7 @@ validate{{capture_index}}:
           grpc:                                                                                                                                                                           
             listening_addr: 127.0.0.1:{{ control_port }}
 {% endfor %}
-    validation_exporter:
+{{ capture_label | indent(4, true)}}:
       type: validation:exporter
       config:
 {% if control_ports| length > 0 %}
@@ -52,8 +52,8 @@ validate{{capture_index}}:
 {{ validate | indent(10, true)}}
   connections:
   - from: suv_receiver
-    to: validation_exporter
+    to: {{ capture_label }}
 {% for _ in control_ports %}
   - from: control_receiver{{ loop.index }}
-    to: validation_exporter
+    to: {{ capture_label }}
 {% endfor %}
