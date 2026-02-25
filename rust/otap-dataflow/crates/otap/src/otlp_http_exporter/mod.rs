@@ -2064,7 +2064,6 @@ mod test {
                     for pdata in pdatas {
                         ctx.send_pdata(pdata).await.unwrap();
                     }
-
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
@@ -2146,7 +2145,7 @@ mod test {
                     for pdata in pdatas {
                         ctx.send_pdata(pdata).await.unwrap();
                     }
-
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
