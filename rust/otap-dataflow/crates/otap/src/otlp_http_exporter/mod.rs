@@ -134,6 +134,21 @@ impl OtlpHttpExporter {
             })?;
         }
 
+        #[cfg(feature = "experimental-tls")]
+        {
+            if let Some(tls) = &config.http.tls {
+                // server_name not currently supported
+                if let Some(_server_name) = &tls.server_name {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: "TLS configuration error: server_name_override is not supported by \
+                        the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
+                        server_name_override."
+                            .into(),
+                    });
+                }
+            }
+        }
+
         Ok(Self {
             config,
             pdata_metrics,
@@ -485,14 +500,12 @@ impl ServiceRequestError {
 fn format_source(e: &reqwest::Error) -> String {
     use std::error::Error;
     match e.source() {
-        Some(src) => {
-            match src.source() {
-                Some(inner_src) => {
-                    format!(": {src}: {inner_src}")
-                },
-                None => {
-                    format!(": {src}")
-                }
+        Some(src) => match src.source() {
+            Some(inner_src) => {
+                format!(": {src}: {inner_src}")
+            }
+            None => {
+                format!(": {src}")
             }
         },
         None => String::new(),
@@ -2186,7 +2199,7 @@ mod test {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
 
-        let (mut pdata_rx, server_cancellation_token) =
+        let (_, server_cancellation_token) =
             run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
 
         let (logs_batch, _, _) = gen_batches_for_each_signal_type();
@@ -2214,7 +2227,6 @@ mod test {
                     // ensure exit success
                     result.unwrap();
                     server_cancellation_token.cancel();
-
 
                     let mut nack_count = 0;
                     let expected_nacks = 1;
@@ -2258,12 +2270,13 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_from_config_validates_server_name_override_set() {
         let invalid_config = serde_json::json!({
             "endpoint": "https://localhost",
             "http": {
                 "tls": {
-                    "server_name": "localhost123"
+                    "server_name_override": "localhost123"
                 }
             },
             "client_pool_size": 5
@@ -2281,12 +2294,73 @@ mod test {
         );
 
         let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
-        todo!()
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+        assert!(
+            err.to_string()
+                .contains("server_name_override is not supported")
+        )
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_start_returns_error_if_server_name_override_set() {
-        todo!()
+        let port = pick_unused_port().unwrap();
+        // let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("https://localhost:{port}");
+
+        let client_tls_config = TlsClientConfig {
+            config: TlsConfig {
+                cert_file: None,
+                cert_pem: None,
+                key_file: None,
+                key_pem: None,
+                reload_interval: None,
+            },
+            ca_file: None,
+            ca_pem: None,
+            include_system_ca_certs_pool: None,
+            server_name: Some("server_name".into()),
+            insecure: None,
+            insecure_skip_verify: None,
+        };
+        let config = Config {
+            http: HttpClientSettings {
+                tls: Some(client_tls_config),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        // let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        // let (mut pdata_rx, server_cancellation_token) =
+        //     run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        ))];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| Box::pin(async move {}))
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    let err = result.unwrap_err();
+                    let err_message = err.to_string();
+                    assert!(
+                        err_message.contains("server_name_override is not supported"),
+                        "unexpected error {}",
+                        err_message
+                    )
+                })
+            });
     }
 
     #[test]
@@ -2477,7 +2551,7 @@ mod test {
                 watch_client_ca: false,
                 handshake_timeout: Some(Duration::from_secs(10)),
             },
-            "client error (Connect): invalid peer certificate: UnknownIssuer"
+            "client error (Connect): invalid peer certificate: UnknownIssuer",
         );
     }
 
@@ -2526,7 +2600,7 @@ mod test {
                 watch_client_ca: false,
                 handshake_timeout: Some(Duration::from_secs(10)),
             },
-            "client error (Connect): invalid peer certificate: UnknownIssuer"
+            "client error (Connect): invalid peer certificate: UnknownIssuer",
         );
     }
 
@@ -2542,7 +2616,6 @@ mod test {
             Some(ExtendedKeyUsage::ServerAuth),
         );
         server.write_to_dir(path, "server");
-
 
         run_tls_failure_test(
             TlsClientConfig {
@@ -2574,8 +2647,7 @@ mod test {
                 watch_client_ca: false,
                 handshake_timeout: Some(Duration::from_secs(10)),
             },
-            "client error (Connect): invalid peer certificate: NotValidForName"
+            "client error (Connect): invalid peer certificate: NotValidForName",
         );
     }
-
 }

@@ -510,7 +510,7 @@ struct HttpHandler {
 
 impl HttpHandler {
     async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-    let Some(signal) = map_path_to_signal(req.uri().path()) else {
+        let Some(signal) = map_path_to_signal(req.uri().path()) else {
             return Ok(not_found());
         };
 

@@ -126,11 +126,10 @@ impl HttpClientSettings {
                 // This is a bit more complex, we'll delay implementing this until it's necessary.
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "TLS configuration error: server_name override is not supported by the current \
-                    Rust OTLP HTTP client implementation (reqwest/rustls) remove server_name.",
+                    "TLS configuration error: server_name_override is not supported by the current \
+                    Rust OTLP HTTP client implementation (reqwest/rustls) remove server_name_override.",
                 ).into());
             }
-
 
             if let Some(true) = &tls.insecure_skip_verify {
                 client_builder = client_builder.danger_accept_invalid_certs(true);
