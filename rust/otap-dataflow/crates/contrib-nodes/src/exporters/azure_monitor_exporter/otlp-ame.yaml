@@ -85,13 +85,6 @@ groups:
                 # OAuth scope for Azure Monitor
                 scope: "https://monitor.azure.com/.default"
 
-              # Self-telemetry configuration (optional, all fields have defaults)
-              telemetry:
-                # How often to report the exporter's own operational metrics.
-                # Accepts human-readable durations: "500ms", "1s", "5s", "1m", etc.
-                # Min: 100ms, Max: 5m, Default: 1s
-                metrics_report_interval: "1s"
-
         connections:
           - from: otlp-receiver
             to: azure-monitor-exporter

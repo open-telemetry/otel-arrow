@@ -489,9 +489,9 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 }
             })?;
 
-        // Start periodic telemetry collection (every 1 second)
-        _ = effect_handler
-            .start_periodic_telemetry(self.config.telemetry.metrics_report_interval)
+        // Start periodic telemetry collection and retain the cancel handle for graceful shutdown
+        let telemetry_timer_cancel_handle = effect_handler
+            .start_periodic_telemetry(std::time::Duration::from_secs(1))
             .await
             .map_err(|e| EngineError::InternalError {
                 message: format!("Failed to start telemetry timer: {e}"),
@@ -601,6 +601,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             let _ = self.metrics.borrow_mut().report(&mut metrics_reporter);
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
+                            let _ = telemetry_timer_cancel_handle.cancel().await;
                             self.handle_shutdown(&effect_handler).await?;
                             let snapshot = self.metrics.borrow().metrics().snapshot();
                             return Ok(TerminalState::new(
@@ -620,7 +621,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig, TelemetryConfig};
+    use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
     use super::*;
     use azure_core::time::OffsetDateTime;
     use bytes::Bytes;
@@ -652,7 +653,6 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
-            telemetry: TelemetryConfig::default(),
         }
     }
 

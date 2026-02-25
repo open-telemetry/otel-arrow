@@ -409,7 +409,7 @@ mod tests {
     }
 
     fn create_test_config() -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig, TelemetryConfig};
+        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
@@ -430,7 +430,6 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
-            telemetry: TelemetryConfig::default(),
         }
     }
 
@@ -718,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_empty_schema_mappings() {
-        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig, TelemetryConfig};
+        use super::super::config::{ApiConfig, AuthConfig, SchemaConfig};
 
         let config = Config {
             api: ApiConfig {
@@ -732,7 +731,6 @@ mod tests {
                 },
             },
             auth: AuthConfig::default(),
-            telemetry: TelemetryConfig::default(),
         };
 
         let transformer = Transformer::new(&config, create_test_metrics());
