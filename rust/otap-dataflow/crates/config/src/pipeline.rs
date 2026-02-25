@@ -926,7 +926,7 @@ impl PipelineConfigBuilder {
                 NodeUserConfig {
                     r#type: node_type,
                     description: None,
-                    telemetry_attributes: HashMap::new(),
+                    entity: None,
                     outputs: Vec::new(),
                     default_output: None,
                     config: config.unwrap_or(Value::Null),

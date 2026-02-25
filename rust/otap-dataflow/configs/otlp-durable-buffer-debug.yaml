@@ -25,7 +25,9 @@ groups:
           receiver:
             type: otlp:receiver
             config:
-              listening_addr: "127.0.0.1:4317"
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
 
           durable_buffer:
             type: durable_buffer:processor

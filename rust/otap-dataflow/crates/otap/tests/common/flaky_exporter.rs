@@ -127,6 +127,7 @@ static FLAKY_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: |_| Ok(()),
 };
 
 #[async_trait(?Send)]
