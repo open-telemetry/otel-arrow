@@ -52,9 +52,12 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_info};
 use prost::Message as _;
 use reqwest::{Client, Response};
+
+#[cfg(feature = "experimental-tls")]
+use otap_df_telemetry::otel_warn;
 
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
@@ -717,7 +720,6 @@ mod test {
     use hyper::service::service_fn;
     use hyper_util::rt::TokioIo;
     use otap_df_config::PortName;
-    use otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig};
     use otap_df_engine::Interests;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::{PipelineControlMsg, pipeline_ctrl_msg_channel};
@@ -738,14 +740,20 @@ mod test {
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
-    use otap_test_tls_certs::{ExtendedKeyUsage, generate_ca};
+
     use parking_lot::lock_api::Mutex;
     use portpicker::pick_unused_port;
     use prost::Message;
-    use tempfile::TempDir;
     use tokio::runtime::Runtime;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
+
+    #[cfg(feature = "experimental-tls")]
+    use {
+        otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
+        otap_test_tls_certs::{ExtendedKeyUsage, generate_ca},
+        tempfile::TempDir,
+    };
 
     use super::*;
 

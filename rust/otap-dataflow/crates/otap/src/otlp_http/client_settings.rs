@@ -3,22 +3,20 @@
 
 //! Shared configuration for HTTP-based clients.
 
-#[cfg(feature = "experimental-tls")]
-use otap_df_config::tls::TlsClientConfig;
-#[cfg(feature = "experimental-tls")]
-use reqwest::Certificate;
-
-use otap_df_telemetry::otel_error;
 use reqwest::ClientBuilder;
 use serde::Deserialize;
-use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
+
+#[cfg(feature = "experimental-tls")]
+use {
+    crate::tls_utils::read_file_with_limit_async, otap_df_config::tls::TlsClientConfig,
+    otap_df_telemetry::otel_error, reqwest::Certificate, std::io,
+};
 
 use crate::otap_grpc::client_settings::{
     default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
 };
-use crate::tls_utils::read_file_with_limit_async;
 
 /// Common configuration shared across HTTP clients.
 #[derive(Debug, Deserialize, Clone)]
