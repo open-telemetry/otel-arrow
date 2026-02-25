@@ -13,20 +13,20 @@ engine: {}
 
 {# Determine receiver type URN and config #}
 {%- if receiver_type == "otap" -%}
-  {% set type_urn = "urn:otel:otap:receiver" %}
+  {% set type_urn = "urn:otel:receiver:otap" %}
   {% set compression = compression_method | default("zstd") %}
   {% set extra_config = {
     "response_stream_channel_size": 100,
     "compression_method": compression
   } %}
 {%- elif receiver_type == "otlp" -%}
-  {% set type_urn = "urn:otel:otlp:receiver" %}
+  {% set type_urn = "urn:otel:receiver:otlp" %}
   {% set compression = compression_method | default("gzip") %}
   {% set extra_config = {
     "request_compression": compression
   } %}
 {%- else -%}
-  {% set type_urn = "urn:unknown:invalid:receiver" %}
+  {% set type_urn = "urn:unknown:receiver:invalid" %}
   {% set error_msg = "Unknown backend_receiver_type: " ~ receiver_type %}
 {%- endif %}
 
@@ -58,7 +58,7 @@ groups:
             {%- endif %}
 
           perf:
-            type: "urn:otel:perf:exporter"
+            type: "urn:otel:exporter:perf"
             config:
               frequency: 500
               cpu_usage: false
