@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1771977274899,
+  "lastUpdate": 1772041705582,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "sachinnb999@gmail.com",
-            "name": "Sachin Bansal",
-            "username": "Apostlex0"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "ede3e1715444e0d20dccf3e7be1f99ecc3f64944",
-          "message": "fix: Always materialize the parent IDs when we transform attributes (#1824)\n\nfixes #966\n\n---------\n\nCo-authored-by: albertlockett <a.lockett@f5.com>",
-          "timestamp": "2026-01-19T19:01:58Z",
-          "tree_id": "cb212c155c6aba852458914ce0b950b05daf5ce7",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/ede3e1715444e0d20dccf3e7be1f99ecc3f64944"
-        },
-        "date": 1768852764513,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.7676288485527039,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 93.95898662144198,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 94.47497525766777,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 45.727734375,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 48.265625,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 561365.3999844705,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 565674.6028207779,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.001817,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 10183417.609587105,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 10127210.999977686,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -8398,6 +8314,90 @@ window.BENCHMARK_DATA = {
           {
             "name": "network_rx_bytes_rate_avg",
             "value": 11248590.109118441,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "AaronRM@users.noreply.github.com",
+            "name": "Aaron Marten",
+            "username": "AaronRM"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7b75b942f643225a2e0ea98f2e1374885cf71678",
+          "message": "feat(metrics): enhance DurableBufferMetrics with per-item, expired, (re)queued tracking (#2103)\n\n# Change Summary\n\nThis commit adds per-item, per-signal-type metrics to the durable buffer\nprocessor. Previously only Arrow-format bundles were counted; now OTLP\npass-through bundles are also counted by scanning the protobuf wire\nformat. Item counts are persisted in the Quiver segment manifest and\nrestored on restart, enabling accurate queued-item gauges across\nrestarts.\n\nNew metrics under `otelcol.node.durable_buffer`:\n\n- Consumed/produced counters per signal type (log records, metric\npoints, spans): renamed from the previous *_arrow_* variants\n- Queued gauges per signal type: items ingested but not yet ACKed,\nseeded from WAL on restart\n- Requeued counters per signal type: items in NACKed bundles scheduled\nfor retry\n- Dropped/expired item gauges: item-granularity equivalents of the\nexisting bundle-level gauges\n\n## What issue does this PR close?\n\n- Closes #2104\n\n## How are these changes tested?\n\n- Added relevant unit tests to validate counters from\n`durable_buffer_processor`\n- Manually validated counters behave as expected from prometheus\nendpoint\n\n## Are there any user-facing changes?\n\nYes. There are new metrics exposed under the durable_buffer metric set.\nThe previous `consumed.arrow.*` and `produced.arrow.*` metrics are\nrenamed to the signal-agnostic names above (e.g., `consumed.arrow.logs`\n=> `consumed.log.records`). This is a breaking change for any dashboards\nor alerts referencing the old metric names.",
+          "timestamp": "2026-02-25T16:54:49Z",
+          "tree_id": "8d171616b5a7a0e29e149c2cae9f5cf5c99463a6",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7b75b942f643225a2e0ea98f2e1374885cf71678"
+        },
+        "date": 1772041704910,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": -2.1483471393585205,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 96.10724783459031,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 96.54501898583263,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 47.52877604166667,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 49.78515625,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 498470.28249550995,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 509179.15499036363,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002582,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 11247934.075687526,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 11194109.877994435,
             "unit": "bytes/sec",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
           }
