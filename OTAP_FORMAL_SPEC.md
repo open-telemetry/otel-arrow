@@ -19,15 +19,17 @@
 
 ### 1.1 Purpose
 
-The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting OpenTelemetry
-telemetry signals (logs, metrics, and traces) from a Client to a Server. OTAP optimizes on multiple
-axis for compression efficiency, memory usage, and processing speed while being semantically
-equivalent to OpenTelemetry Protocol (OTLP).
+The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting
+OpenTelemetry telemetry signals (logs, metrics, and traces) from a Client to a 
+Server. OTAP optimizes on multiple axis for compression efficiency, memory 
+usage, and processing speed while being semanticallyequivalent to OpenTelemetry
+Protocol (OTLP).
 
 ### 1.2 Requirements Language
 
-The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT",
-"RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
+"SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be 
+interpreted as described in
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
 See [Appendix F: Glossary](#appendix-f-glossary) for terminology and
@@ -40,35 +42,39 @@ See [Appendix F: Glossary](#appendix-f-glossary) for terminology and
 
 ### 2.1 Normalized Representation
 
-OTAP represents telemetry Signals as a set of normalized tables connected by foreign key
-relationships. Each Signal type has a different number and set of tables reflecting the data
-transported by that Signal.
+OTAP represents telemetry Signals as a set of normalized tables connected by 
+foreign key relationships. Each Signal type has a different number and set of 
+tables reflecting the data transported by that Signal.
 
-Each table within a Signal has a designated Payload Type that identifies it. The foreign key
-relationships between these tables form a Rooted Directed Acyclic Graph (DAG) with the Root Payload
-Type for each signal being the root of that graph.
+Each table within a Signal has a designated Payload Type that identifies it. 
+The foreign key relationships between these tables form a Rooted Directed 
+Acyclic Graph (DAG) with the Root Payload Type for each signal being the root 
+of that graph.
 
-For example, the Logs signal type consists of four Payload Types: LOGS, LOG_ATTRS, RESOURCE_ATTRS,
-and SCOPE_ATTRS. The LOGS table is the Root Payload Type for Logs and fills a similar role as an
-OTLP Log. Each Log has an `id` which identifies it, and links it to the LOG_ATTRS table  which
-defines the log's attributes. LOGS similarly contains `resource` and `scope` fields, each having an
-`id` which links them to the RESOURCE_ATTRS and SCOPE_ATTRS tables respectively.
+For example, the Logs signal type consists of four Payload Types: LOGS, 
+LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS. The LOGS table is the Root Payload 
+Type for Logs and fills a similar role as an OTLP Log. Each Log has an `id` 
+which identifies it, and links it to the LOG_ATTRS table  which defines the 
+log's attributes. LOGS similarly contains `resource` and `scope` fields, each 
+having an `id` which links them to the RESOURCE_ATTRS and SCOPE_ATTRS tables 
+respectively.
 
-The Metrics and Traces signals have a similar structure, but with more tables. The allowed Payload
-Types for each signal can be found in section 3.
+The Metrics and Traces signals have a similar structure, but with more tables.
+The allowed Payload Types for each signal can be found in section 3.
 
 ### 2.2 Apache Arrow and Columnar Representation
 
 OTAP leverages the the
-[Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html#arrow-columnar-format) to
-transmit the payloads described in the previous section. The Arrow Columnar Format defines a
-Serialization and Interprocess Communication (IPC) protocol for exchanging data as "Record Batches".
+[Arrow Columnar Format](https://arrow.apache.org/docs/format/Columnar.html#arrow-columnar-format)
+to transmit the payloads described in the previous section. The Arrow Columnar 
+Format defines a Serialization and Interprocess Communication (IPC) protocol for
+exchanging data as "Record Batches".
 
-Record Batches have a columnar data structure that can be exchanged and processed without
-deserializing to a language specific construct.
+Record Batches have a columnar data structure that can be exchanged and 
+processed without deserializing to a language specific construct.
 
-Columnar data has advantages such as being beneficial for compression and friendly to operate on
-with SIMD instruction sets.
+Columnar data has advantages such as being beneficial for compression and 
+friendly to operate on with SIMD instruction sets.
 
 ## 3. Transport and Service Definitions
 
@@ -89,16 +95,17 @@ service ArrowMetricsService {
 }
 ```
 
-Clients create an OTAP connection by intiating a gRPC connection and starting a gRPC stream for one
-or more services. `BatchArrowRecords` (BAR) messages are streamed from the client with corresponding
-`BatchStatus` acknowledgments streamed back from the server. The bi-directional streaming pattern
-allows the client to continue sending BARs while waiting for acknowledgments, which may come out of
-order enabling high throughput with backpressure control.
+Clients create an OTAP connection by intiating a gRPC connection and starting a
+gRPC stream for one or more services. `BatchArrowRecords` (BAR) messages are
+streamed from the client with corresponding `BatchStatus` acknowledgments
+streamed back from the server. The bi-directional streaming pattern allows the
+client to continue sending BARs while waiting for acknowledgments, which may
+come out of order enabling high throughput with backpressure control.
 
 ### 3.1 BatchArrowRecords
 
-The BatchArrowRecords (BAR) message is the fundamental unit of data transmission for the OTAP data
-model.
+The BatchArrowRecords (BAR) message is the fundamental unit of data transmission
+for the OTAP data model.
 
 ```protobuf
 message BatchArrowRecords {
@@ -120,18 +127,18 @@ message BatchArrowRecords {
 }
 ```
 
-The `batch_id` is an identifier used for the server to ack or nack successful receipt of the batch
-and MUST be unique within a gRPC stream.
+The `batch_id` is an identifier used for the server to ack or nack successful 
+receipt of the batch and MUST be unique within a gRPC stream.
 
-TODO: Should we require batch_ids be strictly increasing? Is there a reason we'd like to know which
-messages came first/second from a client? What if a schema reset occurs and then we get a nack and
-need to re-transmit?
+TODO: Should we require batch_ids be strictly increasing? Is there a reason we'd 
+like to know which messages came first/second from a client? What if a schema 
+reset occurs and then we get a nack and need to re-transmit?
 
-The `headers` field can contain additional application level metadata and MUST (TODO: MAY?) be HPACK
-compressed if present.
+The `headers` field can contain additional application level metadata and MUST 
+(TODO: MAY?) be HPACK compressed if present.
 
-Each `ArrowPayload` in the `arrow_payloads` field contains data for one Payload Type in the Signal,
-as indicated by the `type` field.
+Each `ArrowPayload` in the `arrow_payloads` field contains data for one Payload
+Type in the Signal, as indicated by the `type` field.
 
 ```protobuf
 message ArrowPayload {
@@ -152,20 +159,23 @@ message ArrowPayload {
 }
 ```
 
-The `schema_id` is an indicator of the schema being used for this Payload Type and is discussed in
-more detail in section 4.
+The `schema_id` is an indicator of the schema being used for this Payload Type
+and is discussed in more detail in section 4.
 
-The `record` field contains the telemetry data for this Payload Type. Data for each Payload Type is
-transmitted in this field as Arrow Record Batches using the Apache Arrow IPC protocol. The `record`
-field MUST contain at least one valid Encapsulated Arrow IPC message.
+The `record` field contains the telemetry data for this Payload Type. Data for 
+each Payload Type is transmitted in this field as Arrow Record Batches using the
+Apache Arrow IPC protocol. The `record` field MUST contain at least one valid 
+Encapsulated Arrow IPC message.
 
-Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only send ArrowPayloads with
-allowed ArrowPayload types for that Signal according to the tables defined in this section.
+Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only 
+send ArrowPayloads with allowed ArrowPayload types for that Signal according to 
+the tables defined in this section.
 
-`arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS, or
-UNIVARIATE_METRICS) and SHOULD omit payloads with 0 rows.
+`arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS,
+or UNIVARIATE_METRICS) and SHOULD omit payloads with 0 rows.
 
-A `type` MUST NOT be sent as `UNKNOWN` (value 0) // TODO: What's the practical use of this value?
+A `type` MUST NOT be sent as `UNKNOWN` (value 0) // TODO: What's the practical 
+use of this value?
 
 #### 3.1.1 Logs Allowed Payload Types
 
@@ -214,9 +224,10 @@ A `type` MUST NOT be sent as `UNKNOWN` (value 0) // TODO: What's the practical u
 
 ### 3.2 BatchStatus Acknowledgment
 
-The `BatchStatus` message provides feedback from server to client about the success or failure of
-processing a BAR. This acknowledgment mechanism enables clients to track which BARs have been
-successfully processed and handle failures for BARs that were rejected.
+The `BatchStatus` message provides feedback from server to client about the 
+success or failure of processing a BAR. This acknowledgment mechanism enables
+clients to track which BARs have been successfully processed and handle failures
+for BARs that were rejected.
 
 ```protobuf
 message BatchStatus {
@@ -238,9 +249,10 @@ message BatchStatus {
 }
 ```
 
-Servers MUST send BatchStatus messages to acknowledge all received BARs. The status code MUST be set
-to OK to indicate a BAR was successfully accepted and MUST be set to a Non-OK status code to
-indicate any error conditions. See section 7.
+Servers MUST send BatchStatus messages to acknowledge all received BARs. The
+status code MUST be set to OK to indicate a BAR was successfully accepted and 
+MUST be set to a Non-OK status code to indicate any error conditions. See 
+section 7.
 
 ### 3.3 Connection Lifecycle
 
@@ -248,100 +260,112 @@ The typical lifecycle for an OTAP connection is as follows:
 
 1. Client establishes gRPC connection to server
 2. Client initiates bi-directional stream for the appropriate signal type
-3. Client sends a stream of BatchArrowRecords (BAR) messages and the Server responds with a stream
-   of BatchStatus acknowledgements.
+3. Client sends a stream of BatchArrowRecords (BAR) messages and the Server 
+   responds with a stream of BatchStatus acknowledgements.
 4. Connection persists until explicitly closed or an error occurs
 
 ## 4. IPC Stream Management and Schema Resets
 
-This section defines how Clients and Servers manage Arrow IPC Streams transmitted over an
-ArrowPayload's `record` field along with the related mechanics of Schema Resets.
+This section defines how Clients and Servers manage Arrow IPC Streams 
+transmitted over an ArrowPayload's `record` field along with the related 
+mechanics of Schema Resets.
 
 ### 4.1 Arrow IPC Background
 
 [Arrow IPC protocol](https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc)
-is defined by the Arrow project. While some details which are especially relevant to OTAP are
-mentioned here, please refer to the full documentation on Arrow IPC. If you are familiar with Arrow
-IPC you may want to skip this section.
+is defined by the Arrow project. While some details which are especially 
+relevant to OTAP are mentioned here, please refer to the full documentation on 
+Arrow IPC. If you are familiar with Arrow IPC you may want to skip this section.
 
-Arrow IPC is a binary protocol for efficiently transmitting Record Batches which share a Schema. It
-can be used with any transport and is defined in terms of a one way stream of
+Arrow IPC is a binary protocol for efficiently transmitting Record Batches which
+share a Schema. It can be used with any transport and is defined in terms of a 
+one way stream of
 [Encapsulated Arrow IPC Messages](https://arrow.apache.org/docs/format/Columnar.html#encapsulated-message-format)
 which must be processed by the recipient in order.
 
-A Schema defines a Record Batch's field names and types. Arrow supports many types including
-primitive types like uint16, list types, struct types, and types with special encodings such as
-Dictionary types.
+A Schema defines a Record Batch's field names and types. Arrow supports many 
+types including primitive types like uint16, list types, struct types, and 
+types with special encodings such as Dictionary types.
 
-Dictionary types can be used to save space for columns with repeated values. For example, rather
-than storing a UTF8 (String) column with many duplicates, you may instead store a Dictionary<U8,
-UTF8> which stores offsets into a separate array of strings, thereby saving space. It's important to
-note that Dictionary<U8, UTF8> is considered a different type from UTF8 rather than a different
-encoding of the same type. Schemas which are otherwise identical, but use these two types for the
-same field are NOT considered the same.
+Dictionary types can be used to save space for columns with repeated values. For
+example, rather than storing a UTF8 (String) column with many duplicates, you 
+may instead store a Dictionary<U8,UTF8> which stores offsets into a separate 
+array of strings, thereby saving space. It's important to note that 
+Dictionary<U8, UTF8> is considered a different type from UTF8 rather than a 
+different encoding of the same type. Schemas which are otherwise identical, but
+use these two types for the same field are NOT considered the same.
 
-IPC Streams are stateful in order to reduce the amount of data that has to be transmitted. The
-Schema of the Record Batches is written first as it's own message and indicates the schema for all
-Record Batch messages to follow.
+IPC Streams are stateful in order to reduce the amount of data that has to be 
+transmitted. The Schema of the Record Batches is written first as it's own 
+message and indicates the schema for all Record Batch messages to follow.
 
-If the Schema contains Dictionary columns, then Dictionary Batches containing the Dictionary values
-must be sent ahead of any Record Batch messages which reference them. The Record batch messages then
-only need to include the offsets into the values array. If the initial Dictionary message for a
-column did not include all possible values which may be discovered after the Stream begins, Delta
-Dictionary messages can be sent to inform the receiver of the new values.
+If the Schema contains Dictionary columns, then Dictionary Batches containing 
+the Dictionary values must be sent ahead of any Record Batch messages which 
+reference them. The Record batch messages then only need to include the offsets
+into the values array. If the initial Dictionary message for a column did not
+include all possible values which may be discovered after the Stream begins, 
+Delta Dictionary messages can be sent to inform the receiver of the new values.
 
 ### 4.2 OTAP Adaptive Schemas
 
-To enable domain specific optimizations, OTAP is flexible in the Schemas that it permits for Record
-Batches of a given Payload Type.
+To enable domain specific optimizations, OTAP is flexible in the Schemas that 
+it permits for Record Batches of a given Payload Type.
 
-First, OTAP defines many columns for a Payload Type as optional. This is different from Arrow's
-concept of nullability. If the column is marked as optional in the OTAP spec, it may be omitted
-entirely by the Client if there is no data for that Column.
+First, OTAP defines many columns for a Payload Type as optional. This is 
+different from Arrow's concept of nullability. If the column is marked as 
+optional in the OTAP spec, it SHOULD be omitted entirely by the Client if there 
+is no data for that Column.
 
-Additionally, there are a range of Data Types allowed for some columns. For example, a LOGS
-payload's `resource.schema_url` field may have the `Utf8` type, a `Dictionary<U8, Utf8>`, or a
-`Dictionary<U16, Utf8>` as appropriate to reduce the size of transmitted data.
+Additionally, there are a range of Data Types allowed for some columns. For 
+example, a LOGS payload's `resource.schema_url` field may have the `Utf8` type,
+a `Dictionary<U8, Utf8>`, or a `Dictionary<U16, Utf8>` as appropriate to reduce
+the size of transmitted data.
 
-Finally, OTAP allows for the Schema to be updated in the middle of a gRPC stream via a Schema Reset.
-This is a feature unique to OTAP. Once a Schema is established for an Arrow IPC Stream, it cannot be
-updated and the IPC Stream needs to be re-established. OTAP therefore defines a process for
-negotiating an IPC Stream Reset is outlined in section 4.4 Schema Resets and IPC Stream
+Finally, OTAP allows for the Schema to be updated in the middle of a gRPC stream
+via a Schema Reset. This is a feature unique to OTAP. Once a Schema is 
+established for an Arrow IPC Stream, it cannot be updated and the IPC Stream
+needs to be re-established. OTAP therefore defines a process for negotiating an
+IPC Stream Reset is outlined in section 4.4 Schema Resets and IPC Stream
 Management.
 
-The full range of Schemas that are permitted for a given Payload Type are described in Section 5.
+The full range of Schemas that are permitted for a given Payload Type are 
+described in Section 5.
 
 ### 4.3 Optimistic Schema Selection
 
-Clients SHOULD take advantage of OTAP adaptive schemas and optimistically Dictionary encode eligible
-columns. Clients that do this MUST detect Dictionary overflow during the Stream and initiate a
-Schema Reset to upgrade key sizes or change to the native type.
+Clients SHOULD take advantage of OTAP adaptive schemas and optimistically 
+Dictionary encode eligible columns. Clients that do this MUST detect Dictionary
+overflow during the Stream and initiate a Schema Reset to upgrade key sizes or
+change to the native type.
 
 ### 4.4 IPC Stream Management and Schema Resets
 
-Within a gRPC Stream for some Signal, there is a separate Arrow IPC Stream for each Payload Type
-transmitted by the Client.
+Within a gRPC Stream for some Signal, there is a separate Arrow IPC Stream for 
+each Payload Type transmitted by the Client.
 
-Each IPC Stream is uniquely identified within a gRPC Stream by a combination of an ArrowPayload's
-`type` and `schema_id` fields. The first time a Client sends an ArrowPayload with a unique
-combination of these fields, it marks the start of an Arrow IPC Stream for that Payload Type.
+Each IPC Stream is uniquely identified within a gRPC Stream by a combination of
+an ArrowPayload's `type` and `schema_id` fields. The first time a Client sends
+an ArrowPayload with a unique combination of these fields, it marks the start 
+of an Arrow IPC Stream for that Payload Type.
 
-This means that the messages contained in the `record` field MUST contain a Schema Message prior to
-any Dictionary, Delta Dictionary, or Record Batch Messages in the Stream.
+This means that the messages contained in the `record` field MUST contain a 
+Schema Message prior to any Dictionary, Delta Dictionary, or Record Batch 
+Messages in the Stream.
 
-Servers MUST keep track of Arrow IPC Stream state per gRPC Stream and per Payload Type and
-`schema_id` within the Stream.
+Servers MUST keep track of Arrow IPC Stream state per gRPC Stream and per
+Payload Type and `schema_id` within the Stream.
 
-When a Client changes the `schema_id` sent for some Payload Type, this is known as a Schema Reset.
-The Server, upon receiving such an `ArrowPayload`, MUST begin processing the Messages in the
-`record` field of that message as if they begin a new IPC Stream.
+When a Client changes the `schema_id` sent for some Payload Type, this is known
+as a Schema Reset. The Server, upon receiving such an `ArrowPayload`, MUST 
+begin processing the Messages in the `record` field of that message as if they 
+begin a new IPC Stream.
 
 ### 4.5 Generating Schema Ids
 
-- A `schema_id` SHOULD be derived deterministically from the schema structure (field names, types,
-  and their ordering).
-- A client SHOULD NOT generate multiple `schema_id` for the same schema as this will trigger
-  wasteful Stream Resets.
+- A `schema_id` SHOULD be derived deterministically from the schema structure 
+(field names, types, and their ordering).
+- A client SHOULD NOT generate multiple `schema_id` for the same schema as this
+  will trigger wasteful Stream Resets.
 
 See Appendix H on a sample algorithm to generate Schema IDs.
 
@@ -349,14 +373,16 @@ See Appendix H on a sample algorithm to generate Schema IDs.
 
 ## 5. Payload Specifications
 
-This section defines the set of allowable Arrow Schemas for all OTAP Payload Types. Entities are
-organized by signal category with attributes for all tables at the end.
+This section defines the set of allowable Arrow Schemas for all OTAP Payload 
+Types. Entities are organized by signal category with attributes for all tables
+at the end.
 
 **Table Column Descriptions:**
 - **Name**: Field name in the Arrow schema
 - **Native Type**: Base Arrow type for this field
-- **Optimized Encodings**: Indicates acceptable optimized Arrow types allowed for this field (e.g.,
-  `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for list types). See also:
+- **Optimized Encodings**: Indicates acceptable optimized Arrow types allowed 
+  for this field (e.g., `Dict(u8)` for Dictionary(UInt8, Type), `List(T)` for
+  list types). See also:
   [Dictionary Encoding](https://arrow.apache.org/docs/format/Columnar.html#dictionary-encoded-layout)
 - **Nullable**: Whether the field can contain null values
 - **Required**: Whether this field must be present in every record
@@ -366,10 +392,11 @@ organized by signal category with attributes for all tables at the end.
   [Section 6.4.4](#644-field-metadata))
 - **Description**: Human-readable description of the field's purpose
 
-Note: For Columns which have a Struct type, there is one entry in the table representing the
-definition of the struct Column e.g. `resource`. Then there are additional entries in the table for
-each of their sub fields named according to a `struct_column.struct_field` syntax. For example
-`resource.id` defines the properties for the `resource` column's `id` field.
+Note: For Columns which have a Struct type, there is one entry in the table 
+representing the definition of the struct Column e.g. `resource`. Then there are
+additional entries in the table for each of their sub fields named according to
+a `struct_column.struct_field` syntax. For example `resource.id` defines the
+properties for the `resource` column's `id` field.
 
 ### 5.1 Logs
 
@@ -601,21 +628,24 @@ Applies to: RESOURCE_ATTRS / SCOPE_ATTRS / LOG_ATTRS / METRIC_ATTRS / SPAN_ATTRS
 
 #### 5.5.1 "AnyValue" Unions
 
-OpenTelemetry has the concept of an "AnyValue". This is a value representing a union of one or more
-types: `string`, `int`, `double`, `bool`, `map`, `slice`, or `bytes`.
+OpenTelemetry defines the concept of an
+["AnyValue"](https://opentelemetry.io/docs/specs/otel/common/#anyvalue). 
+This is a value representing a union of one or more types: 
+`string`, `int`, `double`, `bool`, `map`, `slice`, or `bytes`.
 
-In OTAP this is implemented via multiple "value" columns either `str`, `int`, `double`, `bool`,
-`bytes`, or `ser`.  `type` field that serves as the discriminant and note that multiple AnyValue
-types can map to the `bytes` column. See the below table for the exact mappings.
+In OTAP this is implemented via multiple "value" columns either `str`, `int`, 
+`double`, `bool`, `bytes`, or `ser`.  `type` field that serves as the 
+discriminant and note that multiple AnyValue types can map to the `bytes` 
+column. See the below table for the exact mappings.
 
 // TODO: I see some mention of Arrow Sparse and Dense Unions in the Go code, is that out of date
 // or am I missing some details there?
 
-This technique is used in all Payload Types that utilize Attribute16 and Attribute32 schemas as well
-as the LOGS `body` field.
+This technique is used in all Payload Types that utilize Attribute16 and 
+Attribute32 schemas as well as the LOGS `body` field.
 
-The "Active Field" is defined as the field that contains valid data for the row, all other value
-fields MUST be ignored for that row.
+The "Active Field" is defined as the field that contains valid data for the 
+row, all other value fields MUST be ignored for that row.
 
 The mappings between `type` discriminants and Active Fields is as follows:
 
@@ -630,99 +660,113 @@ The mappings between `type` discriminants and Active Fields is as follows:
 | 6 | slice | bytes |
 | 7 | bytes | bytes |
 
-The complex types of `map` (5) and `slice` (6) additionally indicate that the bytes field is CBOR
-encoded according to RFC 8949. If the type is `bytes` (7) then the structure of the field is unknown
-at the OTAP level.
+The complex types of `map` (5) and `slice` (6) additionally indicate that the
+bytes field is CBOR encoded according to RFC 8949. If the type is `bytes` (7)
+then the structure of the field is unknown at the OTAP level.
 
-A `type` of `0` indicates that the value for the attribute is null. If the column for the Active
-Field indicated by the `type` field is not present, then the value for the key is also interpreted
-as `Null`.
+A `type` of `0` indicates that the value for the attribute is null. If the 
+column for the Active Field indicated by the `type` field is not present, 
+then the value for the key is also interpreted as `Null`.
 
-In the case of the LOGS payload, note that the AnyValue is contained in the `body` column which is
-also nullable. In this case a null entry is semantically equivalent to a `type` of `0`.
+In the case of the LOGS payload, note that the AnyValue is contained in the 
+`body` column which is also nullable. In this case a null entry is semantically
+equivalent to a `type` of `0`.
 
-If the column for the Active Field indicated by the `type` field is not present, or the `type` falls
-outside of the allowed range, then the value for the key is also interpreted as `Null`.
+If the column for the Active Field indicated by the `type` field is not present,
+or the `type` falls outside of the allowed range, then the value for the key is
+also interpreted as `Null`.
 
 #### 5.5.2 Exemplar Value Fields
 
-// TODO: I am not sure how to interpret the int and double value fields of an exemplar.
+// TODO: I am not sure how to interpret the int and double value fields of an
+exemplar.
 
 ---
 
 ## 6. Id Columns
 
-This section defines more details related to identifier columns used to establish relationships
-between payload types in the OTAP data model.
+This section defines more details related to identifier columns used to 
+establish relationships between payload types in the OTAP data model.
 
 ### 6.1 Primary Keys and Foreign Keys
 
-Most parent-child relationships in the OTAP data model follow a uniform convention. Note Resource
-and Scope entities deviate slightly from these conventions, see section 6.3.
+Most parent-child relationships in the OTAP data model follow a uniform 
+convention. Note Resource and Scope entities deviate slightly from these
+conventions, see section 6.3.
 
 - **Parent/Entity tables** define an `id` column as their primary key
-- **Child tables** define a `parent_id` column as a foreign key that always references their parent
-  table's `id` column
-- All `id` columns are nullable, with a null indicating that there are no child rows
-- `parent_id` columns are not nullable as they must be linked back to some parent `id` column
-- `id` columns are only unique within a BAR, Ids may be reused across batches in the same stream
+- **Child tables** define a `parent_id` column as a foreign key that always
+  references their parent table's `id` column
+- All `id` columns are nullable, with a null indicating that there are no child
+  rows
+- `parent_id` columns are not nullable as they must be linked back to some
+  parent `id` column
+- `id` columns are only unique within a BAR, Ids may be reused across batches 
+  in the same stream
 
 **Example**: In the Logs signal:
 - The LOGS table has an `id` column (UInt16)
-- The LOG_ATTRS table has a `parent_id` column (UInt16) that references LOGS.`id`
+- The LOG_ATTRS table has a `parent_id` column (UInt16) that references
+  LOGS.`id`
 - Each LOG_ATTRS row belongs to exactly one LOGS row via this foreign key
 
 ### 6.2 Id Column Types
 
-Id columns use unsigned integer types sized according to expected cardinality. `id` columns are
-either u32 or u16 and they define the primary keys of the parent table. As such they are always
-unique within a Record Batch and do not benefit from dictionary encoding, so they MUST NOT use a
-dictionary type.
+Id columns use unsigned integer types sized according to expected cardinality.
+`id` columns are either u32 or u16 and they define the primary keys of the 
+parent table. As such they are always unique within a Record Batch and do not
+benefit from dictionary encoding, so they MUST NOT use a dictionary type.
 
-On the other hand, child `parent_id` columns referencing u32 `id` columns of their parents MAY use
-dictionary encoding with either `u8` or `u16` keys to save space.
+On the other hand, child `parent_id` columns referencing u32 `id` columns of 
+their parents MAY use dictionary encoding with either `u8` or `u16` keys to
+save space.
 
 ### 6.3 Resource and Scope Identifiers
 
-Resource and scope entities are **not** represented as separate payload types. Instead, they are
-embedded as struct fields within root tables (LOGS, SPANS, or METRICS).
+Resource and scope entities are **not** represented as separate payload types.
+Instead, they are embedded as struct fields within root tables (LOGS, SPANS, 
+or METRICS).
 
 Each root table contains:
 
 - `resource.id` (UInt16): Identifier for the resource
 - `scope.id` (UInt16): Identifier for the instrumentation scope
 
-Note that there are no RESOURCE or SCOPE payload types. Resources and scopes are defined implicitly
-by their presence in root table rows and can be shared among items of the same type. This gives them
-some special characteristics:
+Note that there are no RESOURCE or SCOPE payload types. Resources and scopes
+are defined implicitly by their presence in root table rows and can be shared
+among items of the same type. This gives them some special characteristics:
 
-1. There is a many-to-many relationship relationship between RESOURCE_ATTRS/SCOPE_ATTRS tables and
-   their parent payload types
-2. The corresponding column in the LOGS/METRICS/SPANS tables for RESOURCE_ATTRS.parent_id and
-   SCOPE_ATTRS.parent_id are `resource.id` and `scope.id` respectively rather than just `id`.
-3. Unlike other identifiers, `resource.id` and `scope.id` have no single table that "owns" them and
-   defines the valid set of Ids.
+1. There is a many-to-many relationship relationship between 
+   RESOURCE_ATTRS/SCOPE_ATTRS tables and their parent payload types
+2. The corresponding column in the LOGS/METRICS/SPANS tables for 
+   RESOURCE_ATTRS.parent_id and SCOPE_ATTRS.parent_id are `resource.id` and 
+   `scope.id` respectively rather than just `id`.
+3. Unlike other identifiers, `resource.id` and `scope.id` have no single table
+   that "owns" them and defines the valid set of Ids.
 
 ### 6.4 Transport Optimized Encodings
 
-OTAP defines specialized column encodings that MAY be used to transform `id` and `parent_id` columns
-before serialization to maximize compression efficiency during network transport.
+OTAP defines specialized column encodings that MAY be used to transform `id` 
+and `parent_id` columns before serialization to maximize compression efficiency
+during network transport.
 
 Id columns often exhibit strong sequential patterns:
 
 - Primary IDs are often sequential (0, 1, 2, 3...)
-- Foreign keys (`parent_id`) are often clustered (many attributes reference the same parent item)
+- Foreign keys (`parent_id`) are often clustered (many attributes reference the
+  same parent item)
 - When sorted by `parent_id`, related records appear together
 
-By encoding these patterns explicitly (e.g., storing deltas between values rather than absolute
-values), we create long runs of small integers and repeated values that compress extremely well.
+By encoding these patterns explicitly (e.g., storing deltas between values 
+rather than absolute values), we create long runs of small integers and repeated
+values that compress extremely well.
 
-Id columns, including `id`, `parent_id`, `resource.id`, and `scope.id`, are by default encoded using
-one of the delta encoding techniques listed below unless their field metadata has
-`"encoding": "plain"` explicitly set.
+Id columns, including `id`, `parent_id`, `resource.id`, and `scope.id`, are by
+default encoded using one of the delta encoding techniques listed below unless
+their field metadata has `"encoding": "plain"` explicitly set.
 
-Which fields use which encodings are listed in section 6.4.5. The encoding will be indicated in the
-field's metadata with one of the following values:
+Which fields use which encodings are listed in section 6.4.5. The encoding will
+be indicated in the field's metadata with one of the following values:
 
 | Key | Values | Meaning |
 |-----|--------|---------|
@@ -741,8 +785,9 @@ No transformation applied. Values are stored as-is in the Arrow array.
 
 **Encoding identifier**: `"delta"`
 
-Stores the difference between consecutive values instead of absolute values. Used for columns that
-are sorted and contain sequential or near-sequential values.
+Stores the difference between consecutive values instead of absolute values. 
+Used for columns that are sorted and contain sequential or near-sequential
+values.
 
 **Applicability**: Primary `id` columns
 
@@ -750,15 +795,16 @@ are sorted and contain sequential or near-sequential values.
 
 **Encoding identifier**: `"quasidelta"`
 
-A hybrid encoding that applies delta encoding selectively. Parent IDs are delta-encoded only within
-"runs" of rows that share the same attribute key/value or other identifying columns.
+A hybrid encoding that applies delta encoding selectively. Parent IDs are 
+delta-encoded only within "runs" of rows that share the same attribute 
+key/value or other identifying columns.
 
 **Applicability**: `parent_id` columns in attribute and related tables
 
 #### 6.4.4 Field Metadata
 
-// TODO: What do we want to spec out as the requirement here? Delta encoded by default unless
-// plain is specified is the current behavior.
+// TODO: What do we want to spec out as the requirement here? Delta encoded by
+default unless plain is specified is the current behavior.
 
 Producers SHOULD include field metadata to indicate encoding:
 ```json
@@ -767,11 +813,9 @@ Producers SHOULD include field metadata to indicate encoding:
 }
 ```
 
-**Requirements**:
-- If metadata is present, `encoding` field SHOULD indicate the applied encoding
-- If metadata is absent, consumers SHOULD assume the column is encoded according to the tables in
-  section 6.4.5.
-- Consumers MUST handle both presence and absence of metadata
+If metadata is absent, consumers SHOULD assume the column is encoded according
+to the tables in section 6.4.5. Consumers MUST handle both presence and 
+absence of metadata.
 
 #### 6.4.5 Encoding Application by Payload Type
 
@@ -817,18 +861,21 @@ The following table specifies encodings per payload type:
 
 ## 7. Error Handling
 
-Robust error handling is critical for reliable telemetry collection. OTAP uses gRPC status codes to
-signal different error conditions, allowing clients to distinguish between transient failures (that
-should be retried) and permanent failures (that indicate bugs or misconfigurations).
+Robust error handling is critical for reliable telemetry collection. OTAP uses 
+gRPC status codes to signal different error conditions, allowing clients to
+distinguish between transient failures (that should be retried) and permanent
+failures (that indicate bugs or misconfigurations).
 
 Error handling in OTAP operates at two levels:
 
-1. **BAR-level errors**: Reported via BatchStatus messages with non-OK status codes
-2. **Stream-level errors**: Reported by closing the gRPC stream with an error status
+1. **BAR-level errors**: Reported via BatchStatus messages with non-OK status
+  codes
+2. **Stream-level errors**: Reported by closing the gRPC stream with an error
+  status
 
-Understanding which errors are retryable versus non-retryable is essential for implementing correct
-client behavior. Retrying non-retryable errors wastes resources, while failing to retry retryable
-errors can lead to data loss.
+Understanding which errors are retryable versus non-retryable is essential for
+implementing correct client behavior. Retrying non-retryable errors wastes
+resources, while failing to retry retryable errors can lead to data loss.
 
 ### 7.1 Error Categories
 
@@ -842,7 +889,8 @@ Errors that MAY resolve with retry:
 - **ABORTED**: Operation aborted, typically safe to retry
 - **CANCELED**: Operation canceled by client
 
-**Client behavior**: Clients SHOULD implement exponential backoff retry for these errors.
+**Client behavior**: Clients SHOULD implement exponential backoff retry for
+these errors.
 
 #### 7.1.2 Non-Retryable Errors
 
@@ -853,7 +901,8 @@ Errors indicating client problems or invalid data:
 - **PERMISSION_DENIED**: Insufficient permissions
 - **INTERNAL**: Internal server error (typically not recoverable by retry)
 
-**Client behavior**: Clients SHOULD NOT retry these errors without corrective action.
+**Client behavior**: Clients SHOULD NOT retry these errors without corrective
+action.
 
 ### 7.2 Status Codes
 
@@ -938,21 +987,6 @@ These match gRPC status codes for consistency.
 - **Cause**: RecordBatch references dictionary not yet sent
 - **Status**: INVALID_ARGUMENT
 - **Action**: Client MUST send DictionaryBatch before referencing in RecordBatch
-
-### 7.4 Partial Failure Handling
-
-If a BatchArrowRecords contains multiple payloads and one fails:
-
-**Option 1: Fail entire BAR**
-- Server returns non-OK status for entire BAR
-- Client MUST resend entire BAR or skip it
-
-**Option 2: Partial success (if supported)**
-- Server returns OK status
-- Server MAY include details about partial failure in status_message
-- Responsibility on server to handle incomplete data
-
-**Recommendation**: Implementations SHOULD fail entire BAR to ensure data consistency.
 
 ---
 
@@ -1062,8 +1096,10 @@ BatchArrowRecords {
 ### C.1 Performance Considerations
 
 1. **BAR sizing**: Larger BARs improve compression but increase memory usage
-2. **Dictionary encoding**: Most effective for low-to-medium cardinality (10-10,000 unique values)
-3. **Transport encoding**: Most effective when data has strong sequential patterns
+2. **Dictionary encoding**: Most effective for low-to-medium cardinality 
+   (10-10,000 unique values)
+3. **Transport encoding**: Most effective when data has strong sequential
+   patterns
 4. **Memory pooling**: Reuse Arrow allocators and buffers across BARs
 
 ---
@@ -1082,13 +1118,14 @@ Major differences from OTLP:
 
 ## Appendix E: Load Balancing
 
-OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges that do not arise with
-stateless unary RPCs. Because gRPC multiplexes streams over a single HTTP/2 connection, L4
-(TCP-level) load balancers distribute work at connection granularity, not per-stream. Combined with
-kernel `SO_REUSEPORT` hashing, too few client connections can pin traffic to a single backend core.
+OTAP's stateful, long-lived gRPC streams introduce load-balancing challenges 
+that do not arise with stateless unary RPCs. Because gRPC multiplexes streams
+over a single HTTP/2 connection, L4 (TCP-level) load balancers distribute work
+at connection granularity, not per-stream. Combined with kernel `SO_REUSEPORT`
+hashing, too few client connections can pin traffic to a single backend core.
 
-For a detailed treatment of challenges, solution techniques (client-side and server-side), and
-recommended baseline configurations, see
+For a detailed treatment of challenges, solution techniques (client-side and 
+server-side), and recommended baseline configurations, see
 [Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
 
 ---
