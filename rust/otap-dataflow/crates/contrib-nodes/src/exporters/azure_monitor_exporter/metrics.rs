@@ -431,6 +431,50 @@ mod tests {
     }
 
     #[test]
+    fn test_record_laclient_status_code() {
+        let mut stats = new_test_tracker();
+
+        // 2xx range
+        stats.record_laclient_status_code(200);
+        stats.record_laclient_status_code(204);
+        stats.record_laclient_status_code(299);
+        assert_eq!(stats.metrics().laclient_http_2xx.get(), 3);
+
+        // Specific error codes
+        stats.record_laclient_status_code(401);
+        assert_eq!(stats.metrics().laclient_http_401.get(), 1);
+
+        stats.record_laclient_status_code(403);
+        assert_eq!(stats.metrics().laclient_http_403.get(), 1);
+
+        stats.record_laclient_status_code(413);
+        assert_eq!(stats.metrics().laclient_http_413.get(), 1);
+
+        stats.record_laclient_status_code(429);
+        assert_eq!(stats.metrics().laclient_http_429.get(), 1);
+
+        // 5xx range
+        stats.record_laclient_status_code(500);
+        stats.record_laclient_status_code(503);
+        stats.record_laclient_status_code(599);
+        assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
+
+        // Ignored status codes — counters should remain unchanged
+        stats.record_laclient_status_code(100); // 1xx
+        stats.record_laclient_status_code(301); // 3xx
+        stats.record_laclient_status_code(404); // 4xx not tracked individually
+        stats.record_laclient_status_code(418); // 4xx not tracked individually
+        stats.record_laclient_status_code(600); // out of range
+
+        assert_eq!(stats.metrics().laclient_http_2xx.get(), 3);
+        assert_eq!(stats.metrics().laclient_http_401.get(), 1);
+        assert_eq!(stats.metrics().laclient_http_403.get(), 1);
+        assert_eq!(stats.metrics().laclient_http_413.get(), 1);
+        assert_eq!(stats.metrics().laclient_http_429.get(), 1);
+        assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
+    }
+
+    #[test]
     fn test_report() {
         let mut stats = new_test_tracker();
         let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(16);
