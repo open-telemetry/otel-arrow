@@ -8,7 +8,7 @@ use bytes::Bytes;
 use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
 use otap_df_engine::{
     ExporterFactory, Interests,
-    control::{CallData, PipelineControlMsg},
+    control::{PipelineControlMsg, UserCallData},
 };
 use otap_df_pdata::OtlpProtoBytes;
 use prost::Message;
@@ -37,16 +37,16 @@ impl Default for TestCallData {
     }
 }
 
-impl From<TestCallData> for CallData {
+impl From<TestCallData> for UserCallData {
     fn from(value: TestCallData) -> Self {
         smallvec::smallvec![value.id0.into(), value.id1.into()]
     }
 }
 
-impl TryFrom<CallData> for TestCallData {
+impl TryFrom<UserCallData> for TestCallData {
     type Error = otap_df_engine::error::Error;
 
-    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
         if value.len() != 2 {
             return Err(Self::Error::InternalError {
                 message: "invalid calldata".into(),
@@ -140,21 +140,21 @@ pub fn test_exporter_with_subscription(
             let (trigger, calldata, reqdata, reason) = match pipeline_rx.recv().await {
                 Ok(PipelineControlMsg::DeliverAck { ack, node_id }) => {
                     assert_eq!(node_id, 654321);
-                    (Interests::ACKS, ack.calldata, Some(ack.accepted), "success".into())
+                    (Interests::ACKS, ack.calldata.user, Some(ack.accepted), "success".into())
                 }
                 Ok(PipelineControlMsg::DeliverNack { nack, node_id }) => {
                     assert_eq!(node_id, 654321);
-                    (Interests::NACKS, nack.calldata, Some(nack.refused), nack.reason)
+                    (Interests::NACKS, nack.calldata.user, Some(nack.refused), nack.reason)
                 }
                 Ok(other) => (
                     Interests::empty(),
-                    CallData::default(),
+                    UserCallData::default(),
                     None,
                     format!("other message {other:?}"),
                 ),
                 Err(err) => (
                     Interests::empty(),
-                    CallData::default(),
+                    UserCallData::default(),
                     None,
                     format!("error {err:?}"),
                 ),

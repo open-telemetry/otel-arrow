@@ -41,7 +41,7 @@ use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
-    control::{AckMsg, CallData, NackMsg, NodeControlMsg},
+    control::{AckMsg, NackMsg, NodeControlMsg, UserCallData},
     error::{Error as EngineError, ProcessorErrorKind},
     local::processor as local,
     message::Message,
@@ -961,7 +961,7 @@ where
     async fn handle(
         &mut self,
         signal: SignalType,
-        calldata: CallData,
+        calldata: UserCallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
     ) -> Result<(), EngineError> {
@@ -983,7 +983,7 @@ impl BatchProcessor {
         effect: &mut local::EffectHandler<OtapPdata>,
         ack: AckMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
-        self.handle_response(*ack.accepted, ack.calldata, effect, &Ok(()))
+        self.handle_response(*ack.accepted, ack.calldata.user, effect, &Ok(()))
             .await
     }
 
@@ -993,14 +993,14 @@ impl BatchProcessor {
         nack: NackMsg<OtapPdata>,
     ) -> Result<(), EngineError> {
         let res = Err(nack.reason);
-        self.handle_response(*nack.refused, nack.calldata, effect, &res)
+        self.handle_response(*nack.refused, nack.calldata.user, effect, &res)
             .await
     }
 
     async fn handle_response(
         &mut self,
         retdata: OtapPdata,
-        calldata: CallData,
+        calldata: UserCallData,
         effect: &mut local::EffectHandler<OtapPdata>,
         res: &Result<(), String>,
     ) -> Result<(), EngineError> {
@@ -1768,13 +1768,13 @@ mod tests {
                                 Ok(PipelineControlMsg::DeliverAck { ack, .. }) => {
                                     looped += 1;
                                     let calldata: TestCallData =
-                                        ack.calldata.try_into().expect("calldata");
+                                        ack.calldata.user.try_into().expect("calldata");
                                     received_acks.push(calldata);
                                 }
                                 Ok(PipelineControlMsg::DeliverNack { nack, .. }) => {
                                     looped += 1;
                                     let calldata: TestCallData =
-                                        nack.calldata.try_into().expect("calldata");
+                                        nack.calldata.user.try_into().expect("calldata");
                                     received_nacks.push(calldata);
                                 }
                                 Ok(_) => {

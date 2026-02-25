@@ -20,7 +20,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::{CallData, NodeControlMsg};
+use otap_df_engine::control::{NodeControlMsg, UserCallData};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -151,7 +151,7 @@ impl DebugCallData {
     }
 }
 
-impl From<DebugCallData> for CallData {
+impl From<DebugCallData> for UserCallData {
     fn from(value: DebugCallData) -> Self {
         let msb = (value.micros >> 64) as u64;
         let lsb = value.micros as u64;
@@ -159,10 +159,10 @@ impl From<DebugCallData> for CallData {
     }
 }
 
-impl TryFrom<CallData> for DebugCallData {
+impl TryFrom<UserCallData> for DebugCallData {
     type Error = Error;
 
-    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
         if value.len() != 2 {
             return Err(Self::Error::InternalError {
                 message: "invalid calldata".into(),
@@ -248,7 +248,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             .await?;
                     }
                     NodeControlMsg::Ack(ackmsg) => {
-                        match DebugCallData::try_from(ackmsg.calldata.clone()) {
+                        match DebugCallData::try_from(ackmsg.calldata.user.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -261,7 +261,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "ACK received with unrecognized calldata (len={}): {e}\n",
-                                        ackmsg.calldata.len()
+                                        ackmsg.calldata.user.len()
                                     ))
                                     .await?;
                             }
@@ -270,7 +270,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         effect_handler.notify_ack(ackmsg).await?;
                     }
                     NodeControlMsg::Nack(nackmsg) => {
-                        match DebugCallData::try_from(nackmsg.calldata.clone()) {
+                        match DebugCallData::try_from(nackmsg.calldata.user.clone()) {
                             Ok(dd) => {
                                 debug_output
                                     .output_message(&format!(
@@ -283,7 +283,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                                 debug_output
                                     .output_message(&format!(
                                         "NACK received with unrecognized calldata (len={}): {e}\n",
-                                        nackmsg.calldata.len()
+                                        nackmsg.calldata.user.len()
                                     ))
                                     .await?;
                             }
@@ -1444,7 +1444,7 @@ mod tests {
                                 node_id, upstream_node_id,
                                 "ACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = ack.calldata.try_into().unwrap();
+                            let received_calldata: TestCallData = ack.calldata.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "ACK should contain subscriber's calldata"
@@ -1495,7 +1495,7 @@ mod tests {
                                 node_id, upstream_node_id,
                                 "NACK should route to subscriber's node_id"
                             );
-                            let received_calldata: TestCallData = nack.calldata.try_into().unwrap();
+                            let received_calldata: TestCallData = nack.calldata.user.try_into().unwrap();
                             assert_eq!(
                                 received_calldata, test_calldata,
                                 "NACK should contain subscriber's calldata"

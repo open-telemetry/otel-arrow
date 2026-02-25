@@ -4,6 +4,7 @@
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
 use crate::channel_metrics::ChannelMetricsHandle;
+use crate::component_metrics::ComponentMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
@@ -14,6 +15,7 @@ use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeW
 use crate::pipeline_ctrl::PipelineCtrlMsgManager;
 use crate::terminal_state::TerminalState;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
+use crate::ReceivedAtNode;
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
@@ -42,6 +44,8 @@ pub struct RuntimePipeline<PData: Debug> {
     nodes: NodeDefs<PData, PipeNode>,
     /// Channel metrics handles collected during build.
     channel_metrics: Vec<ChannelMetricsHandle>,
+    /// Component metrics handles collected during build.
+    component_metrics: Vec<ComponentMetricsHandle>,
     /// Flags controlling pipeline-internal metrics collection/reporting.
     telemetry_policy: TelemetryPolicy,
 }
@@ -83,12 +87,17 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             exporters,
             nodes,
             channel_metrics: Default::default(),
+            component_metrics: Default::default(),
             telemetry_policy,
         }
     }
 
     pub(crate) fn set_channel_metrics(&mut self, channel_metrics: Vec<ChannelMetricsHandle>) {
         self.channel_metrics = channel_metrics;
+    }
+
+    pub(crate) fn set_component_metrics(&mut self, component_metrics: Vec<ComponentMetricsHandle>) {
+        self.component_metrics = component_metrics;
     }
 
     /// Returns the number of nodes in the pipeline.
@@ -102,7 +111,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     pub const fn config(&self) -> &PipelineConfig {
         &self.config
     }
+}
 
+impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
     /// Runs the pipeline forever, starting all nodes and handling their tasks.
     /// Returns an error if any node fails to start or if any task encounters an error.
     pub fn run_forever(
@@ -123,6 +134,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
             exporters,
             nodes: _nodes,
             channel_metrics,
+            component_metrics,
             telemetry_policy,
         } = self;
 
@@ -256,6 +268,7 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 metrics_reporter,
                 telemetry_policy,
                 channel_metrics,
+                component_metrics,
             );
             manager.run().await
         }));
@@ -292,7 +305,9 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 .await
         })
     }
+}
 
+impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
     /// Gets a reference to any node by its ID as a Node trait object
     #[must_use]
     pub fn get_node(&self, node_id: usize) -> Option<&dyn Node<PData>> {

@@ -52,6 +52,7 @@ use otap_df_config::engine::{
 use otap_df_config::policy::{ChannelCapacityPolicy, CoreAllocation, TelemetryPolicy};
 use otap_df_config::{DeployedPipelineKey, PipelineKey, pipeline::PipelineConfig};
 use otap_df_engine::PipelineFactory;
+use otap_df_engine::ReceivedAtNode;
 use otap_df_engine::context::{ControllerContext, PipelineContext};
 use otap_df_engine::control::{
     PipelineCtrlMsgReceiver, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel,
@@ -111,7 +112,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     pub const fn new(pipeline_factory: &'static PipelineFactory<PData>) -> Self {
         Self { pipeline_factory }
     }
+}
 
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode> Controller<PData> {
     /// Starts the controller with the given engine configurations.
     pub fn run_forever(&self, engine_config: OtelDataflowSpec) -> Result<(), Error> {
         self.run_with_mode(engine_config, RunMode::ParkMainThread)
@@ -442,7 +445,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
 
         Ok(())
     }
+}
 
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
     /// Selects which CPU cores to use based on the given allocation.
     fn select_cores_for_allocation(
         mut available_core_ids: Vec<CoreId>,
@@ -576,7 +581,9 @@ impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Controller<PData> {
             core_id: core_id.id,
         }
     }
+}
 
+impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode> Controller<PData> {
     /// Spawns the internal telemetry pipeline if engine observability config provides one.
     ///
     /// Returns the thread handle if an internal pipeline was spawned

@@ -361,14 +361,14 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
                 NodeControlMsg::Ack(ack_message) => {
                     self.handle_ack_nack_inbound(
-                        ack_message.calldata.try_into()?,
+                        ack_message.calldata.user.try_into()?,
                         ack_message.accepted.signal_type(),
                         effect_handler,
                     )
                     .await?;
                 }
                 NodeControlMsg::Nack(nack_message) => {
-                    let outbound_key: Key = nack_message.calldata.try_into()?;
+                    let outbound_key: Key = nack_message.calldata.user.try_into()?;
                     self.contexts
                         .set_failed_outbound(outbound_key, nack_message.reason);
                     self.handle_ack_nack_inbound(

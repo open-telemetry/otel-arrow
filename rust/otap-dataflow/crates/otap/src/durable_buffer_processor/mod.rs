@@ -97,7 +97,7 @@ use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
-use otap_df_engine::control::{AckMsg, CallData, NackMsg, NodeControlMsg};
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg, UserCallData};
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::EffectHandler;
 use otap_df_engine::message::Message;
@@ -227,7 +227,7 @@ pub struct DurableBufferMetrics {
 /// Encode a BundleRef into CallData for ACK/NACK tracking.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32 packed into u64)]
-fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
+fn encode_bundle_ref(bundle_ref: BundleRef) -> UserCallData {
     smallvec![
         Context8u8::from(bundle_ref.segment_seq.raw()),
         Context8u8::from(bundle_ref.bundle_index.raw() as u64),
@@ -235,7 +235,7 @@ fn encode_bundle_ref(bundle_ref: BundleRef) -> CallData {
 }
 
 /// Decode a BundleRef from CallData.
-fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
+fn decode_bundle_ref(calldata: &UserCallData) -> Option<BundleRef> {
     if calldata.len() < 2 {
         return None;
     }
@@ -250,7 +250,7 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
 /// Encode a retry ticket into CallData for DelayedData scheduling.
 ///
 /// Layout: [segment_seq (u64), bundle_index (u32), retry_count (u32) packed into u64]
-fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
+fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> UserCallData {
     // Pack bundle_index (low 32 bits) and retry_count (high 32 bits) into one u64
     let packed = (bundle_ref.bundle_index.raw() as u64) | ((retry_count as u64) << 32);
     smallvec![
@@ -262,7 +262,7 @@ fn encode_retry_ticket(bundle_ref: BundleRef, retry_count: u32) -> CallData {
 /// Decode a retry ticket from CallData.
 ///
 /// Returns (BundleRef, retry_count) if valid.
-fn decode_retry_ticket(calldata: &CallData) -> Option<(BundleRef, u32)> {
+fn decode_retry_ticket(calldata: &UserCallData) -> Option<(BundleRef, u32)> {
     if calldata.len() < 2 {
         return None;
     }
@@ -1132,7 +1132,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&ack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&ack.calldata.user) else {
             // Invalid calldata, just forward the ACK upstream
             return effect_handler.notify_ack(ack).await;
         };
@@ -1174,7 +1174,7 @@ impl DurableBuffer {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         // Extract BundleRef from calldata
-        let Some(bundle_ref) = decode_bundle_ref(&nack.calldata) else {
+        let Some(bundle_ref) = decode_bundle_ref(&nack.calldata.user) else {
             // Invalid calldata, just forward the NACK upstream
             return effect_handler.notify_nack(nack).await;
         };
@@ -1245,7 +1245,7 @@ impl DurableBuffer {
             return Ok(());
         };
 
-        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata) else {
+        let Some((bundle_ref, retry_count)) = decode_retry_ticket(&calldata.user) else {
             otel_warn!("durable_buffer.retry.invalid_calldata");
             return Ok(());
         };
@@ -1531,7 +1531,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                 NodeControlMsg::DelayedData { data, .. } => {
                     // Check if this is a retry ticket (has BundleRef + retry_count in calldata)
                     if let Some(calldata) = data.source_calldata() {
-                        if decode_retry_ticket(&calldata).is_some() {
+                        if decode_retry_ticket(&calldata.user).is_some() {
                             // This is a retry ticket - handle retry
                             return self.handle_delayed_retry(data, effect_handler).await;
                         }
@@ -1608,13 +1608,13 @@ mod tests {
 
     #[test]
     fn test_decode_bundle_ref_empty_calldata() {
-        let calldata: CallData = smallvec![];
+        let calldata: UserCallData = smallvec![];
         assert!(decode_bundle_ref(&calldata).is_none());
     }
 
     #[test]
     fn test_decode_bundle_ref_insufficient_calldata() {
-        let calldata: CallData = smallvec![Context8u8::from(123u64)];
+        let calldata: UserCallData = smallvec![Context8u8::from(123u64)];
         assert!(decode_bundle_ref(&calldata).is_none());
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_decode_retry_ticket_empty_calldata() {
-        let calldata: CallData = smallvec![];
+        let calldata: UserCallData = smallvec![];
         assert!(decode_retry_ticket(&calldata).is_none());
     }
 

@@ -151,7 +151,7 @@ impl OTAPReceiver {
     }
 
     fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
-        let calldata = ack.calldata;
+        let calldata = ack.calldata.user;
         let resp = Ok(());
         let state = match ack.accepted.signal_type() {
             SignalType::Logs => states.logs.as_ref(),
@@ -169,7 +169,7 @@ impl OTAPReceiver {
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
     ) -> RouteResponse {
-        let calldata = std::mem::take(&mut nack.calldata);
+        let calldata = std::mem::take(&mut nack.calldata.user);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
         let state = match signal_type {

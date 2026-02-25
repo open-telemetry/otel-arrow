@@ -3,6 +3,7 @@
 
 //! Message definitions for the pipeline engine.
 
+use crate::component_metrics::record_produced_for_control_msg;
 use crate::control::{AckMsg, NackMsg, NodeControlMsg};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
@@ -306,7 +307,10 @@ impl<PData> MessageChannel<PData> {
                         self.pending_shutdown = Some(NodeControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
-                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Ok(msg) => {
+                        record_produced_for_control_msg(&msg);
+                        return Ok(Message::Control(msg));
+                    }
                     Err(e)  => return Err(e),
                 },
 

@@ -114,11 +114,15 @@ impl<PData> ControlChannel<PData> {
 
     /// Asynchronously receives the next control message.
     ///
+    /// Records producer-side component metrics for Ack/Nack messages.
+    ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<NodeControlMsg<PData>, RecvError> {
-        self.rx.recv().await
+        let msg = self.rx.recv().await?;
+        crate::component_metrics::record_produced_for_control_msg(&msg);
+        Ok(msg)
     }
 }
 

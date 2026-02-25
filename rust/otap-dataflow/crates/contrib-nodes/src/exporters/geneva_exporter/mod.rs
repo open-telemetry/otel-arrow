@@ -728,7 +728,7 @@ mod tests {
                 match pipeline_rx.recv().await.unwrap() {
                     PipelineControlMsg::DeliverAck { ack, node_id } => {
                         assert_eq!(node_id, 4242);
-                        let got: TestCallData = ack.calldata.try_into().unwrap();
+                        let got: TestCallData = ack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
                         assert_eq!(ack.accepted.num_items(), 0);
                     }
@@ -765,7 +765,7 @@ mod tests {
                 match pipeline_rx.recv().await.unwrap() {
                     PipelineControlMsg::DeliverNack { nack, node_id } => {
                         assert_eq!(node_id, 777);
-                        let got: TestCallData = nack.calldata.try_into().unwrap();
+                        let got: TestCallData = nack.calldata.user.try_into().unwrap();
                         assert_eq!(TestCallData::default(), got);
                         assert!(
                             nack.reason.contains("Failed to decode logs request"),

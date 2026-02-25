@@ -5,6 +5,11 @@
 //! to associate metrics and events with the correct pipeline entity, node entity or the correct
 //! input/output channel entities.
 
+use crate::component_metrics::{
+    ComponentMetricsHandle, ComponentMetricsState, ConsumedFailureMetrics, ConsumedRefusedMetrics,
+    ConsumedSuccessMetrics, LocalComponentMetricsHandle, ProducedRefusedMetrics,
+    ProducedSuccessMetrics,
+};
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
@@ -67,20 +72,26 @@ pub(crate) struct NodeTaskContext {
     entity_key: Option<EntityKey>,
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
+    /// Per-node component metrics handle (consumed/produced counters).
+    component_metrics: Option<ComponentMetricsHandle>,
 }
 
 impl NodeTaskContext {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         entity_key: Option<EntityKey>,
         telemetry_handle: Option<NodeTelemetryHandle>,
         input_channel_key: Option<EntityKey>,
         output_channel_keys: Vec<(PortName, EntityKey)>,
     ) -> Self {
+        let component_metrics = telemetry_handle
+            .as_ref()
+            .and_then(|h| h.component_metrics());
         Self {
             entity_key,
             telemetry_handle,
             input_channel_key,
             output_channel_keys,
+            component_metrics,
         }
     }
 }
@@ -122,6 +133,16 @@ pub fn node_output_channel_key(port: &str) -> Option<EntityKey> {
                 .find(|(name, _)| name.as_ref() == port)
                 .map(|(_, key)| *key)
         })
+        .ok()
+        .flatten()
+}
+
+/// Returns the component metrics handle for the current task, if registered.
+#[inline]
+#[must_use]
+pub fn current_component_metrics() -> Option<ComponentMetricsHandle> {
+    NODE_TASK_CONTEXT
+        .try_with(|ctx| ctx.component_metrics.clone())
         .ok()
         .flatten()
 }
@@ -186,6 +207,7 @@ struct NodeTelemetryState {
     input_channel_key: Option<EntityKey>,
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
+    component_metrics: Option<ComponentMetricsHandle>,
     cleaned: bool,
 }
 
@@ -200,6 +222,7 @@ impl NodeTelemetryHandle {
                 input_channel_key: None,
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
+                component_metrics: None,
                 cleaned: false,
             })),
         }
@@ -225,6 +248,32 @@ impl NodeTelemetryHandle {
     /// Record an externally-created metric set so it can be unregistered on cleanup.
     pub(crate) fn track_metric_set(&self, metrics_key: MetricSetKey) {
         self.state.borrow_mut().metric_keys.push(metrics_key);
+    }
+
+    /// Register all five component metric sets for this node and store the handle.
+    /// Returns a clone of the handle for centralized reporting.
+    pub(crate) fn register_component_metrics(&self) -> ComponentMetricsHandle {
+        let consumed_success = self.register_metric_set::<ConsumedSuccessMetrics>();
+        let consumed_failure = self.register_metric_set::<ConsumedFailureMetrics>();
+        let consumed_refused = self.register_metric_set::<ConsumedRefusedMetrics>();
+        let produced_success = self.register_metric_set::<ProducedSuccessMetrics>();
+        let produced_refused = self.register_metric_set::<ProducedRefusedMetrics>();
+        let state = ComponentMetricsState::new(
+            consumed_success,
+            consumed_failure,
+            consumed_refused,
+            produced_success,
+            produced_refused,
+        );
+        let handle: LocalComponentMetricsHandle = Rc::new(RefCell::new(state));
+        let handle = ComponentMetricsHandle::Local(handle);
+        self.state.borrow_mut().component_metrics = Some(handle.clone());
+        handle
+    }
+
+    /// Return the component metrics handle, if registered.
+    pub(crate) fn component_metrics(&self) -> Option<ComponentMetricsHandle> {
+        self.state.borrow().component_metrics.clone()
     }
 
     /// Associate the inbound channel entity key with this node for task-local scoping.

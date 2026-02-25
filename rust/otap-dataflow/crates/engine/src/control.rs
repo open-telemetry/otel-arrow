@@ -12,10 +12,44 @@ use crate::shared::message::{SharedReceiver, SharedSender};
 use bytemuck::Pod;
 use otap_df_channel::error::SendError;
 use otap_df_telemetry::reporter::MetricsReporter;
-use smallvec::{SmallVec, smallvec};
+use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// Returns a monotonic timestamp in nanoseconds since an arbitrary process epoch.
+/// Used for duration calculations in pipeline component metrics.
+///
+/// # Performance note
+///
+/// This uses a `OnceLock` to lazily initialize a fixed `Instant` epoch.
+/// After initialization, each call performs an atomic load to retrieve the
+/// stored `Instant`, then computes `elapsed()`. The atomic load prevents
+/// the compiler from caching the epoch reference in a register, hoisting
+/// it out of a loop, or reordering around it — a small but nonzero cost
+/// on every message through every node.
+///
+/// A zero-synchronization alternative would be to call
+/// `libc::clock_gettime(CLOCK_MONOTONIC, ...)` directly. On Linux this is
+/// a vDSO syscall that returns nanoseconds since boot
+/// with no initialization, no atomic, and no epoch. The trade-off is a
+/// platform-specific `cfg` guard and a `libc` dependency. The timestamps
+/// would be larger numbers (time since boot vs. time since first call) but
+/// that is irrelevant since only differences are used.
+///
+/// On Windows, the equivalent is `QueryPerformanceCounter` /
+/// `QueryPerformanceFrequency` (via `winapi` or `windows-sys`).
+/// `QueryPerformanceCounter` reads a monotonic hardware tick count with
+/// no synchronization and no kernel transition. The frequency is fixed
+/// at boot, so it can be queried once and cached in a `const` or
+/// `OnceLock`. Conversion: `nanos = ticks * 1_000_000_000 / freq`.
+/// This is what `Instant::now()` calls on Windows under the hood.
+pub fn nanos_since_epoch() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_nanos() as u64
+}
 
 /// A 8-byte context value. Supports conversion to and from plain data
 /// using bytemuck.
@@ -61,7 +95,20 @@ impl From<Context8u8> for f64 {
 /// size is arbitrary, but shouldn't be larger than needed by
 /// callers. For example: retry count, sequence and generation
 /// numbers, deadline, num_items, etc.
-pub type CallData = SmallVec<[Context8u8; 3]>;
+pub type UserCallData = SmallVec<[Context8u8; 3]>;
+
+/// Engine-managed call data envelope. Wraps the component's opaque
+/// [`UserCallData`] with engine-managed timestamp and byte-count fields
+/// used for pipeline component metrics.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CallData {
+    /// Component-specific opaque data (formerly the entire `CallData`).
+    pub user: UserCallData,
+    /// Receive timestamp (monotonic nanos since process epoch).
+    pub time_ns: u64,
+    /// Request byte count (deferred — currently 0).
+    pub req_bytes: u64,
+}
 
 /// The ACK message.
 #[derive(Debug, Clone)]
@@ -78,7 +125,7 @@ impl<PData> AckMsg<PData> {
     pub fn new(accepted: PData) -> Self {
         Self {
             accepted: Box::new(accepted),
-            calldata: smallvec![],
+            calldata: CallData::default(),
         }
     }
 }
@@ -113,7 +160,7 @@ impl<PData> NackMsg<PData> {
     fn new_internal<T: Into<String>>(reason: T, refused: PData, permanent: bool) -> Self {
         Self {
             reason: reason.into(),
-            calldata: smallvec![],
+            calldata: CallData::default(),
             refused: Box::new(refused),
             permanent,
         }

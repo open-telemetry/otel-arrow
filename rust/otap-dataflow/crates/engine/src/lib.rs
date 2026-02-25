@@ -9,8 +9,9 @@ use crate::{
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
         ChannelMetricsRegistry, ChannelReceiverMetrics, ChannelSenderMetrics,
     },
+    component_metrics::ComponentMetricsHandle,
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    control::{AckMsg, CallData, NackMsg},
+    control::{AckMsg, NackMsg, UserCallData},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
@@ -54,6 +55,7 @@ pub mod receiver;
 mod attributes;
 mod channel_metrics;
 mod channel_mode;
+pub mod component_metrics;
 pub mod config;
 pub mod context;
 pub mod control;
@@ -235,7 +237,15 @@ pub struct Interests: u8 {
 #[async_trait(?Send)]
 pub trait ProducerEffectHandlerExtension<PData> {
     /// Subscribe to a set of interests.
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut PData);
+    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut PData);
+}
+
+/// Called when PData arrives at a queue-consumer node (processor or exporter).
+/// Pushes an entry frame with a receive timestamp so that downstream
+/// consumer metrics can compute processing duration.
+pub trait ReceivedAtNode {
+    /// Record that this PData was received at the given node at the given time.
+    fn received_at_node(&mut self, node_id: usize, time_ns: u64);
 }
 
 /// Effect handler extensions for consumers specific to data type.
@@ -616,6 +626,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
+        pipeline.set_component_metrics(build_state.component_metrics);
 
         Ok(pipeline)
     }
@@ -727,6 +738,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_entity_key = base_ctx.register_node_entity();
         let node_telemetry_handle =
             NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
+        // Register component metrics (consumed/produced) and collect the handle for reporting.
+        let component_metrics_handle = node_telemetry_handle.register_component_metrics();
+        build_state.component_metrics.push(component_metrics_handle);
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));
         build_state.register_node(
@@ -1464,6 +1478,7 @@ struct BuildState<PData> {
     nodes: NodeDefs<PData, PipeNode>,
     registry: HashMap<NodeName, NodeRegistration>,
     channel_metrics: ChannelMetricsRegistry,
+    component_metrics: Vec<ComponentMetricsHandle>,
 }
 
 impl<PData> BuildState<PData> {
@@ -1472,6 +1487,7 @@ impl<PData> BuildState<PData> {
             nodes: NodeDefs::default(),
             registry: HashMap::new(),
             channel_metrics: ChannelMetricsRegistry::default(),
+            component_metrics: Vec::new(),
         }
     }
 

@@ -262,6 +262,18 @@ pub trait OtapBatchStore: Default + Clone {
     /// the number log records and spans respectively, whereas for metrics it's the count of
     /// data points.
     fn num_items(&self) -> usize;
+
+    /// Returns the total in-memory size of all Arrow buffers across all record batches.
+    ///
+    /// This is the sum of [`RecordBatch::get_array_memory_size()`] for every batch
+    /// present in the store.
+    fn num_bytes(&self) -> usize {
+        self.batches()
+            .iter()
+            .filter_map(|b| b.as_ref())
+            .map(RecordBatch::get_array_memory_size)
+            .sum()
+    }
 }
 
 /// Convert the list of decoded messages into an OtapBatchStore implementation

@@ -11,13 +11,14 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender, nanos_since_epoch};
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::local::processor as local;
 use crate::message::{Message, MessageChannel, Receiver, Sender};
+use crate::ReceivedAtNode;
 use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
@@ -393,7 +394,10 @@ impl<PData> ProcessorWrapper<PData> {
         self,
         pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<PData>,
         metrics_reporter: MetricsReporter,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        PData: ReceivedAtNode,
+    {
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
 
         match runtime {
@@ -411,7 +415,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(mut msg) = message_channel.recv().await {
+                    if let Message::PData(ref mut pdata) = msg {
+                        pdata.received_at_node(
+                            effect_handler.processor_id().index,
+                            nanos_since_epoch(),
+                        );
+                    }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection
@@ -438,7 +448,13 @@ impl<PData> ProcessorWrapper<PData> {
                     .start_periodic_telemetry(Duration::from_secs(1))
                     .await?;
 
-                while let Ok(msg) = message_channel.recv().await {
+                while let Ok(mut msg) = message_channel.recv().await {
+                    if let Message::PData(ref mut pdata) = msg {
+                        pdata.received_at_node(
+                            effect_handler.processor_id().index,
+                            nanos_since_epoch(),
+                        );
+                    }
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Cancel periodic collection

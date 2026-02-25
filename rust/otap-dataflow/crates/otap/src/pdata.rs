@@ -16,11 +16,13 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
+use otap_df_engine::entity_context::current_component_metrics;
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
-    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension,
-    control::{AckMsg, CallData, NackMsg},
+    ConsumerEffectHandlerExtension, Interests,
+    MessageSourceLocalEffectHandlerExtension,
+    MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension, ReceivedAtNode,
+    control::{AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch},
 };
 use otap_df_pdata::OtapPayload;
 
@@ -44,20 +46,27 @@ impl Context {
     pub(crate) fn subscribe_to(
         &mut self,
         mut interests: Interests,
-        calldata: CallData,
+        user_calldata: UserCallData,
         node_id: usize,
     ) {
-        if let Some(last) = self.stack.last_mut() {
-            // Inherit the preceding frame's RETURN_DATA bit
-            interests |= last.interests & Interests::RETURN_DATA;
-
-            // We should never subscribe twice.
-            debug_assert_ne!(node_id, last.node_id);
+        if let Some(top) = self.stack.last_mut() {
+            if top.node_id == node_id {
+                // Same node → merge interests, replace user data.
+                // Engine fields (time_ns, req_bytes) are preserved.
+                top.interests |= interests;
+                top.calldata.user = user_calldata;
+                return;
+            }
+            // Different node → inherit RETURN_DATA from predecessor.
+            interests |= top.interests & Interests::RETURN_DATA;
         }
         self.stack.push(Frame {
             interests,
             node_id,
-            calldata,
+            calldata: CallData {
+                user: user_calldata,
+                ..Default::default()
+            },
         });
     }
 
@@ -146,10 +155,45 @@ impl Context {
         });
     }
 
+    /// Stamp the top frame's receive time.
+    pub(crate) fn stamp_top_time(&mut self, time_ns: u64) {
+        if let Some(top) = self.stack.last_mut() {
+            top.calldata.time_ns = time_ns;
+        }
+    }
+
+    /// Push an entry frame for a queue-consumer node (processor/exporter).
+    /// The frame inherits RETURN_DATA from the predecessor and records
+    /// the receive timestamp. If the component later calls `subscribe_to`,
+    /// the same-node merge will fold interests into this frame while
+    /// preserving `time_ns`.
+    pub(crate) fn push_entry_frame(&mut self, node_id: usize, time_ns: u64, req_bytes: u64) {
+        let mut interests = Interests::empty();
+        if let Some(last) = self.stack.last() {
+            interests = last.interests & Interests::RETURN_DATA;
+        }
+        self.stack.push(Frame {
+            interests,
+            node_id,
+            calldata: CallData {
+                user: UserCallData::new(),
+                time_ns,
+                req_bytes,
+            },
+        });
+    }
+
     /// Get the source node for this context.
     #[must_use]
     pub fn source_node(&self) -> Option<usize> {
         self.stack.last().map(|f| f.node_id)
+    }
+
+    /// Returns a reference to the top frame on the context stack.
+    /// Used by consumer metrics to read the current node's entry frame.
+    #[must_use]
+    pub fn peek_top(&self) -> Option<&Frame> {
+        self.stack.last()
     }
 
     /// Returns a reference to the context stack frames (test-only).
@@ -268,7 +312,7 @@ impl OtapPdata {
     pub fn test_subscribe_to(
         mut self,
         interests: Interests,
-        calldata: CallData,
+        calldata: UserCallData,
         node_id: usize,
     ) -> Self {
         self.context.subscribe_to(interests, calldata, node_id);
@@ -310,13 +354,20 @@ impl OtapPdata {
     }
 }
 
+impl ReceivedAtNode for OtapPdata {
+    fn received_at_node(&mut self, node_id: usize, time_ns: u64) {
+        let req_bytes = self.payload.num_bytes().unwrap_or(0) as u64;
+        self.context.push_entry_frame(node_id, time_ns, req_bytes);
+    }
+}
+
 /* -------- Producer effect handler extensions (shared, local) -------- */
 
 #[async_trait(?Send)]
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.processor_id().index)
     }
@@ -326,9 +377,11 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::receiver::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         data.context
-            .subscribe_to(int, ctx, self.receiver_id().index)
+            .subscribe_to(int, ctx, self.receiver_id().index);
+        // Receivers are the pipeline entry point — stamp receive time now.
+        data.context.stamp_top_time(nanos_since_epoch());
     }
 }
 
@@ -336,7 +389,7 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         data.context
             .subscribe_to(int, ctx, self.processor_id().index)
     }
@@ -346,23 +399,58 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::receiver::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: CallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
         data.context
-            .subscribe_to(int, ctx, self.receiver_id().index)
+            .subscribe_to(int, ctx, self.receiver_id().index);
+        // Receivers are the pipeline entry point — stamp receive time now.
+        data.context.stamp_top_time(nanos_since_epoch());
     }
 }
 
 /* -------- Consumer effect handler extensions (shared, local) -------- */
+
+/// Record a consumed.success metric from the current task-local component handle.
+fn record_consumed_success(req_bytes: u64, duration_ns: u64) {
+    if let Some(handle) = current_component_metrics() {
+        handle.record_consumed_success(req_bytes, duration_ns);
+    }
+}
+
+/// Record a consumed.failure metric from the current task-local component handle.
+fn record_consumed_failure(req_bytes: u64, duration_ns: u64) {
+    if let Some(handle) = current_component_metrics() {
+        handle.record_consumed_failure(req_bytes, duration_ns);
+    }
+}
+
+/// Record a consumed.refused metric from the current task-local component handle.
+fn record_consumed_refused(req_bytes: u64, duration_ns: u64) {
+    if let Some(handle) = current_component_metrics() {
+        handle.record_consumed_refused(req_bytes, duration_ns);
+    }
+}
 
 #[async_trait(?Send)]
 impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = ack.accepted.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+        }
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = nack.refused.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            if nack.permanent {
+                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+            } else {
+                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+            }
+        }
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -372,10 +460,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = ack.accepted.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+        }
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = nack.refused.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            if nack.permanent {
+                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+            } else {
+                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+            }
+        }
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -385,10 +485,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = ack.accepted.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+        }
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = nack.refused.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            if nack.permanent {
+                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+            } else {
+                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+            }
+        }
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -398,10 +510,22 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::exporter::EffectHandler<OtapPdata>
 {
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = ack.accepted.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+        }
         self.route_ack(ack, Context::next_ack).await
     }
 
     async fn notify_nack(&self, nack: NackMsg<OtapPdata>) -> Result<(), Error> {
+        if let Some(frame) = nack.refused.context.peek_top() {
+            let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+            if nack.permanent {
+                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+            } else {
+                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+            }
+        }
         self.route_nack(nack, Context::next_nack).await
     }
 }
@@ -1205,7 +1329,7 @@ mod test {
 
         let (node_id, ack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1236,7 +1360,7 @@ mod test {
 
         let (node_id, ack_msg) = result.expect("has");
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1262,7 +1386,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be dropped
@@ -1293,7 +1417,7 @@ mod test {
 
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1234);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
 
         // Payload should be preserved
@@ -1313,9 +1437,9 @@ mod test {
                 test_data.clone().into(),
                 1,
             )
-            .test_subscribe_to(Interests::ACKS, CallData::default(), 2)
-            .test_subscribe_to(Interests::NACKS, CallData::default(), 3)
-            .test_subscribe_to(Interests::ACKS, CallData::default(), 4);
+            .test_subscribe_to(Interests::ACKS, UserCallData::default(), 2)
+            .test_subscribe_to(Interests::NACKS, UserCallData::default(), 3)
+            .test_subscribe_to(Interests::ACKS, UserCallData::default(), 4);
         assert!(pdata.context.may_return_payload());
 
         let ack = AckMsg::new(pdata);
@@ -1343,7 +1467,7 @@ mod test {
         assert!(result.is_some());
         let (node_id, nack_msg) = result.unwrap();
         assert_eq!(node_id, 1);
-        let recv_data: TestCallData = nack_msg.calldata.try_into().expect("has");
+        let recv_data: TestCallData = nack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv_data, test_data);
     }
 
@@ -1409,7 +1533,7 @@ mod test {
         let ack = AckMsg::new(pdata);
         let (node_id, ack_msg) = Context::next_ack(ack).expect("should find subscriber");
         assert_eq!(node_id, 100);
-        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv, test_data);
     }
 
@@ -1442,7 +1566,7 @@ mod test {
         );
 
         // Node 3: downstream processor subscribes with ACKS (no explicit RETURN_DATA)
-        let pdata = pdata.test_subscribe_to(Interests::ACKS, CallData::default(), 3);
+        let pdata = pdata.test_subscribe_to(Interests::ACKS, UserCallData::default(), 3);
 
         // Node 3's frame should have inherited RETURN_DATA through the source frame.
         assert!(
@@ -1466,7 +1590,7 @@ mod test {
         // Continue to node 1
         let (node_id, ack_msg) = Context::next_ack(ack_msg).expect("should find node 1");
         assert_eq!(node_id, 1);
-        let recv: TestCallData = ack_msg.calldata.try_into().expect("has");
+        let recv: TestCallData = ack_msg.calldata.user.try_into().expect("has");
         assert_eq!(recv, test_data);
 
         // Payload still intact for the retry processor

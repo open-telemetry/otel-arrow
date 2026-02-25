@@ -25,7 +25,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
     config::ProcessorConfig,
-    control::{AckMsg, CallData, NackMsg, NodeControlMsg},
+    control::{AckMsg, NackMsg, NodeControlMsg, UserCallData},
     error::{Error, TypedError},
     local::processor::{EffectHandler, Processor},
     message::Message,
@@ -403,7 +403,7 @@ impl RetryState {
     }
 }
 
-impl From<RetryState> for CallData {
+impl From<RetryState> for UserCallData {
     fn from(value: RetryState) -> Self {
         smallvec::smallvec![
             value.retries.into(),
@@ -413,10 +413,10 @@ impl From<RetryState> for CallData {
     }
 }
 
-impl TryFrom<CallData> for RetryState {
+impl TryFrom<UserCallData> for RetryState {
     type Error = Error;
 
-    fn try_from(value: CallData) -> Result<Self, Self::Error> {
+    fn try_from(value: UserCallData) -> Result<Self, Self::Error> {
         if value.len() != 3 {
             return Err(Error::InternalError {
                 message: "invalid calldata".into(),
@@ -455,7 +455,7 @@ impl RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = ack.accepted.signal_type();
-        let calldata = ack.calldata.clone();
+        let calldata = ack.calldata.user.clone();
 
         let num_items = match calldata.try_into() {
             Err(_err) => {
@@ -480,7 +480,7 @@ impl RetryProcessor {
     ) -> Result<(), Error> {
         let signal = nack.refused.signal_type();
 
-        let mut rstate: RetryState = match nack.calldata.clone().try_into() {
+        let mut rstate: RetryState = match nack.calldata.user.clone().try_into() {
             Err(_err) => {
                 // Malformed context error: we don't know what this is.
                 effect_handler.notify_nack(nack).await?;
@@ -628,7 +628,7 @@ impl Processor<OtapPdata> for RetryProcessor {
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
                     if let Some(calldata) = data.source_calldata() {
-                        let rstate: RetryState = calldata.try_into()?;
+                        let rstate: RetryState = calldata.user.try_into()?;
                         let _ = self
                             .handle_delayed(when, data, effect_handler, rstate.num_items)
                             .await?;
@@ -962,7 +962,7 @@ mod test {
                         );
                         assert_eq!(node_id, 4444);
 
-                        let ackdata: TestCallData = ack.calldata.try_into().expect("my calldata");
+                        let ackdata: TestCallData = ack.calldata.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), ackdata);
 
                         // Requested RETURN_DATA, check item count match
@@ -975,7 +975,7 @@ mod test {
                         );
                         assert_eq!(node_id, 4444);
 
-                        let nackdata: TestCallData = nack.calldata.try_into().expect("my calldata");
+                        let nackdata: TestCallData = nack.calldata.user.try_into().expect("my calldata");
                         assert_eq!(TestCallData::default(), nackdata);
 
                         // Requested RETURN_DATA, check item count match

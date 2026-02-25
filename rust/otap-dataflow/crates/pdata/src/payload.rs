@@ -200,7 +200,11 @@ impl OtapPayloadHelpers for OtapArrowRecords {
     }
 
     fn num_bytes(&self) -> Option<usize> {
-        None
+        Some(match self {
+            Self::Logs(logs) => logs.num_bytes(),
+            Self::Metrics(metrics) => metrics.num_bytes(),
+            Self::Traces(traces) => traces.num_bytes(),
+        })
     }
 
     fn take_payload(&mut self) -> Self {
