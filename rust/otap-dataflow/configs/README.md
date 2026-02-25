@@ -150,4 +150,7 @@ You can use these configurations with the following CLI command:
 ```bash
 # Use a specific configuration
 cargo run -- --config configs/otlp-otlp.yaml
+
+# Validate a configuration without starting the engine
+cargo run -- --config configs/otlp-otlp.yaml --validate-and-exit
 ```

@@ -25,14 +25,16 @@ groups:
           receiver:
             type: otlp:receiver
             config:
-              listening_addr: "127.0.0.1:4317"
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
 
           durable_buffer:
             type: durable_buffer:processor
             config:
               path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
               poll_interval: 100ms
-              retention_size_cap: "1GB"
+              retention_size_cap: "10GB"
               size_cap_policy: backpressure
               # Convert to Arrow so debug processor can display the data
               otlp_handling: convert_to_arrow

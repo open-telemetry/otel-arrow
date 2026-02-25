@@ -36,6 +36,7 @@ use tokio::runtime::Runtime;
 fn bench_budget() -> Arc<DiskBudget> {
     Arc::new(DiskBudget::new(
         1024 * 1024 * 1024,
+        64 * 1024 * 1024, // 64 MB segment headroom
         RetentionPolicy::Backpressure,
     ))
 }

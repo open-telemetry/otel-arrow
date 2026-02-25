@@ -77,6 +77,7 @@ socket2 = { workspace = true }
 ipnet = { workspace = true }
 flate2 = { workspace = true }
 zstd = { workspace = true }
+url = { workspace = true }
 
 # Azure feature dependencies (for object_store)
 azure_identity = { workspace = true, optional = true }
@@ -97,13 +98,13 @@ byte-unit.workspace = true
 test-utils = []
 experimental-tls = ["dep:rustls", "dep:rustls-pki-types", "dep:tokio-rustls", "dep:rustls-native-certs", "tonic/tls-ring", "dep:arc-swap", "dep:notify"]
 azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:azure_core"]
+aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
 flume.workspace = true
 portpicker.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-url.workspace = true
 tokio-util.workspace = true
 time.workspace = true
 wiremock.workspace = true

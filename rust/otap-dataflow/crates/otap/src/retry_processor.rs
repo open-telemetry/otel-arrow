@@ -324,6 +324,7 @@ pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFacto
     name: RETRY_PROCESSOR_URN,
     create: create_retry_processor,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<RetryConfig>,
 };
 
 /// A processor that handles message retries with exponential backoff

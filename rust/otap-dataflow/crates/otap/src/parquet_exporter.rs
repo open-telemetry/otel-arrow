@@ -87,6 +87,7 @@ pub static PARQUET_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    validate_config: otap_df_config::validation::validate_typed_config::<config::Config>,
 };
 
 impl ParquetExporter {
@@ -1423,6 +1424,7 @@ mod test {
                 "parquet_exporter".into(),
                 PARQUET_EXPORTER_URN.into(),
                 otap_df_config::node::NodeKind::Exporter,
+                std::collections::HashMap::new(),
             );
 
         let exporter_impl = ParquetExporter::from_config(

@@ -213,6 +213,59 @@ pub enum AttributeValueArray {
     String(Vec<String>),
 }
 
+/// A telemetry attribute with a value and an optional brief description.
+///
+/// Supports two YAML/JSON forms:
+/// - **Bare value**: `attr_name: "value"` (brief defaults to `None`)
+/// - **Extended form**: `attr_name: { value: "value", brief: "description" }`
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum TelemetryAttribute {
+    /// Extended form: `{ value: <value>, brief: "..." }`
+    Extended {
+        /// The attribute value.
+        value: AttributeValue,
+        /// An optional short description of this attribute.
+        brief: Option<String>,
+    },
+    /// Bare form: just a scalar or array value.
+    Bare(AttributeValue),
+}
+
+impl TelemetryAttribute {
+    /// Create a new telemetry attribute with just a value (no brief).
+    #[must_use]
+    pub fn new(value: AttributeValue) -> Self {
+        Self::Bare(value)
+    }
+
+    /// Create a new telemetry attribute with a value and brief description.
+    pub fn with_brief(value: AttributeValue, brief: impl Into<String>) -> Self {
+        Self::Extended {
+            value,
+            brief: Some(brief.into()),
+        }
+    }
+
+    /// Returns a reference to the attribute value.
+    #[must_use]
+    pub fn value(&self) -> &AttributeValue {
+        match self {
+            Self::Extended { value, .. } => value,
+            Self::Bare(value) => value,
+        }
+    }
+
+    /// Returns the optional brief description.
+    #[must_use]
+    pub fn brief(&self) -> Option<&str> {
+        match self {
+            Self::Extended { brief, .. } => brief.as_deref(),
+            Self::Bare(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +444,114 @@ mod tests {
         } else {
             panic!("Expected deserialization to fail for out of range u64 value");
         }
+    }
+
+    #[test]
+    fn test_telemetry_attribute_bare_value_yaml() {
+        let yaml_str = r#"
+            region: "us-west"
+            count: 42
+            enabled: true
+            ratio: 1.5
+        "#;
+        let attrs: HashMap<String, TelemetryAttribute> = serde_yaml::from_str(yaml_str).unwrap();
+
+        let region = attrs.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), None);
+
+        let count = attrs.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert_eq!(count.brief(), None);
+
+        let enabled = attrs.get("enabled").unwrap();
+        assert_eq!(*enabled.value(), AttributeValue::Bool(true));
+        assert_eq!(enabled.brief(), None);
+
+        let ratio = attrs.get("ratio").unwrap();
+        assert_eq!(*ratio.value(), AttributeValue::F64(1.5));
+        assert_eq!(ratio.brief(), None);
+    }
+
+    #[test]
+    fn test_telemetry_attribute_extended_form_yaml() {
+        let yaml_str = r#"
+            region:
+              value: "us-west"
+              brief: "Deployment region"
+            count:
+              value: 42
+        "#;
+        let attrs: HashMap<String, TelemetryAttribute> = serde_yaml::from_str(yaml_str).unwrap();
+
+        let region = attrs.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), Some("Deployment region"));
+
+        let count = attrs.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert_eq!(count.brief(), None);
+    }
+
+    #[test]
+    fn test_telemetry_attribute_mixed_forms_yaml() {
+        let yaml_str = r#"
+            simple: "hello"
+            detailed:
+              value: "world"
+              brief: "A detailed attribute"
+        "#;
+        let attrs: HashMap<String, TelemetryAttribute> = serde_yaml::from_str(yaml_str).unwrap();
+
+        assert_eq!(attrs.get("simple").unwrap().brief(), None);
+        assert_eq!(
+            attrs.get("detailed").unwrap().brief(),
+            Some("A detailed attribute")
+        );
+    }
+
+    #[test]
+    fn test_telemetry_attribute_extended_form_json() {
+        let json_str = r#"{
+            "region": {"value": "us-west", "brief": "Deployment region"},
+            "count": 42
+        }"#;
+        let attrs: HashMap<String, TelemetryAttribute> = serde_json::from_str(json_str).unwrap();
+
+        let region = attrs.get("region").unwrap();
+        assert_eq!(
+            *region.value(),
+            AttributeValue::String("us-west".to_string())
+        );
+        assert_eq!(region.brief(), Some("Deployment region"));
+
+        let count = attrs.get("count").unwrap();
+        assert_eq!(*count.value(), AttributeValue::I64(42));
+        assert_eq!(count.brief(), None);
+    }
+
+    #[test]
+    fn test_telemetry_attribute_serialize_bare() {
+        let attr = TelemetryAttribute::new(AttributeValue::String("test".to_string()));
+        let json = serde_json::to_string(&attr).unwrap();
+        // Without brief, serializes as just the value (with enum tagging)
+        assert_eq!(json, r#"{"String":"test"}"#);
+    }
+
+    #[test]
+    fn test_telemetry_attribute_serialize_with_brief() {
+        let attr = TelemetryAttribute::with_brief(
+            AttributeValue::String("test".to_string()),
+            "A test attribute",
+        );
+        let json = serde_json::to_string(&attr).unwrap();
+        assert!(json.contains(r#""value":{"String":"test"}"#));
+        assert!(json.contains(r#""brief":"A test attribute""#));
     }
 }
