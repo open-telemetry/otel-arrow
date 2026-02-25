@@ -574,8 +574,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             self.sync_gauges();
                             if tracing::enabled!(tracing::Level::DEBUG) {
                                 let m = self.metrics.borrow();
-                                let cl = m.client_latency();
-                                let al = m.auth_latency();
+                                let cl = m.client_success_latency();
+                                let al = m.auth_success_latency();
                                 let bs = m.batch_size();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
@@ -585,12 +585,12 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                     failed_rows = m.failed_row_count(),
                                     failed_batches = m.failed_batch_count(),
                                     failed_messages = m.failed_msg_count(),
-                                    client_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
-                                    client_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
-                                    client_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
-                                    client_latency_count = cl.count,
-                                    auth_latency_avg_ms = if al.count > 0 { al.sum / al.count as f64 } else { 0.0 },
-                                    auth_latency_count = al.count,
+                                    client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
+                                    client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
+                                    client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
+                                    client_success_latency_count = cl.count,
+                                    auth_success_latency_avg_ms = if al.count > 0 { al.sum / al.count as f64 } else { 0.0 },
+                                    auth_success_latency_count = al.count,
                                     batch_size_avg_bytes = if bs.count > 0 { bs.sum / bs.count as f64 } else { 0.0 },
                                     batch_size_min_bytes = if bs.count > 0 { bs.min } else { 0.0 },
                                     batch_size_max_bytes = if bs.count > 0 { bs.max } else { 0.0 },

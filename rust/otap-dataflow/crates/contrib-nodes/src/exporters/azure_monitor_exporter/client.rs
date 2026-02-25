@@ -237,15 +237,17 @@ impl LogsIngestionClient {
         let status_code = response.status().as_u16();
         let elapsed = start.elapsed();
 
-        // Record per-attempt latency, status code, and batch size
+        // Record per-attempt status code and batch size
         {
             let mut m = self.metrics.borrow_mut();
-            m.add_client_latency(elapsed.as_millis() as f64);
             m.record_laclient_status_code(status_code);
             m.add_batch_size(body_len as f64);
         }
 
         if response.status().is_success() {
+            self.metrics
+                .borrow_mut()
+                .add_client_success_latency(elapsed.as_millis() as f64);
             return Ok(elapsed);
         }
 

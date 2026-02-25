@@ -40,9 +40,9 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of messages that failed to export.
     #[metric(unit = "{message}")]
     pub failed_messages: Counter<u64>,
-    /// Client HTTP latency in milliseconds (min/max/sum/count).
+    /// Client HTTP success latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub laclient_http_latency: Mmsc,
+    pub laclient_http_success_latency: Mmsc,
     /// Number of HTTP 2xx (success) responses.
     #[metric(unit = "{response}")]
     pub laclient_http_2xx: Counter<u64>,
@@ -65,9 +65,9 @@ pub struct AzureMonitorExporterMetrics {
     pub auth_successes: Counter<u64>,
     /// Number of failed authentication attempts.
     pub auth_failures: Counter<u64>,
-    /// Authentication latency in milliseconds (min/max/sum/count).
+    /// Authentication success latency in milliseconds (min/max/sum/count).
     #[metric(unit = "ms")]
-    pub auth_latency: Mmsc,
+    pub auth_success_latency: Mmsc,
     /// Batch size in bytes (min/max/sum/count).
     #[metric(unit = "By")]
     pub batch_size: Mmsc,
@@ -182,18 +182,18 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.failed_messages.get()
     }
 
-    /// Get the client HTTP latency snapshot (min/max/sum/count).
+    /// Get the client HTTP success latency snapshot (min/max/sum/count).
     #[inline]
     #[must_use]
-    pub fn client_latency(&self) -> MmscSnapshot {
-        self.metrics.laclient_http_latency.get()
+    pub fn client_success_latency(&self) -> MmscSnapshot {
+        self.metrics.laclient_http_success_latency.get()
     }
 
-    /// Get the auth latency snapshot (min/max/sum/count).
+    /// Get the auth success latency snapshot (min/max/sum/count).
     #[inline]
     #[must_use]
-    pub fn auth_latency(&self) -> MmscSnapshot {
-        self.metrics.auth_latency.get()
+    pub fn auth_success_latency(&self) -> MmscSnapshot {
+        self.metrics.auth_success_latency.get()
     }
 
     /// Get the batch size snapshot (min/max/sum/count) in bytes.
@@ -269,16 +269,16 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.failed_messages.add(msg_count);
     }
 
-    /// Record a client HTTP latency observation in milliseconds.
+    /// Record a client HTTP success latency observation in milliseconds.
     #[inline]
-    pub fn add_client_latency(&mut self, latency_ms: f64) {
-        self.metrics.laclient_http_latency.record(latency_ms);
+    pub fn add_client_success_latency(&mut self, latency_ms: f64) {
+        self.metrics.laclient_http_success_latency.record(latency_ms);
     }
 
-    /// Record an auth latency observation in milliseconds.
+    /// Record an auth success latency observation in milliseconds.
     #[inline]
-    pub fn add_auth_latency(&mut self, latency_ms: f64) {
-        self.metrics.auth_latency.record(latency_ms);
+    pub fn add_auth_success_latency(&mut self, latency_ms: f64) {
+        self.metrics.auth_success_latency.record(latency_ms);
     }
 
     /// Record a successful authentication attempt.
@@ -400,14 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn test_client_latency_histogram() {
+    fn test_client_success_latency_histogram() {
         let mut stats = new_test_tracker();
 
-        stats.add_client_latency(100.0);
-        stats.add_client_latency(200.0);
-        stats.add_client_latency(50.0);
+        stats.add_client_success_latency(100.0);
+        stats.add_client_success_latency(200.0);
+        stats.add_client_success_latency(50.0);
 
-        let snap = stats.client_latency();
+        let snap = stats.client_success_latency();
         assert_eq!(snap.count, 3);
         assert_eq!(snap.min, 50.0);
         assert_eq!(snap.max, 200.0);
@@ -415,13 +415,13 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_latency_histogram() {
+    fn test_auth_success_latency_histogram() {
         let mut stats = new_test_tracker();
 
-        stats.add_auth_latency(10.0);
-        stats.add_auth_latency(30.0);
+        stats.add_auth_success_latency(10.0);
+        stats.add_auth_success_latency(30.0);
 
-        let snap = stats.auth_latency();
+        let snap = stats.auth_success_latency();
         assert_eq!(snap.count, 2);
         assert_eq!(snap.min, 10.0);
         assert_eq!(snap.max, 30.0);
