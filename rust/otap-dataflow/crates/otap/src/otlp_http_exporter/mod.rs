@@ -484,9 +484,6 @@ impl ServiceRequestError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::RequestError { err: req_err } => {
-                // TODO remove this println
-                println!("req_err = {req_err:?}");
-
                 match req_err.status() {
                     Some(status) => {
                         // we received a non-200 response. The OTLP HTTP spec defines certain
@@ -746,9 +743,7 @@ mod test {
     use portpicker::pick_unused_port;
     use prost::Message;
     use tempfile::TempDir;
-    use tokio::net::TcpStream;
     use tokio::runtime::Runtime;
-    use tokio_rustls::TlsAcceptor;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
@@ -759,7 +754,6 @@ mod test {
     use crate::otlp_http::{HttpServerSettings, serve, tune_max_concurrent_requests};
     use crate::otlp_receiver::OtlpReceiverMetrics;
     use crate::testing::TestCallData;
-    use crate::tls_utils::{accept_tls_connection, build_tls_acceptor};
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
@@ -916,11 +910,10 @@ mod test {
         let _ = tracker.close();
     }
 
-    // TODO TLS feature flags ...
-
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
+    #[cfg(feature = "experimental-tls")]
     fn run_tls_server(
         tokio_rt: &Runtime,
         pipeline_ctx: &PipelineContext,
@@ -957,7 +950,7 @@ mod test {
         let server_cancellation_token2 = server_cancellation_token.clone();
 
         _ = tokio_rt.spawn(async move {
-            let result = serve(
+            let _ = serve(
                 server_effect_handler,
                 server_settings,
                 ack_registry,
@@ -966,9 +959,6 @@ mod test {
                 server_cancellation_token,
             )
             .await;
-
-            // TODO remove this println
-            println!("serve result {:?}", result)
         });
 
         (pdata_rx, server_cancellation_token2)
@@ -1953,8 +1943,6 @@ mod test {
                     }
                     server_cancellation_token.cancel();
 
-                    // TODO assert we received 3 pdatas
-
                     for mut pdata in pdatas_received {
                         match pdata.signal_type() {
                             SignalType::Logs => {
@@ -2112,6 +2100,7 @@ mod test {
             })
     }
 
+    #[cfg(feature = "experimental-tls")]
     fn run_tls_success_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2208,6 +2197,7 @@ mod test {
             })
     }
 
+    #[cfg(feature = "experimental-tls")]
     fn run_tls_failure_test(
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
@@ -2367,20 +2357,10 @@ mod test {
         let test_runtime = TestRuntime::<OtapPdata>::new();
         let (_, exporter) = setup_exporter(&test_runtime, config);
 
-        // let (mut pdata_rx, server_cancellation_token) =
-        //     run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
-
-        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
-
-        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
-            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
-        ))];
-        let pdatas = subscribe_pdatas(pdatas, false);
-
         test_runtime
             .set_exporter(exporter)
-            .run_test(|ctx| Box::pin(async move {}))
-            .run_validation(|mut ctx, result| {
+            .run_test(|_ctx| Box::pin(async move {}))
+            .run_validation(|_ctx, result| {
                 Box::pin(async move {
                     let err = result.unwrap_err();
                     let err_message = err.to_string();
@@ -2394,6 +2374,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -2441,6 +2422,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_file() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -2489,6 +2471,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_insecure_skip_verify_true() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -2537,6 +2520,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_no_ca_configured() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -2586,6 +2570,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_invalid_ca_configured() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2635,6 +2620,7 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_failure_server_name_mismatch() {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let temp_dir = TempDir::new().expect("Failed to create temp dir");

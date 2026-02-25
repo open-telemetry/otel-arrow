@@ -3,13 +3,12 @@
 
 //! Shared configuration for HTTP-based clients.
 
-// TODO there's a more idiomatic way to do these imports
 #[cfg(feature = "experimental-tls")]
 use otap_df_config::tls::TlsClientConfig;
 #[cfg(feature = "experimental-tls")]
 use reqwest::Certificate;
 
-use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use otap_df_telemetry::otel_error;
 use reqwest::ClientBuilder;
 use serde::Deserialize;
 use std::io;
