@@ -638,8 +638,8 @@ In OTAP this is implemented via multiple "value" columns either `str`, `int`,
 discriminant and note that multiple AnyValue types can map to the `bytes` 
 column. See the below table for the exact mappings.
 
-// TODO: I see some mention of Arrow Sparse and Dense Unions in the Go code, is that out of date
-// or am I missing some details there?
+// TODO: I see some mention of Arrow Sparse and Dense Unions in the Go code,
+is that out of date or am I missing some details there?
 
 This technique is used in all Payload Types that utilize Attribute16 and 
 Attribute32 schemas as well as the LOGS `body` field.
@@ -664,17 +664,14 @@ The complex types of `map` (5) and `slice` (6) additionally indicate that the
 bytes field is CBOR encoded according to RFC 8949. If the type is `bytes` (7)
 then the structure of the field is unknown at the OTAP level.
 
-A `type` of `0` indicates that the value for the attribute is null. If the 
-column for the Active Field indicated by the `type` field is not present, 
-then the value for the key is also interpreted as `Null`.
+A `type` of `0` indicates that the value for the attribute is empty.
 
 In the case of the LOGS payload, note that the AnyValue is contained in the 
 `body` column which is also nullable. In this case a null entry is semantically
 equivalent to a `type` of `0`.
 
-If the column for the Active Field indicated by the `type` field is not present,
-or the `type` falls outside of the allowed range, then the value for the key is
-also interpreted as `Null`.
+If the column for the Active Field is not present, or the `type` falls outside 
+of the allowed range, then the value for the key is also interpreted as empty.
 
 #### 5.5.2 Exemplar Value Fields
 
