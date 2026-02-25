@@ -11,13 +11,15 @@ use reqwest::Certificate;
 
 use reqwest::ClientBuilder;
 use serde::Deserialize;
+use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
+use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
-
 
 use crate::otap_grpc::client_settings::{
     default_concurrency_limit, default_connect_timeout, default_tcp_keepalive, default_tcp_nodelay,
 };
+use crate::tls_utils::read_file_with_limit_async;
 
 /// Common configuration shared across HTTP clients.
 #[derive(Debug, Deserialize, Clone)]
@@ -54,7 +56,7 @@ pub struct HttpClientSettings {
     /// Requires the `experimental-tls` feature to be enabled.
     #[cfg(feature = "experimental-tls")]
     #[serde(default)]
-    pub tls: Option<TlsClientConfig>
+    pub tls: Option<TlsClientConfig>,
 }
 
 impl HttpClientSettings {
@@ -65,7 +67,7 @@ impl HttpClientSettings {
     }
 
     /// Returns a configured client-builder
-    pub fn client_builder(&self) -> ClientBuilder {
+    pub async fn client_builder(&self) -> Result<ClientBuilder, Box<dyn std::error::Error>> {
         let mut client_builder = ClientBuilder::new()
             .connect_timeout(self.connect_timeout)
             .tcp_nodelay(self.tcp_nodelay)
@@ -87,12 +89,19 @@ impl HttpClientSettings {
 
         #[cfg(feature = "experimental-tls")]
         if let Some(tls) = &self.tls {
-            // TODO - technically there's a way to avoid vec heap allocation here
             let mut certs = vec![];
 
             if let Some(ca_pem) = &tls.ca_pem {
-                // TODO no unwrap
-                let cert = Certificate::from_pem(ca_pem.as_bytes()).unwrap();
+                let cert = Certificate::from_pem(ca_pem.as_bytes())?;
+                certs.push(cert);
+            }
+
+            if let Some(ca_file) = &tls.ca_file {
+                let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
+                    otel_error!("tls.ca_file.read_error", ca_file = ?ca_file, error = ?e, message = "Failed to read CA file");
+                    e
+                })?;
+                let cert = Certificate::from_pem(&ca_pem)?;
                 certs.push(cert);
             }
 
@@ -103,7 +112,7 @@ impl HttpClientSettings {
             }
         }
 
-        client_builder
+        Ok(client_builder)
     }
 }
 
