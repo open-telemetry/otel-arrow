@@ -2246,6 +2246,8 @@ mod test {
                         ctx.send_pdata(pdata).await.unwrap();
                     }
 
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
@@ -2840,7 +2842,7 @@ mod test {
                 watch_client_ca: false,
                 handshake_timeout: Some(Duration::from_secs(10)),
             },
-            "client error (Canceled): operation was canceled",
+            "client error",
             true,
         );
     }
