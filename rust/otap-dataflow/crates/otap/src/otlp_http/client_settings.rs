@@ -163,7 +163,11 @@ impl HttpClientSettings {
                     // Read cert and key
                     let cert_pem = if let Some(cert_file) = &tls.config.cert_file {
                         read_file_with_limit_async(cert_file).await.map_err(|e| {
-                            otel_error!("tls.cert_file.read_error", cert_file = ?cert_file, error = ?e, message = "Failed to read client cert file");
+                            otel_error!(
+                                "tls.cert_file.read_error",
+                                cert_file = ?cert_file,
+                                error = ?e, message = "Failed to read client cert file"
+                            );
                             e
                         })?
                     } else if let Some(cert_pem) = &tls.config.cert_pem {
@@ -174,7 +178,12 @@ impl HttpClientSettings {
 
                     let key_pem = if let Some(key_file) = &tls.config.key_file {
                         read_file_with_limit_async(key_file).await.map_err(|e| {
-                            otel_error!("tls.key_file.read_error", key_file = ?key_file, error = ?e, message = "Failed to read client key file");
+                            otel_error!(
+                                "tls.key_file.read_error",
+                                key_file = ?key_file,
+                                error = ?e,
+                                message = "Failed to read client key file"
+                            );
                             e
                         })?
                     } else if let Some(key_pem) = &tls.config.key_pem {

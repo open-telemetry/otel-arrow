@@ -487,7 +487,6 @@ impl ServiceRequestError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::RequestError { err: req_err } => {
-                println!("req_err = {req_err:?}");
                 match req_err.status() {
                     Some(status) => {
                         // we received a non-200 response. The OTLP HTTP spec defines certain
