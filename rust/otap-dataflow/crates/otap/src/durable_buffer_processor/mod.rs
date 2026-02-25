@@ -79,7 +79,9 @@ use linkme::distributed_slice;
 use quiver::budget::DiskBudget;
 use quiver::segment::SegmentSeq;
 use quiver::segment_store::SegmentStore;
-use quiver::subscriber::{BundleHandle, BundleIndex, BundleRef, RegistryCallback, SubscriberId};
+use quiver::subscriber::{
+    BundleHandle, BundleIndex, BundleRef, RegistryCallback, SegmentProvider, SubscriberId,
+};
 use quiver::{QuiverConfig, QuiverEngine};
 use smallvec::smallvec;
 
@@ -88,12 +90,14 @@ use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use crate::OTAP_PROCESSOR_FACTORIES;
 use crate::pdata::OtapPdata;
 
-use bundle_adapter::{OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata};
+use bundle_adapter::{
+    OtapRecordBundleAdapter, OtlpBytesAdapter, convert_bundle_to_pdata, signal_type_from_slot_id,
+};
 pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 
+use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::Context8u8;
@@ -107,7 +111,7 @@ use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
@@ -131,7 +135,7 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 /// Follows RFC-aligned telemetry conventions:
 /// - Metric set name follows `otelcol.<entity>` pattern
 /// - Channel metrics already track bundle send/receive counts
-/// - This tracks ACK/NACK status, Arrow item counts, storage, and retries
+/// - This tracks ACK/NACK status, item counts, storage, and retries
 #[metric_set(name = "otelcol.node.durable_buffer")]
 #[derive(Debug, Default, Clone)]
 pub struct DurableBufferMetrics {
@@ -146,37 +150,37 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_nacked: Counter<u64>,
 
-    // ─── Consumed Arrow item metrics (per signal type) ──────────────────────
-    /// Number of Arrow log records consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{log}")]
-    pub consumed_arrow_logs: Counter<u64>,
+    // ─── Consumed item metrics (per signal type) ────────────────────────
+    /// Number of log records consumed (ingested to WAL).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{records}")]
+    pub consumed_log_records: Counter<u64>,
 
-    /// Number of Arrow metric data points consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{metric}")]
-    pub consumed_arrow_metrics: Counter<u64>,
+    /// Number of metric data points consumed (ingested to WAL).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{datapoints}")]
+    pub consumed_metric_points: Counter<u64>,
 
-    /// Number of Arrow trace spans consumed (ingested to WAL).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{span}")]
-    pub consumed_arrow_traces: Counter<u64>,
+    /// Number of spans consumed (ingested to WAL).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{spans}")]
+    pub consumed_spans: Counter<u64>,
 
-    // ─── Produced Arrow item metrics (per signal type) ──────────────────────
-    /// Number of Arrow log records produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{log}")]
-    pub produced_arrow_logs: Counter<u64>,
+    // ─── Produced item metrics (per signal type) ────────────────────────
+    /// Number of log records produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{records}")]
+    pub produced_log_records: Counter<u64>,
 
-    /// Number of Arrow metric data points produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{metric}")]
-    pub produced_arrow_metrics: Counter<u64>,
+    /// Number of metric data points produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{datapoints}")]
+    pub produced_metric_points: Counter<u64>,
 
-    /// Number of Arrow trace spans produced (sent downstream).
-    /// OTLP pass-through mode skips counting to avoid parsing overhead.
-    #[metric(unit = "{span}")]
-    pub produced_arrow_traces: Counter<u64>,
+    /// Number of spans produced (sent downstream).
+    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
+    #[metric(unit = "{spans}")]
+    pub produced_spans: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
     /// Number of ingest errors (excludes backpressure/capacity rejections).
@@ -203,12 +207,28 @@ pub struct DurableBufferMetrics {
     /// Total segments force-dropped due to DropOldest retention policy.
     /// Non-zero values indicate data loss.
     #[metric(unit = "{segment}")]
-    pub dropped_segments: Gauge<u64>,
+    pub dropped_segments: ObserveCounter<u64>,
 
     /// Total bundles lost due to force-dropped segments (DropOldest policy).
     /// Non-zero values indicate data loss.
     #[metric(unit = "{bundle}")]
-    pub dropped_bundles: Gauge<u64>,
+    pub dropped_bundles: ObserveCounter<u64>,
+
+    /// Total individual items (log records, data points, spans) lost due to
+    /// force-dropped segments (DropOldest policy). Non-zero values indicate data loss.
+    #[metric(unit = "{item}")]
+    pub dropped_items: ObserveCounter<u64>,
+
+    /// Total bundles lost due to expired segments (max_age retention).
+    /// Non-zero values indicate data aged out before delivery.
+    #[metric(unit = "{bundle}")]
+    pub expired_bundles: ObserveCounter<u64>,
+
+    /// Total individual items (log records, data points, spans) lost due to
+    /// expired segments (max_age retention). Non-zero values indicate data
+    /// aged out before delivery.
+    #[metric(unit = "{item}")]
+    pub expired_items: ObserveCounter<u64>,
 
     // ─── Retry metrics ──────────────────────────────────────────────────────
     /// Number of retry attempts scheduled.
@@ -218,6 +238,35 @@ pub struct DurableBufferMetrics {
     /// Current number of bundles in-flight to downstream.
     #[metric(unit = "{bundle}")]
     pub in_flight: Gauge<u64>,
+
+    // ─── Requeued item metrics (per signal type) ────────────────────────────
+    // These count individual items in NACKed bundles when scheduled for retry.
+    /// Number of individual log records requeued for retry after NACK.
+    #[metric(unit = "{records}")]
+    pub requeued_log_records: Counter<u64>,
+
+    /// Number of individual metric data points requeued for retry after NACK.
+    #[metric(unit = "{datapoints}")]
+    pub requeued_metric_points: Counter<u64>,
+
+    /// Number of individual spans requeued for retry after NACK.
+    #[metric(unit = "{spans}")]
+    pub requeued_spans: Counter<u64>,
+
+    // ─── Queued item metrics (per signal type) ──────────────────────────────
+    // These track the cumulative item count across in-flight and pending
+    // bundles. Incremented on successful ingest, decremented on ACK.
+    /// Current number of log records queued (ingested but not yet ACKed).
+    #[metric(unit = "{records}")]
+    pub queued_log_records: Gauge<u64>,
+
+    /// Current number of metric data points queued (ingested but not yet ACKed).
+    #[metric(unit = "{datapoints}")]
+    pub queued_metric_points: Gauge<u64>,
+
+    /// Current number of spans queued (ingested but not yet ACKed).
+    #[metric(unit = "{spans}")]
+    pub queued_spans: Gauge<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,6 +342,10 @@ struct PendingBundle {
     handle: QuiverBundleHandle,
     /// Number of retries attempted.
     retry_count: u32,
+    /// Number of items in this bundle (0 for legacy WAL entries without counts).
+    item_count: u64,
+    /// Signal type of this bundle.
+    signal_type: SignalType,
 }
 
 /// Result of attempting to process a bundle with non-blocking send.
@@ -364,6 +417,15 @@ pub struct DurableBuffer {
 
     /// Last time we logged a backpressure warning (rate-limiting).
     last_backpressure_warn: Option<Instant>,
+
+    /// Running count of queued log records (ingested but not yet ACKed).
+    queued_log_records: u64,
+
+    /// Running count of queued metric data points (ingested but not yet ACKed).
+    queued_metric_points: u64,
+
+    /// Running count of queued spans (ingested but not yet ACKed).
+    queued_spans: u64,
 }
 
 impl DurableBuffer {
@@ -426,6 +488,9 @@ impl DurableBuffer {
             timer_started: false,
             last_flush_warn: None,
             last_backpressure_warn: None,
+            queued_log_records: 0,
+            queued_metric_points: 0,
+            queued_spans: 0,
         })
     }
 
@@ -544,6 +609,10 @@ impl DurableBuffer {
             }),
             EngineState::Uninitialized => match self.init_engine().await {
                 Ok((engine, subscriber_id)) => {
+                    // Seed queued counters from WAL state before accepting new data.
+                    // This ensures the gauges reflect items that survived a restart.
+                    self.seed_queued_counters_from_wal(&engine);
+
                     self.engine_state = EngineState::Ready {
                         engine,
                         subscriber_id,
@@ -556,6 +625,65 @@ impl DurableBuffer {
                     Err(Error::InternalError { message: msg })
                 }
             },
+        }
+    }
+
+    /// Seed the queued item counters from existing WAL segments.
+    ///
+    /// After a restart, segments in the WAL contain unACKed bundles whose items
+    /// should be reflected in the queued gauges. This iterates all available
+    /// segments, reads per-bundle metadata (item count + first slot ID), and
+    /// classifies each bundle's signal type so the per-signal gauges start at
+    /// the correct value.
+    ///
+    /// This is a one-time cost at engine initialization — O(segments × bundles)
+    /// with no I/O beyond what the segment store already has in memory.
+    fn seed_queued_counters_from_wal(&mut self, engine: &QuiverEngine) {
+        let store = engine.segment_store();
+        for seg_seq in store.available_segments() {
+            let metadata = match store.bundle_metadata(seg_seq) {
+                Ok(m) => m,
+                Err(e) => {
+                    otel_warn!(
+                        "durable_buffer.queued.seed_error",
+                        segment = seg_seq.raw(),
+                        error = %e,
+                        reason = "Queued item gauges may under-count"
+                    );
+                    continue;
+                }
+            };
+            for entry in &metadata {
+                let signal_type = entry
+                    .slot_ids
+                    .iter()
+                    .copied()
+                    .find_map(signal_type_from_slot_id);
+                match signal_type {
+                    Some(SignalType::Logs) => self.queued_log_records += entry.item_count,
+                    Some(SignalType::Metrics) => self.queued_metric_points += entry.item_count,
+                    Some(SignalType::Traces) => self.queued_spans += entry.item_count,
+                    None => { /* legacy or unrecognised slot — skip */ }
+                }
+            }
+        }
+
+        // Push the seeded values to the metric gauges.
+        self.metrics.queued_log_records.set(self.queued_log_records);
+        self.metrics
+            .queued_metric_points
+            .set(self.queued_metric_points);
+        self.metrics.queued_spans.set(self.queued_spans);
+
+        let total = self.queued_log_records + self.queued_metric_points + self.queued_spans;
+        if total > 0 {
+            otel_info!(
+                "durable_buffer.queued.seeded",
+                logs = self.queued_log_records,
+                metrics = self.queued_metric_points,
+                traces = self.queued_spans,
+                total = total
+            );
         }
     }
 
@@ -696,23 +824,25 @@ impl DurableBuffer {
 
         // Ingest based on payload type and configuration.
         // Adapters preserve the original payload via into_inner() for NACK on failure.
-        // Returns (Result, Option<item_count>) - item count is only available for Arrow data.
-        let (ingest_result, item_count) = match payload {
+        // Returns (Result, item_count) - item count tracks individual items for all formats.
+        let (ingest_result, item_count): (Result<(), _>, u64) = match payload {
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 // OTLP bytes: check configuration for handling mode
                 match self.config.otlp_handling {
                     OtlpHandling::PassThrough => {
                         // Store as opaque binary for efficient pass-through.
-                        // Skip item counting to avoid parsing overhead.
+                        // Item count is computed once inside the adapter constructor
+                        // (protobuf wire-format scan, no full deserialization) and cached.
                         match OtlpBytesAdapter::new(otlp_bytes) {
                             Ok(adapter) => {
+                                let num_items = adapter.cached_item_count();
                                 let result = match engine.ingest(&adapter).await {
                                     Ok(()) => Ok(()),
                                     Err(e) => {
                                         Err((e, OtapPayload::OtlpBytes(adapter.into_inner())))
                                     }
                                 };
-                                (result, None) // No item count for pass-through
+                                (result, num_items)
                             }
                             Err((e, original_bytes)) => {
                                 // Adapter creation failed - NACK with original bytes
@@ -750,7 +880,7 @@ impl DurableBuffer {
                                         OtapPayload::OtapArrowRecords(adapter.into_inner()),
                                     )),
                                 };
-                                (result, Some(num_items))
+                                (result, num_items)
                             }
                             Err(e) => {
                                 // Conversion failed - NACK with original bytes so upstream can retry
@@ -779,19 +909,35 @@ impl DurableBuffer {
                     Ok(()) => Ok(()),
                     Err(e) => Err((e, OtapPayload::OtapArrowRecords(adapter.into_inner()))),
                 };
-                (result, Some(num_items))
+                (result, num_items)
             }
         };
 
         // Handle ingest result
         match ingest_result {
             Ok(()) => {
-                // Track consumed Arrow items by signal type
-                if let Some(num_items) = item_count {
-                    match signal_type {
-                        SignalType::Logs => self.metrics.consumed_arrow_logs.add(num_items),
-                        SignalType::Metrics => self.metrics.consumed_arrow_metrics.add(num_items),
-                        SignalType::Traces => self.metrics.consumed_arrow_traces.add(num_items),
+                // Track consumed items by signal type
+                match signal_type {
+                    SignalType::Logs => self.metrics.consumed_log_records.add(item_count),
+                    SignalType::Metrics => self.metrics.consumed_metric_points.add(item_count),
+                    SignalType::Traces => self.metrics.consumed_spans.add(item_count),
+                }
+
+                // Track queued items (ingested but not yet ACKed downstream)
+                match signal_type {
+                    SignalType::Logs => {
+                        self.queued_log_records += item_count;
+                        self.metrics.queued_log_records.set(self.queued_log_records);
+                    }
+                    SignalType::Metrics => {
+                        self.queued_metric_points += item_count;
+                        self.metrics
+                            .queued_metric_points
+                            .set(self.queued_metric_points);
+                    }
+                    SignalType::Traces => {
+                        self.queued_spans += item_count;
+                        self.metrics.queued_spans.set(self.queued_spans);
                     }
                 }
 
@@ -1031,11 +1177,9 @@ impl DurableBuffer {
         // Convert the reconstructed bundle to OtapPdata
         match convert_bundle_to_pdata(handle.data()) {
             Ok(mut pdata) => {
-                // Get item count for Arrow data (cheap); skip for OTLP bytes (expensive)
-                let item_count = match pdata.signal_format() {
-                    SignalFormat::OtapRecords => Some(pdata.num_items() as u64),
-                    SignalFormat::OtlpBytes => None,
-                };
+                // Use the manifest-derived item count carried by the handle.
+                // This avoids re-scanning OTLP bytes on the drain path.
+                let item_count = handle.item_count();
                 let signal_type = pdata.signal_type();
 
                 // Subscribe for ACK/NACK with BundleRef in calldata
@@ -1049,17 +1193,13 @@ impl DurableBuffer {
                 // Try non-blocking send downstream
                 match effect_handler.try_send_message(pdata) {
                     Ok(()) => {
-                        // Track produced Arrow items by signal type
-                        if let Some(num_items) = item_count {
-                            match signal_type {
-                                SignalType::Logs => self.metrics.produced_arrow_logs.add(num_items),
-                                SignalType::Metrics => {
-                                    self.metrics.produced_arrow_metrics.add(num_items)
-                                }
-                                SignalType::Traces => {
-                                    self.metrics.produced_arrow_traces.add(num_items)
-                                }
+                        // Track produced items by signal type
+                        match signal_type {
+                            SignalType::Logs => self.metrics.produced_log_records.add(item_count),
+                            SignalType::Metrics => {
+                                self.metrics.produced_metric_points.add(item_count)
                             }
+                            SignalType::Traces => self.metrics.produced_spans.add(item_count),
                         }
 
                         otel_debug!(
@@ -1076,6 +1216,8 @@ impl DurableBuffer {
                             PendingBundle {
                                 handle,
                                 retry_count,
+                                item_count,
+                                signal_type,
                             },
                         );
                         self.metrics
@@ -1141,6 +1283,26 @@ impl DurableBuffer {
 
         // Remove from pending and acknowledge in Quiver using the stored handle
         if let Some(pending) = self.pending_bundles.remove(&key) {
+            // Decrement queued item count on successful ACK
+            match pending.signal_type {
+                SignalType::Logs => {
+                    self.queued_log_records =
+                        self.queued_log_records.saturating_sub(pending.item_count);
+                    self.metrics.queued_log_records.set(self.queued_log_records);
+                }
+                SignalType::Metrics => {
+                    self.queued_metric_points =
+                        self.queued_metric_points.saturating_sub(pending.item_count);
+                    self.metrics
+                        .queued_metric_points
+                        .set(self.queued_metric_points);
+                }
+                SignalType::Traces => {
+                    self.queued_spans = self.queued_spans.saturating_sub(pending.item_count);
+                    self.metrics.queued_spans.set(self.queued_spans);
+                }
+            }
+
             pending.handle.ack();
             self.metrics.bundles_acked.add(1);
             self.metrics
@@ -1188,6 +1350,13 @@ impl DurableBuffer {
             self.metrics
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
+
+            // Track requeued items by signal type (individual items in NACKed bundles)
+            match pending.signal_type {
+                SignalType::Logs => self.metrics.requeued_log_records.add(pending.item_count),
+                SignalType::Metrics => self.metrics.requeued_metric_points.add(pending.item_count),
+                SignalType::Traces => self.metrics.requeued_spans.add(pending.item_count),
+            }
 
             // Calculate backoff delay with jitter
             let backoff = self.calculate_backoff(retry_count);
@@ -1505,17 +1674,32 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                             budget.hard_cap(),
                             engine.force_dropped_segments(),
                             engine.force_dropped_bundles(),
+                            engine.force_dropped_items(),
+                            engine.expired_bundles(),
+                            engine.expired_items(),
                         ))
                     } else {
                         None
                     };
 
                     // Update metrics from collected values
-                    if let Some((used, cap, dropped_segs, dropped_buns)) = quiver_metrics {
+                    if let Some((
+                        used,
+                        cap,
+                        dropped_segs,
+                        dropped_buns,
+                        dropped_items,
+                        expired_buns,
+                        expired_items,
+                    )) = quiver_metrics
+                    {
                         self.metrics.storage_bytes_used.set(used);
                         self.metrics.storage_bytes_cap.set(cap);
-                        self.metrics.dropped_segments.set(dropped_segs);
-                        self.metrics.dropped_bundles.set(dropped_buns);
+                        self.metrics.dropped_segments.observe(dropped_segs);
+                        self.metrics.dropped_bundles.observe(dropped_buns);
+                        self.metrics.dropped_items.observe(dropped_items);
+                        self.metrics.expired_bundles.observe(expired_buns);
+                        self.metrics.expired_items.observe(expired_items);
                     }
 
                     metrics_reporter
@@ -1672,7 +1856,7 @@ mod tests {
 
         let config = DurableBufferConfig {
             path: std::path::PathBuf::from("/tmp/test"),
-            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MB (above min for default WAL/segment sizes)
+            retention_size_cap: byte_unit::Byte::from_u64(256 * 1024 * 1024), // 256 MiB (above min for default WAL/segment sizes)
             max_age: None,
             size_cap_policy: SizeCapPolicy::Backpressure,
             poll_interval: Duration::from_millis(100),
