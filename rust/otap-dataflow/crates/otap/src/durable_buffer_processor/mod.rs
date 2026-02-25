@@ -133,10 +133,10 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 /// Metrics for the durable buffer processor.
 ///
 /// Follows RFC-aligned telemetry conventions:
-/// - Metric set name follows `otelcol.<entity>` pattern
+/// - Metric set name follows `otap.<role>.<component>` pattern
 /// - Channel metrics already track bundle send/receive counts
 /// - This tracks ACK/NACK status, item counts, storage, and retries
-#[metric_set(name = "otelcol.node.durable_buffer")]
+#[metric_set(name = "otap.processor.durable_buffer")]
 #[derive(Debug, Default, Clone)]
 pub struct DurableBufferMetrics {
     // ─── ACK/NACK tracking ──────────────────────────────────────────────────
