@@ -845,7 +845,10 @@ pub async fn serve(
                         drop(tracker.spawn(async move {
                             let tls_stream = match acceptor.accept(stream).await {
                                 Ok(s) => s,
-                                Err(_) => return,
+                                Err(e) => {
+                                    println!("accept err {e:?}");
+                                    return
+                                },
                             };
                             let io = TokioIo::new(tls_stream);
                             let executor = hyper_util::rt::TokioExecutor::new();

@@ -11,7 +11,7 @@ use tower::limit::ConcurrencyLimitLayer;
 #[cfg(feature = "experimental-tls")]
 use {
     crate::tls_utils::read_file_with_limit_async, otap_df_config::tls::TlsClientConfig,
-    otap_df_telemetry::otel_error, reqwest::Certificate, std::io,
+    otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity, std::io,
 };
 
 use crate::otap_grpc::client_settings::{
@@ -134,6 +134,67 @@ impl HttpClientSettings {
 
                 if let Some(true) = &tls.insecure_skip_verify {
                     client_builder = client_builder.danger_accept_invalid_certs(true);
+                }
+
+                // mTLS client certificate configuration
+                let client_cert_configured = tls.config.cert_file.is_some()
+                    || tls
+                        .config
+                        .cert_pem
+                        .as_ref()
+                        .is_some_and(|pem| !pem.trim().is_empty());
+                let client_key_configured = tls.config.key_file.is_some()
+                    || tls
+                        .config
+                        .key_pem
+                        .as_ref()
+                        .is_some_and(|pem| !pem.trim().is_empty());
+
+                if client_cert_configured || client_key_configured {
+                    if !(client_cert_configured && client_key_configured) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "TLS configuration error: both cert and key must be provided for mTLS. \
+                             Provide both cert_file/cert_pem and key_file/key_pem, or neither.",
+                        )
+                        .into());
+                    }
+
+                    // Read cert and key
+                    let cert_pem = if let Some(cert_file) = &tls.config.cert_file {
+                        read_file_with_limit_async(cert_file).await.map_err(|e| {
+                            otel_error!("tls.cert_file.read_error", cert_file = ?cert_file, error = ?e, message = "Failed to read client cert file");
+                            e
+                        })?
+                    } else if let Some(cert_pem) = &tls.config.cert_pem {
+                        cert_pem.as_bytes().to_vec()
+                    } else {
+                        unreachable!()
+                    };
+
+                    let key_pem = if let Some(key_file) = &tls.config.key_file {
+                        read_file_with_limit_async(key_file).await.map_err(|e| {
+                            otel_error!("tls.key_file.read_error", key_file = ?key_file, error = ?e, message = "Failed to read client key file");
+                            e
+                        })?
+                    } else if let Some(key_pem) = &tls.config.key_pem {
+                        key_pem.as_bytes().to_vec()
+                    } else {
+                        unreachable!()
+                    };
+
+                    // Combine cert and key into PEM format for Identity
+                    let mut identity_pem = cert_pem;
+                    identity_pem.extend_from_slice(&key_pem);
+
+                    let identity = Identity::from_pem(&identity_pem).map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("Failed to create identity from cert and key: {}", e),
+                        )
+                    })?;
+
+                    client_builder = client_builder.identity(identity);
                 }
             }
         }
