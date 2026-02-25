@@ -959,7 +959,10 @@ mod tests {
             "max_concurrent_uploads": 2
         });
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, config);
-        assert!(exporter.is_ok(), "Exporter should initialise with UserManagedIdentityByArmResourceId auth");
+        assert!(
+            exporter.is_ok(),
+            "Exporter should initialise with UserManagedIdentityByArmResourceId auth"
+        );
     }
 
     // TODO: Add integration tests when we can mock GenevaClient:
