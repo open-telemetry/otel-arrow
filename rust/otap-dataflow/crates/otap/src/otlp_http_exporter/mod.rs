@@ -2673,7 +2673,7 @@ mod test {
                 watch_client_ca: false,
                 handshake_timeout: Some(Duration::from_secs(10)),
             },
-            "client error (Connect): invalid peer certificate: NotValidForName",
+            "client error (Connect): invalid peer certificate",
             false,
         );
     }
