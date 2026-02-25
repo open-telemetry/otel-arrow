@@ -2,17 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::error::ValidationError;
-use crate::metrics_types::{MetricDataPoint, MetricSetSnapshot, MetricsSnapshot};
+use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use reqwest::Client;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
-use tokio::time::{Duration, sleep};
 use std::collections::HashMap;
+use tokio::time::{Duration, sleep};
 
 const LOADGEN_METRIC_SET: &str = "fake_data_generator.receiver.metrics";
-const LOADGEN_METRIC_NAME: &str = "logs.produced";
+const LOADGEN_METRIC_NAME_LOGS: &str = "logs.produced";
+const LOADGEN_METRIC_NAME_METRICS: &str = "metrics.produced";
+const LOADGEN_TRACE_NAME_SPANS: &str = "spans.produced";
 const VALIDATION_METRIC_SET: &str = "validation.exporter.metrics";
 const VALIDATION_METRIC_NAME: &str = "valid";
 
@@ -129,10 +130,7 @@ async fn wait_for_loadgen(
     }
 }
 
-async fn ensure_validation_passed(
-    client: &Client,
-    base: &str,
-) -> Result<(), ValidationError> {
+async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), ValidationError> {
     let snapshot = fetch_metrics(client, base).await?;
     match validation_from_metrics(&snapshot) {
         Ok(()) => Ok(()),
@@ -187,10 +185,11 @@ fn loadgen_reached_limit(
         .filter(|set| set.name == LOADGEN_METRIC_SET)
     {
         if let Some(label) = attribute_node_id(&set.attributes) {
-            if let Some(value) = metric_value(set, LOADGEN_METRIC_NAME) {
-                if &value < expected_per_gen.get(&label).unwrap_or(&0u64) {
-                    return false;
-                }
+            let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
+                + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
+                + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
+            if &loadgen_signals_produced < expected_per_gen.get(&label).unwrap_or(&0u64) {
+                return false;
             }
         }
     }
@@ -221,7 +220,6 @@ fn validation_from_metrics(snapshot: &MetricsSnapshot) -> Result<(), String> {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,12 +228,7 @@ mod tests {
     use otap_df_telemetry::metrics::MetricValue;
     use std::collections::HashMap;
 
-    fn set_with_node(
-        set_name: &str,
-        metric: &str,
-        value: u64,
-        node_id: &str,
-    ) -> MetricSetSnapshot {
+    fn set_with_node(set_name: &str, metric: &str, value: u64, node_id: &str) -> MetricSetSnapshot {
         MetricSetSnapshot {
             name: set_name.into(),
             brief: "test".into(),
@@ -260,8 +253,8 @@ mod tests {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 10, "genA"),
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME, 4, "genB"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 10, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 4, "genB"),
             ],
         };
         let mut expected = HashMap::new();

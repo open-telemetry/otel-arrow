@@ -15,6 +15,7 @@
 {% set generator_label = generator_label | default("traffic_generator") -%}
 {% set generator_core_start = generator_core_start | default(2) -%}
 {% set generator_core_end = generator_core_end | default(2) -%}
+{% set data_source = data_source | default(static) %}
 {{ generator_label }}:
   policies:
     resources:
@@ -27,6 +28,8 @@
 {{ generator_label | indent(4, true)}}:
       type: traffic_generator:receiver
       config:
+        data_source: {{ data_source }}
+        generation_strategy: pre_generated
         traffic_config:
           max_signal_count: {{ max_signal_count }}
           max_batch_size: {{ max_batch_size }}

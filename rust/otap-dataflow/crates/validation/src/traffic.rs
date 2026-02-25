@@ -6,6 +6,8 @@
 //! and validated.
 
 use crate::ValidationInstructions;
+use otap_df_otap::fake_data_generator::config::DataSource;
+use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 
@@ -54,6 +56,8 @@ pub struct Generator {
     pub(crate) trace_weight: u32,
     /// Weight for log generation (0-100).
     pub(crate) log_weight: u32,
+    /// static vs semantic messages
+    pub(crate) data_source: DataSource
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
@@ -146,6 +150,18 @@ impl Generator {
         self.core_end = end;
         self
     }
+
+    /// set the traffic generator to use static as source
+    pub fn static_signals(mut self) -> Self {
+        self.data_source = DataSource::Static;
+        self
+    }
+
+    /// set the traffic generator to use semantic convention as source
+    pub fn semantic_signals(mut self) -> Self {
+        self.data_source = DataSource::SemanticConventions;
+        self
+    }
 }
 
 impl Default for Generator {
@@ -163,6 +179,7 @@ impl Default for Generator {
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
+            data_source: DataSource::Static
         }
     }
 }

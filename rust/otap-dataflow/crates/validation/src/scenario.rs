@@ -122,7 +122,6 @@ impl Scenario {
             .collect();
 
         let rendered_group = self.render_template()?;
-        println!("{rendered_group}");
         let tokio_rt = tokio::runtime::Runtime::new()
             .map_err(|e| ValidationError::Io(format!("failed to create tokio runtime: {e}")))?;
 
@@ -279,28 +278,24 @@ impl Scenario {
         let tmpl = env
             .get_template("capture")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
-        let mut out = String::new();
-        let mut labels: Vec<_> = captures.keys().cloned().collect();
-        labels.sort();
-        for label in labels.iter() {
-            let cap = captures.get(label).expect("label exists");
+        let mut captures_rendered: Vec<String> = vec![];
+
+        for (label, capture) in captures.iter() {
             let ctx = context! {
-                suv_receiver_type => &cap.suv_receiver_type,
-                suv_port => cap.suv_port,
-                control_ports => cap.control_ports,
-                validate => &cap.validations_config(),
-                capture_core_start => cap.core_start,
-                capture_core_end => cap.core_end,
+                suv_receiver_type => &capture.suv_receiver_type,
+                suv_port => capture.suv_port,
+                control_ports => capture.control_ports,
+                validate => &capture.validations_config(),
+                capture_core_start => capture.core_start,
+                capture_core_end => capture.core_end,
                 capture_label => label,
             };
-            out.push_str(
-                &tmpl
-                    .render(ctx)
+            captures_rendered.push(
+                tmpl.render(ctx)
                     .map_err(|e| ValidationError::Template(e.to_string()))?,
             );
-            out.push('\n');
         }
-        Ok(out)
+        Ok(captures_rendered.join("\n"))
     }
 
     fn render_generators(
@@ -315,32 +310,29 @@ impl Scenario {
         let tmpl = env
             .get_template("generator")
             .map_err(|e| ValidationError::Template(e.to_string()))?;
-        let mut out = String::new();
-        let mut labels: Vec<_> = generators.keys().cloned().collect();
-        labels.sort();
-        for label in labels.iter() {
-            let generator_cfg = generators.get(label).expect("label exists");
+        let mut generators_rendered: Vec<String> = vec![];
+
+        for (label, generator) in generators.iter() {
             let ctx = context! {
-                suv_exporter_type => &generator_cfg.suv_exporter_type,
-                control_ports => generator_cfg.control_ports,
-                max_signal_count => generator_cfg.max_signal_count,
-                max_batch_size => generator_cfg.max_batch_size,
-                signals_per_second => generator_cfg.signals_per_second,
-                metric_weight => generator_cfg.metric_weight,
-                trace_weight => generator_cfg.trace_weight,
-                log_weight => generator_cfg.log_weight,
-                suv_port => generator_cfg.suv_port,
-                generator_core_start => generator_cfg.core_start,
-                generator_core_end => generator_cfg.core_end,
+                suv_exporter_type => &generator.suv_exporter_type,
+                control_ports => generator.control_ports,
+                max_signal_count => generator.max_signal_count,
+                max_batch_size => generator.max_batch_size,
+                signals_per_second => generator.signals_per_second,
+                metric_weight => generator.metric_weight,
+                trace_weight => generator.trace_weight,
+                log_weight => generator.log_weight,
+                suv_port => generator.suv_port,
+                generator_core_start => generator.core_start,
+                generator_core_end => generator.core_end,
                 generator_label => label,
+                data_source => &generator.data_source
             };
-            out.push_str(
-                &tmpl
-                    .render(ctx)
+            generators_rendered.push(
+                tmpl.render(ctx)
                     .map_err(|e| ValidationError::Template(e.to_string()))?,
             );
-            out.push('\n');
         }
-        Ok(out)
+        Ok(generators_rendered.join("\n"))
     }
 }

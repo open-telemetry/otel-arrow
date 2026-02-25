@@ -184,23 +184,23 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let msg = OtlpProtoBytes::try_from(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
-                    if source_node.is_none() {
-                        otel_error!("source.is.none");
-                    }
 
-
-                    if let Some(msg) = msg
-                        && let Some(node_index) = source_node
-                    {
-                        if node_index == self.suv_index {
+                    if let Some(msg) = msg {
+                        if let Some(node_index) = source_node {
+                            if node_index == self.suv_index {
+                                self.suv_msgs.push(msg.clone());
+                                self.validate_and_record(msg, time_elapsed);
+                                time = Instant::now();
+                            } else if self.control_indices.contains(&node_index) {
+                                self.control_msgs.push(msg);
+                            }
+                        } else if self.control_indices.is_empty() {
                             self.suv_msgs.push(msg.clone());
                             self.validate_and_record(msg, time_elapsed);
                             time = Instant::now();
-                        } else if self.control_indices.contains(&node_index) {
-                            self.control_msgs.push(msg);
+                        } else {
+                            otel_error!("validation.missing.source");
                         }
-                    } else {
-                        otel_error!("validation.missing.source");
                     }
                 }
                 _ => {}
