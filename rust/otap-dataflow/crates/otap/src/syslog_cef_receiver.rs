@@ -10,6 +10,7 @@ use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
@@ -222,6 +223,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         self: Box<Self>,
         mut ctrl_chan: local::ControlChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         // Start periodic telemetry collection (1s), similar to other nodes
         let timer_cancel_handle = effect_handler
@@ -1621,7 +1623,9 @@ mod telemetry_tests {
 
             // Start receiver
             let handle = tokio::task::spawn_local(async move {
-                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+                let _ = Box::new(receiver)
+                    .start(ctrl_chan, eh, ExtensionRegistry::empty())
+                    .await;
             });
 
             // Send one valid and one invalid UDP datagram
@@ -1713,7 +1717,9 @@ mod telemetry_tests {
 
             // Start receiver
             let handle = tokio::task::spawn_local(async move {
-                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+                let _ = Box::new(receiver)
+                    .start(ctrl_chan, eh, ExtensionRegistry::empty())
+                    .await;
             });
             // Allow bind
             tokio::time::sleep(Duration::from_millis(50)).await;

@@ -93,6 +93,8 @@ pub enum NodeKind {
     // Connector,
     /// A merged chain of consecutive processors (experimental).
     ProcessorChain,
+    /// A non-pipeline extension (e.g., auth provider, health check).
+    Extension,
 }
 
 impl From<NodeKind> for Cow<'static, str> {
@@ -102,6 +104,7 @@ impl From<NodeKind> for Cow<'static, str> {
             NodeKind::Processor => "processor".into(),
             NodeKind::Exporter => "exporter".into(),
             NodeKind::ProcessorChain => "processor_chain".into(),
+            NodeKind::Extension => "extension".into(),
         }
     }
 }

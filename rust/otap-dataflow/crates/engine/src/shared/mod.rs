@@ -4,6 +4,7 @@
 //! Traits and structs defining the shared (Send) version of receivers, processors, and exporters.
 
 pub mod exporter;
+pub mod extension;
 pub mod message;
 pub mod processor;
 pub mod receiver;

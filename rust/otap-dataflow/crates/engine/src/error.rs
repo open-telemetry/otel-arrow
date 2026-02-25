@@ -95,6 +95,31 @@ impl fmt::Display for ProcessorErrorKind {
     }
 }
 
+/// High-level classification for extension failures to aid troubleshooting.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ExtensionErrorKind {
+    /// Errors caused by invalid or missing configuration.
+    Configuration,
+    /// Errors encountered during extension startup.
+    Startup,
+    /// Errors raised while shutting down an extension.
+    Shutdown,
+    /// Catch-all for extension failures that do not fit other categories.
+    Other,
+}
+
+impl fmt::Display for ExtensionErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            ExtensionErrorKind::Configuration => "configuration",
+            ExtensionErrorKind::Startup => "startup",
+            ExtensionErrorKind::Shutdown => "shutdown",
+            ExtensionErrorKind::Other => "other",
+        };
+        write!(f, "{label}")
+    }
+}
+
 /// Formats the source chain of an error into a single display string.
 #[must_use]
 pub fn format_error_sources(error: &(dyn std::error::Error + 'static)) -> String {
@@ -433,6 +458,54 @@ pub enum Error {
         /// The name of the unknown port.
         port: PortName,
     },
+
+    /// The specified extension already exists in the pipeline.
+    #[error("The extension `{extension}` already exists")]
+    ExtensionAlreadyExists {
+        /// The name of the extension that already exists.
+        extension: NodeId,
+    },
+
+    /// A wrapper for the extension errors.
+    #[error("An extension error occurred in node {extension} ({kind}): {error}{source_detail}")]
+    ExtensionError {
+        /// The name of the extension that encountered the error.
+        extension: NodeId,
+
+        /// High-level classification for the extension failure.
+        kind: ExtensionErrorKind,
+
+        /// The error that occurred.
+        error: String,
+
+        /// Pre-formatted representation of the source chain used when rendering the error.
+        source_detail: String,
+    },
+
+    /// Unknown extension plugin.
+    #[error("Unknown extension plugin `{plugin_urn}`")]
+    UnknownExtension {
+        /// The name of the unknown extension plugin.
+        plugin_urn: NodeUrn,
+    },
+
+    /// An extension handle of the given type was already registered for the named extension.
+    #[error("Extension handle already registered for `{extension}` (type: {type_name})")]
+    ExtensionHandleAlreadyRegistered {
+        /// The name of the extension.
+        extension: String,
+        /// The type name of the handle.
+        type_name: String,
+    },
+
+    /// No extension handle of the requested type was found.
+    #[error("Extension handle not found for `{extension}` (type: {type_name})")]
+    ExtensionHandleNotFound {
+        /// The name of the extension.
+        extension: String,
+        /// The type name of the handle.
+        type_name: String,
+    },
 }
 
 impl Error {
@@ -463,6 +536,11 @@ impl Error {
             Error::ReceiverAlreadyExists { .. } => "ReceiverAlreadyExists",
             Error::ReceiverError { .. } => "ReceiverError",
             Error::SpmcSharedNotSupported { .. } => "SpmcSharedNotSupported",
+            Error::ExtensionAlreadyExists { .. } => "ExtensionAlreadyExists",
+            Error::ExtensionError { .. } => "ExtensionError",
+            Error::ExtensionHandleAlreadyRegistered { .. } => "ExtensionHandleAlreadyRegistered",
+            Error::ExtensionHandleNotFound { .. } => "ExtensionHandleNotFound",
+            Error::UnknownExtension { .. } => "UnknownExtension",
             Error::TooManyNodes {} => "TooManyNodes",
             Error::UnknownExporter { .. } => "UnknownExporter",
             Error::UnknownNode { .. } => "UnknownNode",
@@ -512,6 +590,18 @@ pub fn error_summary_from(err: &Error) -> ErrorSummary {
         } => ErrorSummary::Node {
             node: exporter.name.to_string(),
             node_kind: NodeKind::Exporter,
+            error_kind: kind.to_string(),
+            message: error.clone(),
+            source: (!source_detail.is_empty()).then(|| source_detail.clone()),
+        },
+        Error::ExtensionError {
+            extension,
+            kind,
+            error,
+            source_detail,
+        } => ErrorSummary::Node {
+            node: extension.name.to_string(),
+            node_kind: NodeKind::Extension,
             error_kind: kind.to_string(),
             message: error.clone(),
             source: (!source_detail.is_empty()).then(|| source_detail.clone()),

@@ -32,6 +32,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ExporterErrorKind};
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{Message, MessageChannel};
 use otap_df_engine::node::NodeId;
@@ -128,6 +129,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
         mut self: Box<Self>,
         mut msg_chan: MessageChannel<OtapPdata>,
         effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         // init variables for tracking
         // let mut average_pipeline_latency: f64 = 0.0;

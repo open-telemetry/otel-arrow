@@ -183,6 +183,44 @@ pub enum NodeControlMsg<PData> {
     },
 }
 
+/// Control messages sent by the pipeline engine to **extensions**.
+///
+/// This is a PData-free subset of [`NodeControlMsg`] — extensions never process
+/// Ack/Nack/DelayedData, so they receive a simpler, non-generic enum.
+#[derive(Debug, Clone)]
+pub enum ExtensionControlMsg {
+    /// Notifies the extension of a configuration change.
+    Config {
+        /// The new configuration as a JSON value.
+        config: serde_json::Value,
+    },
+
+    /// Emitted when a scheduled timer expires.
+    TimerTick {},
+
+    /// Signal to collect/flush local telemetry metrics.
+    CollectTelemetry {
+        /// Metrics reporter used to collect telemetry metrics.
+        metrics_reporter: MetricsReporter,
+    },
+
+    /// Requests a graceful shutdown.
+    Shutdown {
+        /// Deadline for shutdown.
+        deadline: Instant,
+        /// Human-readable reason for the shutdown.
+        reason: String,
+    },
+}
+
+impl ExtensionControlMsg {
+    /// Returns `true` if this control message is a shutdown request.
+    #[must_use]
+    pub const fn is_shutdown(&self) -> bool {
+        matches!(self, ExtensionControlMsg::Shutdown { .. })
+    }
+}
+
 /// Control messages sent by nodes to the pipeline engine to manage node-specific operations
 /// and control pipeline behavior.
 #[derive(Debug, Clone)]

@@ -45,6 +45,7 @@ data-encoding = { workspace = true }
 prost = { workspace = true }
 byte-unit = { workspace = true }
 cpu-time = { workspace = true }
+http = { workspace = true }
 nix = { workspace = true, features = ["resource"] }
 
 [target.'cfg(not(windows))'.dependencies]

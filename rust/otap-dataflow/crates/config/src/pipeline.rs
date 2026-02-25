@@ -526,6 +526,9 @@ impl PipelineConfig {
                         !has_incoming || !has_outgoing
                     }
                     NodeKind::Exporter => !has_incoming,
+                    // Extensions are standalone services; they never participate
+                    // in the data-flow graph and must not be pruned.
+                    NodeKind::Extension => false,
                 };
 
                 if should_remove {

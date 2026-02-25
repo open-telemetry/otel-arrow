@@ -18,6 +18,7 @@ use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::error::Error;
+use otap_df_engine::extensions::ExtensionRegistry;
 use otap_df_engine::local::receiver as local;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::receiver::ReceiverWrapper;
@@ -101,6 +102,7 @@ impl local::Receiver<OtapPdata> for TopicReceiver {
         self: Box<Self>,
         mut ctrl_msg_recv: local::ControlChannel<OtapPdata>,
         _effect_handler: local::EffectHandler<OtapPdata>,
+        _extension_registry: ExtensionRegistry,
     ) -> Result<TerminalState, Error> {
         loop {
             match ctrl_msg_recv.recv().await {
