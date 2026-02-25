@@ -61,8 +61,6 @@ pub struct AzureMonitorExporterMetrics {
     /// Number of HTTP 5xx (server error) responses.
     #[metric(unit = "{response}")]
     pub laclient_http_5xx: Counter<u64>,
-    /// Number of successful authentication attempts.
-    pub auth_successes: Counter<u64>,
     /// Number of failed authentication attempts.
     pub auth_failures: Counter<u64>,
     /// Authentication success latency in milliseconds (min/max/sum/count).
@@ -281,12 +279,6 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub fn add_auth_success_latency(&mut self, latency_ms: f64) {
         self.metrics.auth_success_latency.record(latency_ms);
-    }
-
-    /// Record a successful authentication attempt.
-    #[inline]
-    pub fn add_auth_success(&mut self) {
-        self.metrics.auth_successes.inc();
     }
 
     /// Record a failed authentication attempt.

@@ -79,7 +79,6 @@ impl Auth {
                     otel_debug!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
                     let mut m = self.metrics.borrow_mut();
                     m.add_auth_success_latency(start.elapsed().as_millis() as f64);
-                    m.add_auth_success();
                     return Ok(token);
                 }
                 Err(e) => {
