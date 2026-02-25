@@ -136,7 +136,7 @@ pub enum AuthConfig {
     },
     /// User-assigned managed identity (by ARM resource ID)
     /// Identifies the managed identity by its Azure Resource Manager resource ID.
-    UserManagedIdentityByResourceId {
+    UserManagedIdentityByArmResourceId {
         /// ARM resource ID of the extension identity
         resource_id: String,
         /// MSI resource identifier
@@ -196,7 +196,7 @@ impl GenevaExporter {
             AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
                 client_id: client_id.clone(),
             },
-            AuthConfig::UserManagedIdentityByResourceId { resource_id, .. } => {
+            AuthConfig::UserManagedIdentityByArmResourceId { resource_id, .. } => {
                 AuthMethod::UserManagedIdentityByResourceId {
                     resource_id: resource_id.clone(),
                 }
@@ -210,7 +210,7 @@ impl GenevaExporter {
         let msi_resource = match &config.auth {
             AuthConfig::SystemManagedIdentity { msi_resource }
             | AuthConfig::UserManagedIdentity { msi_resource, .. }
-            | AuthConfig::UserManagedIdentityByResourceId { msi_resource, .. }
+            | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
             | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
             AuthConfig::Certificate { .. } => None,
         };
@@ -908,20 +908,20 @@ mod tests {
         assert!(matches!(user_mi, AuthConfig::UserManagedIdentity { .. }));
 
         let user_mi_resid_json = serde_json::json!({
-            "type": "usermanagedidentitybyresourceid",
+            "type": "usermanagedidentitybyarmresourceid",
             "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Kubernetes/extensions/ext1",
             "msi_resource": "https://monitor.core.windows.net"
         });
         let user_mi_resid: AuthConfig = serde_json::from_value(user_mi_resid_json).unwrap();
         match user_mi_resid {
-            AuthConfig::UserManagedIdentityByResourceId {
+            AuthConfig::UserManagedIdentityByArmResourceId {
                 resource_id,
                 msi_resource,
             } => {
                 assert!(resource_id.contains("sub1"));
                 assert_eq!(msi_resource, "https://monitor.core.windows.net");
             }
-            _ => panic!("Expected UserManagedIdentityByResourceId auth variant"),
+            _ => panic!("Expected UserManagedIdentityByArmResourceId auth variant"),
         }
 
         let workload_json = serde_json::json!({
@@ -935,6 +935,30 @@ mod tests {
     #[test]
     fn test_urn_constant() {
         assert_eq!(GENEVA_EXPORTER_URN, "urn:microsoft:geneva:exporter");
+    }
+
+    #[test]
+    fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "usermanagedidentitybyarmresourceid",
+                "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Kubernetes/extensions/ext1",
+                "msi_resource": "https://monitor.core.windows.net"
+            },
+            "max_buffer_size": 1000,
+            "max_concurrent_uploads": 2
+        });
+        let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, config);
+        assert!(exporter.is_ok(), "Exporter should initialise with UserManagedIdentityByArmResourceId auth");
     }
 
     // TODO: Add integration tests when we can mock GenevaClient:
