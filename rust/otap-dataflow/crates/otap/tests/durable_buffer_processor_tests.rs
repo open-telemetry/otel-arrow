@@ -30,8 +30,10 @@ use otap_df_otap::noop_exporter::NOOP_EXPORTER_URN;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use quiver::segment::SegmentReader;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -176,7 +178,7 @@ impl TestConfigBuilder {
         let mut buffer_config = json!({
             "path": self.buffer_path.to_string_lossy(),
             "poll_interval": "20ms",
-            "retention_size_cap": "256MB",
+            "retention_size_cap": "256MiB",
             "size_cap_policy": self.size_cap_policy,
             "max_segment_open_duration": "50ms"
         });
@@ -447,6 +449,203 @@ fn wait_for_signals_in_segments(
         timeout,
         Duration::from_millis(10),
     )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Metrics Capture
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Snapshot of durable_buffer metrics captured from the telemetry registry.
+///
+/// Field names mirror `DurableBufferMetrics` in mod.rs. Values are
+/// captured via `visit_current_metrics` on the registry after the collector
+/// drains the reporting channel — so they reflect the most-recent
+/// `CollectTelemetry` snapshot produced by the processor.
+#[derive(Debug, Default)]
+struct DurableBufferMetricsSnapshot {
+    fields: HashMap<String, u64>,
+}
+
+impl DurableBufferMetricsSnapshot {
+    /// Get a metric value by its dot-separated field name (e.g. "consumed.logs").
+    fn get(&self, field: &str) -> u64 {
+        self.fields.get(field).copied().unwrap_or(0)
+    }
+
+    /// Assert that a metric equals an exact expected value.
+    fn assert_eq(&self, field: &str, expected: u64) {
+        let actual = self.get(field);
+        assert_eq!(
+            actual, expected,
+            "{field}: expected {expected}, got {actual}"
+        );
+    }
+
+    /// Assert that a metric is greater than or equal to a minimum.
+    fn assert_ge(&self, field: &str, minimum: u64) {
+        let actual = self.get(field);
+        assert!(
+            actual >= minimum,
+            "{field}: expected >= {minimum}, got {actual}"
+        );
+    }
+}
+
+/// Capture a snapshot of `otelcol.node.durable_buffer` metrics from the
+/// telemetry registry.
+///
+/// The caller must ensure that:
+/// 1. At least one `CollectTelemetry` cycle has flushed the processor's metrics.
+/// 2. `collector.collect_pending()` has been called to drain the channel.
+fn capture_durable_buffer_metrics(
+    registry: &TelemetryRegistryHandle,
+) -> DurableBufferMetricsSnapshot {
+    let mut snapshot = DurableBufferMetricsSnapshot::default();
+    registry.visit_current_metrics(|desc, _attrs, iter| {
+        if desc.name == "otelcol.node.durable_buffer" {
+            for (field, value) in iter {
+                let _ = snapshot
+                    .fields
+                    .insert(field.name.to_owned(), value.to_u64_lossy());
+            }
+        }
+    });
+    snapshot
+}
+
+/// Run a pipeline with a shutdown condition and capture durable_buffer metrics
+/// just before shutdown.
+///
+/// Works like `run_pipeline_with_condition`, but additionally:
+/// 1. After the condition fires, waits for a telemetry cycle (~1.2s) so the
+///    processor has flushed its metrics at least once.
+/// 2. Drains the collector channel into the registry via `collect_pending()`.
+/// 3. Captures a `DurableBufferMetricsSnapshot` from the registry.
+/// 4. Sends the shutdown signal.
+///
+/// Returns the captured metrics snapshot.
+fn run_pipeline_and_capture_metrics<F>(
+    config: PipelineConfig,
+    pipeline_group_id: &PipelineGroupId,
+    pipeline_id: &PipelineId,
+    max_duration: Duration,
+    shutdown_deadline: Duration,
+    shutdown_condition: F,
+) -> DurableBufferMetricsSnapshot
+where
+    F: Fn() -> bool + Send + 'static,
+{
+    let telemetry_system = InternalTelemetrySystem::default();
+    let registry = telemetry_system.registry();
+    let collector = telemetry_system.collector();
+    let controller_ctx = ControllerContext::new(registry.clone());
+    let pipeline_ctx = controller_ctx.pipeline_context_with(
+        pipeline_group_id.clone(),
+        pipeline_id.clone(),
+        0,
+        1,
+        0,
+    );
+
+    let pipeline_entity_key = pipeline_ctx.register_pipeline_entity();
+    let channel_capacity_policy = ChannelCapacityPolicy::default();
+    let runtime_pipeline = OTAP_PIPELINE_FACTORY
+        .build(
+            pipeline_ctx.clone(),
+            config.clone(),
+            channel_capacity_policy.clone(),
+            TelemetryPolicy::default(),
+            None,
+        )
+        .expect("failed to build runtime pipeline");
+
+    let (pipeline_ctrl_tx, pipeline_ctrl_rx) =
+        pipeline_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
+    let pipeline_ctrl_tx_for_shutdown = pipeline_ctrl_tx.clone();
+    let observed_state_store =
+        ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
+
+    let pipeline_key = DeployedPipelineKey {
+        pipeline_group_id: pipeline_group_id.clone(),
+        pipeline_id: pipeline_id.clone(),
+        core_id: 0,
+    };
+    let metrics_reporter = telemetry_system.reporter();
+    let event_reporter = observed_state_store.reporter(SendPolicy::default());
+
+    // Share registry + collector with the shutdown thread for pre-shutdown capture.
+    let capture_registry = registry.clone();
+    let capture_collector = collector.clone();
+
+    let shutdown_handle = std::thread::spawn(move || {
+        let poll_interval = Duration::from_millis(10);
+        let start = Instant::now();
+        loop {
+            if start.elapsed() >= max_duration {
+                break;
+            }
+            if shutdown_condition() {
+                break;
+            }
+            // Drain the reporting channel periodically to prevent it from filling up.
+            // In production, InternalCollector::run_collection_loop() runs continuously;
+            // without this drain the bounded channel saturates with high-frequency
+            // channel-metric snapshots, silently dropping node-level reports.
+            capture_collector.collect_pending();
+            std::thread::sleep(poll_interval);
+        }
+
+        // Wait for at least one CollectTelemetry cycle (1s interval + margin),
+        // continuing to drain the reporting channel so it doesn't fill up and
+        // silently drop the node-level CollectTelemetry reports.
+        let telemetry_wait = Duration::from_millis(1500);
+        let telemetry_start = Instant::now();
+        while telemetry_start.elapsed() < telemetry_wait {
+            capture_collector.collect_pending();
+            std::thread::sleep(poll_interval);
+        }
+
+        // Final drain of the reporting channel into the registry.
+        capture_collector.collect_pending();
+
+        // Capture the metrics snapshot while metric sets are still registered.
+        let snapshot = capture_durable_buffer_metrics(&capture_registry);
+
+        let deadline = Instant::now() + shutdown_deadline;
+        let _ = pipeline_ctrl_tx_for_shutdown.try_send(PipelineControlMsg::Shutdown {
+            deadline,
+            reason: "test shutdown (metrics capture)".to_owned(),
+        });
+
+        snapshot
+    });
+
+    let run_result = {
+        let _pipeline_entity_guard =
+            set_pipeline_entity_key(pipeline_ctx.metrics_registry(), pipeline_entity_key);
+        runtime_pipeline.run_forever(
+            pipeline_key,
+            pipeline_ctx,
+            event_reporter,
+            metrics_reporter,
+            pipeline_ctrl_tx,
+            pipeline_ctrl_rx,
+        )
+    };
+
+    let snapshot = shutdown_handle.join().expect("shutdown thread panicked");
+
+    let is_acceptable_shutdown = match &run_result {
+        Ok(_) => true,
+        Err(e) => e.to_string().contains("Channel is closed"),
+    };
+    assert!(
+        is_acceptable_shutdown,
+        "pipeline failed to shut down cleanly: {:?}",
+        run_result
+    );
+
+    snapshot
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -915,6 +1114,223 @@ fn test_durable_buffer_high_volume_throughput() {
         total_signals,
         delivered
     );
+}
+
+/// Test that item-level metrics are correctly tracked through the durable buffer
+/// for all three signal types (logs, traces, metrics).
+///
+/// This is a two-phase test that validates the end-to-end item counting pipeline:
+///
+/// **Phase 1** (error exporter — all NACKs):
+///   Generates a mix of OTLP logs, traces, and metrics (roughly equal weights).
+///   The durable buffer ingests them, downstream NACKs everything.
+///   After shutdown, segment files contain bundles with item_count in the manifest.
+///
+/// **Between phases** — manifest validation:
+///   Opens segment files directly and classifies each bundle by its OTLP slot ID
+///   (60=logs, 61=traces, 62=metrics). Asserts:
+///   - Every signal type has at least one bundle with non-zero item_count
+///   - The total item_count across all signals equals the number generated
+///
+/// **Phase 2** (counting exporter — all ACKs):
+///   Restarts pipeline against the same buffer directory. Recovered bundles from
+///   Phase 1 are re-delivered along with new data. The counting exporter verifies
+///   the total item count equals Phase 1 + Phase 2 data.
+///
+/// This validates:
+///   1. OTLP wire-format scanning produces correct item counts for each signal type
+///   2. Item counts are persisted in the segment manifest (write -> round-trip)
+///   3. Per-signal slot classification works correctly for all three signal types
+///   4. Recovered item counts flow correctly through the drain path to downstream
+#[test]
+fn test_durable_buffer_otlp_item_count_metrics() {
+    // OTLP pass-through slot IDs (mirrors otlp_slots in bundle_adapter.rs)
+    const OTLP_LOGS_SLOT: u16 = 60;
+    const OTLP_TRACES_SLOT: u16 = 61;
+    const OTLP_METRICS_SLOT: u16 = 62;
+
+    let temp_dir = tempdir().expect("failed to create temp dir");
+    let buffer_path = temp_dir.path().to_path_buf();
+    let pipeline_group_id: PipelineGroupId = "item-count-test".into();
+    let pipeline_id: PipelineId = "item-count-pipeline".into();
+
+    // The fake data generator sends signals in order (metrics, traces, logs) per
+    // iteration. Using equal weights with max_batch_size=30 ensures exactly 10 of
+    // each signal type per iteration (30 total). No rate limit — the budget is
+    // governed entirely by max_signal_count.
+    let phase1_signals = 30u64;
+
+    // ── Phase 1: Ingest mixed signals, all NACKs (data persists in segments) ─
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(phase1_signals))
+        .max_batch_size(30)
+        .signals_per_second(None) // No rate limit — budget governed by max_signal_count
+        .signal_weights(1, 1, 1) // Equal distribution: 10 metrics + 10 traces + 10 logs
+        .use_error_exporter()
+        .otlp_handling("pass_through") // OTLP pass-through: exercises wire-format scanning
+        .retry_config(json!({
+            "initial_retry_interval": "50ms",
+            "max_retry_interval": "100ms",
+            "max_in_flight": 50
+        }))
+        .build(&pipeline_group_id, &pipeline_id);
+
+    run_pipeline(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(2), // Give time for WAL → segment rotation
+        Duration::from_secs(1),
+    );
+
+    // ── Between phases: verify per-signal item_count in segment manifests ────
+    let segments_dir = buffer_path.join("core_0").join("segments");
+    assert!(
+        segments_dir.exists(),
+        "Segments directory should exist after Phase 1"
+    );
+
+    // Track item counts per signal type via OTLP slot IDs.
+    let mut log_items: u64 = 0;
+    let mut trace_items: u64 = 0;
+    let mut metric_items: u64 = 0;
+    let mut total_bundles: usize = 0;
+
+    for entry in std::fs::read_dir(&segments_dir).expect("read segments dir") {
+        let entry = entry.expect("dir entry");
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "qseg") {
+            if let Ok(reader) = SegmentReader::open(&path) {
+                for manifest_entry in reader.manifest() {
+                    total_bundles += 1;
+                    let ic = manifest_entry.item_count();
+                    // Classify by OTLP slot ID present in the bundle.
+                    for slot in manifest_entry.slot_ids() {
+                        match slot.raw() {
+                            OTLP_LOGS_SLOT => log_items += ic,
+                            OTLP_TRACES_SLOT => trace_items += ic,
+                            OTLP_METRICS_SLOT => metric_items += ic,
+                            _ => {} // shared or unknown slots
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let total_manifest_items = log_items + trace_items + metric_items;
+
+    assert!(
+        total_bundles > 0,
+        "Should have at least one bundle in segments after Phase 1"
+    );
+
+    // Each signal type should have received at least one item.
+    assert!(
+        log_items > 0,
+        "Logs should have non-zero item_count in manifest (got {log_items})"
+    );
+    assert!(
+        trace_items > 0,
+        "Traces should have non-zero item_count in manifest (got {trace_items})"
+    );
+    assert!(
+        metric_items > 0,
+        "Metrics should have non-zero item_count in manifest (got {metric_items})"
+    );
+
+    // For OTLP pass-through, each signal from the fake data generator is 1 item
+    // (1 log record, 1 span, or 1 metric data point). The total should match.
+    assert_eq!(
+        total_manifest_items, phase1_signals,
+        "Sum of per-signal manifest item_counts should equal signals generated \
+         (expected {phase1_signals}, got {total_manifest_items}: \
+         logs={log_items}, traces={trace_items}, metrics={metric_items})"
+    );
+
+    // ── Phase 2: Recovery run with counting exporter + metrics capture ──
+    let phase2_signals = 12u64;
+    let counter = Arc::new(AtomicU64::new(0));
+    let test_id = "item_count_metrics";
+    counting_exporter::register_counter(test_id, counter.clone());
+
+    let config = TestConfigBuilder::new(buffer_path.clone())
+        .max_signal_count(Some(phase2_signals))
+        .max_batch_size(12)
+        .signals_per_second(None) // No rate limit
+        .signal_weights(1, 1, 1) // Same equal mix for Phase 2 (4 each)
+        .use_counting_exporter()
+        .exporter_id(test_id)
+        .otlp_handling("pass_through") // Same format as Phase 1
+        .build(&pipeline_group_id, &pipeline_id);
+
+    let expected_total = phase1_signals + phase2_signals;
+    let delivered_counter = counter.clone();
+    let metrics_snapshot = run_pipeline_and_capture_metrics(
+        config,
+        &pipeline_group_id,
+        &pipeline_id,
+        Duration::from_secs(15), // Extra time for telemetry cycle
+        Duration::from_millis(500),
+        move || delivered_counter.load(Ordering::Relaxed) >= expected_total,
+    );
+
+    counting_exporter::unregister_counter(test_id);
+    let delivered = counter.load(Ordering::Relaxed);
+
+    // All Phase 1 data (recovered from segments) + Phase 2 data should arrive.
+    assert_eq!(
+        delivered, expected_total,
+        "Counting exporter should receive exactly {expected_total} items \
+         ({phase1_signals} recovered + {phase2_signals} new), got {delivered}"
+    );
+
+    // ── Validate durable buffer telemetry metrics ───────────────────────
+    // The metrics snapshot was captured after at least one CollectTelemetry cycle
+    // completed, so counters and gauges should reflect the pipeline's activity.
+    eprintln!("Durable buffer metrics snapshot: {metrics_snapshot:?}");
+
+    // Consumed counters count items ingested in THIS pipeline run only (Phase 2).
+    // Phase 2 generates phase2_signals with equal weights → phase2_signals/3 each.
+    let phase2_per_signal = phase2_signals / 3;
+    metrics_snapshot.assert_eq("consumed.log.records", phase2_per_signal);
+    metrics_snapshot.assert_eq("consumed.spans", phase2_per_signal);
+    metrics_snapshot.assert_eq("consumed.metric.points", phase2_per_signal);
+
+    // Produced counters count items sent downstream (Phase 1 recovered + Phase 2 new).
+    let phase1_per_signal = phase1_signals / 3;
+    let produced_per_signal = phase1_per_signal + phase2_per_signal;
+    metrics_snapshot.assert_eq("produced.log.records", produced_per_signal);
+    metrics_snapshot.assert_eq("produced.spans", produced_per_signal);
+    metrics_snapshot.assert_eq("produced.metric.points", produced_per_signal);
+
+    // All bundles ACKed, none NACKed (counting exporter always succeeds).
+    // The exact bundle count depends on internal batching decisions (how many
+    // items get grouped per bundle), but there must be at least 3 — one per
+    // signal type (logs, traces, metrics).
+    metrics_snapshot.assert_ge("bundles.acked", 3);
+    metrics_snapshot.assert_eq("bundles.nacked", 0);
+
+    // No errors, drops, or expirations in a clean run.
+    metrics_snapshot.assert_eq("dropped.items", 0);
+    metrics_snapshot.assert_eq("dropped.bundles", 0);
+    metrics_snapshot.assert_eq("dropped.segments", 0);
+    metrics_snapshot.assert_eq("expired.items", 0);
+    metrics_snapshot.assert_eq("expired.bundles", 0);
+    metrics_snapshot.assert_eq("ingest.errors", 0);
+    metrics_snapshot.assert_eq("read.errors", 0);
+
+    // No NACKs → no requeues, and all data drained → queued gauges at zero.
+    metrics_snapshot.assert_eq("requeued.log.records", 0);
+    metrics_snapshot.assert_eq("requeued.metric.points", 0);
+    metrics_snapshot.assert_eq("requeued.spans", 0);
+    metrics_snapshot.assert_eq("queued.log.records", 0);
+    metrics_snapshot.assert_eq("queued.metric.points", 0);
+    metrics_snapshot.assert_eq("queued.spans", 0);
+    metrics_snapshot.assert_eq("in.flight", 0);
+
+    // Storage cap should match the configured 256MiB retention_size_cap (per-core budget).
+    metrics_snapshot.assert_eq("storage.bytes.cap", 256 * 1024 * 1024);
 }
 
 /// Test drop_oldest size cap policy configuration is accepted.

@@ -31,7 +31,7 @@ pub fn config_to_telemetry_attr(
 }
 
 /// Convert a map of config `TelemetryAttribute`s to a telemetry `BTreeMap`,
-/// extracting just the values (briefs are config-layer metadata only).
+/// extracting just the keys and values.
 #[must_use]
 pub fn config_map_to_telemetry(
     map: &std::collections::HashMap<
@@ -115,7 +115,7 @@ pub struct NodeAttributeSet {
 
 /// Node attributes extended with user-configured custom telemetry attributes.
 ///
-/// This is only used when a node has non-empty `telemetry_attributes` in its config.
+/// This is used only when a node has non-empty `entity.extend.identity_attributes` in its config.
 /// Nodes without custom attributes use [`NodeAttributeSet`] directly, avoiding
 /// empty `custom={}` noise in telemetry output.
 #[attribute_set(name = "node.custom.attrs")]
