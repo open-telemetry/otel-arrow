@@ -53,7 +53,7 @@ use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic_middleware::MiddlewareLayer;
 
-const OTAP_RECEIVER_URN: &str = "urn:otel:otap:receiver";
+const OTAP_RECEIVER_URN: &str = "urn:otel:receiver:otap";
 
 /// Configuration for the OTAP Receiver
 #[derive(Debug, Deserialize)]

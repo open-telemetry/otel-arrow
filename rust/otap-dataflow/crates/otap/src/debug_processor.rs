@@ -51,7 +51,7 @@ mod predicate;
 mod sampling;
 
 /// The URN for the debug processor
-pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:debug:processor";
+pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 
 /// processor that outputs all data received to stdout
 pub struct DebugProcessor {

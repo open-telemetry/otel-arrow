@@ -63,7 +63,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// URN for the OTAP batch processor
-pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:batch:processor";
+pub const OTAP_BATCH_PROCESSOR_URN: &str = "urn:otel:processor:batch";
 
 /// Default configuration item min-size (OTAP default)
 pub const DEFAULT_OTAP_MIN_SIZE_ITEMS: usize = 8192;

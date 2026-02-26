@@ -79,7 +79,7 @@ pub use self_tracing::LogContext;
 
 /// The URN for the internal telemetry receiver.
 /// Defined here so it can be used by controller, engine, otap, and other crates.
-pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:internal_telemetry:receiver";
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
 
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///

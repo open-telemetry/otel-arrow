@@ -37,16 +37,16 @@ groups:
       main:
         nodes:
           otlp/ingest:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
           batcher:
-            type: batch:processor
+            type: processor:batch
             config: {}
           otlp/export:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
         connections:
@@ -124,7 +124,7 @@ At pipeline level:
 
 At node level:
 
-- `type`: `NodeUrn` (`urn:<namespace>:<id>:<kind>` or `<id>:<kind>` for `otel`)
+- `type`: `NodeUrn` (`urn:<namespace>:<kind>:<id>` or `<kind>:<id>` for `otel`)
 - `config`: node-specific payload
 - `outputs` (optional): named output ports for multi-output nodes
 - `default_output` (optional): explicit default output port for implicit sends
@@ -164,10 +164,10 @@ engine:
     pipeline:
       nodes:
         itr:
-          type: "urn:otel:internal_telemetry:receiver"
+          type: "urn:otel:receiver:internal_telemetry"
           config: {}
         sink:
-          type: "urn:otel:console:exporter"
+          type: "urn:otel:exporter:console"
           config: {}
       connections:
         - from: itr
@@ -273,12 +273,12 @@ Topic defaults:
 - `policies.queue_capacity = 128`
 - `policies.queue_on_full = block`
 
-`topic:exporter` may locally override full-queue behavior:
+`exporter:topic` may locally override full-queue behavior:
 
 ```yaml
 nodes:
   publish/raw:
-    type: topic:exporter
+    type: exporter:topic
     config:
       topic: raw_signals
       queue_on_full: drop_newest
@@ -315,28 +315,28 @@ groups:
       main:
         nodes:
           otlp/ingest:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
 
           router:
-            type: type_router:processor
+            type: processor:type_router
             outputs: ["logs", "metrics", "traces"]
             config: {}
 
           logs_exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4318"
 
           metrics_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
 
           traces_exporter:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
 
         connections:
@@ -398,7 +398,7 @@ Config loading validates:
 
 - Wiring is explicit in a DAG, not implicit from ordered arrays.
 - A single pipeline can express richer fan-in/fan-out relationships directly.
-- Node type is a URN with kind suffix (`otlp:receiver`, `batch:processor`,
+- Node type is a URN with kind suffix (`receiver:otlp`, `processor:batch`,
   etc.).
 - Complex topologies (branching, routing, fallback patterns) are modeled through
   graph shape and node semantics.
