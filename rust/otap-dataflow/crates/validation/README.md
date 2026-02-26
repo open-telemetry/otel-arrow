@@ -34,7 +34,7 @@ e.g. `receiver`, `exporter`.
        .fixed_count(500)                           // total signals to emit
        .max_batch_size(50)                         // optional
        .otlp_grpc("receiver")                      // or .otap_grpc()
-       .static_signals()                           // or semantic_signals()     
+       .static_signals()                           // or semantic_signals()
        .core_range(2, 2);                          // set core range to use
    ```
 
@@ -198,8 +198,8 @@ the keys under `nodes:` in your pipeline YAML.
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
 
-> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match the keys under
-`nodes:` in your pipeline YAML.
+> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
+the keys under `nodes:` in your pipeline YAML.
 
 ### Validation instructions (used with `Capture::validate`)
 
@@ -223,8 +223,8 @@ count per message; `min/max` optional; `timeout` optional
 
 (see `validation_types::attributes` and `validation_types`)
 
-> NOTE: Some ValidationInstructions require control signals make sure to connect the
-generator(s) to capture(s) if needed
+> NOTE: Some ValidationInstructions require control signals make sure to
+connect the generator(s) -> capture(s) if needed
 
 ## Troubleshooting
 
