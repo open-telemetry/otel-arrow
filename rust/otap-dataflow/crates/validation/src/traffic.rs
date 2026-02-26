@@ -57,7 +57,7 @@ pub struct Generator {
     /// Weight for log generation (0-100).
     pub(crate) log_weight: u32,
     /// static vs semantic messages
-    pub(crate) data_source: DataSource
+    pub(crate) data_source: DataSource,
 }
 
 /// Configuration describing how validation receivers capture generated traffic.
@@ -179,7 +179,7 @@ impl Default for Generator {
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
-            data_source: DataSource::Static
+            data_source: DataSource::Static,
         }
     }
 }

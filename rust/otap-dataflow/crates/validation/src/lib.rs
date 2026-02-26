@@ -44,9 +44,16 @@ mod tests {
             )
             .add_generator(
                 "input",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver").core_range(1, 1).static_signals(),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
             )
-            .add_capture("output", Capture::default().otlp_grpc("exporter").core_range(2, 2))
+            .add_capture(
+                "output",
+                Capture::default().otlp_grpc("exporter").core_range(2, 2),
+            )
             .connect("input", "output")
             .expect_within(Duration::from_secs(140))
             .run()
@@ -62,9 +69,16 @@ mod tests {
             )
             .add_generator(
                 "input",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver").core_range(1, 1).static_signals(),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
             )
-            .add_capture("output", Capture::default().otap_grpc("exporter").core_range(2, 2))
+            .add_capture(
+                "output",
+                Capture::default().otap_grpc("exporter").core_range(2, 2),
+            )
             .connect("input", "output")
             .expect_within(Duration::from_secs(140))
             .run()
@@ -88,13 +102,18 @@ mod tests {
             )
             .add_generator(
                 "input",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver").static_signals().core_range(1, 1),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .static_signals()
+                    .core_range(1, 1),
             )
             .add_capture(
                 "output",
                 Capture::default()
                     .otlp_grpc("exporter")
-                    .validate(vec![deny, require]).core_range(2, 2),
+                    .validate(vec![deny, require])
+                    .core_range(2, 2),
             )
             .expect_within(Duration::from_secs(500))
             .run()
@@ -118,17 +137,24 @@ mod tests {
             )
             .add_generator(
                 "input",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver").core_range(1, 1).static_signals(),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver")
+                    .core_range(1, 1)
+                    .static_signals(),
             )
             .add_capture(
                 "output",
-                Capture::default().otap_grpc("exporter").validate(vec![
-                    ValidationInstructions::SignalDrop {
-                        min_drop_ratio: None,
-                        max_drop_ratio: None,
-                    },
-                    attr_check,
-                ]).core_range(2, 2),
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![
+                        ValidationInstructions::SignalDrop {
+                            min_drop_ratio: None,
+                            max_drop_ratio: None,
+                        },
+                        attr_check,
+                    ])
+                    .core_range(2, 2),
             )
             .connect("input", "output")
             .expect_within(Duration::from_secs(140))
@@ -145,22 +171,44 @@ mod tests {
             )
             .add_generator(
                 "input1",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver1").static_signals().core_range(1, 1),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver1")
+                    .static_signals()
+                    .core_range(1, 1),
             )
             .add_generator(
                 "input2",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver2").static_signals().core_range(2, 2),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver2")
+                    .static_signals()
+                    .core_range(2, 2),
             )
             .add_generator(
                 "input3",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver3").static_signals().core_range(3, 3),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver3")
+                    .static_signals()
+                    .core_range(3, 3),
             )
             .add_generator(
                 "input4",
-                Generator::logs().fixed_count(500).otlp_grpc("receiver4").static_signals().core_range(4, 4),
+                Generator::logs()
+                    .fixed_count(500)
+                    .otlp_grpc("receiver4")
+                    .static_signals()
+                    .core_range(4, 4),
             )
-            .add_capture("output1", Capture::default().otlp_grpc("exporter1").core_range(5, 5))
-            .add_capture("output2", Capture::default().otlp_grpc("exporter2").core_range(6,6))
+            .add_capture(
+                "output1",
+                Capture::default().otlp_grpc("exporter1").core_range(5, 5),
+            )
+            .add_capture(
+                "output2",
+                Capture::default().otlp_grpc("exporter2").core_range(6, 6),
+            )
             .connect("input1", "output1")
             .connect("input2", "output1")
             .connect("input3", "output1")

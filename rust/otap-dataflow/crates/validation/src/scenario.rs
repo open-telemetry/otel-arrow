@@ -182,10 +182,19 @@ impl Scenario {
 
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
-        let pipeline = self
-            .pipeline
-            .as_mut()
-            .ok_or_else(|| ValidationError::Config("pipeline not provided".into()))?;
+        // helper to get port and return error if no ports are found
+        fn pick_port(context: &str) -> Result<u16, ValidationError> {
+            pick_unused_port()
+                .ok_or_else(|| ValidationError::Config(format!("failed to get port for {context}")))
+        }
+
+        // helper to check if generators/captures are missing fields
+        fn require_non_empty(s: &str, context: &str) -> Result<(), ValidationError> {
+            if s.is_empty() {
+                return Err(ValidationError::Config(format!("{context} missing").into()));
+            }
+            Ok(())
+        }
 
         if self.generators.is_empty() {
             return Err(ValidationError::Config("no generators configured".into()));
@@ -194,78 +203,70 @@ impl Scenario {
             return Err(ValidationError::Config("no captures configured".into()));
         }
 
-        let mut generators = self.generators.clone();
-        let mut captures = self.captures.clone();
+        let pipeline = self
+            .pipeline
+            .as_mut()
+            .ok_or_else(|| ValidationError::Config("pipeline not provided".into()))?;
 
-        // allocate suv input per generator
-        for generator in generators.values_mut() {
-            if generator.suv_exporter_node.is_empty() {
-                return Err(ValidationError::Config(
-                    "generator missing suv exporter node name".into(),
-                ));
-            }
-            let input_port = pick_unused_port().ok_or_else(|| {
-                ValidationError::Config("failed to get port for generator".into())
-            })?;
-            generator.suv_port = input_port;
-            let port: u16 = input_port;
-            match generator.suv_exporter_type {
-                crate::traffic::MessageType::Otlp => pipeline.apply_endpoint(
-                    EndpointKind::OtlpGrpcReceiver(generator.suv_exporter_node.clone()),
-                    port,
-                )?,
-                crate::traffic::MessageType::Otap => pipeline.apply_endpoint(
-                    EndpointKind::OtapGrpcReceiver(generator.suv_exporter_node.clone()),
-                    port,
-                )?,
-            }
-        }
-
-        // allocate suv output per capture
-        for capture in captures.values_mut() {
-            if capture.suv_receiver_node.is_empty() {
-                return Err(ValidationError::Config(
-                    "capture missing suv receiver node name".into(),
-                ));
-            }
-            let output_port = pick_unused_port()
-                .ok_or_else(|| ValidationError::Config("failed to get port for capture".into()))?;
-            capture.suv_port = output_port;
-            pipeline.apply_endpoint(
-                match capture.suv_receiver_type {
-                    crate::traffic::MessageType::Otlp => {
-                        EndpointKind::OtlpGrpcExporter(capture.suv_receiver_node.clone())
-                    }
-                    crate::traffic::MessageType::Otap => {
-                        EndpointKind::OtapGrpcExporter(capture.suv_receiver_node.clone())
-                    }
-                },
-                output_port,
+        // Allocate a receiver port per generator and configure the pipeline.
+        for generator in self.generators.values_mut() {
+            require_non_empty(
+                &generator.suv_exporter_node,
+                "generator missing suv exporter node name",
             )?;
+
+            let port = pick_port("generator wiring")?;
+            generator.suv_port = port;
+
+            let node = generator.suv_exporter_node.clone();
+            let endpoint = match generator.suv_exporter_type {
+                MessageType::Otlp => EndpointKind::OtlpGrpcReceiver(node),
+                MessageType::Otap => EndpointKind::OtapGrpcReceiver(node),
+            };
+            pipeline.apply_endpoint(endpoint, port)?;
         }
 
-        // connect control paths
+        // Allocate an exporter port per capture and configure the pipeline.
+        for capture in self.captures.values_mut() {
+            require_non_empty(
+                &capture.suv_receiver_node,
+                "capture missing suv receiver node name",
+            )?;
+
+            let port = pick_port("capture wiring")?;
+            capture.suv_port = port;
+
+            let node = capture.suv_receiver_node.clone();
+            let endpoint = match capture.suv_receiver_type {
+                MessageType::Otlp => EndpointKind::OtlpGrpcExporter(node),
+                MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
+            };
+            pipeline.apply_endpoint(endpoint, port)?;
+        }
+
+        // Connect control paths between each generator–capture pair.
         for (gen_label, cap_label) in &self.connections {
-            let generator_cfg = generators
+            let control_port = pick_port("control wiring")?;
+
+            self.generators
                 .get_mut(gen_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown generator {gen_label}")))?;
-            let cap = captures
+                .ok_or_else(|| ValidationError::Config(format!("unknown generator {gen_label}")))?
+                .control_ports
+                .push(control_port);
+
+            self.captures
                 .get_mut(cap_label)
-                .ok_or_else(|| ValidationError::Config(format!("unknown capture {cap_label}")))?;
-            let control_port = pick_unused_port()
-                .ok_or_else(|| ValidationError::Config("failed to get control port".into()))?;
-            generator_cfg.control_ports.push(control_port);
-            cap.control_ports.push(control_port);
+                .ok_or_else(|| ValidationError::Config(format!("unknown capture {cap_label}")))?
+                .control_ports
+                .push(control_port);
         }
 
-        let admin_port = pick_unused_port()
-            .ok_or_else(|| ValidationError::Config("failed to get new port for admin".into()))?;
-        self.admin_addr = format!("127.0.0.1:{admin_port}");
-        self.generators = generators;
-        self.captures = captures;
+        self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
+
         Ok(())
     }
 
+    /// render the capture pipelines
     fn render_captures(
         &self,
         captures: &HashMap<String, Capture>,
@@ -298,6 +299,7 @@ impl Scenario {
         Ok(captures_rendered.join("\n"))
     }
 
+    /// render the generator pipelines
     fn render_generators(
         &self,
         generators: &HashMap<String, Generator>,

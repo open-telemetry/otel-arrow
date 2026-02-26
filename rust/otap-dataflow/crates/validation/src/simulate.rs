@@ -115,6 +115,7 @@ async fn fetch_metrics(client: &Client, base: &str) -> Result<MetricsSnapshot, V
         .map_err(|e| ValidationError::Http(e.to_string()))
 }
 
+/// loop until traffic generation is done
 async fn wait_for_loadgen(
     client: &Client,
     base: &str,
@@ -130,6 +131,8 @@ async fn wait_for_loadgen(
     }
 }
 
+/// get metrics and check the validation metric
+/// errors if validation failed
 async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), ValidationError> {
     let snapshot = fetch_metrics(client, base).await?;
     match validation_from_metrics(&snapshot) {
@@ -140,6 +143,7 @@ async fn ensure_validation_passed(client: &Client, base: &str) -> Result<(), Val
     }
 }
 
+/// shutdown pipeline after running
 async fn shutdown_pipeline(client: &Client, base: &str) -> Result<(), ValidationError> {
     let _ = client
         .post(format!("{base}/pipeline-groups/shutdown?wait=true"))
