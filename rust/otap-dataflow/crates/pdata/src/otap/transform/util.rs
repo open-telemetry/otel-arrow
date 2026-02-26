@@ -680,86 +680,62 @@ mod tests {
     use super::*;
     use crate::record_batch;
 
-    /// Helper: extract a column from the result batch as a u16 slice.
-    fn col_u16(rb: &RecordBatch, name: &str) -> Vec<u16> {
-        let col = rb.column_by_name(name).unwrap();
-        col.as_primitive::<UInt16Type>().values().to_vec()
-    }
-
-    #[test]
-    fn test_native_parent_id_and_id() {
-        // parent_id: [2, 1, 2, 1], id: [4, 3, 2, 1]
-        // expected order by (parent_id, id): (1,1), (1,3), (2,2), (2,4)
-        let rb = record_batch!(
-            ("parent_id", UInt16, [2, 1, 2, 1]),
-            ("id", UInt16, [4, 3, 2, 1])
-        )
-        .unwrap();
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(col_u16(&sorted, "parent_id"), vec![1, 1, 2, 2]);
-        assert_eq!(col_u16(&sorted, "id"), vec![1, 3, 2, 4]);
-    }
-
-    #[test]
-    fn test_dict_parent_id_and_native_id() {
-        // Dict<UInt8, UInt16> parent_id with values [10, 20], keys [1, 0, 1, 0]
-        // So resolved parent_id = [20, 10, 20, 10], id = [4, 3, 2, 1]
-        // expected: (10,1), (10,3), (20,2), (20,4)
-        let rb = record_batch!(
-            ("parent_id", (UInt8, UInt16), ([1, 0, 1, 0], [10, 20])),
-            ("id", UInt16, [4, 3, 2, 1])
-        )
-        .unwrap();
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        // parent_id is still dict-encoded after take, so read via id column
-        assert_eq!(col_u16(&sorted, "id"), vec![1, 3, 2, 4]);
-    }
-
-    #[test]
-    fn test_only_id_column() {
-        let rb = record_batch!(("id", UInt16, [3, 1, 2])).unwrap();
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(col_u16(&sorted, "id"), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn test_only_parent_id_column() {
-        let rb = record_batch!(("parent_id", UInt16, [3, 1, 2])).unwrap();
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(col_u16(&sorted, "parent_id"), vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn test_neither_column() {
-        let rb = record_batch!(("other", UInt16, [3, 1, 2])).unwrap();
-
-        let sorted = sort_by_parent_then_id(rb.clone()).unwrap();
-        // Should be unchanged
-        assert_eq!(col_u16(&sorted, "other"), vec![3, 1, 2]);
-    }
-
-    #[test]
-    fn test_already_sorted() {
-        let rb = record_batch!(
-            ("parent_id", UInt16, [1, 1, 2, 2]),
-            ("id", UInt16, [1, 2, 1, 2])
-        )
-        .unwrap();
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(col_u16(&sorted, "parent_id"), vec![1, 1, 2, 2]);
-        assert_eq!(col_u16(&sorted, "id"), vec![1, 2, 1, 2]);
-    }
-
-    // -- nullable column tests --------------------------------------------------
-
     use arrow::array::{DictionaryArray, UInt16Array};
+    use arrow::compute::SortColumn;
     use arrow::datatypes::{Field, UInt8Type};
+    use arrow_schema::SortOptions;
     use std::sync::Arc;
+
+    /// Oracle: the legacy RowConverter-based sort. Used as ground truth for all tests.
+    fn sort_oracle(rb: RecordBatch) -> RecordBatch {
+        let schema = rb.schema();
+        let cols = rb.columns();
+        let options = Some(SortOptions {
+            descending: false,
+            nulls_first: true,
+        });
+
+        let mut sort_columns: Vec<SortColumn> = Vec::new();
+        if let Some((idx, _)) = schema.column_with_name("parent_id") {
+            sort_columns.push(SortColumn {
+                values: cols[idx].clone(),
+                options,
+            });
+        }
+        if let Some((idx, _)) = schema.column_with_name("id") {
+            sort_columns.push(SortColumn {
+                values: cols[idx].clone(),
+                options,
+            });
+        }
+
+        if sort_columns.is_empty() {
+            return rb;
+        }
+
+        let indices = super::super::sort_to_indices(&sort_columns).expect("oracle sort failed");
+        let (schema, columns, _) = rb.into_parts();
+        let new_columns: Vec<_> = columns
+            .iter()
+            .map(|c| arrow::compute::take(c, &indices, None).expect("take failed"))
+            .collect();
+        RecordBatch::try_new(schema, new_columns).expect("valid record batch")
+    }
+
+    /// Assert that our optimized sort produces the same result as the oracle.
+    fn assert_matches_oracle(rb: RecordBatch) {
+        let expected = sort_oracle(rb.clone());
+        let actual = sort_by_parent_then_id(rb).expect("optimized sort failed");
+        assert_eq!(expected.num_columns(), actual.num_columns());
+        for i in 0..expected.num_columns() {
+            assert_eq!(
+                expected.column(i).as_ref(),
+                actual.column(i).as_ref(),
+                "column {} mismatch",
+                expected.schema().field(i).name(),
+            );
+        }
+    }
 
     /// Helper: build a RecordBatch from pre-built (name, array) pairs.
     fn batch_from_arrays(cols: Vec<(&str, ArrayRef)>) -> RecordBatch {
@@ -769,35 +745,62 @@ mod tests {
                 .collect::<Vec<_>>(),
         ));
         let arrays: Vec<ArrayRef> = cols.into_iter().map(|(_, a)| a).collect();
-        RecordBatch::try_new(schema, arrays).unwrap()
+        RecordBatch::try_new(schema, arrays).expect("valid record batch")
     }
 
-    /// Helper: extract a nullable u16 column as Vec<Option<u16>>.
-    fn col_u16_nullable(rb: &RecordBatch, name: &str) -> Vec<Option<u16>> {
-        let col = rb.column_by_name(name).unwrap();
-        let arr = col.as_primitive::<UInt16Type>();
-        (0..arr.len())
-            .map(|i| {
-                if arr.is_null(i) {
-                    None
-                } else {
-                    Some(arr.value(i))
-                }
-            })
-            .collect()
+    #[test]
+    fn test_native_parent_id_and_id() {
+        let rb = record_batch!(
+            ("parent_id", UInt16, [2, 1, 2, 1]),
+            ("id", UInt16, [4, 3, 2, 1])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_dict_parent_id_and_native_id() {
+        let rb = record_batch!(
+            ("parent_id", (UInt8, UInt16), ([1, 0, 1, 0], [10, 20])),
+            ("id", UInt16, [4, 3, 2, 1])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_only_id_column() {
+        let rb = record_batch!(("id", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_only_parent_id_column() {
+        let rb = record_batch!(("parent_id", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_neither_column() {
+        let rb = record_batch!(("other", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_already_sorted() {
+        let rb = record_batch!(
+            ("parent_id", UInt16, [1, 1, 2, 2]),
+            ("id", UInt16, [1, 2, 1, 2])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
     }
 
     #[test]
     fn test_native_id_with_nulls() {
-        // id = [3, NULL, 1] → expected: [NULL, 1, 3]
         let id: ArrayRef = Arc::new(UInt16Array::from(vec![Some(3), None, Some(1)]));
         let rb = batch_from_arrays(vec![("id", id)]);
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(
-            col_u16_nullable(&sorted, "id"),
-            vec![None, Some(1), Some(3)]
-        );
+        assert_matches_oracle(rb);
     }
 
     #[test]
@@ -812,20 +815,13 @@ mod tests {
 
     #[test]
     fn test_dict_parent_id_and_native_id_with_null_ids() {
-        // Dict parent_id resolves to [20, 10, 20, 10], id = [NULL, 3, 2, 1]
-        // expected by (parent_id, id): (10, 1), (10, 3), (20, NULL), (20, 2)
         let pid: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
             arrow::array::UInt8Array::from(vec![1, 0, 1, 0]),
             Arc::new(UInt16Array::from(vec![10, 20])),
         ));
         let id: ArrayRef = Arc::new(UInt16Array::from(vec![None, Some(3), Some(2), Some(1)]));
         let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
-
-        let sorted = sort_by_parent_then_id(rb).unwrap();
-        assert_eq!(
-            col_u16_nullable(&sorted, "id"),
-            vec![Some(1), Some(3), None, Some(2)]
-        );
+        assert_matches_oracle(rb);
     }
 
     #[test]
