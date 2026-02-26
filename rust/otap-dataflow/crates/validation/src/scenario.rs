@@ -345,6 +345,26 @@ mod tests {
     use super::*;
     use crate::pipeline::Pipeline;
 
+    fn sample_yaml() -> &'static str {
+        r#"
+nodes:
+  receiver:
+    config:
+      protocols:
+        grpc:
+          listening_addr: "0.0.0.0:4317"
+  exporter:
+    config:
+      grpc_endpoint: "http://default-export"
+  otap_recv:
+    config:
+      listening_addr: "0.0.0.0:4420"
+  otap_exp:
+    config:
+      grpc_endpoint: "http://default-otap-export"
+"#
+    }
+
     #[test]
     fn render_template_requires_pipeline() {
         let scenario = Scenario::new();
@@ -357,27 +377,28 @@ mod tests {
 
     #[test]
     fn render_template_requires_connected_labels() {
-        let pipeline = Pipeline::from_yaml("nodes: {}\n");
-        let generator = Generator::logs();
-        let capture = Capture::default();
-        let scenario = Scenario::new()
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let generator = Generator::logs().otlp_grpc("receiver");
+        let capture = Capture::default().otap_grpc("exporter");
+        let mut scenario = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
             .add_capture("cap", capture)
             .connect("missing_gen", "cap");
 
         let err = scenario
-            .render_template()
+            .update_configs()
             .expect_err("unknown generator label should error");
+
         assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("unknown generator label"));
+        assert!(err.to_string().contains("unknown generator missing_gen"));
     }
 
     #[test]
     fn render_template_includes_added_generator_and_capture() {
-        let pipeline = Pipeline::from_yaml("nodes: {}\n");
-        let generator = Generator::logs();
-        let capture = Capture::default();
+        let pipeline = Pipeline::from_yaml(sample_yaml());
+        let generator = Generator::logs().otlp_grpc("receiver");
+        let capture = Capture::default().otap_grpc("exporter");
 
         let rendered = Scenario::new()
             .pipeline(pipeline)
