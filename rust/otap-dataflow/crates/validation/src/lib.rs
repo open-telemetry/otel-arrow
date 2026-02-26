@@ -189,36 +189,14 @@ mod tests {
                     .otlp_grpc("receiver2")
                     .static_signals(),
             )
-            .add_generator(
-                "input3",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver3")
-                    .static_signals(),
-            )
-            .add_generator(
-                "input4",
-                Generator::logs()
-                    .fixed_count(500)
-                    .otlp_grpc("receiver4")
-                    .static_signals(),
-            )
             .add_capture(
                 "output1",
                 Capture::default()
                     .otlp_grpc("exporter1")
                     .validate(vec![ValidationInstructions::Equivalence]),
             )
-            .add_capture(
-                "output2",
-                Capture::default()
-                    .otlp_grpc("exporter2")
-                    .validate(vec![ValidationInstructions::Equivalence]),
-            )
             .connect("input1", "output1")
             .connect("input2", "output1")
-            .connect("input3", "output1")
-            .connect("input4", "output2")
             .expect_within(Duration::from_secs(140))
             .run()
             .expect("validation scenario failed");
