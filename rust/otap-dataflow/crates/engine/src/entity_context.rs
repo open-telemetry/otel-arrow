@@ -354,13 +354,13 @@ mod tests {
 
         let source_ctx = pipeline_ctx.with_node_context(
             "source".into(),
-            "urn:test:example:receiver".into(),
+            "urn:test:receiver:example".into(),
             NodeKind::Receiver,
             HashMap::new(),
         );
         let dest_ctx = pipeline_ctx.with_node_context(
             "dest".into(),
-            "urn:test:example:processor".into(),
+            "urn:test:processor:example".into(),
             NodeKind::Processor,
             HashMap::new(),
         );

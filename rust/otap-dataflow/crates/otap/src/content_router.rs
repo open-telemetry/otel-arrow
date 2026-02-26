@@ -77,7 +77,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// URN for the ContentRouter processor
-pub const CONTENT_ROUTER_URN: &str = "urn:otel:content_router:processor";
+pub const CONTENT_ROUTER_URN: &str = "urn:otel:processor:content_router";
 
 /// Specifies where and how the routing key value is extracted from a telemetry message.
 ///

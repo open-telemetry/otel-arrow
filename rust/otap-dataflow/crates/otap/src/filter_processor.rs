@@ -33,7 +33,7 @@ use std::sync::Arc;
 mod config;
 mod metrics;
 /// The URN for the filter processor
-pub const FILTER_PROCESSOR_URN: &str = "urn:otel:filter:processor";
+pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {

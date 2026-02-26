@@ -13,12 +13,12 @@ groups:
 
         nodes:
           receiver:
-            type: otap:receiver
+            type: receiver:otap
             config:
               listening_addr: "127.0.0.1:4318"
               response_stream_channel_size: 256
           perf:
-            type: perf:exporter
+            type: exporter:perf
             config:
               frequency: 5000
               cpu_usage: false

@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: otap:receiver
+            type: receiver:otap
             config:
               listening_addr: "127.0.0.1:4317"
               response_stream_channel_size: 256  # Required: channel buffer capacity (number of messages)
@@ -33,7 +33,7 @@ groups:
               #   handshake_timeout: "10s"           # default is 10s
               #   reload_interval: "5m"              # default is 5m
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:1235"
               # timeout: "15s"  # Optional: timeout for RPC requests

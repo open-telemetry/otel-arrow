@@ -116,7 +116,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry_macros::metric_set;
 
 /// URN for the durable buffer.
-pub const DURABLE_BUFFER_URN: &str = "urn:otel:durable_buffer:processor";
+pub const DURABLE_BUFFER_URN: &str = "urn:otel:processor:durable_buffer";
 
 /// Minimum interval between repeated warning logs for the same condition
 /// (backpressure, flush failures). Prevents log flooding when the timer

@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 /// URN for the error exporter (always NACKs).
-const ERROR_EXPORTER_URN: &str = "urn:otel:error:exporter";
+const ERROR_EXPORTER_URN: &str = "urn:otel:exporter:error";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test Configuration Builder

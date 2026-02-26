@@ -48,7 +48,7 @@ use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
 /// The URN for the OTLP exporter
-pub const OTLP_EXPORTER_URN: &str = "urn:otel:otlp:exporter";
+pub const OTLP_EXPORTER_URN: &str = "urn:otel:exporter:otlp";
 
 /// Configuration for the OTLP Exporter
 #[derive(Debug, Deserialize)]
