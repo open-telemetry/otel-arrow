@@ -21,7 +21,7 @@ const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
 const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
-const DEFAULT_PROPAGATION_DELAY: Duration = Duration::from_secs(10);
+const DEFAULT_PROPAGATION_DELAY: Duration = Duration::from_secs(20);
 const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(140);
 
 /// Programmatic scenario builder used by tests.
