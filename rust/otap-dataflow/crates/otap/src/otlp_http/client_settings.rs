@@ -5,13 +5,14 @@
 
 use reqwest::ClientBuilder;
 use serde::Deserialize;
+use std::io;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
 
 #[cfg(feature = "experimental-tls")]
 use {
     crate::tls_utils::read_file_with_limit_async, otap_df_config::tls::TlsClientConfig,
-    otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity, std::io,
+    otap_df_telemetry::otel_error, reqwest::Certificate, reqwest::Identity,
 };
 
 use crate::otap_grpc::client_settings::{
