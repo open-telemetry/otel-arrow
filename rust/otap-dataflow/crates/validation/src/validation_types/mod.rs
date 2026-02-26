@@ -86,51 +86,51 @@ impl ValidationInstructions {
     pub fn validate(
         &self,
         control: &[OtlpProtoMessage],
-        suv: &[OtlpProtoMessage],
-        received_suv_message: &OtlpProtoMessage,
-        time_elapsed: &Duration,
+        suv: &[(OtlpProtoMessage, Duration)],
     ) -> bool {
         match self {
-            ValidationInstructions::Equivalence => validate_equivalent(control, suv),
+            ValidationInstructions::Equivalence => {
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_equivalent(control, &suv_msgs)
+            }
             ValidationInstructions::SignalDrop {
                 min_drop_ratio,
                 max_drop_ratio,
-            } => validate_signal_drop(control, suv, *min_drop_ratio, *max_drop_ratio),
+            } => {
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_signal_drop(control, &suv_msgs, *min_drop_ratio, *max_drop_ratio)
+            }
             ValidationInstructions::BatchItems {
                 min_batch_size,
                 max_batch_size,
                 timeout,
-            } => {
-                if let Some(time) = timeout {
-                    if time_elapsed >= time {
-                        return true;
-                    }
-                }
-                validate_batch_items(received_suv_message, *min_batch_size, *max_batch_size)
-            }
+            } => validate_batch_items(suv, min_batch_size, max_batch_size, timeout),
             ValidationInstructions::BatchBytes {
                 min_bytes,
                 max_bytes,
                 timeout,
-            } => {
-                if let Some(time) = timeout {
-                    if time_elapsed >= time {
-                        return true;
-                    }
-                }
-                validate_batch_bytes(received_suv_message, *min_bytes, *max_bytes)
-            }
+            } => validate_batch_bytes(suv, min_bytes, max_bytes, timeout),
             ValidationInstructions::AttributeDeny { domains, keys } => {
-                validate_deny_keys(received_suv_message, domains, keys)
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_deny_keys(&suv_msgs, domains, keys)
             }
             ValidationInstructions::AttributeRequireKey { domains, keys } => {
-                validate_require_keys(received_suv_message, domains, keys)
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_require_keys(&suv_msgs, domains, keys)
             }
             ValidationInstructions::AttributeRequireKeyValue { domains, pairs } => {
-                validate_require_key_values(received_suv_message, domains, pairs)
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_require_key_values(&suv_msgs, domains, pairs)
             }
             ValidationInstructions::AttributeNoDuplicate => {
-                validate_no_duplicate_keys(received_suv_message)
+                let suv_msgs: Vec<OtlpProtoMessage> =
+                    suv.iter().map(|(msg, _)| msg.clone()).collect();
+                validate_no_duplicate_keys(&suv_msgs)
             }
         }
     }
@@ -161,15 +161,17 @@ mod tests {
         };
         OtlpProtoMessage::Logs(logs)
     }
+    fn with_duration(msgs: &[OtlpProtoMessage]) -> Vec<(OtlpProtoMessage, Duration)> {
+        msgs.iter()
+            .map(|m| (m.clone(), Duration::from_secs(0)))
+            .collect()
+    }
+
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
-        assert!(ValidationInstructions::Equivalence.validate(
-            &msgs,
-            &msgs,
-            msgs.last().unwrap(),
-            &Duration::from_secs(0)
-        ));
+        let suv = with_duration(&msgs);
+        assert!(ValidationInstructions::Equivalence.validate(&msgs, &suv));
     }
 
     #[test]
@@ -219,33 +221,31 @@ mod tests {
                 ..Default::default()
             }],
         })];
-        assert!(!ValidationInstructions::Equivalence.validate(
-            &left,
-            &right,
-            right.last().unwrap(),
-            &Duration::from_secs(0)
-        ));
+        let right_suv = with_duration(&right);
+        assert!(!ValidationInstructions::Equivalence.validate(&left, &right_suv));
     }
     #[test]
     fn batch_respects_bounds() {
         let msgs = vec![logs_with_records(3)];
+        let suv = with_duration(&msgs);
         let instruction = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(instruction.validate(&msgs, &msgs, msgs.last().unwrap(), &Duration::from_secs(0)));
+        assert!(instruction.validate(&msgs, &suv));
         let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(!failing.validate(&msgs, &msgs, msgs.last().unwrap(), &Duration::from_secs(0)));
+        assert!(!failing.validate(&msgs, &suv));
     }
 
     #[test]
     fn batch_bytes_respects_bounds() {
         let msgs = vec![logs_with_records(1)];
+        let suv = with_duration(&msgs);
         let mut buf = Vec::new();
         // compute encoded size of the latest SUV message
         let latest = msgs.last().unwrap();
@@ -270,9 +270,9 @@ mod tests {
             timeout: None,
         };
 
-        assert!(pass.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
-        assert!(!fail_small.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
-        assert!(!fail_large.validate(&msgs, &msgs, latest, &Duration::from_secs(0)));
+        assert!(pass.validate(&msgs, &suv));
+        assert!(!fail_small.validate(&msgs, &suv));
+        assert!(!fail_large.validate(&msgs, &suv));
     }
 
     #[test]
@@ -296,12 +296,12 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let suv = vec![OtlpProtoMessage::Logs(logs)];
+        let suv = vec![(OtlpProtoMessage::Logs(logs), Duration::from_secs(0))];
         let check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
+        assert!(check.validate(&[], &suv));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -324,12 +324,12 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let suv = vec![OtlpProtoMessage::Logs(logs)];
+        let suv = vec![(OtlpProtoMessage::Logs(logs), Duration::from_secs(0))];
         let check = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
+        assert!(!check.validate(&[], &suv));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -360,14 +360,14 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let suv = vec![OtlpProtoMessage::Logs(logs)];
+        let suv = vec![(OtlpProtoMessage::Logs(logs), Duration::from_secs(0))];
         let check = ValidationInstructions::AttributeNoDuplicate;
-        assert!(!check.validate(&[], &suv, suv.last().unwrap(), &Duration::from_secs(0)));
+        assert!(!check.validate(&[], &suv));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
         let before = vec![logs_with_records(10)];
-        let after = vec![logs_with_records(4)];
+        let after = with_duration(&[logs_with_records(4)]);
         // drop ratio = 0.6
         let pass = ValidationInstructions::SignalDrop {
             min_drop_ratio: Some(0.5),
@@ -381,23 +381,8 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.validate(
-            &before,
-            &after,
-            after.last().unwrap(),
-            &Duration::from_secs(0)
-        ));
-        assert!(!fail_min.validate(
-            &before,
-            &after,
-            after.last().unwrap(),
-            &Duration::from_secs(0)
-        ));
-        assert!(!fail_max.validate(
-            &before,
-            &after,
-            after.last().unwrap(),
-            &Duration::from_secs(0)
-        ));
+        assert!(pass.validate(&before, &after));
+        assert!(!fail_min.validate(&before, &after));
+        assert!(!fail_max.validate(&before, &after));
     }
 }

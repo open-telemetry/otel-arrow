@@ -67,7 +67,7 @@ pub struct ValidationExporter {
     control_indices: HashSet<usize>,
     validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
-    suv_msgs: Vec<OtlpProtoMessage>,
+    suv_msgs: Vec<(OtlpProtoMessage, Duration)>,
     metrics: MetricSet<ValidationExporterMetrics>,
 }
 
@@ -93,15 +93,10 @@ pub static VALIDATION_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFac
 
 impl ValidationExporter {
     /// Run the configured validations and update metrics.
-    fn validate_and_record(&mut self, received_suv_msg: OtlpProtoMessage, time_elapsed: Duration) {
+    fn validate_and_record(&mut self) {
         let mut valid = true;
         for validate in &self.validations {
-            valid &= validate.validate(
-                &self.control_msgs,
-                &self.suv_msgs,
-                &received_suv_msg,
-                &time_elapsed,
-            );
+            valid &= validate.validate(&self.control_msgs, &self.suv_msgs);
         }
 
         if valid {
@@ -182,15 +177,16 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     if let Some(msg) = msg {
                         if let Some(node_index) = source_node {
                             if node_index == self.suv_index {
-                                self.suv_msgs.push(msg.clone());
-                                self.validate_and_record(msg, time_elapsed);
+                                self.suv_msgs.push((msg, time_elapsed));
+                                self.validate_and_record();
                                 time = Instant::now();
                             } else if self.control_indices.contains(&node_index) {
                                 self.control_msgs.push(msg);
+                                self.validate_and_record();
                             }
                         } else if self.control_indices.is_empty() {
-                            self.suv_msgs.push(msg.clone());
-                            self.validate_and_record(msg, time_elapsed);
+                            self.suv_msgs.push((msg, time_elapsed));
+                            self.validate_and_record();
                             time = Instant::now();
                         } else {
                             otel_error!("validation.missing.source");
