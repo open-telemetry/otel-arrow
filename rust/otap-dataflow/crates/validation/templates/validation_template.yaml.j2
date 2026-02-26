@@ -6,13 +6,13 @@ engine:
     bind_address: {{ admin_bind_address }}
 {% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
 {% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
-{% set suv_receiver_plugin_urn = "urn:otel:otlp:receiver" -%}
+{% set suv_receiver_plugin_urn = "urn:otel:receiver:otlp" -%}
 {% if suv_receiver_type == "otap" -%}
-  {% set suv_receiver_plugin_urn = "urn:otel:otap:receiver" -%}
+  {% set suv_receiver_plugin_urn = "urn:otel:receiver:otap" -%}
 {% endif -%}
-{% set suv_exporter_plugin_urn = "urn:otel:otlp:exporter" -%}
+{% set suv_exporter_plugin_urn = "urn:otel:exporter:otlp" -%}
 {% if suv_exporter_type == "otap" -%}
-  {% set suv_exporter_plugin_urn = "urn:otel:otap:exporter" -%}
+  {% set suv_exporter_plugin_urn = "urn:otel:exporter:otap" -%}
 {% endif -%}
 {% set suv_pipeline = pipeline_config | default("nodes:") -%}
 {% set max_signal_count = max_signal_count | default(2000) -%}
@@ -56,14 +56,14 @@ groups:
               {% endif %}
 
           control_receiver:
-            type: "urn:otel:otlp:receiver"
+            type: "urn:otel:receiver:otlp"
             config:
               protocols:                                                                                                                                                                        
                 grpc:                                                                                                                                                                           
                   listening_addr: "{{ control_addr }}"
 
           validation_exporter:
-            type: "urn:otel:validation:exporter"
+            type: "urn:otel:exporter:validation"
             config:
               control_input: control_receiver
               suv_input: suv_receiver
@@ -102,7 +102,7 @@ groups:
 
         nodes:
           receiver:
-            type: "urn:otel:traffic_generator:receiver"
+            type: "urn:otel:receiver:traffic_generator"
             config:
               traffic_config:
                 max_signal_count: {{ max_signal_count }}
@@ -114,7 +114,7 @@ groups:
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
 
           fanout:
-            type: "urn:otel:fanout_temp:processor"
+            type: "urn:otel:processor:fanout_temp"
             outputs: ["suv_port", "control_port"]
             config:
           suv_exporter:
@@ -128,7 +128,7 @@ groups:
               {% endif %}
 
           control_exporter:
-            type: "urn:otel:otlp:exporter"
+            type: "urn:otel:exporter:otlp"
             config:
               grpc_endpoint: "{{ control_endpoint }}"
         connections:

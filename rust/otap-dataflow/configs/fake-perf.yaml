@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 # For testing with a finite stream, use max_signal_count. Otherwise
@@ -24,7 +24,7 @@ groups:
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            type: perf:exporter
+            type: exporter:perf
             config:
               frequency: 1000
               cpu_usage: false

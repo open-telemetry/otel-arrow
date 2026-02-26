@@ -27,7 +27,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// URN for the topic receiver.
-pub const TOPIC_RECEIVER_URN: &str = "urn:otel:topic:receiver";
+pub const TOPIC_RECEIVER_URN: &str = "urn:otel:receiver:topic";
 
 /// Topic receiver configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -841,10 +841,10 @@ mod tests {
             r#"
 nodes:
   receiver:
-    type: "urn:test:example:receiver"
+    type: "urn:test:receiver:example"
     config: null
   exporter:
-    type: "urn:test:example:exporter"
+    type: "urn:test:exporter:example"
     config: null
 connections:
   - from: receiver

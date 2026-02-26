@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_batch_size: 1000
@@ -23,7 +23,7 @@ groups:
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           filter:
-            type: filter:processor
+            type: processor:filter
             config:
               logs:
                 include:
@@ -34,12 +34,12 @@ groups:
                     - key: ios.app.state
                       value: active
           debug:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               mode: signal
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config:
 
         connections:

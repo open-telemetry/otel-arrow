@@ -44,7 +44,7 @@ use tonic::transport::Channel;
 use tonic::{IntoStreamingRequest, Response, Status, Streaming};
 
 /// The URN for the OTAP exporter
-pub const OTAP_EXPORTER_URN: &str = "urn:otel:otap:exporter";
+pub const OTAP_EXPORTER_URN: &str = "urn:otel:exporter:otap";
 
 pub mod config;
 use config::Config;

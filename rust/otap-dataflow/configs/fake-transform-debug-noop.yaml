@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_signal_count: 10000
@@ -22,21 +22,21 @@ groups:
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           debug1:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               output: /tmp/debug1.log
           transform:
-            type: transform:processor
+            type: processor:transform
             config:
               kql_query: logs | where event_name == "gen_ai.system.message"
           debug2:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               output: /tmp/debug2.log
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config:
 
         connections:

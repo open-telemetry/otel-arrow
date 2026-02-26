@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_batch_size: 1000
@@ -21,7 +21,7 @@ groups:
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            type: parquet:exporter
+            type: exporter:parquet
             config:
               storage:
                 file:
