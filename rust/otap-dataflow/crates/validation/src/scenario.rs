@@ -6,6 +6,7 @@
 
 use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
+use crate::traffic::MessageType;
 use crate::simulate::run_pipelines_with_timeout;
 use crate::traffic::{Capture, Generator};
 use minijinja::{Environment, context};
@@ -336,5 +337,57 @@ impl Scenario {
             );
         }
         Ok(generators_rendered.join("\n"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pipeline::Pipeline;
+
+    #[test]
+    fn render_template_requires_pipeline() {
+        let scenario = Scenario::new();
+        let err = scenario
+            .render_template()
+            .expect_err("missing pipeline should error");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("pipeline missing"));
+    }
+
+    #[test]
+    fn render_template_requires_connected_labels() {
+        let pipeline = Pipeline::from_yaml("nodes: {}\n");
+        let generator = Generator::new(MessageType::Logs).signals_per_second(1);
+        let capture = Capture::new();
+        let scenario = Scenario::new()
+            .pipeline(pipeline)
+            .add_generator("gen", generator)
+            .add_capture("cap", capture)
+            .connect("missing_gen", "cap");
+
+        let err = scenario
+            .render_template()
+            .expect_err("unknown generator label should error");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(err.to_string().contains("unknown generator label"));
+    }
+
+    #[test]
+    fn render_template_includes_added_generator_and_capture() {
+        let pipeline = Pipeline::from_yaml("nodes: {}\n");
+        let generator = Generator::new(MessageType::Logs).signals_per_second(7);
+        let capture = Capture::new();
+
+        let rendered = Scenario::new()
+            .pipeline(pipeline)
+            .add_generator("gen", generator)
+            .add_capture("cap", capture)
+            .connect("gen", "cap")
+            .render_template()
+            .expect("template should render");
+
+        assert!(rendered.contains("gen:"));
+        assert!(rendered.contains("cap:"));
     }
 }

@@ -21,10 +21,8 @@ e.g. `receiver`, `exporter`.
    ```rust
    use otap_df_validation::pipeline::Pipeline;
 
-   let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml")
-       .expect("load pipeline")
-       .wire_otlp_grpc_receiver("receiver")   // node name in your YAML
-       .wire_otlp_grpc_exporter("exporter");  // node name in your YAML
+   let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml") // path to your pipeline yaml
+       .expect("load pipeline");
    ```
 
 3) **Configure traffic generation**:
@@ -35,18 +33,10 @@ e.g. `receiver`, `exporter`.
    let generator = Generator::logs()                // logs(), metrics(), traces()
        .fixed_count(500)                           // total signals to emit
        .max_batch_size(50)                         // optional
-       .otlp_grpc();                               // or .otap_grpc()
+       .otlp_grpc("receiver")                      // or .otap_grpc()
+       .static_signals()                           // or semantic_signals()     
+       .core_range(2, 2);                          // set core range to use
    ```
-
-   Available knobs on `Generator`:
-
-   - `logs()`, `metrics()`, `traces()` - choose what signal type to emit
-   - `fixed_count(usize)` - sets max signals to emit before completion
-     - optional; defaults to 2000
-   - `max_batch_size(usize)` - controls batch size
-     - optional; defaults to 100
-   - `otlp_grpc()` / `otap_grpc()` - choose export protocol
-     - optional; OTLP by default
 
 4) **Configure capture & validations**:
 
@@ -56,14 +46,14 @@ e.g. `receiver`, `exporter`.
    use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
    let capture = Capture::default()
-       .otlp_grpc() // or .otap_grpc()
+       .otlp_grpc("exporter") // or .otap_grpc()
        .validate(vec![
            ValidationInstructions::Equivalence, // control vs SUV outputs match
-           ValidationInstructions::SignalDrop {
+           ValidationInstructions::SignalDrop { // detect signal drop
                min_drop_ratio: Some(0.2),
                max_drop_ratio: Some(0.8),
            },
-           ValidationInstructions::AttributeRequireKeyValue {
+           ValidationInstructions::AttributeRequireKeyValue { // require suv signals to all have key value pair
                domains: vec![AttributeDomain::Signal],
                pairs: vec![KeyValue::new(
                    "ios.app.state".into(),
@@ -80,9 +70,10 @@ e.g. `receiver`, `exporter`.
    use std::time::Duration;
 
    Scenario::new()
-       .pipeline(pipeline)
-       .input(generator)
-       .observe(capture)
+       .pipeline(pipeline)                      // add your system under validation pipeline
+       .add_generator("input", generator)       // add your configured generator pipeline
+       .add_capture("output", capture).         // add your configured capture pipeline
+       .connect("input", "output")              // connect generator and capture to compare input vs output signals from suv pipeline
        .expect_within(Duration::from_secs(200)) // optional timeout; default 140
        .run()
        .expect("validation scenario failed");
@@ -98,8 +89,9 @@ e.g. `receiver`, `exporter`.
 
   Scenario::new()
       .pipeline(pipeline)               // required: rewired Pipeline
-      .input(generator)                 // required: Generator config
-      .observe(capture)                 // required: Capture config
+      .add_generator("input", generator)                 // required: Generator config
+      .add_capture("output", capture)                 // required: Capture config
+      .connect("input", "output")                // required for certain validation checks that require a control signal to compare to
       .expect_within(Duration::from_secs(180)) // optional; default 140s
       .run()
       .expect("validation scenario failed");
@@ -107,8 +99,17 @@ e.g. `receiver`, `exporter`.
 
 - `Scenario::new()` - create a new Scenario
 - `pipeline(Pipeline)` - provide the system-under-validation pipeline (required).
-- `input(Generator)` - provide traffic generation config (required).
-- `observe(Capture)` - provide capture/validation config (required).
+- `add_generator("label", Generator)` - add traffic generation config (required) 
+  - at least one generator must be configured
+  - add support multiple if your pipeline has multiple receivers
+- `add_capture("label", Capture)` - add capture/validation config (required)
+  - at least one capture must be configured
+  - can support multiple if your pipeline has multiple exporters
+- `connect("generator_label", "capture_label")` - connect generator and capture pipelines
+  - allow capture to use original signals from the generator for validation
+  - multiple connections can be made if there are multiple generators/captures
+    - required for certain validation methods that require signal to compare to
+      - e.g. ValidationInstructions::Equivalence
 - `expect_within(Duration)` - set max runtime
   - optional; default: 140s
 - `run()` - renders template, launches pipelines, waits for readiness
@@ -123,20 +124,9 @@ e.g. `receiver`, `exporter`.
 
   let pipeline = Pipeline::from_file("./validation_pipelines/your_pipeline.yaml")
       .expect("load pipeline")
-      .wire_otlp_grpc_receiver("receiver")   // rewires protocols.grpc.listening_addr
-      .wire_otlp_grpc_exporter("exporter");  // rewires grpc_endpoint
   ```
 
 - `Pipeline::from_file(path)` / `from_yaml(str)` - load the SUV pipeline YAML.
-- `wire_otlp_grpc_receiver(node_name)` - mark the node whose
-`protocols.grpc.listening_addr` will be rewritten.
-- `wire_otlp_grpc_exporter(node_name)` - mark the exporter whose
-`grpc_endpoint` will be rewritten.
-- `wire_otap_grpc_receiver(node_name)` / `wire_otap_grpc_exporter(node_name)`
-  - OTAP variants.
-
-> NOTE: The node names you pass to `wire_*` must match the keys under
-`nodes:` in your pipeline YAML.
 
 ## Generator
 
@@ -148,7 +138,9 @@ e.g. `receiver`, `exporter`.
   let generator = Generator::logs()
       .fixed_count(1000)   // optional; default 2000
       .max_batch_size(64)  // optional; default 100
-      .otap_grpc();        // optional; default OTLP
+      .core_range(2, 2)    // optional; default 2-2
+      .otap_grpc("node_name");        // required; must pass node name of the receiver in your system-under-validation pipeline
+                                      // tells the generator which receiver to send signals to
   ```
 
 - `Generator::logs()`, `metrics()`, `traces()` - constructors for signal type
@@ -156,8 +148,18 @@ e.g. `receiver`, `exporter`.
   - default: 2000
 - `max_batch_size(usize)` - controls batch size
   - default: 100
-- `otlp_grpc()` / `otap_grpc()` - choose export protocol
-  - default: OTLP
+- `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to receiver
+  - specifies which receiver in suv pipeline to send data to
+  - also sets the exporter type of the generator
+    - exporter type must match the receiver type 
+      - OTLP -> OTLP or OTAP -> OTAP
+- `static_signals()` / `semantic_signals()` - choose data source
+  - default: static
+- `core_range(start, end)` - set the core range to use for pipeline
+  - default: 2-2
+
+> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match the keys under
+`nodes:` in your pipeline YAML.
 
 ## Capture
 
@@ -169,8 +171,9 @@ e.g. `receiver`, `exporter`.
   use otap_df_validation::validation_types::attributes::{AttributeDomain, KeyValue, AnyValue};
 
   let capture = Capture::default()
-      .otlp_grpc()
-      .validate(vec![
+      .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
+      .core_range(3, 5)    // optional; default 1-1
+      .validate(vec![           // optional; only equivalence with be checked by default
           ValidationInstructions::Equivalence,
           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
           ValidationInstructions::AttributeRequireKeyValue {
@@ -179,17 +182,27 @@ e.g. `receiver`, `exporter`.
           },
       ]);
   ```
-
-- `Capture::otlp_grpc()`, `Capture::otap_grpc()` - switch protocols
-  - default: OTLP
+- `Generator::default()` - create a Generator
+- `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
+  - specifies which exporter in suv pipeline to send data to
+  - also sets the receiver type of the capture
+    - receiver type must match the exporter type 
+      - OTLP -> OTLP or OTAP -> OTAP
 - `Capture::validate(Vec<ValidationInstructions>)` - define validation instructions
   - default: [Equivalence]
+- `core_range(start, end)` - set the core range to use for pipeline
+  - default: 1-1
+
+> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match the keys under
+`nodes:` in your pipeline YAML.
 
 ### Validation instructions (used with `Capture::validate`)
 
 - `Equivalence`: control and SUV outputs are semantically equal
+  - requires control signals
 - `SignalDrop { min_drop_ratio, max_drop_ratio }`: asserts the SUV emitted
 fewer signals within optional ratio bounds.
+  - required control signals
 - `BatchItems { min_batch_size, max_batch_size, timeout }`: bounds the item
 count per message; `min/max` optional; `timeout` optional
 - `BatchBytes { min_bytes, max_bytes, timeout }`: bounds encoded message size;
@@ -205,7 +218,13 @@ count per message; `min/max` optional; `timeout` optional
 
 (see `validation_types::attributes` and `validation_types`)
 
+> NOTE: Some ValidationInstructions require control signals make sure to connect the
+generator(s) to capture(s) if needed
+
 ## Troubleshooting
 
-- **Missing wire**: Ensure both `wire_*_receiver` and `wire_*_exporter` are
-called before `Scenario::run()`.
+- **Missing wire**: Ensure generator and capture are connected properly to
+your system-under-validation pipeline, the node names must match
+- **Invalid Validation**: Ensure generator and capture pipelines are connected to
+allow the validation instructions to have control signals to validate against
+

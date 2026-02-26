@@ -7,7 +7,6 @@
 
 use crate::ValidationInstructions;
 use otap_df_otap::fake_data_generator::config::DataSource;
-use otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 
