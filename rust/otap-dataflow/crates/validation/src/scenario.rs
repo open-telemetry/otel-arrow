@@ -192,7 +192,7 @@ impl Scenario {
         // helper to check if generators/captures are missing fields
         fn require_non_empty(s: &str, context: &str) -> Result<(), ValidationError> {
             if s.is_empty() {
-                return Err(ValidationError::Config(format!("{context} missing").into()));
+                return Err(ValidationError::Config(format!("{context} missing")));
             }
             Ok(())
         }
