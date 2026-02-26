@@ -128,22 +128,12 @@ pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
 ///
 /// Dispatches to specialized sort paths based on the column types:
 /// - No sort columns: returns batch unchanged.
-/// - Single column (native): sort via primitive values slice with `is_sorted` early return.
-/// - Single column (dictionary): resolve through dict keys→values, `is_sorted` early return.
+/// - Single column (native): sort via primitive values slice with `is_sorted`
+/// - Single column (dictionary): resolve through dict keys -> values, `is_sorted` early return.
 /// - Two columns (both native): RowConverter-based sort with `is_sorted` early return.
 /// - Two columns (dict parent_id + native id): pack resolved parent_id and id into a `Vec<u64>`,
 ///   sort that, with `is_sorted` early return. Avoids the RowConverter dictionary expansion.
-#[cfg(feature = "bench")]
 pub fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
-    sort_by_parent_then_id_impl(rb)
-}
-
-#[cfg(not(feature = "bench"))]
-pub(crate) fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
-    sort_by_parent_then_id_impl(rb)
-}
-
-fn sort_by_parent_then_id_impl(rb: RecordBatch) -> Result<RecordBatch> {
     let schema = rb.schema();
 
     let parent_id_col = schema

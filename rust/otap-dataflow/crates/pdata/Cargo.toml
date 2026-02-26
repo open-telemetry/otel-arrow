@@ -54,4 +54,3 @@ harness = false
 [[bench]]
 name = "sort_by_parent_then_id"
 harness = false
-required-features = ["bench"]
