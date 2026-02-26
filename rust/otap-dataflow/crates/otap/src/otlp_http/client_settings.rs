@@ -87,124 +87,120 @@ impl HttpClientSettings {
         #[cfg(feature = "experimental-tls")]
         if let Some(tls) = &self.tls {
             let insecure = tls.insecure.unwrap_or(false);
-            if insecure {
-                // client_builder = client_builder.
+            let mut certs = vec![];
+
+            if let Some(ca_pem) = &tls.ca_pem {
+                let cert = Certificate::from_pem(ca_pem.as_bytes())?;
+                certs.push(cert);
+            }
+
+            if let Some(ca_file) = &tls.ca_file {
+                let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
+                    otel_error!(
+                        "tls.ca_file.read_error",
+                        ca_file = ?ca_file,
+                        error = ?e,
+                        message = "Failed to read CA file"
+                    );
+                    e
+                })?;
+                let cert = Certificate::from_pem(&ca_pem)?;
+                certs.push(cert);
+            }
+
+            if tls.include_system_ca_certs_pool.unwrap_or(true) {
+                client_builder = client_builder.tls_certs_merge(certs);
             } else {
-                let mut certs = vec![];
+                client_builder = client_builder.tls_certs_only(certs);
+            }
 
-                if let Some(ca_pem) = &tls.ca_pem {
-                    let cert = Certificate::from_pem(ca_pem.as_bytes())?;
-                    certs.push(cert);
-                }
-
-                if let Some(ca_file) = &tls.ca_file {
-                    let ca_pem = read_file_with_limit_async(ca_file).await.map_err(|e| {
-                        otel_error!(
-                            "tls.ca_file.read_error",
-                            ca_file = ?ca_file,
-                            error = ?e,
-                            message = "Failed to read CA file"
-                        );
-                        e
-                    })?;
-                    let cert = Certificate::from_pem(&ca_pem)?;
-                    certs.push(cert);
-                }
-
-                if tls.include_system_ca_certs_pool.unwrap_or(true) {
-                    client_builder = client_builder.tls_certs_merge(certs);
-                } else {
-                    client_builder = client_builder.tls_certs_only(certs);
-                }
-
-                if let Some(_server_name) = &tls.server_name {
-                    // TODO - currently reqwest doesn't support custom server name validation. The only
-                    // option is to skip all server name validation, which is not what we want. One
-                    // option here would be to pass a configured rustls::ClientConfig to
-                    // ClientBuilder::tls_backend_preconfigured, with a custom
-                    // rustls::verify::ServerCertVerifier implementation, but then we need to manage
-                    // the entire rustls configuration and can't rely on the ClientBuilder to help.
-                    // This is a bit more complex, we'll delay implementing this until it's necessary.
-                    return Err(io::Error::new(
+            if let Some(_server_name) = &tls.server_name {
+                // TODO - currently reqwest doesn't support custom server name validation. The only
+                // option is to skip all server name validation, which is not what we want. One
+                // option here would be to pass a configured rustls::ClientConfig to
+                // ClientBuilder::tls_backend_preconfigured, with a custom
+                // rustls::verify::ServerCertVerifier implementation, but then we need to manage
+                // the entire rustls configuration and can't rely on the ClientBuilder to help.
+                // This is a bit more complex, we'll delay implementing this until it's necessary.
+                return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "TLS configuration error: server_name_override is not supported by the current \
                         Rust OTLP HTTP client implementation (reqwest/rustls) remove server_name_override.",
                     ).into());
-                }
+            }
 
-                if let Some(true) = &tls.insecure_skip_verify {
-                    client_builder = client_builder.danger_accept_invalid_certs(true);
-                }
+            if let Some(true) = &tls.insecure_skip_verify {
+                client_builder = client_builder.danger_accept_invalid_certs(true);
+            }
 
-                // mTLS client certificate configuration
-                let client_cert_configured = tls.config.cert_file.is_some()
-                    || tls
-                        .config
-                        .cert_pem
-                        .as_ref()
-                        .is_some_and(|pem| !pem.trim().is_empty());
-                let client_key_configured = tls.config.key_file.is_some()
-                    || tls
-                        .config
-                        .key_pem
-                        .as_ref()
-                        .is_some_and(|pem| !pem.trim().is_empty());
+            // mTLS client certificate configuration
+            let client_cert_configured = tls.config.cert_file.is_some()
+                || tls
+                    .config
+                    .cert_pem
+                    .as_ref()
+                    .is_some_and(|pem| !pem.trim().is_empty());
+            let client_key_configured = tls.config.key_file.is_some()
+                || tls
+                    .config
+                    .key_pem
+                    .as_ref()
+                    .is_some_and(|pem| !pem.trim().is_empty());
 
-                if client_cert_configured || client_key_configured {
-                    if !(client_cert_configured && client_key_configured) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "TLS configuration error: both cert and key must be provided for mTLS. \
+            if client_cert_configured || client_key_configured {
+                if !(client_cert_configured && client_key_configured) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "TLS configuration error: both cert and key must be provided for mTLS. \
                              Provide both cert_file/cert_pem and key_file/key_pem, or neither.",
-                        )
-                        .into());
-                    }
-
-                    // Read cert and key
-                    let cert_pem = if let Some(cert_file) = &tls.config.cert_file {
-                        read_file_with_limit_async(cert_file).await.map_err(|e| {
-                            otel_error!(
-                                "tls.cert_file.read_error",
-                                cert_file = ?cert_file,
-                                error = ?e, message = "Failed to read client cert file"
-                            );
-                            e
-                        })?
-                    } else if let Some(cert_pem) = &tls.config.cert_pem {
-                        cert_pem.as_bytes().to_vec()
-                    } else {
-                        unreachable!()
-                    };
-
-                    let key_pem = if let Some(key_file) = &tls.config.key_file {
-                        read_file_with_limit_async(key_file).await.map_err(|e| {
-                            otel_error!(
-                                "tls.key_file.read_error",
-                                key_file = ?key_file,
-                                error = ?e,
-                                message = "Failed to read client key file"
-                            );
-                            e
-                        })?
-                    } else if let Some(key_pem) = &tls.config.key_pem {
-                        key_pem.as_bytes().to_vec()
-                    } else {
-                        unreachable!()
-                    };
-
-                    // Combine cert and key into PEM format for Identity
-                    let mut identity_pem = cert_pem;
-                    identity_pem.extend_from_slice(&key_pem);
-
-                    let identity = Identity::from_pem(&identity_pem).map_err(|e| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("Failed to create identity from cert and key: {}", e),
-                        )
-                    })?;
-
-                    client_builder = client_builder.identity(identity);
+                    )
+                    .into());
                 }
+
+                // Read cert and key
+                let cert_pem = if let Some(cert_file) = &tls.config.cert_file {
+                    read_file_with_limit_async(cert_file).await.map_err(|e| {
+                        otel_error!(
+                            "tls.cert_file.read_error",
+                            cert_file = ?cert_file,
+                            error = ?e, message = "Failed to read client cert file"
+                        );
+                        e
+                    })?
+                } else if let Some(cert_pem) = &tls.config.cert_pem {
+                    cert_pem.as_bytes().to_vec()
+                } else {
+                    unreachable!()
+                };
+
+                let key_pem = if let Some(key_file) = &tls.config.key_file {
+                    read_file_with_limit_async(key_file).await.map_err(|e| {
+                        otel_error!(
+                            "tls.key_file.read_error",
+                            key_file = ?key_file,
+                            error = ?e,
+                            message = "Failed to read client key file"
+                        );
+                        e
+                    })?
+                } else if let Some(key_pem) = &tls.config.key_pem {
+                    key_pem.as_bytes().to_vec()
+                } else {
+                    unreachable!()
+                };
+
+                // Combine cert and key into PEM format for Identity
+                let mut identity_pem = cert_pem;
+                identity_pem.extend_from_slice(&key_pem);
+
+                let identity = Identity::from_pem(&identity_pem).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Failed to create identity from cert and key: {}", e),
+                    )
+                })?;
+
+                client_builder = client_builder.identity(identity);
             }
         }
 

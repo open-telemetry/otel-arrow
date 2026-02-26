@@ -156,17 +156,17 @@ impl OtlpHttpExporter {
                     // configured, but the endpoints are start with https, we still send the
                     // request using https. Just warn about the ignored config mismatch.
                     let wants_https = config.endpoint.starts_with("https://")
-                        | config
+                        || config
                             .logs_endpoint
                             .as_ref()
                             .map(|e| e.starts_with("https://"))
                             .unwrap_or(false)
-                        | config
+                        || config
                             .metrics_endpoint
                             .as_ref()
                             .map(|e| e.starts_with("https://"))
                             .unwrap_or(false)
-                        | config
+                        || config
                             .traces_endpoint
                             .as_ref()
                             .map(|e| e.starts_with("https://"))
