@@ -105,7 +105,7 @@ mod tests {
             (logs_with_records(5), Duration::from_secs(0)),
         ];
         assert!(validate_batch_items(&msgs, &Some(2), &Some(5), &None));
-        assert!(!validate_batch_items(&msgs,& Some(4), &None, &None));
+        assert!(!validate_batch_items(&msgs, &Some(4), &None, &None));
     }
 
     #[test]
