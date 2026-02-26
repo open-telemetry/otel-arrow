@@ -16,7 +16,7 @@ pub enum ExprLogicalType {
     // TODO comments
     AnyValue,
     // TODO comments
-    AnyValueNumeric,
+    AnyValueNumberic,
     Boolean,
     Binary,
     FixedSizeBinary(usize),
@@ -108,10 +108,17 @@ pub fn coerce_arithmetic(
     right: &mut LogicalDomainExpr,
 ) -> Option<ExprLogicalType> {
     match &left.expr_type {
-        ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric => match right.expr_type {
-            // just assume we're adding either int64 or float64
-            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric => {
-                Some(ExprLogicalType::AnyValueNumeric)
+        ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => match &right.expr_type {
+            ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumberic => {
+                // just assume we're adding either int64 or float64
+                Some(ExprLogicalType::AnyValueNumberic)
+            }
+
+            ExprLogicalType::ScalarInt => {
+                // default for scalar int is int64, and the only type for AnyValue that is int like
+                // is int64. We don't need to massage the input types, but we've identified what the
+                // expression type should be ...
+                Some(ExprLogicalType::Int64)
             }
 
             // TODO - should this be any int that gets coerced?
@@ -125,8 +132,8 @@ pub fn coerce_arithmetic(
                 Some(ExprLogicalType::Int64)
             }
 
-            _ => {
-                todo!()
+            other_right => {
+                todo!("todo left to other right {other_right:?}")
             }
         },
         // TODO this can probably be ExprLogicalType::UInt32 | ExprLogicalType::UInt64 ... etc.

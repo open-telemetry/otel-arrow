@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, NullArray, RecordBatch, StringArray, StructArray};
 use arrow::compute::filter_record_batch;
@@ -355,6 +355,11 @@ pub(crate) struct PhysicalExprEvalResult {
     resource_ids: Option<ArrayRef>,
 }
 
+/// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
+/// the call to PhysicalExpr::evaluate. We just pass a static empty record batch.
+static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
+    LazyLock::new(|| RecordBatch::new_empty(Arc::new(Schema::new(Vec::<Field>::new()))));
+
 impl PhysicalDomainExpr {
     fn execute(
         &mut self,
@@ -366,10 +371,8 @@ impl PhysicalDomainExpr {
         let (source_rb, result_data_domain) = match &mut self.source {
             PhysicalExprDataSource::DataSource(data_domain_id) => {
                 let input_rb = match data_domain_id {
-                    // TODO Cow not clone
-                    DataDomainId::Root => otap_batch.root_record_batch().cloned(),
+                    DataDomainId::Root => otap_batch.root_record_batch().map(Cow::Borrowed),
                     DataDomainId::Attributes(attrs_id, key) => {
-                        // Get the appropriate attributes batch based on AttributesIdentifier
                         let attrs_payload_type = match *attrs_id {
                             AttributesIdentifier::Root => match otap_batch.root_payload_type() {
                                 ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
@@ -390,13 +393,10 @@ impl PhysicalDomainExpr {
                             })
                             .transpose()?
                             .flatten()
+                            .map(Cow::Owned)
                     }
                     DataDomainId::StaticScalar => {
-                        // Static scalars don't need input data, so provide an empty batch
-                        // TODO: This could be a lazy static to avoid repeated allocation
-                        Some(RecordBatch::new_empty(Arc::new(Schema::new(
-                            Vec::<Field>::new(),
-                        ))))
+                        Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref()))
                     }
                 };
 
@@ -409,21 +409,29 @@ impl PhysicalDomainExpr {
 
                 let (joined_rb, result_data_domain) =
                     join(&left_result, &right_result, otap_batch)?;
-                (Some(joined_rb), result_data_domain)
+                (Some(Cow::Owned(joined_rb)), result_data_domain)
             }
         };
 
-        // TODO no unwrap, need null propagation
-        let source_rb = source_rb.unwrap();
+        let source_rb = match source_rb {
+            Some(rb) => rb,
+            None => return Ok(None),
+        };
 
-        // TODO no unwrap, need null propagation
         let projected_rb = if result_data_domain != DataDomainId::StaticScalar {
-            self.projection
+            match self
+                .projection
                 .project_with_options(&source_rb, &self.projection_opts)
-                .unwrap()
+            {
+                Some(rb) => Cow::Owned(rb),
+                None => return Ok(None),
+            }
         } else {
-            // don't bother projecting scalars because there are no columns
-            source_rb.clone() // TODO booo clone, use Cow
+            // TODO there must be a helper for this
+            match &source_rb {
+                Cow::Borrowed(rb) => Cow::Borrowed(*rb),
+                Cow::Owned(rb) => Cow::Borrowed(rb),
+            }
         };
 
         if self.physical_expr.is_none() {
@@ -1574,6 +1582,175 @@ mod test {
 
         // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![14, 17, 34]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+    }
+
+    #[test]
+    fn test_arithmetic_null_propagation_null_values_no_join() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+        ));
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build().severity_number(1).finish(),
+            LogRecord::build().finish(),
+            LogRecord::build()
+                .severity_number(6)
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(Int32Array::from_iter([Some(4), None, Some(9)]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+    }
+
+    #[test]
+    fn test_arithmetic_null_propagation_null_column_no_join() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+        ));
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        // no severity number column
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let result = run_scalar_expr_test(input_expr, &otap_batch);
+        assert!(result.is_none(), "expected result to be None")
+    }
+
+    #[test]
+    fn test_arithmetic_null_propagation_null_batch_no_join() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "x"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
+            IntegerScalarExpression::new(QueryLocation::new_fake(), 3),
+        ));
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        // no attributes record batch column
+        let logs = to_logs_data(vec![
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+            LogRecord::build().finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        assert!(otap_batch.get(ArrowPayloadType::LogAttrs).is_none());
+        let result = run_scalar_expr_test(input_expr, &otap_batch);
+        assert!(result.is_none(), "expected result to be None")
+    }
+
+    #[test]
+    fn test_arithmetic_null_propagation_null_values_on_right_of_join() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                ])
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let expected_col = Arc::new(Int64Array::from_iter([Some(4), None, Some(9)]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 }
