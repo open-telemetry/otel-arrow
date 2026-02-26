@@ -10,7 +10,8 @@ use crate::ExporterFactory;
 use crate::config::ExporterConfig;
 use crate::context::{ControllerContext, PipelineContext};
 use crate::control::{
-    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
+    Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
@@ -174,6 +175,7 @@ pub struct TestPhase<PData> {
     /// The exporter to start (deferred until `run_test`).
     exporter: ExporterWrapper<PData>,
 
+    pipeline_ctrl_msg_sender: PipelineCtrlMsgSender<PData>,
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
 
     metrics_system: InternalTelemetrySystem,
@@ -258,7 +260,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 )
             }
         };
-        let (_, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
@@ -271,6 +273,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             control_sender,
             pdata_sender: pdata_tx,
             exporter,
+            pipeline_ctrl_msg_sender: pipeline_ctrl_msg_tx,
             pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
             metrics_system: self.metrics_system,
             extension_registry: None,
@@ -299,7 +302,6 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let (pipeline_ctrl_msg_tx, _) = pipeline_ctrl_msg_channel(10);
         let metrics_reporter_start = self.metrics_system.reporter();
         let metrics_reporter_terminal = self.metrics_system.reporter();
         let metrics_collector = self.metrics_system.collector();
@@ -312,6 +314,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let mut context = self.create_context();
         let ctx_test = context.clone();
 
+        let pipeline_ctrl_msg_tx = self.pipeline_ctrl_msg_sender;
         let exporter = self.exporter;
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter

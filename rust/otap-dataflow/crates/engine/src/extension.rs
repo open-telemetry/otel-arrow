@@ -139,6 +139,7 @@ impl ExtensionWrapper {
     }
 
     /// Returns the node id of the extension.
+    #[must_use]
     pub fn node_id(&self) -> NodeId {
         match self {
             ExtensionWrapper::Local { node_id, .. } => node_id.clone(),
@@ -147,6 +148,7 @@ impl ExtensionWrapper {
     }
 
     /// Returns the extension name (from the user config URN).
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             ExtensionWrapper::Local { user_config, .. } => user_config.r#type.as_ref(),
