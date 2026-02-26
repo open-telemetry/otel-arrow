@@ -151,12 +151,14 @@ impl Generator {
     }
 
     /// set the traffic generator to use static as source
+    #[must_use]
     pub fn static_signals(mut self) -> Self {
         self.data_source = DataSource::Static;
         self
     }
 
     /// set the traffic generator to use semantic convention as source
+    #[must_use]
     pub fn semantic_signals(mut self) -> Self {
         self.data_source = DataSource::SemanticConventions;
         self

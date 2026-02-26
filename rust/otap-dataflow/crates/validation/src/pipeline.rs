@@ -88,6 +88,7 @@ impl EndpointKind {
     }
 
     /// Return the node name this endpoint targets.
+    #[must_use]
     pub fn node_name(&self) -> &str {
         match self {
             EndpointKind::OtlpGrpcReceiver(node)
@@ -104,7 +105,7 @@ fn node_config_map<'a>(doc: &'a mut Value, node: &str) -> Result<&'a mut Mapping
         .and_then(Value::as_mapping_mut)
         .ok_or_else(|| ValidationError::Config("pipeline missing nodes map".into()))?;
     let node_cfg = nodes
-        .get_mut(&Value::from(node.to_string()))
+        .get_mut(Value::from(node.to_string()))
         .and_then(Value::as_mapping_mut)
         .ok_or_else(|| ValidationError::Config(format!("missing node {node}")))?;
     let config = node_cfg
