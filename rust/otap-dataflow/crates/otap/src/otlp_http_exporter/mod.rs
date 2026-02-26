@@ -2333,56 +2333,6 @@ mod test {
 
     #[test]
     #[cfg(feature = "experimental-tls")]
-    fn test_start_returns_error_if_server_name_override_set() {
-        let port = pick_unused_port().unwrap();
-        // let endpoint_addr = format!("127.0.0.1:{}", port);
-        let endpoint = format!("https://localhost:{port}");
-
-        let client_tls_config = TlsClientConfig {
-            config: TlsConfig {
-                cert_file: None,
-                cert_pem: None,
-                key_file: None,
-                key_pem: None,
-                reload_interval: None,
-            },
-            ca_file: None,
-            ca_pem: None,
-            include_system_ca_certs_pool: None,
-            server_name: Some("server_name".into()),
-            insecure: None,
-            insecure_skip_verify: None,
-        };
-        let config = Config {
-            http: HttpClientSettings {
-                tls: Some(client_tls_config),
-                ..Default::default()
-            },
-            ..default_test_config(endpoint)
-        };
-
-        // let tokio_rt = Runtime::new().unwrap();
-        let test_runtime = TestRuntime::<OtapPdata>::new();
-        let (_, exporter) = setup_exporter(&test_runtime, config);
-
-        test_runtime
-            .set_exporter(exporter)
-            .run_test(|_ctx| Box::pin(async move {}))
-            .run_validation(|_ctx, result| {
-                Box::pin(async move {
-                    let err = result.unwrap_err();
-                    let err_message = err.to_string();
-                    assert!(
-                        err_message.contains("server_name_override is not supported"),
-                        "unexpected error {}",
-                        err_message
-                    )
-                })
-            });
-    }
-
-    #[test]
-    #[cfg(feature = "experimental-tls")]
     fn test_tls_server_only_ca_pem_from_str() {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
