@@ -9,13 +9,16 @@
 
 use std::borrow::Cow;
 use std::ops::Deref;
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{Field, Schema};
-use data_engine_expressions::{Expression, MathScalarExpression, ScalarExpression};
+use data_engine_expressions::{
+    BinaryMathematicalScalarExpression, Expression, MathScalarExpression, ScalarExpression,
+};
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
@@ -116,7 +119,7 @@ impl LogicalDomainExpr {
     fn into_physical(self) -> Result<PhysicalDomainExpr> {
         let source = match self.source {
             LogicalExprDataSource::DataSource(domain) => {
-                PhysicalExprDataSource::DataSource(domain.domain_id)
+                PhysicalExprDataSource::DataSource(Rc::new(domain.domain_id))
             }
             LogicalExprDataSource::Join(left, right) => PhysicalExprDataSource::Join(
                 Box::new(left.into_physical()?),
@@ -216,10 +219,6 @@ impl ExprLogicalPlanner {
                     SSE::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
                     }
-                    // SSE::Null(_) => {
-                    //     // Create a null literal of unknown type
-                    //     lit(datafusion::scalar::ScalarValue::Null)
-                    // }
                     _ => {
                         return Err(Error::ExecutionError {
                             cause: format!(
@@ -241,69 +240,86 @@ impl ExprLogicalPlanner {
             }
             ScalarExpression::Math(math_scalar_expr) => match math_scalar_expr {
                 MathScalarExpression::Add(binary_math_expr) => {
-                    // Recursively plan left and right sub-expressions
-                    let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
-                    let mut right =
-                        self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
-
-                    let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
-                        // TODO - test for this code path
-                        Error::InvalidPipelineError {
-                            cause: format!(
-                                "could not coerce types for arithmetic: left type {:?}, right type {:?}",
-                                left.expr_type,
-                                right.expr_type
-                            ),
-                            query_location: Some(math_scalar_expr.get_query_location().clone())
-                        }
-                    })?;
-
-                    // TODO comment about what we're doing here
-                    let possible_combined_expr_domain = match (&left.source, &right.source) {
-                        (
-                            LogicalExprDataSource::DataSource(left_domain),
-                            LogicalExprDataSource::DataSource(right_domain),
-                        ) => left_domain.can_combine(right_domain).then_some(
-                            if !left_domain.is_scalar() {
-                                left_domain
-                            } else {
-                                right_domain
-                            },
-                        ),
-                        _ => None,
-                    };
-
-                    if let Some(combined_domain) = possible_combined_expr_domain {
-                        Ok(LogicalDomainExpr {
-                            logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                                Box::new(left.logical_expr),
-                                Operator::Plus,
-                                Box::new(right.logical_expr),
-                            )),
-                            source: LogicalExprDataSource::DataSource(combined_domain.clone()),
-                            expr_type,
-                            requires_dict_downcast: true,
-                        })
-                    } else {
-                        Ok(LogicalDomainExpr {
-                            logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                                Box::new(col(LEFT_COLUMN_NAME)),
-                                Operator::Plus,
-                                Box::new(col(RIGHT_COLUMN_NAME)),
-                            )),
-                            source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
-                            expr_type,
-                            requires_dict_downcast: true,
-                        })
-                    }
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Plus)
                 }
-                _ => {
-                    todo!("other math")
+                MathScalarExpression::Subtract(binary_math_expr) => {
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Minus)
                 }
+                MathScalarExpression::Multiply(binary_math_expr) => {
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Multiply)
+                }
+                MathScalarExpression::Divide(binary_math_expr) => {
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Divide)
+                }
+                MathScalarExpression::Modulus(binary_math_expr) => {
+                    self.plan_binary_math_expr(binary_math_expr, Operator::Modulo)
+                }
+                other_math_expr => Err(Error::NotYetSupportedError {
+                    message: format!("math expression not yet supported {other_math_expr:?}"),
+                }),
             },
-            _ => {
-                todo!("handle other scalar expressions or return error")
+            other_expr => Err(Error::NotYetSupportedError {
+                message: format!("expression not yet supported {other_expr:?}"),
+            }),
+        }
+    }
+
+    fn plan_binary_math_expr(
+        &mut self,
+        binary_math_expr: &BinaryMathematicalScalarExpression,
+        operator: Operator,
+    ) -> Result<LogicalDomainExpr> {
+        // Recursively plan left and right sub-expressions
+        let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
+        let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
+
+        let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
+            Error::InvalidPipelineError {
+                cause: format!(
+                    "could not coerce types for arithmetic: left type {:?}, right type {:?}",
+                    left.expr_type, right.expr_type
+                ),
+                query_location: Some(binary_math_expr.get_query_location().clone()),
             }
+        })?;
+
+        // TODO comment about what we're doing here
+        let possible_combined_expr_domain = match (&left.source, &right.source) {
+            (
+                LogicalExprDataSource::DataSource(left_domain),
+                LogicalExprDataSource::DataSource(right_domain),
+            ) => left_domain
+                .can_combine(right_domain)
+                .then_some(if !left_domain.is_scalar() {
+                    left_domain
+                } else {
+                    right_domain
+                }),
+            _ => None,
+        };
+
+        if let Some(combined_domain) = possible_combined_expr_domain {
+            Ok(LogicalDomainExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(left.logical_expr),
+                    operator,
+                    Box::new(right.logical_expr),
+                )),
+                source: LogicalExprDataSource::DataSource(combined_domain.clone()),
+                expr_type,
+                requires_dict_downcast: true,
+            })
+        } else {
+            Ok(LogicalDomainExpr {
+                logical_expr: Expr::BinaryExpr(BinaryExpr::new(
+                    Box::new(col(LEFT_COLUMN_NAME)),
+                    operator,
+                    Box::new(col(RIGHT_COLUMN_NAME)),
+                )),
+                source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
+                expr_type,
+                requires_dict_downcast: true,
+            })
         }
     }
 }
@@ -334,7 +350,7 @@ struct PhysicalDomainExpr {
 }
 
 enum PhysicalExprDataSource {
-    DataSource(DataDomainId),
+    DataSource(Rc<DataDomainId>),
     Join(Box<PhysicalDomainExpr>, Box<PhysicalDomainExpr>),
 }
 
@@ -342,7 +358,7 @@ enum PhysicalExprDataSource {
 pub(crate) struct PhysicalExprEvalResult {
     values: ColumnarValue,
     ids: Option<ArrayRef>,
-    data_domain: DataDomainId,
+    data_domain: Rc<DataDomainId>,
     parent_ids: Option<ArrayRef>,
     scope_ids: Option<ArrayRef>,
     resource_ids: Option<ArrayRef>,
@@ -363,7 +379,7 @@ impl PhysicalDomainExpr {
         // TODO need to avoid cloning the data domain Id here
         let (source_rb, result_data_domain) = match &mut self.source {
             PhysicalExprDataSource::DataSource(data_domain_id) => {
-                let input_rb = match data_domain_id {
+                let input_rb = match data_domain_id.as_ref() {
                     DataDomainId::Root => otap_batch.root_record_batch().map(Cow::Borrowed),
                     DataDomainId::Attributes(attrs_id, key) => {
                         let attrs_payload_type = match *attrs_id {
@@ -419,7 +435,7 @@ impl PhysicalDomainExpr {
         };
 
         // project the source record batch into the schema expected by the physical expr
-        let projected_rb = if result_data_domain != DataDomainId::StaticScalar {
+        let projected_rb = if *result_data_domain != DataDomainId::StaticScalar {
             match self
                 .projection
                 .project_with_options(&source_rb, &self.projection_opts)?
@@ -472,7 +488,7 @@ impl PhysicalDomainExpr {
         result.ids = source_rb.column_by_name(consts::ID).cloned();
         result.parent_ids = source_rb.column_by_name(consts::PARENT_ID).cloned();
 
-        if result_data_domain == DataDomainId::Root {
+        if *result_data_domain == DataDomainId::Root {
             result.scope_ids = get_optional_array_from_struct_array_from_record_batch(
                 &source_rb,
                 consts::SCOPE,
@@ -663,7 +679,7 @@ impl PhysicalDomainExpr {
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Int32Array, Int64Array, StructArray};
+    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray};
     use arrow::compute::take;
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
@@ -1155,6 +1171,174 @@ mod test {
     }
 
     #[test]
+    fn test_binary_arithmetic_expr_additional_operators_int_values() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let binary_expr = BinaryMathematicalScalarExpression::new(
+            QueryLocation::new_fake(),
+            left_expr,
+            right_expr,
+        );
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .severity_number(10)
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(9)),
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                ])
+                .severity_number(20)
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                ])
+                .severity_text("DEBUG")
+                .severity_number(30)
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let test_cases = vec![
+            (
+                MathScalarExpression::Subtract(binary_expr.clone()),
+                vec![2, 6, -5],
+            ),
+            (
+                MathScalarExpression::Multiply(binary_expr.clone()),
+                vec![3, 27, 14],
+            ),
+            (
+                MathScalarExpression::Divide(binary_expr.clone()),
+                vec![3, 3, 0],
+            ),
+            (
+                MathScalarExpression::Modulus(binary_expr.clone()),
+                vec![0, 0, 2],
+            ),
+        ];
+        for (math_expr, expected) in test_cases {
+            let input_expr = ScalarExpression::Math(math_expr);
+            let expected_col = Arc::new(Int64Array::from(expected));
+            run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+        }
+    }
+
+    #[test]
+    fn test_binary_arithmetic_expr_additional_operators_float_values() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let binary_expr = BinaryMathematicalScalarExpression::new(
+            QueryLocation::new_fake(),
+            left_expr,
+            right_expr,
+        );
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(3)),
+                    KeyValue::new("k2", AnyValue::new_double(1)),
+                ])
+                .severity_number(10)
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(9)),
+                    KeyValue::new("k2", AnyValue::new_double(3)),
+                ])
+                .severity_number(20)
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(2)),
+                    KeyValue::new("k2", AnyValue::new_double(7)),
+                ])
+                .severity_text("DEBUG")
+                .severity_number(30)
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let test_cases = vec![
+            (
+                MathScalarExpression::Subtract(binary_expr.clone()),
+                vec![2.0, 6.0, -5.0],
+            ),
+            (
+                MathScalarExpression::Multiply(binary_expr.clone()),
+                vec![3.0, 27.0, 14.0],
+            ),
+            (
+                MathScalarExpression::Divide(binary_expr.clone()),
+                vec![3.0, 3.0, 2.0 / 7.0],
+            ),
+            (
+                MathScalarExpression::Modulus(binary_expr.clone()),
+                vec![0.0, 0.0, 2.0],
+            ),
+        ];
+        for (math_expr, expected) in test_cases {
+            let input_expr = ScalarExpression::Math(math_expr);
+            let expected_col = Arc::new(Float64Array::from(expected));
+            run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+        }
+    }
+
+    #[test]
     fn test_planner_binary_expr_root_to_nonroot_attrs() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -1492,7 +1676,6 @@ mod test {
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
-    // TODO - this is kind of just a smoke test, should we have it be more purposeful?
     #[test]
     fn test_planner_binary_expr_deeply_nested_expr() {
         let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
