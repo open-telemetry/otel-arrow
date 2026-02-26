@@ -133,10 +133,10 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 /// Metrics for the durable buffer processor.
 ///
 /// Follows RFC-aligned telemetry conventions:
-/// - Metric set name follows `otelcol.<entity>` pattern
+/// - Metric set name follows `otap.<role>.<component>` pattern
 /// - Channel metrics already track bundle send/receive counts
 /// - This tracks ACK/NACK status, item counts, storage, and retries
-#[metric_set(name = "otelcol.node.durable_buffer")]
+#[metric_set(name = "otap.processor.durable_buffer")]
 #[derive(Debug, Default, Clone)]
 pub struct DurableBufferMetrics {
     // ─── ACK/NACK tracking ──────────────────────────────────────────────────
@@ -153,33 +153,33 @@ pub struct DurableBufferMetrics {
     // ─── Consumed item metrics (per signal type) ────────────────────────
     /// Number of log records consumed (ingested to WAL).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{records}")]
+    #[metric(unit = "{log_record}")]
     pub consumed_log_records: Counter<u64>,
 
     /// Number of metric data points consumed (ingested to WAL).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{datapoints}")]
+    #[metric(unit = "{data_point}")]
     pub consumed_metric_points: Counter<u64>,
 
     /// Number of spans consumed (ingested to WAL).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{spans}")]
+    #[metric(unit = "{span}")]
     pub consumed_spans: Counter<u64>,
 
     // ─── Produced item metrics (per signal type) ────────────────────────
     /// Number of log records produced (sent downstream).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{records}")]
+    #[metric(unit = "{log_record}")]
     pub produced_log_records: Counter<u64>,
 
     /// Number of metric data points produced (sent downstream).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{datapoints}")]
+    #[metric(unit = "{data_point}")]
     pub produced_metric_points: Counter<u64>,
 
     /// Number of spans produced (sent downstream).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{spans}")]
+    #[metric(unit = "{span}")]
     pub produced_spans: Counter<u64>,
 
     // ─── Error and backpressure metrics ─────────────────────────────────────
@@ -242,30 +242,30 @@ pub struct DurableBufferMetrics {
     // ─── Requeued item metrics (per signal type) ────────────────────────────
     // These count individual items in NACKed bundles when scheduled for retry.
     /// Number of individual log records requeued for retry after NACK.
-    #[metric(unit = "{records}")]
+    #[metric(unit = "{log_record}")]
     pub requeued_log_records: Counter<u64>,
 
     /// Number of individual metric data points requeued for retry after NACK.
-    #[metric(unit = "{datapoints}")]
+    #[metric(unit = "{data_point}")]
     pub requeued_metric_points: Counter<u64>,
 
     /// Number of individual spans requeued for retry after NACK.
-    #[metric(unit = "{spans}")]
+    #[metric(unit = "{span}")]
     pub requeued_spans: Counter<u64>,
 
     // ─── Queued item metrics (per signal type) ──────────────────────────────
     // These track the cumulative item count across in-flight and pending
     // bundles. Incremented on successful ingest, decremented on ACK.
     /// Current number of log records queued (ingested but not yet ACKed).
-    #[metric(unit = "{records}")]
+    #[metric(unit = "{log_record}")]
     pub queued_log_records: Gauge<u64>,
 
     /// Current number of metric data points queued (ingested but not yet ACKed).
-    #[metric(unit = "{datapoints}")]
+    #[metric(unit = "{data_point}")]
     pub queued_metric_points: Gauge<u64>,
 
     /// Current number of spans queued (ingested but not yet ACKed).
-    #[metric(unit = "{spans}")]
+    #[metric(unit = "{span}")]
     pub queued_spans: Gauge<u64>,
 }
 
