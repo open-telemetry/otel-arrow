@@ -1,12 +1,20 @@
 nodes:
   receiver:
+<<<<<<< HEAD
     type: otlp:receiver
+=======
+    type: "urn:otel:receiver:otlp"
+>>>>>>> main
     config:
       protocols:
         grpc:
           listening_addr: 127.0.0.1:4317
   filter:
+<<<<<<< HEAD
     type: filter:processor
+=======
+    type: "urn:otel:processor:filter"
+>>>>>>> main
     config:
       logs:
         include:
@@ -15,7 +23,11 @@ nodes:
             - key: ios.app.state
               value: active
   debug:
+<<<<<<< HEAD
     type: attribute:processor
+=======
+    type: "urn:otel:processor:attribute"
+>>>>>>> main
     config:
       actions:
         - action: "rename"
@@ -23,7 +35,11 @@ nodes:
           destination_key: "ios.app.state2"
           apply_to: ["signal"]
   exporter:
+<<<<<<< HEAD
     type: otlp:exporter
+=======
+    type: "urn:otel:exporter:otap"
+>>>>>>> main
     config:
       grpc_endpoint: http://127.0.0.1:4318
 connections:

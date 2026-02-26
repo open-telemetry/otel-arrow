@@ -1144,21 +1144,21 @@ a naive per-core cap. Preliminary goals:
 ```yaml
 nodes:
   otlp_receiver:
-    type: "urn:otel:otlp:receiver"
+    type: "urn:otel:receiver:otlp"
     config:
       listening_addr: "127.0.0.1:4317"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   otap_receiver:
-    type: "urn:otel:otap:receiver"
+    type: "urn:otel:receiver:otap"
     config:
       listening_addr: "127.0.0.1:4318"
       # Required: channel buffer capacity (number of messages)
       response_stream_channel_size: 256
 
   durable_buffer:
-    type: "urn:otel:durable_buffer:processor"
+    type: "urn:otel:processor:durable_buffer"
     config:
       # Platform-appropriate persistent storage location
       path: /var/lib/otap/buffer
@@ -1178,14 +1178,14 @@ nodes:
         size_cap_policy: drop_oldest
 
   otap_exporter:
-    type: "urn:otel:otap:exporter"
+    type: "urn:otel:exporter:otap"
     config:
       grpc_endpoint: "http://{{backend_hostname}}:1235"
       compression_method: zstd
       arrow:
         payload_compression: none
   otlp_exporter:
-    type: "urn:otel:otlp:exporter"
+    type: "urn:otel:exporter:otlp"
     config:
       grpc_endpoint: "http://127.0.0.1:4318"
       # Optional: timeout for RPC requests

@@ -67,7 +67,7 @@ use crate::pdata::{Context, OtapPdata};
 mod config;
 
 /// The URN for the OTLP HTTP exporter
-pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:otlp_http:exporter";
+pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {

@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// URN for the RetryProcessor processor
-pub const RETRY_PROCESSOR_URN: &str = "urn:otel:retry:processor";
+pub const RETRY_PROCESSOR_URN: &str = "urn:otel:processor:retry";
 
 /// Configuration for the retry processor. Modeled exactly on
 /// https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#retry-on-failure.

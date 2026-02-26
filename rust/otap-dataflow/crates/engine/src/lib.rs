@@ -504,7 +504,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 name.clone(),
                 node_config.r#type.clone(),
                 node_kind,
-                node_config.telemetry_attributes.clone(),
+                node_config.identity_attributes(),
             );
 
             match node_kind {

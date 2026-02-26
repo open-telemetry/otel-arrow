@@ -293,18 +293,31 @@ impl SlotChunkRef {
 pub struct ManifestEntry {
     /// Zero-based index of this bundle within the segment.
     pub bundle_index: u32,
+    /// Number of logical data items in this bundle.
+    ///
+    /// For Arrow bundles this is `num_rows()`, for OTLP pass-through
+    /// bundles this is the count of log records, metric data points,
+    /// or spans. Zero if unknown (e.g. legacy segments without this field).
+    item_count: u64,
     /// Mapping from slot to the stream/chunk containing that slot's data.
     slot_refs: HashMap<SlotId, SlotChunkRef>,
 }
 
 impl ManifestEntry {
-    /// Creates a new manifest entry for the given bundle index.
+    /// Creates a new manifest entry for the given bundle index and item count.
     #[must_use]
-    pub fn new(bundle_index: u32) -> Self {
+    pub fn new(bundle_index: u32, item_count: u64) -> Self {
         Self {
             bundle_index,
+            item_count,
             slot_refs: HashMap::new(),
         }
+    }
+
+    /// Returns the number of logical data items in this bundle.
+    #[must_use]
+    pub const fn item_count(&self) -> u64 {
+        self.item_count
     }
 
     /// Adds a slot reference to this manifest entry.
@@ -749,15 +762,16 @@ mod tests {
 
     #[test]
     fn manifest_entry_empty() {
-        let entry = ManifestEntry::new(0);
+        let entry = ManifestEntry::new(0, 0);
         assert_eq!(entry.bundle_index, 0);
+        assert_eq!(entry.item_count(), 0);
         assert!(entry.is_empty());
         assert_eq!(entry.slot_count(), 0);
     }
 
     #[test]
     fn manifest_entry_add_and_get_slot() {
-        let mut entry = ManifestEntry::new(5);
+        let mut entry = ManifestEntry::new(5, 42);
         entry.add_slot(SlotId::new(0), StreamId::new(1), ChunkIndex::new(2));
         entry.add_slot(SlotId::new(1), StreamId::new(3), ChunkIndex::new(0));
 
@@ -777,7 +791,7 @@ mod tests {
 
     #[test]
     fn manifest_entry_slots_iterator() {
-        let mut entry = ManifestEntry::new(0);
+        let mut entry = ManifestEntry::new(0, 0);
         entry.add_slot(SlotId::new(2), StreamId::new(0), ChunkIndex::new(0));
         entry.add_slot(SlotId::new(5), StreamId::new(1), ChunkIndex::new(0));
 
@@ -792,7 +806,7 @@ mod tests {
 
     #[test]
     fn manifest_entry_overwrite_slot() {
-        let mut entry = ManifestEntry::new(0);
+        let mut entry = ManifestEntry::new(0, 0);
         entry.add_slot(SlotId::new(0), StreamId::new(1), ChunkIndex::new(0));
         entry.add_slot(SlotId::new(0), StreamId::new(2), ChunkIndex::new(1));
 

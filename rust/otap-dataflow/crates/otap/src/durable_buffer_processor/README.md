@@ -9,7 +9,7 @@ downstream, enabling recovery after crashes or network outages.
 ```yaml
 nodes:
   durable_buffer:
-    type: "durable_buffer:processor"
+    type: "processor:durable_buffer"
     config:
       # Directory for persistent storage (required)
       path: /var/lib/otap/buffer

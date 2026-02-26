@@ -106,8 +106,12 @@ pub struct QuiverEngine {
     force_dropped_segments: AtomicU64,
     /// Count of bundles lost due to force-dropped segments.
     force_dropped_bundles: AtomicU64,
+    /// Count of individual data items lost due to force-dropped segments.
+    force_dropped_items: AtomicU64,
     /// Count of bundles lost due to expired segments (max_age retention).
     expired_bundles: AtomicU64,
+    /// Count of individual data items lost due to expired segments.
+    expired_items: AtomicU64,
     /// Segment store for finalized segment files.
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
@@ -394,7 +398,9 @@ impl QuiverEngine {
             cumulative_segment_bytes: AtomicU64::new(0),
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
+            force_dropped_items: AtomicU64::new(0),
             expired_bundles: AtomicU64::new(0),
+            expired_items: AtomicU64::new(0),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -479,6 +485,19 @@ impl QuiverEngine {
         self.force_dropped_bundles.load(Ordering::Relaxed)
     }
 
+    /// Returns the total number of individual data items lost due to
+    /// force-dropped segments (DropOldest policy).
+    ///
+    /// This tracks the same events as [`force_dropped_bundles()`](Self::force_dropped_bundles)
+    /// but counts individual records (log records, metric data points, spans)
+    /// rather than bundles.
+    ///
+    /// **By design** this counter resets to zero on restart.  It records
+    /// losses that occurred *during the current engine lifetime* only.
+    pub fn force_dropped_items(&self) -> u64 {
+        self.force_dropped_items.load(Ordering::Relaxed)
+    }
+
     /// Returns the total number of bundles lost due to expired segments.
     ///
     /// This counter tracks data loss from segments deleted because they
@@ -488,6 +507,15 @@ impl QuiverEngine {
     /// [`RetentionConfig::max_age`]: crate::config::RetentionConfig::max_age
     pub fn expired_bundles(&self) -> u64 {
         self.expired_bundles.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of individual data items lost due to
+    /// expired segments (max_age retention policy).
+    ///
+    /// **By design** this counter resets to zero on restart.  It records
+    /// losses that occurred *during the current engine lifetime* only.
+    pub fn expired_items(&self) -> u64 {
+        self.expired_items.load(Ordering::Relaxed)
     }
 
     /// Returns WAL statistics (rotation count, purge count).
@@ -1262,13 +1290,15 @@ impl QuiverEngine {
             return 0;
         }
 
-        // Delete the segment files, counting bundles before deletion
+        // Delete the segment files, counting bundles and items before deletion
         let mut deleted = 0;
         let mut bundles_dropped: u64 = 0;
+        let mut items_dropped: u64 = 0;
         for seq in &to_drop {
-            // Count bundles before deleting
-            if let Ok(count) = self.segment_store.bundle_count(*seq) {
-                bundles_dropped += count as u64;
+            // Count bundles and items before deleting (single lock acquisition)
+            if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
+                bundles_dropped += bundles as u64;
+                items_dropped += items;
             }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
                 otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
@@ -1289,6 +1319,9 @@ impl QuiverEngine {
         let _ = self
             .force_dropped_bundles
             .fetch_add(bundles_dropped, Ordering::Relaxed);
+        let _ = self
+            .force_dropped_items
+            .fetch_add(items_dropped, Ordering::Relaxed);
 
         // Clean up registry internal state
         if let Some(&max_dropped) = to_drop.iter().max() {
@@ -1329,11 +1362,13 @@ impl QuiverEngine {
 
         let mut deleted = 0;
         let mut bundles_expired: u64 = 0;
+        let mut items_expired: u64 = 0;
 
         for seq in &expired_segments {
-            // Count bundles before deleting
-            if let Ok(count) = self.segment_store.bundle_count(*seq) {
-                bundles_expired += count as u64;
+            // Count bundles and items before deleting (single lock acquisition)
+            if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
+                bundles_expired += bundles as u64;
+                items_expired += items;
             }
 
             if let Err(e) = self.segment_store.delete_segment(*seq) {
@@ -1360,11 +1395,16 @@ impl QuiverEngine {
             self.registry.cleanup_segments_before(max_deleted.next());
         }
 
-        // Track expired bundles in the dedicated counter
+        // Track expired bundles and items in the dedicated counters
         if bundles_expired > 0 {
             let _ = self
                 .expired_bundles
                 .fetch_add(bundles_expired, Ordering::Relaxed);
+        }
+        if items_expired > 0 {
+            let _ = self
+                .expired_items
+                .fetch_add(items_expired, Ordering::Relaxed);
         }
 
         Ok(deleted)

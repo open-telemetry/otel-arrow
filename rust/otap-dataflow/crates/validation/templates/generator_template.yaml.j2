@@ -1,8 +1,8 @@
 
 {% set suv_exporter_type = suv_exporter_type | default("otlp") -%}
-{% set suv_exporter_plugin_urn = "otlp:exporter" -%}
+{% set suv_exporter_plugin_urn = "urn:otel:exporter:otlp" -%}
 {% if suv_exporter_type == "otap" -%}
-  {% set suv_exporter_plugin_urn = "otap:exporter" -%}
+  {% set suv_exporter_plugin_urn = "urn:otel:exporter:otap" -%}
 {% endif -%}
 {% set control_ports = control_ports | default([]) -%}
 {% set max_signal_count = max_signal_count | default(2000) -%}
@@ -16,6 +16,7 @@
 {% set generator_core_start = generator_core_start | default(2) -%}
 {% set generator_core_end = generator_core_end | default(2) -%}
 {% set data_source = data_source | default(static) %}
+
 {{ generator_label }}:
   policies:
     resources:
@@ -26,7 +27,7 @@
             end: {{ generator_core_end }}
   nodes:
 {{ generator_label | indent(4, true)}}:
-      type: traffic_generator:receiver
+      type: "urn:otel:receiver:traffic_generator"
       config:
         data_source: {{ data_source }}
         traffic_config:
@@ -38,7 +39,7 @@
           log_weight: {{ log_weight }}
         registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
     fanout:
-      type: fanout_temp:processor
+      type: "urn:otel:processor:fanout_temp"
       outputs: 
         - "suv_port"
 {% for _ in control_ports %}
@@ -56,7 +57,7 @@
 {% endif %}
 {% for control_port in control_ports %}
     control_exporter{{ loop.index }}:
-      type: otlp:exporter
+      type: "urn:otel:exporter:otlp"
       config:
         grpc_endpoint: http://127.0.0.1:{{ control_port }}
 {% endfor %}

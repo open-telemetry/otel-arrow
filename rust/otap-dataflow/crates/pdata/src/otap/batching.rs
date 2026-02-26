@@ -29,6 +29,5 @@ pub fn make_item_batches(
 
     // Join batches in sequence.
     records = records.concatenate(max_items)?;
-
     Ok(records.into_otap_arrow_records())
 }

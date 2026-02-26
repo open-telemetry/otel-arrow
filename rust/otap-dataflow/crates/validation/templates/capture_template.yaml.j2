@@ -1,7 +1,7 @@
 {% set suv_receiver_type = suv_receiver_type | default("otlp") -%}
-{% set suv_receiver_plugin_urn = "otlp:receiver" -%}
+{% set suv_receiver_plugin_urn = "urn:otel:receiver:otlp" -%}
 {% if suv_receiver_type == "otap" -%}
-  {% set suv_receiver_plugin_urn = "otap:receiver" -%}
+  {% set suv_receiver_plugin_urn = "urn:otel:receiver:otap" -%}
 {% endif -%}
 {% set suv_port = suv_port | default(4318) -%}
 {% set validate = validate | default("- equivalence") -%}
@@ -32,14 +32,14 @@
 {% endif %}
 {% for control_port in control_ports %}
     control_receiver{{ loop.index }}:
-      type: otlp:receiver
+      type: "urn:otel:receiver:otlp"
       config:
         protocols:                                                                                                                                                                        
           grpc:                                                                                                                                                                           
             listening_addr: 127.0.0.1:{{ control_port }}
 {% endfor %}
 {{ capture_label | indent(4, true)}}:
-      type: validation:exporter
+      type: "urn:otel:exporter:validation"
       config:
 {% if control_ports| length > 0 %}
         control_inputs: 

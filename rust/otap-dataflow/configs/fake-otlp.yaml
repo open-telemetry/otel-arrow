@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               data_source: static
               generation_strategy: pre_generated
@@ -24,7 +24,7 @@ groups:
                 trace_weight: 0
                 log_weight: 30
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               grpc_endpoint: "http://127.0.0.1:4317"
 
