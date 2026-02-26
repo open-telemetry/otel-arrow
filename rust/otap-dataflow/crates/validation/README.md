@@ -98,12 +98,13 @@ e.g. `receiver`, `exporter`.
   ```
 
 - `Scenario::new()` - create a new Scenario
-- `pipeline(Pipeline)` - provide the system-under-validation pipeline (required).
-- `add_generator("label", Generator)` - add traffic generation config (required) 
-  - at least one generator must be configured
+- `pipeline(Pipeline)` - provide the system-under-validation pipeline
+  - required
+- `add_generator("label", Generator)` - add traffic generation config
+  - required, at least one generator must be configured
   - add support multiple if your pipeline has multiple receivers
-- `add_capture("label", Capture)` - add capture/validation config (required)
-  - at least one capture must be configured
+- `add_capture("label", Capture)` - add capture/validation config
+  - required, at least one capture must be configured
   - can support multiple if your pipeline has multiple exporters
 - `connect("generator_label", "capture_label")` - connect generator and capture pipelines
   - allow capture to use original signals from the generator for validation
@@ -113,6 +114,7 @@ e.g. `receiver`, `exporter`.
 - `expect_within(Duration)` - set max runtime
   - optional; default: 140s
 - `run()` - renders template, launches pipelines, waits for readiness
+  - required to run the validation stage
   - returns `Result<(), ValidationError>` if invalid or timeout
 
 ## Pipeline
@@ -149,17 +151,18 @@ e.g. `receiver`, `exporter`.
 - `max_batch_size(usize)` - controls batch size
   - default: 100
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to receiver
+  - required
   - specifies which receiver in suv pipeline to send data to
   - also sets the exporter type of the generator
-    - exporter type must match the receiver type 
+    - exporter type must match the receiver type
       - OTLP -> OTLP or OTAP -> OTAP
 - `static_signals()` / `semantic_signals()` - choose data source
   - default: static
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 2-2
 
-> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match the keys under
-`nodes:` in your pipeline YAML.
+> NOTE: The node names you pass to `otlp_grpc() / otap_grpc()` must match
+the keys under `nodes:` in your pipeline YAML.
 
 ## Capture
 
@@ -182,13 +185,15 @@ e.g. `receiver`, `exporter`.
           },
       ]);
   ```
+
 - `Generator::default()` - create a Generator
 - `otlp_grpc("node_name")` / `otap_grpc("node_name")` - connect to exporter
+  - required
   - specifies which exporter in suv pipeline to send data to
   - also sets the receiver type of the capture
-    - receiver type must match the exporter type 
+    - receiver type must match the exporter type
       - OTLP -> OTLP or OTAP -> OTAP
-- `Capture::validate(Vec<ValidationInstructions>)` - define validation instructions
+- `validate(Vec<ValidationInstructions>)` - define validation instructions
   - default: [Equivalence]
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
@@ -227,4 +232,3 @@ generator(s) to capture(s) if needed
 your system-under-validation pipeline, the node names must match
 - **Invalid Validation**: Ensure generator and capture pipelines are connected to
 allow the validation instructions to have control signals to validate against
-
