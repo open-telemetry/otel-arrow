@@ -1,18 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmarks for `sort_by_parent_then_id` - compares the optimized implementation
-//! against the old RowConverter-based baseline.
+//! Benchmarks for `sort_by_parent_then_id`.
 
 use std::sync::Arc;
 
 use arrow::array::{
     ArrayRef, DictionaryArray, PrimitiveArray, RecordBatch, UInt16Array, UInt32Array,
 };
-use arrow::compute::SortColumn;
 use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
-use arrow::row::{RowConverter, SortField};
-use arrow_schema::SortOptions;
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -34,14 +30,7 @@ fn bench_sort(c: &mut Criterion) {
         let id_col = Arc::new(random_u16_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let batch = make_batch(vec![("id", DataType::UInt16, id_col)]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u16_id_only", "random"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u16_id_only", "random"),
+            BenchmarkId::new("u16_id_only", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -54,14 +43,7 @@ fn bench_sort(c: &mut Criterion) {
         let id_col = Arc::new(sorted_u16_array(NUM_ROWS)) as ArrayRef;
         let batch = make_batch(vec![("id", DataType::UInt16, id_col)]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u16_id_only", "sorted"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u16_id_only", "sorted"),
+            BenchmarkId::new("u16_id_only", "sorted"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -78,14 +60,7 @@ fn bench_sort(c: &mut Criterion) {
             ("id", DataType::UInt16, id_col),
         ]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u16_pid_u16_id_native", "random"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u16_pid_u16_id_native", "random"),
+            BenchmarkId::new("u16_pid_u16_id_native", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -103,14 +78,7 @@ fn bench_sort(c: &mut Criterion) {
             ("id", DataType::UInt32, id_col),
         ]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u32_id_dict_u8_u32_pid", "random"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u32_id_dict_u8_u32_pid", "random"),
+            BenchmarkId::new("u32_id_dict_u8_u32_pid", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -128,14 +96,7 @@ fn bench_sort(c: &mut Criterion) {
             ("id", DataType::UInt32, id_col),
         ]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u32_id_dict_u16_u32_pid", "random"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u32_id_dict_u16_u32_pid", "random"),
+            BenchmarkId::new("u32_id_dict_u16_u32_pid", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -153,14 +114,7 @@ fn bench_sort(c: &mut Criterion) {
             ("id", DataType::UInt32, id_col),
         ]);
         let _ = group.bench_with_input(
-            BenchmarkId::new("old/u32_id_null25_dict_u8_u32_pid", "random"),
-            &batch,
-            |b, batch| {
-                b.iter(|| sort_by_parent_then_id_baseline(batch.clone()));
-            },
-        );
-        let _ = group.bench_with_input(
-            BenchmarkId::new("new/u32_id_null25_dict_u8_u32_pid", "random"),
+            BenchmarkId::new("u32_id_null25_dict_u8_u32_pid", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).expect("sort failed"));
@@ -169,69 +123,6 @@ fn bench_sort(c: &mut Criterion) {
     }
 
     group.finish();
-}
-
-/// The original implementation from main: delegates all sorting to Arrow's
-/// RowConverter via `sort_to_indices`.
-fn sort_by_parent_then_id_baseline(rb: RecordBatch) -> RecordBatch {
-    let schema = rb.schema();
-    let cols = rb.columns();
-
-    let options = Some(SortOptions {
-        descending: false,
-        nulls_first: true,
-    });
-
-    let mut sort_columns: Vec<SortColumn> = Vec::new();
-
-    if let Some((parent_id_idx, _)) = schema.column_with_name("parent_id") {
-        sort_columns.push(SortColumn {
-            values: cols[parent_id_idx].clone(),
-            options,
-        });
-    }
-
-    if let Some((id_idx, _)) = schema.column_with_name("id") {
-        sort_columns.push(SortColumn {
-            values: cols[id_idx].clone(),
-            options,
-        });
-    }
-
-    if sort_columns.is_empty() {
-        return rb;
-    }
-
-    // Inline the RowConverter-based sort_to_indices logic (it's pub(crate) in the main crate).
-    let indices = if sort_columns.len() == 1 {
-        arrow::compute::sort_to_indices(&sort_columns[0].values, sort_columns[0].options, None)
-            .expect("sort failed")
-    } else {
-        let sort_fields = sort_columns
-            .iter()
-            .map(|sc| {
-                SortField::new_with_options(
-                    sc.values.data_type().clone(),
-                    sc.options.unwrap_or_default(),
-                )
-            })
-            .collect();
-        let row_converter = RowConverter::new(sort_fields).expect("row converter");
-        let arrays: Vec<_> = sort_columns.iter().map(|sc| sc.values.clone()).collect();
-        let rows = row_converter
-            .convert_columns(&arrays)
-            .expect("convert columns");
-        let mut sort: Vec<_> = rows.iter().enumerate().collect();
-        sort.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
-        UInt32Array::from_iter_values(sort.iter().map(|(i, _)| *i as u32))
-    };
-
-    let (schema, columns, _) = rb.into_parts();
-    let new_columns: Vec<_> = columns
-        .iter()
-        .map(|c| arrow::compute::take(c, &indices, None).expect("take failed"))
-        .collect();
-    RecordBatch::try_new(schema, new_columns).expect("valid record batch")
 }
 
 fn make_batch(fields: Vec<(&str, DataType, ArrayRef)>) -> RecordBatch {
