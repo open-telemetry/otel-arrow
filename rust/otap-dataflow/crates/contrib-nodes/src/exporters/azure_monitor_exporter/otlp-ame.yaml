@@ -34,7 +34,7 @@ groups:
                   listening_addr: "0.0.0.0:4317"
 
           azure-monitor-exporter:
-            type: "urn:microsoft_azure:exporter:monitor"
+            type: "urn:microsoft:exporter:azure_monitor"
             config:
               # API configuration - Update with your actual values
               api:
