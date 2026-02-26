@@ -257,6 +257,9 @@ mod tests {
         assert_eq!(g.metric_weight, 0);
         assert_eq!(g.trace_weight, 0);
         assert_eq!(g.log_weight, 100);
+        assert_eq!(g.data_source, DataSource::Static);
+        assert_eq!(g.core_start, 2);
+        assert_eq!(g.core_end, 2);
     }
 
     #[test]
@@ -265,6 +268,9 @@ mod tests {
         assert_eq!(c.suv_receiver_type, MessageType::Otlp);
         assert_eq!(c.suv_port, DEFAULT_SUV_PORT);
         assert_eq!(c.control_ports, Vec::<u16>::new());
+        assert_eq!(c.validate, vec![]);
+        assert_eq!(c.core_start, 1);
+        assert_eq!(c.core_end, 1);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 const VALIDATION_TEMPLATE_PATH: &str = "templates/validation_template.yaml.j2";
 const DEFAULT_ADMIN_ADDR: &str = "127.0.0.1:8085";
-const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
+const DEFAULT_READY_MAX_ATTEMPTS: usize = 15;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
 const DEFAULT_PROPAGATION_DELAY: Duration = Duration::from_secs(10);
