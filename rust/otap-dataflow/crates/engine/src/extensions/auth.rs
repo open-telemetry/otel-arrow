@@ -297,7 +297,7 @@ mod tests {
 
 /// End-to-end scenario tests demonstrating realistic auth extension
 /// patterns: a receiver-side header allow-list and an exporter-side
-/// token refresher backed by `tokio::sync::watch`.
+/// token refresher backed by a shared `Arc<Mutex<String>>`.
 #[cfg(test)]
 mod scenario_tests {
     use super::*;
@@ -395,20 +395,17 @@ mod scenario_tests {
         assert!(handle.authenticate(&headers).is_err());
     }
 
-    // ─── Scenario 2: Watch-based bearer token (exporter-side) ─────
+    // ─── Scenario 2: Shared-state bearer token (exporter-side) ──────
 
-    /// A client authenticator backed by a `tokio::sync::watch::Receiver`.
-    /// The extension task owns the `Sender` and refreshes the token
-    /// periodically; each exporter clone reads the latest value.
-    struct WatchBearerAuth {
-        rx: tokio::sync::watch::Receiver<String>,
+    struct SharedTokenAuth {
+        token: Arc<Mutex<String>>,
     }
 
-    impl ClientAuthenticator for WatchBearerAuth {
+    impl ClientAuthenticator for SharedTokenAuth {
         fn get_request_metadata(
             &self,
         ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, AuthError> {
-            let token = self.rx.borrow().clone();
+            let token = self.token.lock().expect("token lock poisoned").clone();
             if token.is_empty() {
                 return Err(AuthError {
                     message: "token not yet available".into(),
@@ -426,35 +423,39 @@ mod scenario_tests {
     }
 
     #[test]
-    fn watch_bearer_initial_empty_token_fails() {
-        let (_tx, rx) = tokio::sync::watch::channel(String::new());
-        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    fn shared_token_initial_empty_token_fails() {
+        let token = Arc::new(Mutex::new(String::new()));
+        let auth = ClientAuthenticatorHandle::new(SharedTokenAuth { token });
 
         let err = auth.get_request_metadata().unwrap_err();
         assert!(err.message.contains("not yet available"));
     }
 
     #[test]
-    fn watch_bearer_returns_current_token() {
-        let (tx, rx) = tokio::sync::watch::channel("initial-token".to_string());
-        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    fn shared_token_returns_current_token() {
+        let token = Arc::new(Mutex::new("initial-token".to_string()));
+        let auth = ClientAuthenticatorHandle::new(SharedTokenAuth {
+            token: token.clone(),
+        });
 
         let metadata = auth.get_request_metadata().unwrap();
         assert_eq!(metadata[0].1, "Bearer initial-token");
 
-        // Simulate token refresh
-        tx.send("refreshed-token".to_string()).unwrap();
+        // Simulate token refresh by the extension's start() task
+        *token.lock().unwrap() = "refreshed-token".to_string();
 
         let metadata = auth.get_request_metadata().unwrap();
         assert_eq!(metadata[0].1, "Bearer refreshed-token");
     }
 
     #[test]
-    fn watch_bearer_cloned_handle_sees_updates() {
-        let (tx, rx) = tokio::sync::watch::channel("v1".to_string());
-        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    fn shared_token_cloned_handle_sees_updates() {
+        let token = Arc::new(Mutex::new("v1".to_string()));
+        let auth = ClientAuthenticatorHandle::new(SharedTokenAuth {
+            token: token.clone(),
+        });
 
-        // Clone the handle (simulating multiple exporter instances)
+        // Clone the handle (simulating the registry cloning for multiple exporters)
         let auth2 = auth.clone();
 
         let m1 = auth.get_request_metadata().unwrap();
@@ -463,7 +464,7 @@ mod scenario_tests {
         assert_eq!(m2[0].1, "Bearer v1");
 
         // Refresh token — both clones see the update
-        tx.send("v2".to_string()).unwrap();
+        *token.lock().unwrap() = "v2".to_string();
 
         let m1 = auth.get_request_metadata().unwrap();
         let m2 = auth2.get_request_metadata().unwrap();
@@ -472,9 +473,11 @@ mod scenario_tests {
     }
 
     #[test]
-    fn watch_bearer_via_registry() {
-        let (tx, rx) = tokio::sync::watch::channel("tok-abc".to_string());
-        let auth = WatchBearerAuth { rx };
+    fn shared_token_via_registry() {
+        let token = Arc::new(Mutex::new("tok-abc".to_string()));
+        let auth = SharedTokenAuth {
+            token: token.clone(),
+        };
 
         // Extension factory registers the handle
         let mut handles = ExtensionHandles::new();
@@ -493,7 +496,7 @@ mod scenario_tests {
         assert_eq!(metadata[0].1, "Bearer tok-abc");
 
         // Token refresh propagates through the registry-retrieved handle
-        tx.send("tok-xyz".to_string()).unwrap();
+        *token.lock().unwrap() = "tok-xyz".to_string();
         let metadata = handle.get_request_metadata().unwrap();
         assert_eq!(metadata[0].1, "Bearer tok-xyz");
     }
