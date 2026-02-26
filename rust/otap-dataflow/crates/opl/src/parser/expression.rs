@@ -5,12 +5,11 @@ use std::sync::LazyLock;
 
 use data_engine_expressions::{
     AndLogicalExpression, BinaryMathematicalScalarExpression, BooleanScalarExpression,
-    ContainsLogicalExpression, DoubleScalarExpression, DoubleValue, EqualToLogicalExpression,
-    Expression, GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression,
-    IntegerScalarExpression, IntegerValue, LogicalExpression, MatchesLogicalExpression,
-    MathScalarExpression, NotLogicalExpression, NullScalarExpression, OrLogicalExpression,
-    QueryLocation, ScalarExpression, SourceScalarExpression, StaticScalarExpression,
-    StringScalarExpression, ValueAccessor,
+    ContainsLogicalExpression, DoubleScalarExpression, EqualToLogicalExpression, Expression,
+    GreaterThanLogicalExpression, GreaterThanOrEqualToLogicalExpression, IntegerScalarExpression,
+    LogicalExpression, MatchesLogicalExpression, MathScalarExpression, NotLogicalExpression,
+    NullScalarExpression, OrLogicalExpression, QueryLocation, ScalarExpression,
+    SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
 };
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_double_literal, parse_standard_integer_literal,

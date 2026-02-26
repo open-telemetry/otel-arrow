@@ -11,20 +11,15 @@ use std::borrow::Cow;
 use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 
-use arrow::array::{Array, ArrayRef, NullArray, RecordBatch, StringArray, StructArray};
+use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{Field, Fields, Schema};
-use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, Expression, MathScalarExpression, ScalarExpression,
-    SetTransformExpression, SourceScalarExpression,
-};
+use arrow::datatypes::{Field, Schema};
+use data_engine_expressions::{Expression, MathScalarExpression, ScalarExpression};
 use datafusion::common::DFSchema;
-use datafusion::execution::context::SessionState;
 use datafusion::functions::core::expr_ext::FieldAccessor;
 use datafusion::logical_expr::{BinaryExpr, ColumnarValue, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
-use datafusion::physical_plan::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::{
@@ -36,9 +31,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
-use crate::pipeline::expr::types::{
-    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
-};
+use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic, root_field_type};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
@@ -91,7 +84,7 @@ impl LogicalDataDomain {
             return true;
         }
 
-        return false;
+        false
     }
 
     /// Returns true if this domain represents a static scalar value.
@@ -429,7 +422,7 @@ impl PhysicalDomainExpr {
         let projected_rb = if result_data_domain != DataDomainId::StaticScalar {
             match self
                 .projection
-                .project_with_options(&source_rb, &self.projection_opts)
+                .project_with_options(&source_rb, &self.projection_opts)?
             {
                 Some(rb) => Cow::Owned(rb),
                 None => return Ok(None),
@@ -556,8 +549,9 @@ impl PhysicalDomainExpr {
                 cause: "No non-null type value found in filtered attributes".to_string(),
             })?;
 
-        // TODO no unwrap
-        let type_value = AttributeValueType::try_from(type_value).unwrap();
+        let type_value = AttributeValueType::try_from(type_value).map_err(|_e| Error::ExecutionError {
+            cause:  format!("invalid record batch. Found invalid value in attributes type column: {type_value}")
+        })?;
 
         // Based on type value, select the appropriate value column
 
@@ -653,7 +647,7 @@ impl PhysicalDomainExpr {
         columns.push(value_array);
 
         if downcast_dicts {
-            Projection::downcast_dicts(&mut fields, &mut columns);
+            Projection::try_downcast_dicts(&mut fields, &mut columns)?;
         }
 
         let schema = Arc::new(Schema::new(fields));
@@ -672,8 +666,8 @@ mod test {
     use arrow::array::{Int32Array, Int64Array, StructArray};
     use arrow::compute::take;
     use data_engine_expressions::{
-        IntegerScalarExpression, QueryLocation, StaticScalarExpression, StringScalarExpression,
-        ValueAccessor,
+        BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
+        SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
     // TODO ugly imports
     use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
@@ -701,6 +695,19 @@ mod test {
             .execute(&input_data, &session_ctx, false)
             .unwrap();
         result.map(|result| result.values)
+    }
+
+    fn run_scalar_expr_failure_test(
+        input_expr: ScalarExpression,
+        input_data: &OtapArrowRecords,
+    ) -> Error {
+        let mut planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        physical_expr
+            .execute(&input_data, &session_ctx, false)
+            .unwrap_err()
     }
 
     fn run_scalar_expr_success_test(
@@ -1894,5 +1901,96 @@ mod test {
             "Unexpected error message: {:?}",
             err_msg
         )
+    }
+
+    #[test]
+    fn test_arithmetic_runtime_any_value_type_mismatches() {
+        // check that adding types that cannot be added fails ar runtime as a fallback for when
+        // we can't detect at compile time that the types are invalid. In this case, we're doing
+        // something like attributes["x"] + attributes["y"], where we don't know what type are
+        // these attribute values.
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_double(4.0)),
+                    KeyValue::new("k3", AnyValue::new_string("a")),
+                    KeyValue::new("k4", AnyValue::new_bool(false)),
+                    KeyValue::new("k5", AnyValue::new_bytes(b"a")),
+                ])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let test_cases = vec![
+            ("k1", "k2"),
+            ("k1", "k3"),
+            ("k1", "k4"),
+            ("k1", "k5"),
+            ("k2", "k3"),
+            ("k2", "k4"),
+            ("k2", "k5"),
+            ("k3", "k4"),
+            ("k3", "k5"),
+            ("k4", "k5"),
+        ];
+
+        fn check_arithmetic_fails(
+            left: &'static str,
+            right: &'static str,
+            otap_batch: &OtapArrowRecords,
+        ) {
+            let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ATTRIBUTES_FIELD_NAME,
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), left),
+                    )),
+                ]),
+            ));
+
+            let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+                QueryLocation::new_fake(),
+                ValueAccessor::new_with_selectors(vec![
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            ATTRIBUTES_FIELD_NAME,
+                        ),
+                    )),
+                    ScalarExpression::Static(StaticScalarExpression::String(
+                        StringScalarExpression::new(QueryLocation::new_fake(), right),
+                    )),
+                ]),
+            ));
+
+            let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    left_expr,
+                    right_expr,
+                ),
+            ));
+
+            let err = run_scalar_expr_failure_test(input_expr, &otap_batch);
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains("Invalid arithmetic operation"),
+                "unexpected error. left key = {left}, right key = {right}, error_msg = {err_msg:?}"
+            );
+        }
+
+        for (left, right) in test_cases {
+            check_arithmetic_fails(left, right, &otap_batch);
+            check_arithmetic_fails(right, left, &otap_batch);
+        }
     }
 }

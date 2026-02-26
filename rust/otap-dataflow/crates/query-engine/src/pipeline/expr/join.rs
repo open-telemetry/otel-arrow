@@ -13,10 +13,10 @@ use arrow::datatypes::{DataType, Field, Fields, Schema};
 use datafusion::logical_expr::ColumnarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
-use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
+use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::pipeline::expr::{
     DataDomainId, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME,
 };

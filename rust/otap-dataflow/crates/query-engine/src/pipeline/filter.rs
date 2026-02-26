@@ -1151,7 +1151,7 @@ impl AdaptivePhysicalExprExec {
         record_batch: &RecordBatch,
         session_ctx: &SessionContext,
     ) -> Result<BooleanArray> {
-        let record_batch = match self.projection.project(record_batch) {
+        let record_batch = match self.projection.project(record_batch)? {
             Some(rb) => rb,
             None => {
                 // we weren't able to project the record batch into the schema expected by the

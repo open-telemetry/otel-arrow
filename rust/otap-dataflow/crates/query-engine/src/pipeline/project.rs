@@ -17,18 +17,11 @@ use datafusion::scalar::ScalarValue;
 
 use crate::error::Result;
 
+#[derive(Default)]
 pub struct ProjectionOptions {
     /// Whether or not to downcast dictionary arrays to the native type. Some types of expressions,
     /// arithmetic operations for example, do not work on dictionary encoded columns.
     pub downcast_dicts: bool,
-}
-
-impl Default for ProjectionOptions {
-    fn default() -> Self {
-        Self {
-            downcast_dicts: false,
-        }
-    }
 }
 
 /// Projection helper that can project a RecordBatch to only the columns needed by an expression
@@ -50,7 +43,7 @@ impl Projection {
 
     /// Project the record batch to the expected schema. If there are some expected columns in
     /// the passed [`RecordBatch`] which are missing, this will return `None`.
-    pub fn project(&self, record_batch: &RecordBatch) -> Option<RecordBatch> {
+    pub fn project(&self, record_batch: &RecordBatch) -> Result<Option<RecordBatch>> {
         self.project_with_options(record_batch, &ProjectionOptions::default())
     }
 
@@ -58,7 +51,29 @@ impl Projection {
         &self,
         record_batch: &RecordBatch,
         options: &ProjectionOptions,
-    ) -> Option<RecordBatch> {
+    ) -> Result<Option<RecordBatch>> {
+        let (mut fields, mut columns) = match self.project_columns(record_batch) {
+            Some(projection) => projection,
+            None => return Ok(None),
+        };
+
+        if options.downcast_dicts {
+            Self::try_downcast_dicts(&mut fields, &mut columns)?;
+        }
+
+        // safety: `try_new` should not return an error here unless the columns do not match the
+        // fields in the schema, or if the columns are different lengths. Based on how we've
+        // constructed the inputs, this should not happen because we've taken them from the input
+        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+            .expect("can project record batch");
+
+        Ok(Some(rb))
+    }
+
+    fn project_columns(
+        &self,
+        record_batch: &RecordBatch,
+    ) -> Option<(Vec<Arc<Field>>, Vec<ArrayRef>)> {
         let original_schema = record_batch.schema_ref();
 
         // TODO - if the heap allocations here have significant perf overhead, we could try reusing
@@ -110,31 +125,21 @@ impl Projection {
             }
         }
 
-        // TODO - might reduce a few heap allocations to do this inline while projecting
-        if options.downcast_dicts {
-            Self::downcast_dicts(&mut fields, &mut columns);
-        }
-
-        // safety: `try_new` should not return an error here unless the columns do not match the
-        // fields in the schema, or if the columns are different lengths. Based on how we've
-        // constructed the inputs, this should not happen because we've taken them from the input
-        let rb = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-            .expect("can project record batch");
-
-        Some(rb)
+        Some((fields, columns))
     }
 
-    pub fn downcast_dicts(fields: &mut Vec<Arc<Field>>, columns: &mut Vec<ArrayRef>) {
+    pub fn try_downcast_dicts(fields: &mut [Arc<Field>], columns: &mut [ArrayRef]) -> Result<()> {
         for i in 0..fields.len() {
             let field = &fields[i];
             if let DataType::Dictionary(_, v) = field.data_type() {
                 let new_field = Arc::new(field.as_ref().clone().with_data_type(v.as_ref().clone()));
-                // TODO no unwrap
-                let new_column = cast(&columns[i], v.as_ref()).unwrap();
+                let new_column = cast(&columns[i], v.as_ref())?;
                 fields[i] = new_field;
                 columns[i] = new_column;
             }
         }
+
+        Ok(())
     }
 }
 
