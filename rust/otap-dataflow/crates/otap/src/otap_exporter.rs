@@ -477,7 +477,7 @@ mod tests {
     use otap_df_engine::control::pipeline_ctrl_msg_channel;
     use otap_df_engine::error::Error;
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::extensions::ExtensionRegistryBuilder;
+    use otap_df_engine::extensions::ExtensionRegistry;
     use otap_df_engine::local::message::LocalReceiver;
     use otap_df_engine::local::message::LocalSender;
     use otap_df_engine::message::Receiver;
@@ -848,7 +848,7 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             _ = exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await;

@@ -11,7 +11,7 @@ use crate::control::{
     Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, pipeline_ctrl_msg_channel,
 };
 use crate::error::Error;
-use crate::extensions::ExtensionRegistryBuilder;
+use crate::extensions::{ExtensionRegistry, ExtensionRegistryBuilder};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataSender;
@@ -159,6 +159,7 @@ pub struct TestPhase<PData> {
     control_sender: Sender<NodeControlMsg<PData>>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
+    extension_registry: Option<ExtensionRegistry>,
 }
 
 /// Data and operations for the validation phase of a receiver.
@@ -222,6 +223,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             receiver,
             control_sender,
             counters: self.counter,
+            extension_registry: None,
         }
     }
 }
@@ -233,6 +235,14 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 }
 
 impl<PData: Debug + 'static> TestPhase<PData> {
+    /// Sets a custom extension registry to be passed to the receiver's `start()` method.
+    ///
+    /// When not set, the receiver will receive an empty registry.
+    pub fn with_extension_registry(mut self, registry: ExtensionRegistry) -> Self {
+        self.extension_registry = Some(registry);
+        self
+    }
+
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
@@ -279,8 +289,11 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
         let final_metrics_reporter = metrics_reporter.clone();
 
+        let extension_registry = self
+            .extension_registry
+            .unwrap_or_else(|| ExtensionRegistryBuilder::new().build());
+
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
-            let extension_registry = ExtensionRegistryBuilder::new().build();
             let terminal_state = self
                 .receiver
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)

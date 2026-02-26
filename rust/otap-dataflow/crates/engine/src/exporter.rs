@@ -831,3 +831,137 @@ mod tests {
         assert!(matches!(chan.recv().await, Err(RecvError::Closed)));
     }
 }
+
+/// Tests verifying that an exporter can retrieve and use a [`ClientAuthenticatorHandle`]
+/// from the [`ExtensionRegistry`] to attach credentials to outgoing requests.
+#[cfg(test)]
+mod auth_extension_tests {
+    use super::ExporterWrapper;
+    use crate::error::{Error, ExporterErrorKind};
+    use crate::extensions::auth::{AuthError, ClientAuthenticator, ClientAuthenticatorHandle};
+    use crate::extensions::{ExtensionHandles, ExtensionRegistry, ExtensionRegistryBuilder};
+    use crate::local::exporter as local;
+    use crate::message;
+    use crate::message::Message;
+    use crate::terminal_state::TerminalState;
+    use crate::testing::exporter::TestRuntime;
+    use crate::testing::{TestMsg, test_node};
+    use async_trait::async_trait;
+    use otap_df_config::node::NodeUserConfig;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A client authenticator that attaches a static bearer token.
+    struct StaticBearerAuth {
+        token: String,
+    }
+
+    impl ClientAuthenticator for StaticBearerAuth {
+        fn get_request_metadata(
+            &self,
+        ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, AuthError> {
+            Ok(vec![(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_str(&format!("Bearer {}", self.token)).map_err(|e| {
+                    AuthError {
+                        message: e.to_string(),
+                    }
+                })?,
+            )])
+        }
+    }
+
+    /// A minimal exporter that retrieves a client auth handle from the
+    /// extension registry, uses it to produce outgoing headers, and
+    /// logs the result via the PData message channel. No network I/O —
+    /// auth is exercised directly in `start()`.
+    struct AuthExporter;
+
+    #[async_trait(?Send)]
+    impl local::Exporter<TestMsg> for AuthExporter {
+        async fn start(
+            self: Box<Self>,
+            mut msg_chan: message::MessageChannel<TestMsg>,
+            effect_handler: local::EffectHandler<TestMsg>,
+            extension_registry: ExtensionRegistry,
+        ) -> Result<TerminalState, Error> {
+            // Retrieve the client auth handle — this is what a real exporter does.
+            let auth = extension_registry
+                .get::<ClientAuthenticatorHandle>("bearer_auth")
+                .expect("bearer_auth extension must be registered");
+
+            // Simulate attaching credentials to an outgoing request.
+            let headers = auth
+                .get_request_metadata()
+                .map_err(|e| Error::ExporterError {
+                    exporter: effect_handler.exporter_id(),
+                    kind: ExporterErrorKind::Other,
+                    error: e.message,
+                    source_detail: String::new(),
+                })?;
+
+            assert_eq!(headers.len(), 1);
+            let (name, value) = &headers[0];
+            assert_eq!(name, http::header::AUTHORIZATION);
+            assert_eq!(value, "Bearer test-token-42");
+
+            // Report success through the counter (increment_message).
+            // Wait for shutdown.
+            loop {
+                match msg_chan.recv().await? {
+                    Message::Control(crate::control::NodeControlMsg::Shutdown { .. }) => break,
+                    Message::PData(_) => {}
+                    _ => {}
+                }
+            }
+            Ok(TerminalState::default())
+        }
+    }
+
+    fn build_auth_registry() -> ExtensionRegistry {
+        let auth = StaticBearerAuth {
+            token: "test-token-42".into(),
+        };
+        let mut handles = ExtensionHandles::new();
+        handles.register(ClientAuthenticatorHandle::new(auth));
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.merge("bearer_auth", handles).unwrap();
+        builder.build()
+    }
+
+    /// Exporter retrieves a client auth handle from the extension registry and
+    /// uses it to produce credentials for outgoing requests.
+    #[test]
+    fn test_exporter_with_auth_extension() {
+        let test_runtime = TestRuntime::new();
+        let user_config = Arc::new(NodeUserConfig::new_exporter_config("auth_exporter"));
+        let exporter = ExporterWrapper::local(
+            AuthExporter,
+            test_node("auth_exp".to_string()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        let registry = build_auth_registry();
+
+        test_runtime
+            .set_exporter(exporter)
+            .with_extension_registry(registry)
+            .run_test(|ctx| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "Test")
+                        .await
+                        .expect("shutdown failed");
+                })
+            })
+            .run_validation(|_ctx, result| -> Pin<Box<dyn Future<Output = ()>>> {
+                Box::pin(async move {
+                    // The exporter should have completed successfully — any auth
+                    // failure would have returned an error from `start()`.
+                    result.expect("exporter start() should succeed with valid auth");
+                })
+            });
+    }
+}

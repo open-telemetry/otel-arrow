@@ -144,8 +144,10 @@ pub trait ClientAuthenticator: Send {
 /// A cloneable handle that exporters use to attach credentials to outgoing requests.
 ///
 /// This wraps any [`ClientAuthenticator`] behind an `Arc<Mutex<…>>` so that
-/// each exporter gets its own clone. See [`ServerAuthenticatorHandle`] for
-/// the rationale behind the `Mutex` wrapper.
+/// each exporter gets its own clone. The `Mutex` makes the handle `Sync`
+/// (required by tonic services) without requiring `Sync` on the trait itself.
+/// The lock is never contended because the engine uses a thread-per-core
+/// architecture in both local and shared modes.
 #[derive(Clone)]
 pub struct ClientAuthenticatorHandle {
     inner: Arc<Mutex<Box<dyn ClientAuthenticator>>>,
@@ -291,207 +293,208 @@ mod tests {
         let metadata = client.get_request_metadata().unwrap();
         assert_eq!(metadata[0].1, "Bearer shared");
     }
+}
 
-    /// End-to-end scenario tests demonstrating realistic auth extension
-    /// patterns: a receiver-side header allow-list and an exporter-side
-    /// token refresher backed by `tokio::sync::watch`.
-    mod scenario_tests {
-        use super::*;
-        use crate::extensions::{ExtensionHandles, ExtensionRegistryBuilder};
+/// End-to-end scenario tests demonstrating realistic auth extension
+/// patterns: a receiver-side header allow-list and an exporter-side
+/// token refresher backed by `tokio::sync::watch`.
+#[cfg(test)]
+mod scenario_tests {
+    use super::*;
+    use crate::extensions::{ExtensionHandles, ExtensionRegistryBuilder};
 
-        // ─── Scenario 1: Header allow-list (receiver-side) ────────────
+    // ─── Scenario 1: Header allow-list (receiver-side) ────────────
 
-        /// A server authenticator that checks a specific header is present
-        /// and its value belongs to a known allow-list.
-        struct HeaderAllowListAuth {
-            header_name: http::HeaderName,
-            allowed_values: Vec<String>,
-        }
+    /// A server authenticator that checks a specific header is present
+    /// and its value belongs to a known allow-list.
+    struct HeaderAllowListAuth {
+        header_name: http::HeaderName,
+        allowed_values: Vec<String>,
+    }
 
-        impl ServerAuthenticator for HeaderAllowListAuth {
-            fn authenticate(&self, headers: &http::HeaderMap) -> Result<(), AuthError> {
-                let value = headers
-                    .get(&self.header_name)
-                    .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| AuthError {
-                        message: format!("missing required header: {}", self.header_name),
-                    })?;
+    impl ServerAuthenticator for HeaderAllowListAuth {
+        fn authenticate(&self, headers: &http::HeaderMap) -> Result<(), AuthError> {
+            let value = headers
+                .get(&self.header_name)
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| AuthError {
+                    message: format!("missing required header: {}", self.header_name),
+                })?;
 
-                if !self.allowed_values.iter().any(|allowed| allowed == value) {
-                    return Err(AuthError {
-                        message: format!("header value '{}' is not in the allow-list", value),
-                    });
-                }
-                Ok(())
+            if !self.allowed_values.iter().any(|allowed| allowed == value) {
+                return Err(AuthError {
+                    message: format!("header value '{}' is not in the allow-list", value),
+                });
             }
+            Ok(())
         }
+    }
 
-        #[test]
-        fn header_allowlist_valid_value() {
-            let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
-                header_name: http::HeaderName::from_static("x-tenant-id"),
-                allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
-            });
+    #[test]
+    fn header_allowlist_valid_value() {
+        let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
+            header_name: http::HeaderName::from_static("x-tenant-id"),
+            allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
+        });
 
-            let mut headers = http::HeaderMap::new();
-            let _ = headers.insert("x-tenant-id", "tenant-a".parse().unwrap());
-            assert!(auth.authenticate(&headers).is_ok());
-        }
+        let mut headers = http::HeaderMap::new();
+        let _ = headers.insert("x-tenant-id", "tenant-a".parse().unwrap());
+        assert!(auth.authenticate(&headers).is_ok());
+    }
 
-        #[test]
-        fn header_allowlist_invalid_value() {
-            let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
-                header_name: http::HeaderName::from_static("x-tenant-id"),
-                allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
-            });
+    #[test]
+    fn header_allowlist_invalid_value() {
+        let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
+            header_name: http::HeaderName::from_static("x-tenant-id"),
+            allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
+        });
 
-            let mut headers = http::HeaderMap::new();
-            let _ = headers.insert("x-tenant-id", "tenant-unknown".parse().unwrap());
-            let err = auth.authenticate(&headers).unwrap_err();
-            assert!(err.message.contains("not in the allow-list"));
-        }
+        let mut headers = http::HeaderMap::new();
+        let _ = headers.insert("x-tenant-id", "tenant-unknown".parse().unwrap());
+        let err = auth.authenticate(&headers).unwrap_err();
+        assert!(err.message.contains("not in the allow-list"));
+    }
 
-        #[test]
-        fn header_allowlist_missing_header() {
-            let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
-                header_name: http::HeaderName::from_static("x-tenant-id"),
-                allowed_values: vec!["tenant-a".into()],
-            });
+    #[test]
+    fn header_allowlist_missing_header() {
+        let auth = ServerAuthenticatorHandle::new(HeaderAllowListAuth {
+            header_name: http::HeaderName::from_static("x-tenant-id"),
+            allowed_values: vec!["tenant-a".into()],
+        });
 
-            let headers = http::HeaderMap::new();
-            let err = auth.authenticate(&headers).unwrap_err();
-            assert!(err.message.contains("missing required header"));
-        }
+        let headers = http::HeaderMap::new();
+        let err = auth.authenticate(&headers).unwrap_err();
+        assert!(err.message.contains("missing required header"));
+    }
 
-        #[test]
-        fn header_allowlist_via_registry() {
-            let auth = HeaderAllowListAuth {
-                header_name: http::HeaderName::from_static("x-tenant-id"),
-                allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
-            };
+    #[test]
+    fn header_allowlist_via_registry() {
+        let auth = HeaderAllowListAuth {
+            header_name: http::HeaderName::from_static("x-tenant-id"),
+            allowed_values: vec!["tenant-a".into(), "tenant-b".into()],
+        };
 
-            // Extension factory registers the handle
-            let mut handles = ExtensionHandles::new();
-            handles.register(ServerAuthenticatorHandle::new(auth));
+        // Extension factory registers the handle
+        let mut handles = ExtensionHandles::new();
+        handles.register(ServerAuthenticatorHandle::new(auth));
 
-            let mut builder = ExtensionRegistryBuilder::new();
-            builder.merge("header_allowlist", handles).unwrap();
-            let registry = builder.build();
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.merge("header_allowlist", handles).unwrap();
+        let registry = builder.build();
 
-            // Receiver retrieves it by name + type at startup
-            let handle = registry
-                .get::<ServerAuthenticatorHandle>("header_allowlist")
-                .unwrap();
+        // Receiver retrieves it by name + type at startup
+        let handle = registry
+            .get::<ServerAuthenticatorHandle>("header_allowlist")
+            .unwrap();
 
-            let mut headers = http::HeaderMap::new();
-            let _ = headers.insert("x-tenant-id", "tenant-b".parse().unwrap());
-            assert!(handle.authenticate(&headers).is_ok());
+        let mut headers = http::HeaderMap::new();
+        let _ = headers.insert("x-tenant-id", "tenant-b".parse().unwrap());
+        assert!(handle.authenticate(&headers).is_ok());
 
-            let _ = headers.insert("x-tenant-id", "tenant-c".parse().unwrap());
-            assert!(handle.authenticate(&headers).is_err());
-        }
+        let _ = headers.insert("x-tenant-id", "tenant-c".parse().unwrap());
+        assert!(handle.authenticate(&headers).is_err());
+    }
 
-        // ─── Scenario 2: Watch-based bearer token (exporter-side) ─────
+    // ─── Scenario 2: Watch-based bearer token (exporter-side) ─────
 
-        /// A client authenticator backed by a `tokio::sync::watch::Receiver`.
-        /// The extension task owns the `Sender` and refreshes the token
-        /// periodically; each exporter clone reads the latest value.
-        struct WatchBearerAuth {
-            rx: tokio::sync::watch::Receiver<String>,
-        }
+    /// A client authenticator backed by a `tokio::sync::watch::Receiver`.
+    /// The extension task owns the `Sender` and refreshes the token
+    /// periodically; each exporter clone reads the latest value.
+    struct WatchBearerAuth {
+        rx: tokio::sync::watch::Receiver<String>,
+    }
 
-        impl ClientAuthenticator for WatchBearerAuth {
-            fn get_request_metadata(
-                &self,
-            ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, AuthError> {
-                let token = self.rx.borrow().clone();
-                if token.is_empty() {
-                    return Err(AuthError {
-                        message: "token not yet available".into(),
-                    });
-                }
-                Ok(vec![(
-                    http::header::AUTHORIZATION,
-                    http::HeaderValue::from_str(&format!("Bearer {}", token)).map_err(|e| {
-                        AuthError {
-                            message: e.to_string(),
-                        }
-                    })?,
-                )])
+    impl ClientAuthenticator for WatchBearerAuth {
+        fn get_request_metadata(
+            &self,
+        ) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, AuthError> {
+            let token = self.rx.borrow().clone();
+            if token.is_empty() {
+                return Err(AuthError {
+                    message: "token not yet available".into(),
+                });
             }
+            Ok(vec![(
+                http::header::AUTHORIZATION,
+                http::HeaderValue::from_str(&format!("Bearer {}", token)).map_err(|e| {
+                    AuthError {
+                        message: e.to_string(),
+                    }
+                })?,
+            )])
         }
+    }
 
-        #[test]
-        fn watch_bearer_initial_empty_token_fails() {
-            let (_tx, rx) = tokio::sync::watch::channel(String::new());
-            let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    #[test]
+    fn watch_bearer_initial_empty_token_fails() {
+        let (_tx, rx) = tokio::sync::watch::channel(String::new());
+        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
 
-            let err = auth.get_request_metadata().unwrap_err();
-            assert!(err.message.contains("not yet available"));
-        }
+        let err = auth.get_request_metadata().unwrap_err();
+        assert!(err.message.contains("not yet available"));
+    }
 
-        #[test]
-        fn watch_bearer_returns_current_token() {
-            let (tx, rx) = tokio::sync::watch::channel("initial-token".to_string());
-            let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    #[test]
+    fn watch_bearer_returns_current_token() {
+        let (tx, rx) = tokio::sync::watch::channel("initial-token".to_string());
+        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
 
-            let metadata = auth.get_request_metadata().unwrap();
-            assert_eq!(metadata[0].1, "Bearer initial-token");
+        let metadata = auth.get_request_metadata().unwrap();
+        assert_eq!(metadata[0].1, "Bearer initial-token");
 
-            // Simulate token refresh
-            tx.send("refreshed-token".to_string()).unwrap();
+        // Simulate token refresh
+        tx.send("refreshed-token".to_string()).unwrap();
 
-            let metadata = auth.get_request_metadata().unwrap();
-            assert_eq!(metadata[0].1, "Bearer refreshed-token");
-        }
+        let metadata = auth.get_request_metadata().unwrap();
+        assert_eq!(metadata[0].1, "Bearer refreshed-token");
+    }
 
-        #[test]
-        fn watch_bearer_cloned_handle_sees_updates() {
-            let (tx, rx) = tokio::sync::watch::channel("v1".to_string());
-            let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
+    #[test]
+    fn watch_bearer_cloned_handle_sees_updates() {
+        let (tx, rx) = tokio::sync::watch::channel("v1".to_string());
+        let auth = ClientAuthenticatorHandle::new(WatchBearerAuth { rx });
 
-            // Clone the handle (simulating multiple exporter instances)
-            let auth2 = auth.clone();
+        // Clone the handle (simulating multiple exporter instances)
+        let auth2 = auth.clone();
 
-            let m1 = auth.get_request_metadata().unwrap();
-            let m2 = auth2.get_request_metadata().unwrap();
-            assert_eq!(m1[0].1, "Bearer v1");
-            assert_eq!(m2[0].1, "Bearer v1");
+        let m1 = auth.get_request_metadata().unwrap();
+        let m2 = auth2.get_request_metadata().unwrap();
+        assert_eq!(m1[0].1, "Bearer v1");
+        assert_eq!(m2[0].1, "Bearer v1");
 
-            // Refresh token — both clones see the update
-            tx.send("v2".to_string()).unwrap();
+        // Refresh token — both clones see the update
+        tx.send("v2".to_string()).unwrap();
 
-            let m1 = auth.get_request_metadata().unwrap();
-            let m2 = auth2.get_request_metadata().unwrap();
-            assert_eq!(m1[0].1, "Bearer v2");
-            assert_eq!(m2[0].1, "Bearer v2");
-        }
+        let m1 = auth.get_request_metadata().unwrap();
+        let m2 = auth2.get_request_metadata().unwrap();
+        assert_eq!(m1[0].1, "Bearer v2");
+        assert_eq!(m2[0].1, "Bearer v2");
+    }
 
-        #[test]
-        fn watch_bearer_via_registry() {
-            let (tx, rx) = tokio::sync::watch::channel("tok-abc".to_string());
-            let auth = WatchBearerAuth { rx };
+    #[test]
+    fn watch_bearer_via_registry() {
+        let (tx, rx) = tokio::sync::watch::channel("tok-abc".to_string());
+        let auth = WatchBearerAuth { rx };
 
-            // Extension factory registers the handle
-            let mut handles = ExtensionHandles::new();
-            handles.register(ClientAuthenticatorHandle::new(auth));
+        // Extension factory registers the handle
+        let mut handles = ExtensionHandles::new();
+        handles.register(ClientAuthenticatorHandle::new(auth));
 
-            let mut builder = ExtensionRegistryBuilder::new();
-            builder.merge("token_refresher", handles).unwrap();
-            let registry = builder.build();
+        let mut builder = ExtensionRegistryBuilder::new();
+        builder.merge("token_refresher", handles).unwrap();
+        let registry = builder.build();
 
-            // Exporter retrieves it by name + type at startup
-            let handle = registry
-                .get::<ClientAuthenticatorHandle>("token_refresher")
-                .unwrap();
+        // Exporter retrieves it by name + type at startup
+        let handle = registry
+            .get::<ClientAuthenticatorHandle>("token_refresher")
+            .unwrap();
 
-            let metadata = handle.get_request_metadata().unwrap();
-            assert_eq!(metadata[0].1, "Bearer tok-abc");
+        let metadata = handle.get_request_metadata().unwrap();
+        assert_eq!(metadata[0].1, "Bearer tok-abc");
 
-            // Token refresh propagates through the registry-retrieved handle
-            tx.send("tok-xyz".to_string()).unwrap();
-            let metadata = handle.get_request_metadata().unwrap();
-            assert_eq!(metadata[0].1, "Bearer tok-xyz");
-        }
+        // Token refresh propagates through the registry-retrieved handle
+        tx.send("tok-xyz".to_string()).unwrap();
+        let metadata = handle.get_request_metadata().unwrap();
+        assert_eq!(metadata[0].1, "Bearer tok-xyz");
     }
 }

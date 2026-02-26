@@ -14,7 +14,7 @@ use crate::control::{
 };
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
-use crate::extensions::ExtensionRegistryBuilder;
+use crate::extensions::{ExtensionRegistry, ExtensionRegistryBuilder};
 use crate::local::message::{LocalReceiver, LocalSender};
 use crate::message::{Receiver, Sender};
 use crate::node::NodeWithPDataReceiver;
@@ -171,10 +171,14 @@ pub struct TestPhase<PData> {
     control_sender: Sender<NodeControlMsg<PData>>,
     pdata_sender: Sender<PData>,
 
-    /// Join handle for the starting the exporter task
-    run_exporter_handle: tokio::task::JoinHandle<Result<(), Error>>,
+    /// The exporter to start (deferred until `run_test`).
+    exporter: ExporterWrapper<PData>,
 
     pipeline_ctrl_msg_receiver: PipelineCtrlMsgReceiver<PData>,
+
+    metrics_system: InternalTelemetrySystem,
+
+    extension_registry: Option<ExtensionRegistry>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -230,6 +234,10 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
+    ///
+    /// The exporter is not started until [`TestPhase::run_test`] is called, which
+    /// allows injecting a custom [`ExtensionRegistry`] via
+    /// [`TestPhase::with_extension_registry`] before the exporter begins.
     pub fn set_exporter(self, mut exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
         let control_sender = exporter.control_sender();
         let (pdata_tx, pdata_rx) = match &exporter {
@@ -250,38 +258,22 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
                 )
             }
         };
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (_, pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
 
         exporter
             .set_pdata_receiver(test_node(self.config.name.clone()), pdata_rx)
             .expect("Failed to set PData receiver");
-        let metrics_reporter_start = self.metrics_reporter();
-        let metrics_reporter_terminal = self.metrics_reporter();
-        let metrics_collector = self.metrics_system.collector();
-        let run_exporter_handle = self.local_tasks.spawn_local(async move {
-            let extension_registry = ExtensionRegistryBuilder::new().build();
-            exporter
-                .start(
-                    pipeline_ctrl_msg_tx,
-                    metrics_reporter_start,
-                    extension_registry,
-                )
-                .await
-                .map(|terminal_state| {
-                    for snapshot in terminal_state.into_metrics() {
-                        let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
-                    }
-                    metrics_collector.collect_pending(); // Collect after sending all the
-                })
-        });
+
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counter.clone(),
             control_sender,
             pdata_sender: pdata_tx,
-            run_exporter_handle,
+            exporter,
             pipeline_ctrl_msg_receiver: pipeline_ctrl_msg_rx,
+            metrics_system: self.metrics_system,
+            extension_registry: None,
         }
     }
 }
@@ -293,14 +285,49 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 }
 
 impl<PData: Debug + 'static> TestPhase<PData> {
+    /// Sets a custom extension registry to be passed to the exporter's `start()` method.
+    ///
+    /// When not set, the exporter will receive an empty registry.
+    pub fn with_extension_registry(mut self, registry: ExtensionRegistry) -> Self {
+        self.extension_registry = Some(registry);
+        self
+    }
+
     /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
+    pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
         F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
+        let (pipeline_ctrl_msg_tx, _) = pipeline_ctrl_msg_channel(10);
+        let metrics_reporter_start = self.metrics_system.reporter();
+        let metrics_reporter_terminal = self.metrics_system.reporter();
+        let metrics_collector = self.metrics_system.collector();
+
+        let extension_registry = self
+            .extension_registry
+            .take()
+            .unwrap_or_else(|| ExtensionRegistryBuilder::new().build());
+
         let mut context = self.create_context();
         let ctx_test = context.clone();
+
+        let exporter = self.exporter;
+        let run_exporter_handle = self.local_tasks.spawn_local(async move {
+            exporter
+                .start(
+                    pipeline_ctrl_msg_tx,
+                    metrics_reporter_start,
+                    extension_registry,
+                )
+                .await
+                .map(|terminal_state| {
+                    for snapshot in terminal_state.into_metrics() {
+                        let _ = metrics_reporter_terminal.try_report_snapshot(snapshot);
+                    }
+                    metrics_collector.collect_pending();
+                })
+        });
         _ = self.local_tasks.spawn_local(f(ctx_test));
 
         context.pipeline_ctrl_msg_receiver = Some(self.pipeline_ctrl_msg_receiver);
@@ -309,7 +336,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             context,
-            run_exporter_handle: self.run_exporter_handle,
+            run_exporter_handle,
         }
     }
 

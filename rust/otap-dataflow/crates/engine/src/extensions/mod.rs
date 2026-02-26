@@ -35,4 +35,5 @@ pub use auth::{
     AuthError, ClientAuthenticator, ClientAuthenticatorHandle, ServerAuthenticator,
     ServerAuthenticatorHandle,
 };
-pub use registry::{ExtensionHandles, ExtensionRegistry, ExtensionRegistryBuilder};
+pub(crate) use registry::ExtensionRegistryBuilder;
+pub use registry::{ExtensionHandles, ExtensionRegistry};

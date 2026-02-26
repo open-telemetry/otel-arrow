@@ -574,7 +574,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 ext_name.clone(),
                 node_config.r#type.clone(),
                 otap_df_config::node::NodeKind::Extension,
-                node_config.telemetry_attributes.clone(),
+                node_config.identity_attributes(),
             );
             let control_channel_capacity = channel_capacity_policy.control.node;
             let extension_wrapper = self.build_node_wrapper(

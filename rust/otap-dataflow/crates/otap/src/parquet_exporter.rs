@@ -434,7 +434,7 @@ mod test {
         pipeline_ctrl_msg_channel,
     };
     use otap_df_engine::exporter::ExporterWrapper;
-    use otap_df_engine::extensions::ExtensionRegistryBuilder;
+    use otap_df_engine::extensions::ExtensionRegistry;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::message::{Receiver, Sender};
     use otap_df_engine::node::NodeWithPDataReceiver;
@@ -922,7 +922,7 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
@@ -1073,7 +1073,7 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
@@ -1222,7 +1222,7 @@ mod test {
         ) -> Result<(), Error> {
             let (_metrics_rx, metrics_reporter) =
                 otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(1);
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
@@ -1466,7 +1466,7 @@ mod test {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) -> Result<(), Error> {
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await

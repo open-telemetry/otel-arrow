@@ -27,8 +27,21 @@ use std::collections::HashMap;
 ///
 /// Stores the handle as `Box<dyn Any + Send>` alongside a function pointer
 /// that knows how to clone it back into another `Box<dyn Any + Send>`.
+///
+/// ## Why `clone_fn`?
+///
+/// `Clone` is not object-safe, so it cannot be used as a supertrait of `Any`.
+/// This means `Box<dyn Any + Send>` does not implement `Clone`, even when the
+/// concrete type inside it does. To work around this, we capture a function
+/// pointer at construction time (in [`ErasedHandle::new`]) that is monomorphized
+/// for the concrete type `T`. When cloning, the function pointer downcasts the
+/// `&dyn Any` back to `&T`, calls `T::clone()`, and re-boxes the result. This
+/// is a standard Rust pattern for type-erased cloning.
 pub(crate) struct ErasedHandle {
+    /// The type-erased handle value.
     value: Box<dyn Any + Send>,
+    /// A function pointer, monomorphized for `T` at construction time, that
+    /// downcasts `&dyn Any` → `&T`, clones it, and boxes the clone.
     clone_fn: fn(&dyn Any) -> Box<dyn Any + Send>,
 }
 
@@ -101,7 +114,7 @@ impl Default for ExtensionHandles {
 ///
 /// Collects handles from all extensions during pipeline build, then freezes
 /// into an immutable registry that is cloned to each component.
-pub struct ExtensionRegistryBuilder {
+pub(crate) struct ExtensionRegistryBuilder {
     /// (extension_name, TypeId) → handle
     entries: HashMap<(String, TypeId), ErasedHandle>,
 }
@@ -109,7 +122,7 @@ pub struct ExtensionRegistryBuilder {
 impl ExtensionRegistryBuilder {
     /// Creates a new, empty builder.
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
         }
@@ -121,7 +134,11 @@ impl ExtensionRegistryBuilder {
     ///
     /// Returns [`Error::ExtensionHandleAlreadyRegistered`] if a `(name, TypeId)` pair
     /// is already present.
-    pub fn merge(&mut self, extension_name: &str, handles: ExtensionHandles) -> Result<(), Error> {
+    pub(crate) fn merge(
+        &mut self,
+        extension_name: &str,
+        handles: ExtensionHandles,
+    ) -> Result<(), Error> {
         for (type_id, handle) in handles.into_inner() {
             let key = (extension_name.to_owned(), type_id);
             if self.entries.contains_key(&key) {
@@ -137,7 +154,7 @@ impl ExtensionRegistryBuilder {
 
     /// Freezes the builder into an immutable [`ExtensionRegistry`].
     #[must_use]
-    pub fn build(self) -> ExtensionRegistry {
+    pub(crate) fn build(self) -> ExtensionRegistry {
         ExtensionRegistry {
             entries: self.entries,
         }

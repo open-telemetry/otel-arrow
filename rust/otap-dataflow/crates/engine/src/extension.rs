@@ -129,7 +129,7 @@ impl ExtensionWrapper {
     /// Takes the service handles out of this wrapper.
     ///
     /// Called during pipeline build to transfer handles into the
-    /// [`ExtensionRegistryBuilder`](crate::extensions::ExtensionRegistryBuilder).
+    /// `ExtensionRegistryBuilder` (crate-internal).
     /// Returns `None` if handles have already been taken.
     pub fn take_handles(&mut self) -> Option<ExtensionHandles> {
         match self {

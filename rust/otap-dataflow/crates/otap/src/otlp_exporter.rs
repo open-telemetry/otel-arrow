@@ -783,7 +783,7 @@ mod tests {
     #[cfg(not(windows))]
     use {
         otap_df_engine::control::{Controllable, PipelineCtrlMsgSender, pipeline_ctrl_msg_channel},
-        otap_df_engine::extensions::ExtensionRegistryBuilder,
+        otap_df_engine::extensions::ExtensionRegistry,
         otap_df_engine::local::message::{LocalReceiver, LocalSender},
         otap_df_engine::message::{Receiver, Sender},
         otap_df_engine::node::NodeWithPDataReceiver,
@@ -1095,7 +1095,7 @@ mod tests {
             pipeline_ctrl_msg_tx: PipelineCtrlMsgSender<OtapPdata>,
             metrics_reporter: MetricsReporter,
         ) -> Result<(), Error> {
-            let extension_registry = ExtensionRegistryBuilder::new().build();
+            let extension_registry = ExtensionRegistry::empty();
             exporter
                 .start(pipeline_ctrl_msg_tx, metrics_reporter, extension_registry)
                 .await
