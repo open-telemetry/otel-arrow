@@ -1389,8 +1389,7 @@ impl DurableBuffer {
                             .set(self.queued_metric_points);
                     }
                     SignalType::Traces => {
-                        self.queued_spans =
-                            self.queued_spans.saturating_sub(pending.item_count);
+                        self.queued_spans = self.queued_spans.saturating_sub(pending.item_count);
                         self.metrics.queued_spans.set(self.queued_spans);
                     }
                 }
@@ -2121,9 +2120,11 @@ mod tests {
 
         // Simulate: permanent NACK path decrements by 30 items
         // (mirrors the code in handle_nack when nack.permanent is true)
-        processor.queued_log_records =
-            processor.queued_log_records.saturating_sub(30);
-        processor.metrics.queued_log_records.set(processor.queued_log_records);
+        processor.queued_log_records = processor.queued_log_records.saturating_sub(30);
+        processor
+            .metrics
+            .queued_log_records
+            .set(processor.queued_log_records);
 
         // Snapshot should show queued_log_records = 70 (index 27)
         reporter.report(&mut processor.metrics).unwrap();
@@ -2135,9 +2136,11 @@ mod tests {
         );
 
         // Simulate: ACK the remaining 70
-        processor.queued_log_records =
-            processor.queued_log_records.saturating_sub(70);
-        processor.metrics.queued_log_records.set(processor.queued_log_records);
+        processor.queued_log_records = processor.queued_log_records.saturating_sub(70);
+        processor
+            .metrics
+            .queued_log_records
+            .set(processor.queued_log_records);
 
         reporter.report(&mut processor.metrics).unwrap();
         let snap2 = metrics_rx.try_recv().unwrap();
@@ -2150,9 +2153,11 @@ mod tests {
         // Verify the same for metrics and spans signals
         processor.queued_metric_points = 50;
         processor.metrics.queued_metric_points.set(50);
-        processor.queued_metric_points =
-            processor.queued_metric_points.saturating_sub(50);
-        processor.metrics.queued_metric_points.set(processor.queued_metric_points);
+        processor.queued_metric_points = processor.queued_metric_points.saturating_sub(50);
+        processor
+            .metrics
+            .queued_metric_points
+            .set(processor.queued_metric_points);
 
         processor.queued_spans = 25;
         processor.metrics.queued_spans.set(25);
