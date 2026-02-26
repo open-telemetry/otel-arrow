@@ -13,7 +13,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 signals_per_second: 100000
@@ -23,7 +23,7 @@ groups:
                 log_weight: 30
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
-            type: otap:exporter
+            type: exporter:otap
             config:
               grpc_endpoint: "http://127.0.0.1:4327"
 

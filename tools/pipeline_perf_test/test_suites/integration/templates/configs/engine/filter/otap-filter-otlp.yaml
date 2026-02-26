@@ -15,13 +15,13 @@ groups:
       main:
         nodes:
           receiver:
-            type: urn:otel:otap:receiver
+            type: urn:otel:receiver:otap
             config:
               listening_addr: 0.0.0.0:4317
               response_stream_channel_size: 100
               compression_method: zstd
           filter:
-            type: urn:otel:filter:processor
+            type: urn:otel:processor:filter
             config:
               logs:
                 include:
@@ -30,7 +30,7 @@ groups:
                   - key: ios.app.state
                     value: active
           exporter:
-            type: urn:otel:otlp:exporter
+            type: urn:otel:exporter:otlp
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: gzip

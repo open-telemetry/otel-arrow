@@ -23,14 +23,14 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
 
           durable_buffer:
-            type: durable_buffer:processor
+            type: processor:durable_buffer
             config:
               path: /var/lib/otap/otlp-durable-buffer-debug-example/buffer
               poll_interval: 100ms
@@ -40,13 +40,13 @@ groups:
               otlp_handling: convert_to_arrow
 
           debug:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               output: /tmp/durable_buffer_debug.log
 
           noop:
-            type: noop:exporter
+            type: exporter:noop
 
         connections:
           - from: receiver

@@ -46,7 +46,7 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:receiver:syslog_cef";
 
 /// Default maximum time to wait before flushing an Arrow batch.
 const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);
@@ -233,10 +233,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
         match &self.config.protocol {
             Protocol::Tcp(tcp_config) => {
                 otel_info!(
-                    "receiver.start",
+                    "syslog_cef_receiver.start",
                     protocol = "TCP",
-                    listening_addr = tcp_config.listening_addr.to_string(),
-                    message = "Starting Syslog/CEF receiver"
+                    listening_addr = tcp_config.listening_addr.to_string()
                 );
 
                 let listener = effect_handler.tcp_listener(tcp_config.listening_addr)?;
@@ -262,7 +261,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                 #[cfg(feature = "experimental-tls")]
                 if maybe_tls_acceptor.is_some() {
                     otel_info!(
-                        "receiver.tls_enabled",
+                        "syslog_cef_receiver.tls_enabled",
                         message = "TLS enabled for Syslog/CEF TCP receiver"
                     );
                 }
@@ -300,7 +299,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                     if drain_result.is_err() {
                                         otel_warn!(
-                                            "receiver.shutdown.drain_timeout",
+                                            "syslog_cef_receiver.shutdown.drain_timeout",
                                             active_tasks = active_task_count.get(),
                                             message = "Shutdown drain timeout expired with tasks still active"
                                         );
@@ -362,7 +361,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             match accept_tls_connection(socket, &acceptor, timeout).await {
                                                 Ok(tls_stream) => {
                                                     otel_debug!(
-                                                        "tls.handshake.success",
+                                                        "syslog_cef_receiver.tls.handshake.success",
                                                         peer = %peer_addr,
                                                         message = "TLS handshake completed"
                                                     );
@@ -370,7 +369,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                 }
                                                 Err(e) => {
                                                     otel_warn!(
-                                                        "tls.handshake.failed",
+                                                        "syslog_cef_receiver.tls.handshake.failed",
                                                         peer = %peer_addr,
                                                         error = %e,
                                                         message = "TLS handshake failed, closing connection"
@@ -592,10 +591,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
             Protocol::Udp(udp_config) => {
                 otel_info!(
-                    "receiver.start",
+                    "syslog_cef_receiver.start",
                     protocol = "UDP",
-                    listening_addr = udp_config.listening_addr.to_string(),
-                    message = "Starting Syslog/CEF receiver"
+                    listening_addr = udp_config.listening_addr.to_string()
                 );
 
                 let socket = effect_handler.udp_socket(udp_config.listening_addr)?;

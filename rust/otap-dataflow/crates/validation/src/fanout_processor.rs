@@ -23,7 +23,7 @@ use otap_df_telemetry_macros::metric_set;
 use std::sync::Arc;
 
 /// URN that identifies the temporary fanout processor used in validation pipelines.
-pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:fanout_temp:processor";
+pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout_temp";
 
 #[metric_set(name = "fanout.processor.metrics")]
 #[derive(Debug, Default, Clone)]

@@ -398,10 +398,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver
@@ -537,10 +537,10 @@ groups:
         let yaml = r#"
 nodes:
   receiver:
-    type: "urn:fake:unknown:receiver"
+    type: "urn:fake:receiver:unknown"
     config: {}
   exporter:
-    type: noop:exporter
+    type: exporter:noop
     config: {}
 connections:
   - from: receiver
@@ -663,10 +663,10 @@ groups:
       main:
         nodes:
           receiver:
-            type: "urn:test:example:receiver"
+            type: "urn:test:receiver:example"
             config: null
           exporter:
-            type: "urn:test:example:exporter"
+            type: "urn:test:exporter:example"
             config: null
         connections:
           - from: receiver

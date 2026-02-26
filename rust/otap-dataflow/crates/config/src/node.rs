@@ -23,8 +23,8 @@ pub struct NodeUserConfig {
     /// The node type URN identifying the plugin (factory) to use for this node.
     ///
     /// Expected format:
-    /// - `urn:<namespace>:<id>:<kind>`
-    /// - `<id>:<kind>` (shortcut form for the `otel` namespace)
+    /// - `urn:<namespace>:<kind>:<id>`
+    /// - `<kind>:<id>` (shortcut form for the `otel` namespace)
     ///
     /// The node kind is inferred from the `<kind>` segment.
     pub r#type: NodeUrn,
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn node_user_config_minimal_valid() {
         let json = r#"{
-            "type": "urn:example:demo:receiver"
+            "type": "urn:example:receiver:demo"
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn test_yaml_node_config() {
         let yaml = r#"
-type: "urn:otel:type_router:processor"
+type: "urn:otel:processor:type_router"
 outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
@@ -277,7 +277,7 @@ config: {}
     #[test]
     fn test_yaml_node_outputs() {
         let yaml = r#"
-type: "debug:processor"
+type: "processor:debug"
 outputs: ["logs", "metrics", "traces"]
 config: {}
 "#;
@@ -293,7 +293,7 @@ config: {}
     #[test]
     fn node_user_config_with_entity_identity_attributes_valid() {
         let json = r#"{
-            "type": "urn:example:demo:receiver",
+            "type": "urn:example:receiver:demo",
             "entity": {
                 "extend": {
                     "identity_attributes": {
@@ -321,7 +321,7 @@ config: {}
     #[test]
     fn node_user_config_with_entity_identity_attributes_extended_form() {
         let json = r#"{
-            "type": "urn:example:demo:receiver",
+            "type": "urn:example:receiver:demo",
             "entity": {
                 "extend": {
                     "identity_attributes": {
@@ -356,7 +356,7 @@ config: {}
     #[test]
     fn node_user_config_with_entity_identity_attribute_array_expects_error() {
         let json = r#"{
-            "type": "urn:example:demo:receiver",
+            "type": "urn:example:receiver:demo",
             "entity": {
                 "extend": {
                     "identity_attributes": {
@@ -373,7 +373,7 @@ config: {}
     #[test]
     fn node_user_config_no_entity_returns_empty_identity_attributes() {
         let json = r#"{
-            "type": "urn:example:demo:receiver"
+            "type": "urn:example:receiver:demo"
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.identity_attributes().is_empty());
@@ -382,7 +382,7 @@ config: {}
     #[test]
     fn node_user_config_entity_without_extend_returns_empty_identity_attributes() {
         let json = r#"{
-            "type": "urn:example:demo:receiver",
+            "type": "urn:example:receiver:demo",
             "entity": {}
         }"#;
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
