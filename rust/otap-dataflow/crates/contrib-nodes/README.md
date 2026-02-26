@@ -21,7 +21,7 @@ Aggregate flags enable all nodes in their category.
 | Feature | Enables Node | Node URN | Module |
 | ------- | ------------ | -------- | ------ |
 | `geneva-exporter` | Geneva exporter | `urn:microsoft:exporter:geneva` | `src/exporters/geneva_exporter/` |
-| `azure-monitor-exporter` | Azure Monitor exporter | `urn:microsoft_azure:exporter:monitor` | `src/exporters/azure_monitor_exporter/` |
+| `azure-monitor-exporter` | Azure Monitor exporter | `urn:microsoft:exporter:azure_monitor` | `src/exporters/azure_monitor_exporter/` |
 
 ### Processors
 

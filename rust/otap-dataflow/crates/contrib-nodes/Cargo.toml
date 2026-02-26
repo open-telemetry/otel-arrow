@@ -27,6 +27,7 @@ arrow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 bytes.workspace = true
 prost.workspace = true
 serde.workspace = true

@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use futures::StreamExt;
-use futures::future::BoxFuture;
+use futures::future::LocalBoxFuture;
 use futures::stream::FuturesUnordered;
 use tokio::time::Duration;
 
@@ -18,7 +18,7 @@ pub struct CompletedExport {
 }
 
 pub struct InFlightExports {
-    futures: FuturesUnordered<BoxFuture<'static, CompletedExport>>,
+    futures: FuturesUnordered<LocalBoxFuture<'static, CompletedExport>>,
     limit: usize,
 }
 
@@ -49,7 +49,7 @@ impl InFlightExports {
     #[inline]
     pub async fn push(
         &mut self,
-        fut: BoxFuture<'static, CompletedExport>,
+        fut: LocalBoxFuture<'static, CompletedExport>,
     ) -> Option<CompletedExport> {
         let completed = if self.futures.len() >= self.limit {
             self.futures.next().await
@@ -78,7 +78,7 @@ impl InFlightExports {
         batch_id: u64,
         row_count: f64,
         body: Bytes,
-    ) -> BoxFuture<'static, CompletedExport> {
+    ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
             let result = client.export(body).await;
             CompletedExport {
@@ -102,11 +102,28 @@ impl InFlightExports {
 
 #[cfg(test)]
 mod tests {
+    use super::super::metrics::{
+        AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc,
+        AzureMonitorExporterMetricsTracker,
+    };
     use super::*;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::testing::EmptyAttributes;
     use reqwest::Client;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::time::Duration as StdDuration;
 
     // ==================== Test Helpers ====================
+
+    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
+        let registry = TelemetryRegistryHandle::new();
+        let metric_set =
+            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
+            metric_set,
+        )))
+    }
 
     fn create_test_client() -> LogsIngestionClient {
         // Use a client that will fail fast if actually used
@@ -115,12 +132,16 @@ mod tests {
             .build()
             .expect("failed to create HTTP client");
 
-        LogsIngestionClient::from_parts(http_client, "http://localhost".to_string())
+        LogsIngestionClient::from_parts(
+            http_client,
+            "http://localhost".to_string(),
+            create_test_metrics(),
+        )
     }
 
     /// Create a future that completes immediately with a success result.
     /// Used to fill the InFlightExports to test backpressure without waiting for real network calls.
-    fn mock_completed_export_future(batch_id: u64) -> BoxFuture<'static, CompletedExport> {
+    fn mock_completed_export_future(batch_id: u64) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
             CompletedExport {
                 batch_id,
@@ -162,7 +183,8 @@ mod tests {
     async fn test_len_after_push() {
         let mut exports = InFlightExports::new(5);
 
-        let pending_future: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
+        let pending_future: LocalBoxFuture<'static, CompletedExport> =
+            Box::pin(std::future::pending());
 
         let _ = exports.push(pending_future).await;
 
@@ -174,7 +196,7 @@ mod tests {
         let mut exports = InFlightExports::new(10);
 
         for _ in 0..5 {
-            let pending_future: BoxFuture<'static, CompletedExport> =
+            let pending_future: LocalBoxFuture<'static, CompletedExport> =
                 Box::pin(std::future::pending());
             let _ = exports.push(pending_future).await;
         }
@@ -188,7 +210,8 @@ mod tests {
     async fn test_push_under_limit_returns_none() {
         let mut exports = InFlightExports::new(5);
 
-        let pending_future: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
+        let pending_future: LocalBoxFuture<'static, CompletedExport> =
+            Box::pin(std::future::pending());
 
         let result = exports.push(pending_future).await;
 
@@ -201,7 +224,7 @@ mod tests {
         let mut exports = InFlightExports::new(10);
 
         for i in 0..5 {
-            let pending_future: BoxFuture<'static, CompletedExport> =
+            let pending_future: LocalBoxFuture<'static, CompletedExport> =
                 Box::pin(std::future::pending());
             let _ = exports.push(pending_future).await;
             assert_eq!(exports.len(), i + 1);
@@ -319,8 +342,8 @@ mod tests {
         let mut exports = InFlightExports::new(2);
 
         // Fill to capacity with pending futures
-        let pending1: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
-        let pending2: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
+        let pending1: LocalBoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
+        let pending2: LocalBoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
 
         let _ = exports.push(pending1).await;
         let _ = exports.push(pending2).await;
@@ -340,7 +363,8 @@ mod tests {
 
         // Push up to limit
         for _ in 0..limit {
-            let pending: BoxFuture<'static, CompletedExport> = Box::pin(std::future::pending());
+            let pending: LocalBoxFuture<'static, CompletedExport> =
+                Box::pin(std::future::pending());
             let result = exports.push(pending).await;
             assert!(result.is_none(), "Should not return completion under limit");
         }
