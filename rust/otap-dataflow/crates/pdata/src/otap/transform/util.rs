@@ -128,11 +128,11 @@ pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
 ///
 /// Dispatches to specialized sort paths based on the column types:
 /// - No sort columns: returns batch unchanged.
-/// - Single column (native): sort via primitive values slice with `is_sorted`
-/// - Single column (dictionary): resolve through dict keys -> values, `is_sorted` early return.
-/// - Two columns (both native): RowConverter-based sort with `is_sorted` early return.
-/// - Two columns (dict parent_id + native id): pack resolved parent_id and id into a `Vec<u64>`,
-///   sort that, with `is_sorted` early return. Avoids the RowConverter dictionary expansion.
+/// - Single column (native): sort via the normal arrow sort_to_indices with an
+///   early return check if we're already sorted.
+/// - Two columns (both native): Sort via a specialized two column sort that packs
+///   parent_id into the high bits and id into the low bits of a u64 and sorts that
+///   instead.
 pub fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
     let schema = rb.schema();
 
@@ -253,30 +253,28 @@ fn dispatch_id_and_pack(
 /// Pack parent_id and id into u64 sort keys and sort.
 ///
 /// High 32 bits hold the resolved `parent_id` value, low 32 bits hold the `id` value
-/// (cast to u32 on-the-fly via `ArrowNativeType::as_usize()`).
 ///
 /// Parent_id must be non-null (enforced by caller). When the id column has nulls,
-/// partitions into null-id and valid-id rows, sorts each group, and merges with
-/// null-id rows first at equal parent_id (nulls_first for id).
-fn sort_two_columns_packed<IV: ArrowNativeType>(
+/// null-id rows cannot be packed (no valid id value), so we partition into two groups,
+/// sort each independently, then merge them with nulls_first semantics for id.
+fn sort_two_columns_packed<T: ArrowNativeType>(
     rb: RecordBatch,
     resolve_pid: impl Fn(u32) -> u64,
     id_col: &dyn Array,
-    id_vals: &[IV],
+    id_vals: &[T],
 ) -> Result<RecordBatch> {
     let len = id_vals.len();
 
     let pack = |i: u32| -> u64 { (resolve_pid(i) << 32) | id_vals[i as usize].as_usize() as u64 };
 
     // Partition by id nullability. When there are no nulls, null_indices is empty
-    // and valid_indices contains all row indices — the merge becomes a pass-through.
+    // and valid_indices contains all row indices - the merge becomes a pass-through.
     let (mut valid_indices, mut null_indices) = partition_validity(id_col);
 
     // Sort null-id rows by parent_id only.
     null_indices.sort_unstable_by_key(|&i| resolve_pid(i));
 
-    // Precompute packed keys for O(1) lookup during sort. Only valid row slots
-    // are populated; null row slots are never accessed.
+    // Precompute packed keys for sorting. Only valid row slots are populated
     let mut packed = vec![0u64; len];
     for &i in &valid_indices {
         packed[i as usize] = pack(i);
@@ -287,7 +285,9 @@ fn sort_two_columns_packed<IV: ArrowNativeType>(
     let mut indices: Vec<u32> = Vec::with_capacity(len);
     let (mut ni, mut vi) = (0, 0);
     while ni < null_indices.len() && vi < valid_indices.len() {
-        if resolve_pid(null_indices[ni]) <= packed[valid_indices[vi] as usize] >> 32 {
+        let parent_id = packed[valid_indices[vi] as usize] >> 32;
+        let null_parent_id = resolve_pid(null_indices[ni]);
+        if null_parent_id <= parent_id {
             indices.push(null_indices[ni]);
             ni += 1;
         } else {
@@ -295,6 +295,8 @@ fn sort_two_columns_packed<IV: ArrowNativeType>(
             vi += 1;
         }
     }
+
+    // Add any leftovers
     indices.extend_from_slice(&null_indices[ni..]);
     indices.extend_from_slice(&valid_indices[vi..]);
 
@@ -749,9 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn test_native_parent_id_and_id() {
+    fn test_dict_u8_u32() {
         let rb = record_batch!(
-            ("parent_id", UInt16, [2, 1, 2, 1]),
+            ("parent_id", (UInt8, UInt32), ([1, 0, 1, 0], [10, 20])),
             ("id", UInt16, [4, 3, 2, 1])
         )
         .unwrap();
@@ -759,9 +761,9 @@ mod tests {
     }
 
     #[test]
-    fn test_dict_parent_id_and_native_id() {
+    fn test_dict_16_u32() {
         let rb = record_batch!(
-            ("parent_id", (UInt8, UInt16), ([1, 0, 1, 0], [10, 20])),
+            ("parent_id", (UInt8, UInt32), ([1, 0, 1, 0], [10, 20])),
             ("id", UInt16, [4, 3, 2, 1])
         )
         .unwrap();
