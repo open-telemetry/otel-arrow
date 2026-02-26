@@ -632,7 +632,10 @@ impl HttpHandler {
                     return limited_body_too_large();
                 }
 
-                otap_df_telemetry::otel_warn!("otlp.receiver.http.body_collection_failed", error = e.to_string());
+                otap_df_telemetry::otel_warn!(
+                    "otlp.receiver.http.body_collection_failed",
+                    error = e.to_string()
+                );
                 internal_error()
             })?;
             let body = collected.to_bytes();
