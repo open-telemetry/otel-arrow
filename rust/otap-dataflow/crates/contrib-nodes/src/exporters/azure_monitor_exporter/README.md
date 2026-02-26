@@ -21,7 +21,7 @@ cargo build --release --features azure-monitor-exporter
 ./target/release/df_engine --help
 ```
 
-You should see `urn:microsoft_azure:exporter:monitor` in the Exporters list.
+You should see `urn:microsoft:exporter:azure_monitor` in the Exporters list.
 
 ## Configuration
 
@@ -33,7 +33,7 @@ configuration:
 ```yaml
 nodes:
   azure-monitor-exporter:
-    type: "urn:microsoft_azure:exporter:monitor"
+    type: "urn:microsoft:exporter:azure_monitor"
     config:
       # API configuration (REQUIRED)
       api:

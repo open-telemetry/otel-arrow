@@ -13,7 +13,7 @@ urn:<namespace>:<kind>:<id>
 
 Where:
 
-- `<namespace>` is a vendor or vendor+product identifier (e.g., `otel`, `microsoft_azure`).
+- `<namespace>` is a vendor or vendor+product identifier (e.g., `otel`, `microsoft`).
 - `otel` is reserved for OpenTelemetry-provided nodes.
 - `<id>` identifies the node type.
 - `<kind>` is one of: `receiver`, `processor`, `exporter`.
@@ -54,7 +54,7 @@ Full form examples:
 urn:otel:receiver:otlp
 urn:otel:processor:debug
 urn:otel:exporter:otap
-urn:microsoft_azure:exporter:monitor
+urn:microsoft:exporter:azure_monitor
 ```
 
 Shortcut form (OTel only):
