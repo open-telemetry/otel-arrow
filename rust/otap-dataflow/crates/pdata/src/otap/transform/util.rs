@@ -7,7 +7,7 @@ use std::sync::Arc;
 use arrow::array::{
     Array, ArrayRef, AsArray, MutableArrayData, RecordBatch, StructArray, UInt32Array, make_array,
 };
-use arrow::compute::{SortColumn, partition_validity};
+use arrow::compute::partition_validity;
 use arrow::datatypes::{ArrowNativeType, UInt16Type, UInt32Type};
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
@@ -193,7 +193,7 @@ fn sort_single_column(rb: RecordBatch, col: &ArrayRef) -> Result<RecordBatch> {
     sort_record_batch_by_indices(rb, &indices)
 }
 
-/// Two-column sort. Uses packed u64 sort for dict-encoded parent_id, RowConverter otherwise.
+/// Two-column sort. Packs parent_id and id into u64 sort keys for a single-pass sort.
 fn sort_two_columns(
     rb: RecordBatch,
     parent_id_col: &ArrayRef,
@@ -205,34 +205,21 @@ fn sort_two_columns(
 
     id_column_dispatch!(
         parent_id_col,
-        Native[_T] => sort_two_columns_row_converter(rb, parent_id_col, id_col),
+        Native[PType] => {
+            // safety: id_column_dispatch! matched the native data type
+            let pid_vals = parent_id_col.as_primitive::<PType>().values();
+            dispatch_id_and_pack(rb, |i| pid_vals[i as usize].as_usize() as u64, id_col)
+        },
         Dictionary[KType, VType] => {
             // safety: id_column_dispatch! matched the dictionary key/value types
             let dict = parent_id_col.as_dictionary::<KType>();
             let pid_keys = dict.keys().values();
             let pid_vals = dict.values().as_primitive::<VType>().values();
-
-            // The id column is never dictionary-encoded. Dispatch to get native values,
-            // casting to u32 on-the-fly via ArrowNativeType::as_usize() in the pack closure.
-            match id_col.data_type() {
-                DataType::UInt16 => {
-                    // safety: data type was matched in the enclosing match arm
-                    let id_vals = id_col.as_primitive::<UInt16Type>().values();
-                    sort_by_packed_dict_parent_native_id(
-                        rb, pid_keys, pid_vals, id_col.as_ref(), id_vals,
-                    )
-                }
-                DataType::UInt32 => {
-                    // safety: data type was matched in the enclosing match arm
-                    let id_vals = id_col.as_primitive::<UInt32Type>().values();
-                    sort_by_packed_dict_parent_native_id(
-                        rb, pid_keys, pid_vals, id_col.as_ref(), id_vals,
-                    )
-                }
-                other => Err(Error::UnsupportedParentIdType {
-                    actual: other.clone(),
-                }),
-            }
+            dispatch_id_and_pack(
+                rb,
+                |i| pid_vals[pid_keys[i as usize].as_usize()].as_usize() as u64,
+                id_col,
+            )
         },
         _ => {
             Err(Error::UnsupportedParentIdType {
@@ -242,37 +229,28 @@ fn sort_two_columns(
     )
 }
 
-/// RowConverter-based two-column sort (handles native types and nullable columns).
-fn sort_two_columns_row_converter(
+/// Dispatches on the id column's native type, then delegates to packed sort.
+fn dispatch_id_and_pack(
     rb: RecordBatch,
-    parent_id_col: &ArrayRef,
+    resolve_pid: impl Fn(u32) -> u64,
     id_col: &ArrayRef,
 ) -> Result<RecordBatch> {
-    let options = Some(SortOptions {
-        descending: false,
-        nulls_first: true,
-    });
-    let sort_columns = vec![
-        SortColumn {
-            values: parent_id_col.clone(),
-            options,
-        },
-        SortColumn {
-            values: id_col.clone(),
-            options,
-        },
-    ];
-    let indices =
-        super::sort_to_indices(&sort_columns).map_err(|e| Error::Batching { source: e })?;
-
-    if indices.values().is_sorted() {
-        return Ok(rb);
+    match id_col.data_type() {
+        DataType::UInt16 => {
+            let id_vals = id_col.as_primitive::<UInt16Type>().values();
+            sort_two_columns_packed(rb, resolve_pid, id_col.as_ref(), id_vals)
+        }
+        DataType::UInt32 => {
+            let id_vals = id_col.as_primitive::<UInt32Type>().values();
+            sort_two_columns_packed(rb, resolve_pid, id_col.as_ref(), id_vals)
+        }
+        other => Err(Error::UnsupportedParentIdType {
+            actual: other.clone(),
+        }),
     }
-
-    sort_record_batch_by_indices(rb, &indices)
 }
 
-/// Pack resolved dict parent_id + native id into u64 sort keys and sort.
+/// Pack parent_id and id into u64 sort keys and sort.
 ///
 /// High 32 bits hold the resolved `parent_id` value, low 32 bits hold the `id` value
 /// (cast to u32 on-the-fly via `ArrowNativeType::as_usize()`).
@@ -280,21 +258,14 @@ fn sort_two_columns_row_converter(
 /// Parent_id must be non-null (enforced by caller). When the id column has nulls,
 /// partitions into null-id and valid-id rows, sorts each group, and merges with
 /// null-id rows first at equal parent_id (nulls_first for id).
-fn sort_by_packed_dict_parent_native_id<
-    K: ArrowNativeType,
-    PV: ArrowNativeType,
-    IV: ArrowNativeType,
->(
+fn sort_two_columns_packed<IV: ArrowNativeType>(
     rb: RecordBatch,
-    pid_keys: &[K],
-    pid_vals: &[PV],
+    resolve_pid: impl Fn(u32) -> u64,
     id_col: &dyn Array,
     id_vals: &[IV],
 ) -> Result<RecordBatch> {
-    let len = pid_keys.len();
+    let len = id_vals.len();
 
-    let resolve_pid =
-        |i: u32| -> u64 { pid_vals[pid_keys[i as usize].as_usize()].as_usize() as u64 };
     let pack = |i: u32| -> u64 { (resolve_pid(i) << 32) | id_vals[i as usize].as_usize() as u64 };
 
     // Partition by id nullability. When there are no nulls, null_indices is empty
