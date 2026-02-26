@@ -175,7 +175,7 @@ impl OtlpHttpExporter {
                         otel_warn!(
                             "otlp.exporter.http.validate_insecure_flag",
                             message = "config setting http.tls.insecure = true is ignored. \
-                                requests will still be send with TLS to endpoints configured \
+                                requests will still be sent with TLS to endpoints configured \
                                 with scheme https"
                         )
                     }
