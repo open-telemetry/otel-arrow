@@ -56,10 +56,13 @@ use otap_df_telemetry::{otel_debug, otel_info};
 use prost::Message as _;
 use reqwest::{Client, Response};
 
+#[cfg(feature = "experimental-tls")]
+use otap_df_telemetry::otel_warn;
+
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otlp_exporter::InFlightExports;
-use crate::otlp_http::client_settings::HttpClientSettings;
+use crate::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use crate::otlp_http_exporter::config::Config;
 use crate::pdata::{Context, OtapPdata};
@@ -135,6 +138,51 @@ impl OtlpHttpExporter {
             })?;
         }
 
+        #[cfg(feature = "experimental-tls")]
+        {
+            if let Some(tls) = &config.http.tls {
+                // server_name not currently supported
+                if let Some(_server_name) = &tls.server_name {
+                    return Err(ConfigError::InvalidUserConfig {
+                        error: "TLS configuration error: server_name_override is not supported by \
+                        the current Rust OTLP HTTP client implementation (reqwest/rustls) remove \
+                        server_name_override."
+                            .into(),
+                    });
+                }
+
+                if let Some(true) = tls.insecure {
+                    // Keeping with the same behaviour in the golang collector: if this is
+                    // configured, but the endpoints are start with https, we still send the
+                    // request using https. Just warn about the ignored config mismatch.
+                    let wants_https = config.endpoint.starts_with("https://")
+                        || config
+                            .logs_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false)
+                        || config
+                            .metrics_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false)
+                        || config
+                            .traces_endpoint
+                            .as_ref()
+                            .map(|e| e.starts_with("https://"))
+                            .unwrap_or(false);
+                    if wants_https {
+                        otel_warn!(
+                            "otlp.exporter.http.validate_insecure_flag",
+                            message = "config setting http.tls.insecure = true is ignored. \
+                                requests will still be sent with TLS to endpoints configured \
+                                with scheme https"
+                        )
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             config,
             pdata_metrics,
@@ -189,14 +237,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
         let max_in_flight = self.config.max_in_flight.max(1);
         let mut client_pool =
-            HttpClientPool::try_new(&self.config.http, self.config.client_pool_size).map_err(
-                |e| EngineError::ExporterError {
+            HttpClientPool::try_new(&self.config.http, self.config.client_pool_size)
+                .await
+                .map_err(|e| EngineError::ExporterError {
                     exporter: effect_handler.exporter_id(),
                     kind: ExporterErrorKind::Configuration,
                     error: "unable to initialize HTTP client pool".into(),
                     source_detail: e.to_string(),
-                },
-            )?;
+                })?;
 
         let mut inflight_exports = InFlightExports::new();
 
@@ -483,7 +531,14 @@ impl ServiceRequestError {
 fn format_source(e: &reqwest::Error) -> String {
     use std::error::Error;
     match e.source() {
-        Some(src) => format!(": {src}"),
+        Some(src) => match src.source() {
+            Some(inner_src) => {
+                format!(": {src}: {inner_src}")
+            }
+            None => {
+                format!(": {src}")
+            }
+        },
         None => String::new(),
     }
 }
@@ -610,10 +665,10 @@ struct HttpClientPool {
 }
 
 impl HttpClientPool {
-    fn try_new(
+    async fn try_new(
         client_settings: &HttpClientSettings,
         pool_size: NonZeroUsize,
-    ) -> Result<Self, reqwest::Error> {
+    ) -> Result<Self, HttpClientError> {
         let mut default_headers = HeaderMap::new();
 
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
@@ -631,6 +686,7 @@ impl HttpClientPool {
         for _ in 0..pool_size {
             let client_builder = client_settings
                 .client_builder()
+                .await?
                 .default_headers(default_headers.clone());
             pool.push(client_builder.build()?);
         }
@@ -685,12 +741,20 @@ mod test {
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
     use otap_df_pdata::{OtapArrowRecords, OtlpProtoBytes};
     use otap_df_telemetry::reporter::MetricsReporter;
+
     use parking_lot::lock_api::Mutex;
     use portpicker::pick_unused_port;
     use prost::Message;
     use tokio::runtime::Runtime;
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
+
+    #[cfg(feature = "experimental-tls")]
+    use {
+        otap_df_config::tls::{TlsClientConfig, TlsConfig, TlsServerConfig},
+        otap_test_tls_certs::{ExtendedKeyUsage, generate_ca},
+        tempfile::TempDir,
+    };
 
     use super::*;
 
@@ -853,6 +917,60 @@ mod test {
         }
 
         let _ = tracker.close();
+    }
+
+    /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
+    /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
+    /// the test is finished), and a receiver that will emit any pdata that the server produces.
+    #[cfg(feature = "experimental-tls")]
+    fn run_tls_server(
+        tokio_rt: &Runtime,
+        pipeline_ctx: &PipelineContext,
+        endpoint_addr: &str,
+        tls_server_config: TlsServerConfig,
+    ) -> (tokio::sync::mpsc::Receiver<OtapPdata>, CancellationToken) {
+        let server_node_id = test_node("test-server");
+        let port_name = PortName::from("server_out");
+        let mut msg_senders = HashMap::new();
+        let (pdata_tx, pdata_rx) = tokio::sync::mpsc::channel(10);
+        _ = msg_senders.insert(port_name.clone(), SharedSender::mpsc(pdata_tx));
+
+        let (pipeline_ctrl_msg_tx, _pipeline_ctrl_msg_rx) = pipeline_ctrl_msg_channel(10);
+        let (_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(5);
+        let server_effect_handler =
+            otap_df_engine::shared::receiver::EffectHandler::<OtapPdata>::new(
+                server_node_id,
+                msg_senders,
+                Some(port_name),
+                pipeline_ctrl_msg_tx,
+                metrics_reporter,
+            );
+
+        let mut server_settings = HttpServerSettings {
+            listening_addr: endpoint_addr.parse().unwrap(),
+            tls: Some(tls_server_config),
+            ..Default::default()
+        };
+        tune_max_concurrent_requests(&mut server_settings, 1);
+
+        let ack_registry = AckRegistry::new(None, None, None);
+        let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+
+        _ = tokio_rt.spawn(async move {
+            let _ = serve(
+                server_effect_handler,
+                server_settings,
+                ack_registry,
+                Arc::new(Mutex::new(server_metrics)),
+                None,
+                server_cancellation_token,
+            )
+            .await;
+        });
+
+        (pdata_rx, server_cancellation_token2)
     }
 
     fn setup_exporter(
@@ -1947,7 +2065,6 @@ mod test {
                     for pdata in pdatas {
                         ctx.send_pdata(pdata).await.unwrap();
                     }
-
                     ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
                         .await
                         .unwrap();
@@ -1989,5 +2106,806 @@ mod test {
                     traces_server_cancellation_token.cancel();
                 })
             })
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    fn run_tls_success_test(
+        client_tls_config: TlsClientConfig,
+        server_tls_config: TlsServerConfig,
+    ) {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("https://localhost:{port}");
+
+        let config = Config {
+            http: HttpClientSettings {
+                tls: Some(client_tls_config),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+
+        let (mut pdata_rx, server_cancellation_token) =
+            run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        ))];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+
+                    let num_expected_pdatas = 1;
+                    let mut pdatas_received = Vec::new();
+                    while let Some(pdata) = pdata_rx.recv().await {
+                        pdatas_received.push(pdata);
+                        if pdatas_received.len() >= num_expected_pdatas {
+                            break;
+                        }
+                    }
+
+                    server_cancellation_token.cancel();
+
+                    // assert the pdata sent was the pdata received
+                    let pdata: OtlpProtoBytes =
+                        pdatas_received[0].take_payload().try_into().unwrap();
+                    let pdata_decoded = LogsData::decode(pdata.as_bytes()).unwrap();
+                    assert_equivalent(
+                        &[OtlpProtoMessage::Logs(pdata_decoded)],
+                        &[OtlpProtoMessage::Logs(logs_batch.clone())],
+                    );
+
+                    let mut ack_count = 0;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                ack_count += 1;
+                                if ack_count >= num_expected_pdatas {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverNack { .. } => {
+                                panic!("unexpected Nack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(ack_count, num_expected_pdatas);
+                })
+            })
+    }
+
+    #[cfg(feature = "experimental-tls")]
+    fn run_tls_failure_test(
+        client_tls_config: TlsClientConfig,
+        server_tls_config: TlsServerConfig,
+        expected_err_content: &'static str,
+        expect_permanent_nack: bool,
+    ) {
+        let port = pick_unused_port().unwrap();
+        let endpoint_addr = format!("127.0.0.1:{}", port);
+        let endpoint = format!("https://localhost:{port}");
+
+        let config = Config {
+            http: HttpClientSettings {
+                tls: Some(client_tls_config),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (pipeline_ctx, exporter) = setup_exporter(&test_runtime, config);
+
+        let (_, server_cancellation_token) =
+            run_tls_server(&tokio_rt, &pipeline_ctx, &endpoint_addr, server_tls_config);
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+
+        let pdatas = vec![OtapPdata::new_default(OtapPayload::OtapArrowRecords(
+            otlp_to_otap(&OtlpProtoMessage::Logs(logs_batch.clone())),
+        ))];
+        let pdatas = subscribe_pdatas(pdatas, false);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    // ensure exit success
+                    result.unwrap();
+                    server_cancellation_token.cancel();
+
+                    let mut nack_count = 0;
+                    let expected_nacks = 1;
+                    let mut pipeline_ctrl_rx = ctx.take_pipeline_ctrl_receiver().unwrap();
+                    loop {
+                        let msg = match pipeline_ctrl_rx.recv().await {
+                            Ok(msg) => msg,
+                            Err(_) => break, // channel closed, no more messages will be received
+                        };
+
+                        match msg {
+                            PipelineControlMsg::DeliverNack { nack, .. } => {
+                                nack_count += 1;
+
+                                assert!(
+                                    nack.reason.contains(expected_err_content),
+                                    "unexpected error message in Nack: {}",
+                                    nack.reason
+                                );
+
+                                assert_eq!(nack.permanent, expect_permanent_nack,);
+
+                                if nack_count >= expected_nacks {
+                                    break;
+                                }
+                            }
+                            PipelineControlMsg::DeliverAck { .. } => {
+                                panic!("unexpected Ack message")
+                            }
+                            _ => {
+                                // ignore other control messages
+                            }
+                        }
+                    }
+                    assert_eq!(nack_count, expected_nacks);
+                })
+            })
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_from_config_validates_server_name_override_set() {
+        let invalid_config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "http": {
+                "tls": {
+                    "server_name_override": "localhost123"
+                }
+            },
+            "client_pool_size": 5
+        });
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let pipeline_ctx = controller_ctx.pipeline_context_with(
+            "test_group".into(),
+            "test_pipeline".into(),
+            0,
+            1,
+            0,
+        );
+
+        let result = OtlpHttpExporter::from_config(pipeline_ctx, &invalid_config);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+        assert!(
+            err.to_string()
+                .contains("server_name_override is not supported")
+        )
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_only_ca_pem_from_str() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        run_tls_success_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: Some(ca.cert_pem.clone()),
+                include_system_ca_certs_pool: None,
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_only_ca_pem_from_file() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(path, "ca");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        run_tls_success_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: Some(path.join("ca.crt")),
+                ca_pem: None,
+                include_system_ca_certs_pool: None,
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_insecure_skip_verify_true() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(path, "ca");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        run_tls_success_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: None,
+                include_system_ca_certs_pool: None,
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: Some(true),
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_failure_no_ca_configured() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        ca.write_cert_to_dir(path, "ca");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        run_tls_failure_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: None,
+                include_system_ca_certs_pool: None,
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+            "client error (Connect): invalid peer certificate: UnknownIssuer",
+            false,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_failure_invalid_ca_configured() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        let ca2 = generate_ca("Test CA 2");
+
+        run_tls_failure_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: Some(ca2.cert_pem.to_string()),
+                include_system_ca_certs_pool: None,
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+            "client error (Connect): invalid peer certificate: UnknownIssuer",
+            false,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_server_failure_server_name_mismatch() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost123",
+            Some("localhost123"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        server.write_to_dir(path, "server");
+
+        run_tls_failure_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: None,
+                    key_file: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: Some(ca.cert_pem.to_string()),
+                include_system_ca_certs_pool: None,
+                server_name: None, // the test runner func will use hostname "localhost"
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: None,
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+            "client error (Connect): invalid peer certificate",
+            false,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_mtls_success_cert_pem() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA and certificates
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+
+        server.write_to_dir(path, "server");
+        client.write_to_dir(path, "client");
+
+        run_tls_success_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: None,
+                    cert_pem: Some(client.cert_pem.clone()),
+                    key_file: None,
+                    key_pem: Some(client.key_pem.clone()),
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: Some(ca.cert_pem.clone()),
+                include_system_ca_certs_pool: Some(false),
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                include_system_ca_certs_pool: Some(false),
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_mtls_success_cert_file() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA and certificates
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+
+        server.write_to_dir(path, "server");
+        client.write_to_dir(path, "client");
+        ca.write_cert_to_dir(path, "ca");
+
+        run_tls_success_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("client.crt")),
+                    cert_pem: None,
+                    key_file: Some(path.join("client.key")),
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: Some(path.join("ca.crt")),
+                ca_pem: None,
+                include_system_ca_certs_pool: Some(false),
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: None,
+                client_ca_pem: Some(ca.cert_pem.to_string()),
+                include_system_ca_certs_pool: None,
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_tls_mtls_failure_wrong_client_cert() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        // Generate CA and certificates
+        let ca = generate_ca("Test CA");
+        let server = ca.issue_leaf(
+            "localhost",
+            Some("localhost"),
+            Some(ExtendedKeyUsage::ServerAuth),
+        );
+        let trusted_client =
+            ca.issue_leaf("Trusted Client", None, Some(ExtendedKeyUsage::ClientAuth));
+
+        // Wrong client cert from different CA
+        let other_ca = generate_ca("Other CA");
+        let wrong_client =
+            other_ca.issue_leaf("Wrong Client", None, Some(ExtendedKeyUsage::ClientAuth));
+
+        server.write_to_dir(path, "server");
+        trusted_client.write_to_dir(path, "trusted_client");
+        wrong_client.write_to_dir(path, "wrong_client");
+
+        run_tls_failure_test(
+            TlsClientConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("wrong_client.crt")),
+                    cert_pem: None,
+                    key_file: Some(path.join("wrong_client.key")),
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                ca_file: None,
+                ca_pem: Some(ca.cert_pem.clone()),
+                include_system_ca_certs_pool: Some(false),
+                server_name: None,
+                insecure: None,
+                insecure_skip_verify: None,
+            },
+            TlsServerConfig {
+                config: TlsConfig {
+                    cert_file: Some(path.join("server.crt")),
+                    key_file: Some(path.join("server.key")),
+                    cert_pem: None,
+                    key_pem: None,
+                    reload_interval: None,
+                },
+                client_ca_file: Some(path.join("trusted_client.crt")),
+                client_ca_pem: None,
+                include_system_ca_certs_pool: Some(false),
+                watch_client_ca: false,
+                handshake_timeout: Some(Duration::from_secs(10)),
+            },
+            "client error",
+            true,
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_start_returns_error_if_mtls_cert_without_key() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        client.write_to_dir(path, "client");
+
+        let port = pick_unused_port().unwrap();
+        let endpoint = format!("https://localhost:{port}");
+
+        let config = Config {
+            http: HttpClientSettings {
+                tls: Some(TlsClientConfig {
+                    config: TlsConfig {
+                        cert_file: Some(path.join("client.crt")),
+                        cert_pem: None,
+                        key_file: None, // Missing key
+                        key_pem: None,
+                        reload_interval: None,
+                    },
+                    ca_file: None,
+                    ca_pem: Some(ca.cert_pem.clone()),
+                    include_system_ca_certs_pool: Some(false),
+                    server_name: None,
+                    insecure: None,
+                    insecure_skip_verify: None,
+                }),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|_ctx| Box::pin(async move {}))
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    let err = result.unwrap_err();
+                    let err_message = err.to_string();
+                    assert!(
+                        err_message.contains("both cert and key must be provided"),
+                        "unexpected error: {}",
+                        err_message
+                    )
+                })
+            });
+    }
+
+    #[test]
+    #[cfg(feature = "experimental-tls")]
+    fn test_start_returns_error_if_mtls_key_without_cert() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let path = temp_dir.path();
+
+        let ca = generate_ca("Test CA");
+        let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
+        client.write_to_dir(path, "client");
+
+        let port = pick_unused_port().unwrap();
+        let endpoint = format!("https://localhost:{port}");
+
+        let config = Config {
+            http: HttpClientSettings {
+                tls: Some(TlsClientConfig {
+                    config: TlsConfig {
+                        cert_file: None, // Missing cert
+                        cert_pem: None,
+                        key_file: Some(path.join("client.key")),
+                        key_pem: None,
+                        reload_interval: None,
+                    },
+                    ca_file: None,
+                    ca_pem: Some(ca.cert_pem.clone()),
+                    include_system_ca_certs_pool: Some(false),
+                    server_name: None,
+                    insecure: None,
+                    insecure_skip_verify: None,
+                }),
+                ..Default::default()
+            },
+            ..default_test_config(endpoint)
+        };
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let (_, exporter) = setup_exporter(&test_runtime, config);
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|_ctx| Box::pin(async move {}))
+            .run_validation(|_ctx, result| {
+                Box::pin(async move {
+                    let err = result.unwrap_err();
+                    let err_message = err.to_string();
+                    assert!(
+                        err_message.contains("both cert and key must be provided"),
+                        "unexpected error: {}",
+                        err_message
+                    )
+                })
+            });
     }
 }

@@ -491,7 +491,7 @@ impl DurableBufferMetricsSnapshot {
     }
 }
 
-/// Capture a snapshot of `otelcol.node.durable_buffer` metrics from the
+/// Capture a snapshot of `otap.processor.durable_buffer` metrics from the
 /// telemetry registry.
 ///
 /// The caller must ensure that:
@@ -502,7 +502,7 @@ fn capture_durable_buffer_metrics(
 ) -> DurableBufferMetricsSnapshot {
     let mut snapshot = DurableBufferMetricsSnapshot::default();
     registry.visit_current_metrics(|desc, _attrs, iter| {
-        if desc.name == "otelcol.node.durable_buffer" {
+        if desc.name == "otap.processor.durable_buffer" {
             for (field, value) in iter {
                 let _ = snapshot
                     .fields
