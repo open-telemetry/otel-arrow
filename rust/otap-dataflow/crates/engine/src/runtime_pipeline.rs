@@ -7,7 +7,7 @@ use crate::channel_metrics::ChannelMetricsHandle;
 use crate::component_metrics::ComponentMetricsHandle;
 use crate::context::PipelineContext;
 use crate::control::{
-    ControlSenders, Controllable, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
+    ControlSenders, Controllable, MetricLevel, NodeControlMsg, PipelineCtrlMsgReceiver, PipelineCtrlMsgSender,
 };
 use crate::entity_context::{NodeTaskContext, instrument_with_node_context};
 use crate::error::{Error, TypedError};
@@ -176,11 +176,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
+                // TODO(W12): read MetricLevel from engine config.
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
@@ -209,11 +210,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
+                // TODO(W12): read MetricLevel from engine config.
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));
@@ -246,11 +248,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode> RuntimePipeline<PData> {
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
                 let output_keys = handle.output_channel_keys();
+                // TODO(W12): read MetricLevel from engine config.
                 let node_ctx =
-                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys);
+                    NodeTaskContext::new(node_entity_key, Some(handle), input_key, output_keys, MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else if let Some(key) = node_entity_key {
-                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new());
+                let node_ctx = NodeTaskContext::new(Some(key), None, None, Vec::new(), MetricLevel::None);
                 futures.push(local_tasks.spawn_local(instrument_with_node_context(node_ctx, fut)));
             } else {
                 futures.push(local_tasks.spawn_local(fut));

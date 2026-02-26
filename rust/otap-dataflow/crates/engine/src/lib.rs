@@ -739,7 +739,9 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_telemetry_handle =
             NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
         // Register component metrics (consumed/produced) and collect the handle for reporting.
-        let component_metrics_handle = node_telemetry_handle.register_component_metrics();
+        // TODO(W12): read MetricLevel from engine config instead of hardcoding None.
+        let component_metrics_handle =
+            node_telemetry_handle.register_component_metrics(MetricLevel::None);
         build_state.component_metrics.push(component_metrics_handle);
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));

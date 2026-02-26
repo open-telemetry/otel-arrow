@@ -6,10 +6,11 @@
 //! input/output channel entities.
 
 use crate::component_metrics::{
-    ComponentMetricsHandle, ComponentMetricsState, ConsumedFailureMetrics, ConsumedRefusedMetrics,
-    ConsumedSuccessMetrics, LocalComponentMetricsHandle, ProducedRefusedMetrics,
-    ProducedSuccessMetrics,
+    ComponentMetricsHandle, ComponentMetricsState, ConsumedBytesMetrics, ConsumedDurationMetrics,
+    ConsumedRequestMetrics, LocalComponentMetricsHandle, ProducedBytesMetrics,
+    ProducedRequestMetrics,
 };
+use crate::control::MetricLevel;
 use otap_df_config::PortName;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
@@ -74,6 +75,8 @@ pub(crate) struct NodeTaskContext {
     output_channel_keys: Vec<(PortName, EntityKey)>,
     /// Per-node component metrics handle (consumed/produced counters).
     component_metrics: Option<ComponentMetricsHandle>,
+    /// Engine-wide metric level for this node.
+    metric_level: MetricLevel,
 }
 
 impl NodeTaskContext {
@@ -82,6 +85,7 @@ impl NodeTaskContext {
         telemetry_handle: Option<NodeTelemetryHandle>,
         input_channel_key: Option<EntityKey>,
         output_channel_keys: Vec<(PortName, EntityKey)>,
+        metric_level: MetricLevel,
     ) -> Self {
         let component_metrics = telemetry_handle
             .as_ref()
@@ -92,6 +96,7 @@ impl NodeTaskContext {
             input_channel_key,
             output_channel_keys,
             component_metrics,
+            metric_level,
         }
     }
 }
@@ -145,6 +150,16 @@ pub fn current_component_metrics() -> Option<ComponentMetricsHandle> {
         .try_with(|ctx| ctx.component_metrics.clone())
         .ok()
         .flatten()
+}
+
+/// Returns the metric level for the current task.
+/// Returns `MetricLevel::None` if no task context is set.
+#[inline]
+#[must_use]
+pub fn current_metric_level() -> MetricLevel {
+    NODE_TASK_CONTEXT
+        .try_with(|ctx| ctx.metric_level)
+        .unwrap_or_default()
 }
 
 /// Runs the given future with the provided node task context in task-local storage.
@@ -250,21 +265,46 @@ impl NodeTelemetryHandle {
         self.state.borrow_mut().metric_keys.push(metrics_key);
     }
 
-    /// Register all five component metric sets for this node and store the handle.
+    /// Register level-gated component metric sets for this node and store the handle.
+    /// Only metric sets appropriate for the given `MetricLevel` are registered.
     /// Returns a clone of the handle for centralized reporting.
-    pub(crate) fn register_component_metrics(&self) -> ComponentMetricsHandle {
-        let consumed_success = self.register_metric_set::<ConsumedSuccessMetrics>();
-        let consumed_failure = self.register_metric_set::<ConsumedFailureMetrics>();
-        let consumed_refused = self.register_metric_set::<ConsumedRefusedMetrics>();
-        let produced_success = self.register_metric_set::<ProducedSuccessMetrics>();
-        let produced_refused = self.register_metric_set::<ProducedRefusedMetrics>();
-        let state = ComponentMetricsState::new(
-            consumed_success,
-            consumed_failure,
-            consumed_refused,
-            produced_success,
-            produced_refused,
-        );
+    pub(crate) fn register_component_metrics(&self, level: MetricLevel) -> ComponentMetricsHandle {
+        // Basic+: outcome request counters
+        let consumed_requests = if level >= MetricLevel::Basic {
+            Some(self.register_metric_set::<ConsumedRequestMetrics>())
+        } else {
+            None
+        };
+        let produced_requests = if level >= MetricLevel::Basic {
+            Some(self.register_metric_set::<ProducedRequestMetrics>())
+        } else {
+            None
+        };
+        // Normal+: forward-path byte counters
+        let consumed_bytes = if level >= MetricLevel::Normal {
+            Some(self.register_metric_set::<ConsumedBytesMetrics>())
+        } else {
+            None
+        };
+        let produced_bytes = if level >= MetricLevel::Normal {
+            Some(self.register_metric_set::<ProducedBytesMetrics>())
+        } else {
+            None
+        };
+        // Detailed: duration counters per outcome
+        let consumed_duration = if level >= MetricLevel::Detailed {
+            Some(self.register_metric_set::<ConsumedDurationMetrics>())
+        } else {
+            None
+        };
+        let state = ComponentMetricsState {
+            metric_level: level,
+            consumed_requests,
+            produced_requests,
+            consumed_bytes,
+            produced_bytes,
+            consumed_duration,
+        };
         let handle: LocalComponentMetricsHandle = Rc::new(RefCell::new(state));
         let handle = ComponentMetricsHandle::Local(handle);
         self.state.borrow_mut().component_metrics = Some(handle.clone());
