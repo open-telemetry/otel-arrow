@@ -208,7 +208,7 @@ fn sort_two_columns(
         Native[PType] => {
             // safety: id_column_dispatch! matched the native data type
             let pid_vals = parent_id_col.as_primitive::<PType>().values();
-            dispatch_id_and_pack(rb, |i| pid_vals[i as usize].as_usize() as u64, id_col)
+            dispatch_id_and_pack(rb, |i| pid_vals[i as usize] as u64, id_col)
         },
         Dictionary[KType, VType] => {
             // safety: id_column_dispatch! matched the dictionary key/value types
@@ -217,7 +217,7 @@ fn sort_two_columns(
             let pid_vals = dict.values().as_primitive::<VType>().values();
             dispatch_id_and_pack(
                 rb,
-                |i| pid_vals[pid_keys[i as usize].as_usize()].as_usize() as u64,
+                |i| pid_vals[pid_keys[i as usize].as_usize()] as u64,
                 id_col,
             )
         },
