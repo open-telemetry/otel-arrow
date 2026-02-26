@@ -32,14 +32,6 @@ fn random_u32_array(rng: &mut StdRng, n: usize) -> UInt32Array {
     PrimitiveArray::from_iter_values((0..n).map(|_| rng.random::<u32>()))
 }
 
-fn random_u16_parent_id(rng: &mut StdRng, n: usize) -> UInt16Array {
-    PrimitiveArray::from_iter_values((0..n).map(|_| rng.random::<u16>()))
-}
-
-fn random_u32_parent_id(rng: &mut StdRng, n: usize) -> UInt32Array {
-    PrimitiveArray::from_iter_values((0..n).map(|_| rng.random::<u32>()))
-}
-
 /// Build a Dict<UInt8, UInt32> array with `n` rows, `n_values` distinct values.
 fn random_dict_u8_u32(rng: &mut StdRng, n: usize, n_values: usize) -> ArrayRef {
     let values: Vec<u32> = (0..n_values).map(|_| rng.random::<u32>()).collect();
@@ -120,7 +112,7 @@ fn bench_sort(c: &mut Criterion) {
 
     // 3) u16 parent_id + u16 id - random (native)
     {
-        let pid = Arc::new(random_u16_parent_id(&mut rng, NUM_ROWS)) as ArrayRef;
+        let pid = Arc::new(random_u16_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let id_col = Arc::new(random_u16_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let batch = make_batch(vec![
             ("parent_id", DataType::UInt16, pid),
@@ -137,7 +129,7 @@ fn bench_sort(c: &mut Criterion) {
 
     // 4) u32 id + u16 parent_id - random (native)
     {
-        let pid = Arc::new(random_u16_parent_id(&mut rng, NUM_ROWS)) as ArrayRef;
+        let pid = Arc::new(random_u16_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let id_col = Arc::new(random_u32_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let batch = make_batch(vec![
             ("parent_id", DataType::UInt16, pid),
@@ -154,7 +146,7 @@ fn bench_sort(c: &mut Criterion) {
 
     // 5) u32 id + u32 parent_id - native
     {
-        let pid = Arc::new(random_u32_parent_id(&mut rng, NUM_ROWS)) as ArrayRef;
+        let pid = Arc::new(random_u32_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let id_col = Arc::new(random_u32_array(&mut rng, NUM_ROWS)) as ArrayRef;
         let batch = make_batch(vec![
             ("parent_id", DataType::UInt32, pid),
