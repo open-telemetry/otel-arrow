@@ -17,7 +17,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadT
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::{DataDomainId, PhysicalExprEvalResult};
+use crate::pipeline::expr::{
+    DataDomainId, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME,
+};
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Two-level lookup structure for joining u16 IDs.
@@ -184,7 +186,7 @@ fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> RecordB
 
     match &left.values {
         ColumnarValue::Array(arr) => {
-            fields.push(Field::new("left", arr.data_type().clone(), true));
+            fields.push(Field::new(LEFT_COLUMN_NAME, arr.data_type().clone(), true));
             columns.push(arr.clone());
         }
         _ => {
@@ -193,7 +195,11 @@ fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> RecordB
         }
     }
 
-    fields.push(Field::new("right", right_col.data_type().clone(), true));
+    fields.push(Field::new(
+        RIGHT_COLUMN_NAME,
+        right_col.data_type().clone(),
+        true,
+    ));
     columns.push(right_col);
 
     if let Some(ids) = &left.ids {
@@ -451,14 +457,22 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
 
         // TODO use the correct length ...
         let joined_vals = take(&left.values.to_array(100).unwrap(), &to_take, None).unwrap();
-        new_fields.push(Field::new("left", joined_vals.data_type().clone(), true));
+        new_fields.push(Field::new(
+            LEFT_COLUMN_NAME,
+            joined_vals.data_type().clone(),
+            true,
+        ));
         new_columns.push(joined_vals);
 
         // TODO have a match, assert right.values is an array, and use the array instead of
         // callling to_array wiht a random length (which will be ignored b/c we should know
         // that this is an array at this point)
         let child_col = right.values.to_array(100).unwrap();
-        new_fields.push(Field::new("right", child_col.data_type().clone(), true));
+        new_fields.push(Field::new(
+            RIGHT_COLUMN_NAME,
+            child_col.data_type().clone(),
+            true,
+        ));
         new_columns.push(child_col);
 
         Ok(RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap())
@@ -707,14 +721,22 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
 
         // TODO use actual length
         let joined_vals = take(&left.values.to_array(100).unwrap(), &to_take, None).unwrap();
-        fields.push(Field::new("left", joined_vals.data_type().clone(), true));
+        fields.push(Field::new(
+            LEFT_COLUMN_NAME,
+            joined_vals.data_type().clone(),
+            true,
+        ));
         columns.push(joined_vals);
 
         // TODO have a match, assert right.values is an array, and use the array instead of
         // callling to_array wiht a random length (which will be ignored b/c we should know
         // that this is an array at this point)
         let child_col = right.values.to_array(100).unwrap();
-        fields.push(Field::new("right", child_col.data_type().clone(), true));
+        fields.push(Field::new(
+            RIGHT_COLUMN_NAME,
+            child_col.data_type().clone(),
+            true,
+        ));
         columns.push(child_col);
 
         Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())

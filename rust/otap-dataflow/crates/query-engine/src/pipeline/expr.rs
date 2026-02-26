@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// TODO we'll use this eventually
+#![allow(dead_code)]
+
 //! Implementation of expression evaluation for OTAP (OpenTelemetry Arrow Protocol) batches.
 //!
 
@@ -13,7 +16,7 @@ use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{Field, Fields, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, MathScalarExpression, ScalarExpression,
+    BinaryMathematicalScalarExpression, Expression, MathScalarExpression, ScalarExpression,
     SetTransformExpression, SourceScalarExpression,
 };
 use datafusion::common::DFSchema;
@@ -33,12 +36,18 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::join::join;
-use crate::pipeline::expr::types::{ExprLogicalType, coerce_arithmetic};
+use crate::pipeline::expr::types::{
+    ExprLogicalType, coerce_arithmetic, nested_struct_field_type, root_field_type,
+};
 use crate::pipeline::planner::{AttributesIdentifier, ColumnAccessor};
 use crate::pipeline::project::{Projection, ProjectionOptions};
 
 mod join;
 mod types;
+
+pub(crate) const VALUE_COLUMN_NAME: &str = "value";
+pub(crate) const LEFT_COLUMN_NAME: &str = "left";
+pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 
 /// Identifies which OTAP RecordBatch domain an expression operates on.
 ///
@@ -149,50 +158,56 @@ impl ExprLogicalPlanner {
     ) -> Result<LogicalDomainExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
-                // TODO: Implement source scalar planning
-                // This will handle column references like log.severity_number,
-                // attribute access like attributes["http.method"], etc.
                 let value_accessor = source_scalar_expr.get_value_accessor();
                 let column_accessor = ColumnAccessor::try_from(value_accessor)?;
 
                 match column_accessor {
-                    ColumnAccessor::ColumnName(column_name) => Ok(LogicalDomainExpr {
-                        logical_expr: col(column_name),
-                        requires_dict_downcast: false,
-                        source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                            domain_id: DataDomainId::Root,
-                        }),
-                        // TODO - we should be able to resolve this from schema?
-                        expr_type: ExprLogicalType::Int32,
-                    }),
+                    ColumnAccessor::ColumnName(column_name) => {
+                        let field_type = root_field_type(&column_name).ok_or_else(|| {
+                            Error::InvalidPipelineError {
+                                cause: format!("unknown field {column_name} on root record batch"),
+                                query_location: Some(
+                                    source_scalar_expr.get_query_location().clone(),
+                                ),
+                            }
+                        })?;
+                        Ok(LogicalDomainExpr {
+                            logical_expr: col(column_name),
+                            requires_dict_downcast: false,
+                            source: LogicalExprDataSource::DataSource(LogicalDataDomain {
+                                domain_id: DataDomainId::Root,
+                            }),
+                            expr_type: field_type,
+                        })
+                    }
                     ColumnAccessor::StructCol(column_name, struct_field_name) => {
+                        let field_type =
+                            root_field_type(&struct_field_name).ok_or_else(|| Error::InvalidPipelineError {
+                                cause: format!("unknown field {struct_field_name} on {column_name} struct column"),
+                                query_location: Some(
+                                    source_scalar_expr.get_query_location().clone(),
+                                ),
+                            })?;
                         Ok(LogicalDomainExpr {
                             logical_expr: col(column_name).field(struct_field_name),
                             requires_dict_downcast: false,
                             source: LogicalExprDataSource::DataSource(LogicalDataDomain {
                                 domain_id: DataDomainId::Root,
                             }),
-                            // TODO - this isn't right, needs to be resolved from schema
-                            expr_type: ExprLogicalType::String,
+                            expr_type: field_type,
                         })
                     }
-                    ColumnAccessor::Attributes(attrs_id, key) => {
-                        Ok(LogicalDomainExpr {
-                            // TODO could have a const for this column name
-                            logical_expr: col("value"),
-                            requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                                domain_id: DataDomainId::Attributes(attrs_id, key),
-                            }),
-                            expr_type: ExprLogicalType::AnyValue,
-                        })
-                    }
+                    ColumnAccessor::Attributes(attrs_id, key) => Ok(LogicalDomainExpr {
+                        logical_expr: col(VALUE_COLUMN_NAME),
+                        requires_dict_downcast: false,
+                        source: LogicalExprDataSource::DataSource(LogicalDataDomain {
+                            domain_id: DataDomainId::Attributes(attrs_id, key),
+                        }),
+                        expr_type: ExprLogicalType::AnyValue,
+                    }),
                 }
             }
             ScalarExpression::Static(static_scalar_expr) => {
-                // Convert static scalar constants to DataFusion literals.
-                // All static scalars belong to the StaticScalar domain.
-                // TODO - don't like how this is imported
                 use data_engine_expressions::StaticScalarExpression as SSE;
 
                 let (logical_expr, expr_type) = match static_scalar_expr {
@@ -238,11 +253,19 @@ impl ExprLogicalPlanner {
                     let mut right =
                         self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
 
-                    let expr_type = coerce_arithmetic(&mut left, &mut right);
+                    let expr_type = coerce_arithmetic(&mut left, &mut right).ok_or_else(|| {
+                        // TODO - test for this code path
+                        Error::InvalidPipelineError {
+                            cause: format!(
+                                "could not coerce types for arithmetic: left type {:?}, right type {:?}",
+                                left.expr_type,
+                                right.expr_type
+                            ),
+                            query_location: Some(math_scalar_expr.get_query_location().clone())
+                        }
+                    })?;
 
-                    println!("left = {:?}", left);
-                    println!("right = {:?}", right);
-
+                    // TODO comment about what we're doing here
                     let possible_combined_expr_domain = match (&left.source, &right.source) {
                         (
                             LogicalExprDataSource::DataSource(left_domain),
@@ -271,9 +294,9 @@ impl ExprLogicalPlanner {
                     } else {
                         Ok(LogicalDomainExpr {
                             logical_expr: Expr::BinaryExpr(BinaryExpr::new(
-                                Box::new(col("left")),
+                                Box::new(col(LEFT_COLUMN_NAME)),
                                 Operator::Plus,
-                                Box::new(col("right")),
+                                Box::new(col(RIGHT_COLUMN_NAME)),
                             )),
                             source: LogicalExprDataSource::Join(Box::new(left), Box::new(right)),
                             expr_type,
@@ -317,7 +340,7 @@ struct PhysicalDomainExpr {
     projection_opts: ProjectionOptions,
 }
 
-pub enum PhysicalExprDataSource {
+enum PhysicalExprDataSource {
     DataSource(DataDomainId),
     Join(Box<PhysicalDomainExpr>, Box<PhysicalDomainExpr>),
 }
@@ -330,68 +353,6 @@ pub(crate) struct PhysicalExprEvalResult {
     parent_ids: Option<ArrayRef>,
     scope_ids: Option<ArrayRef>,
     resource_ids: Option<ArrayRef>,
-}
-
-impl From<&PhysicalExprEvalResult> for RecordBatch {
-    fn from(value: &PhysicalExprEvalResult) -> Self {
-        // TODO preallocate
-        let mut columns = Vec::new();
-        let mut fields = Vec::new();
-
-        match &value.values {
-            ColumnarValue::Array(arr) => {
-                fields.push(Field::new("value", arr.data_type().clone(), true));
-                columns.push(arr.clone());
-            }
-            _ => {
-                // TODO - not sure this is reachable?
-                todo!("scalar val in result conversion")
-            }
-        }
-
-        if let Some(ids) = &value.ids {
-            fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
-            columns.push(ids.clone());
-        }
-
-        if let Some(parent_ids) = &value.parent_ids {
-            fields.push(Field::new(
-                consts::PARENT_ID,
-                parent_ids.data_type().clone(),
-                false,
-            ));
-            columns.push(parent_ids.clone());
-        }
-
-        if let Some(col) = &value.resource_ids {
-            let struct_arr = StructArray::new(
-                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-                vec![col.clone()],
-                None,
-            );
-            fields.push(Field::new(
-                consts::RESOURCE,
-                struct_arr.data_type().clone(),
-                true,
-            ));
-            columns.push(Arc::new(struct_arr));
-        }
-
-        if let Some(col) = &value.scope_ids {
-            let struct_arr = StructArray::new(
-                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-                vec![col.clone()],
-                None,
-            );
-            fields.push(Field::new(
-                consts::SCOPE,
-                struct_arr.data_type().clone(),
-                true,
-            ));
-            columns.push(Arc::new(struct_arr));
-        }
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
-    }
 }
 
 impl PhysicalDomainExpr {
@@ -667,7 +628,7 @@ impl PhysicalDomainExpr {
 
         // Add the value column renamed to "value"
         fields.push(Arc::new(Field::new(
-            "value",
+            VALUE_COLUMN_NAME,
             value_array.data_type().clone(),
             true,
         )));
@@ -710,6 +671,36 @@ mod test {
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
+    fn run_scalar_expr_test(
+        input_expr: ScalarExpression,
+        input_data: &OtapArrowRecords,
+    ) -> Option<ColumnarValue> {
+        let mut planner = ExprLogicalPlanner {};
+        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
+        let mut physical_expr = logical_expr.into_physical().unwrap();
+        let session_ctx = Pipeline::create_session_context();
+        let result = physical_expr
+            .execute(&input_data, &session_ctx, false)
+            .unwrap();
+        result.map(|result| result.values)
+    }
+
+    fn run_scalar_expr_success_test(
+        input_expr: ScalarExpression,
+        input_data: &OtapArrowRecords,
+        expected_result: ArrayRef,
+    ) {
+        let result = run_scalar_expr_test(input_expr, input_data);
+        match &result {
+            Some(ColumnarValue::Array(arr)) => {
+                assert_eq!(arr.as_ref(), expected_result.as_ref())
+            }
+            otherwise => {
+                panic!("expected Some(ColumnarValue({expected_result:?})), got {otherwise:?}")
+            }
+        }
+    }
+
     // TODO the name the LLM generated for these tests is a bit hokey ...
     // "_to_physical_expr" ugh
     // I think we can
@@ -750,8 +741,7 @@ mod test {
 
     #[test]
     fn test_planner_root_source_to_physical_execute() {
-        let mut planner = ExprLogicalPlanner {};
-        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
                 StaticScalarExpression::String(StringScalarExpression::new(
@@ -761,11 +751,6 @@ mod test {
             )]),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
         let logs = to_logs_data(vec![
             LogRecord::build().severity_text("ERROR").finish(),
             LogRecord::build().severity_text("INFO").finish(),
@@ -773,33 +758,16 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
-        // get the expected column
+        // get the expected column, which is the column we're accessing
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
         let input_col = logs.column_by_name(consts::SEVERITY_TEXT).unwrap();
-
-        // Should successfully evaluate
-        assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), input_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, input_col.clone());
     }
 
     #[test]
     fn test_planner_root_struct_to_physical_execute() {
-        let mut planner = ExprLogicalPlanner {};
-        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -810,11 +778,6 @@ mod test {
                 )),
             ]),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![ResourceLogs {
             scope_logs: vec![
@@ -837,8 +800,6 @@ mod test {
         }]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let logs = otap_batch.get(ArrowPayloadType::Logs).unwrap();
@@ -850,26 +811,12 @@ mod test {
             .column_by_name(consts::NAME)
             .unwrap();
 
-        // Should successfully evaluate
-        assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), input_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, input_col.clone());
     }
 
     #[test]
     fn test_planner_attribute_source_to_physical_execute() {
-        let mut planner = ExprLogicalPlanner {};
-        let static_expr = ScalarExpression::Source(SourceScalarExpression::new(
+        let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
                 ScalarExpression::Static(StaticScalarExpression::String(
@@ -880,11 +827,6 @@ mod test {
                 )),
             ]),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&static_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = to_logs_data(vec![
             LogRecord::build()
@@ -907,33 +849,17 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
         let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         let expected_col = take(input_col, &Int32Array::from(vec![1, 2, 4]), None).unwrap();
 
-        // Should successfully evaluate
-        assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_column_to_scalar() {
-        let mut planner = ExprLogicalPlanner {};
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -956,11 +882,6 @@ mod test {
             ),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
         let logs = to_logs_data(vec![
             LogRecord::build().severity_number(10).finish(),
             LogRecord::build()
@@ -974,31 +895,13 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
-        // get the expected column
         let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
-
-        // Should successfully evaluate
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_scalar_to_column() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
             IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
         ));
@@ -1021,11 +924,6 @@ mod test {
             ),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
         let logs = to_logs_data(vec![
             LogRecord::build().severity_number(10).finish(),
             LogRecord::build()
@@ -1039,30 +937,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
         let expected_col = Arc::new(Int32Array::from_iter_values(vec![12, 32, 22]));
-
-        // Should successfully evaluate
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_same_attributes() {
-        let mut planner = ExprLogicalPlanner {};
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1095,11 +975,6 @@ mod test {
             ),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
         let logs = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
@@ -1124,33 +999,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
-        // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         let expected_col = Arc::new(Int64Array::from(vec![4, 12, 9]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_root_to_attribute() {
-        let mut planner = ExprLogicalPlanner {};
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -1181,11 +1035,6 @@ mod test {
             ),
         ));
 
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
-
         let logs = to_logs_data(vec![
             LogRecord::build()
                 .attributes(vec![
@@ -1213,34 +1062,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
-        // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_attribute_to_root() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1270,11 +1097,6 @@ mod test {
                 right_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = to_logs_data(vec![
             LogRecord::build()
@@ -1303,34 +1125,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
-        // let logs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
-        // let input_col = logs.column_by_name(consts::ATTRIBUTE_STR).unwrap();
         let expected_col = Arc::new(Int64Array::from(vec![13, 29, 32]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_root_to_nonroot_attrs() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -1363,11 +1163,6 @@ mod test {
                 right_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![
             ResourceLogs {
@@ -1408,32 +1203,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_nonroot_attrs_to_root() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1466,11 +1241,6 @@ mod test {
                 right_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![
             ResourceLogs {
@@ -1511,32 +1281,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![13, 15, 27]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_attrs_to_nonroot_attrs() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1571,11 +1321,6 @@ mod test {
                 right_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![
             ResourceLogs {
@@ -1627,32 +1372,12 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     #[test]
     fn test_planner_binary_expr_nonroot_attrs_to_root_attrs() {
-        let mut planner = ExprLogicalPlanner {};
-
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1687,11 +1412,6 @@ mod test {
                 right_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![
             ResourceLogs {
@@ -1743,33 +1463,13 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
-
-        // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![11, 12, 27]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 
     // TODO - this is kind of just a smoke test, should we have it be more purposeful?
     #[test]
     fn test_planner_binary_expr_deeply_nested_expr() {
-        let mut planner = ExprLogicalPlanner {};
-
         let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1807,23 +1507,6 @@ mod test {
             )]),
         ));
 
-        // let scope_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
-        //     QueryLocation::new_fake(),
-        //     ValueAccessor::new_with_selectors(vec![
-        //         ScalarExpression::Static(StaticScalarExpression::String(
-        //             StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
-        //         )),
-        //         ScalarExpression::Static(StaticScalarExpression::String(
-        //             StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
-        //         )),
-        //         ScalarExpression::Static(StaticScalarExpression::String(
-        //             StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
-        //         )),
-        //     ]),
-        // ));
-
-        // let
-
         let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
             BinaryMathematicalScalarExpression::new(
                 QueryLocation::new_fake(),
@@ -1837,11 +1520,6 @@ mod test {
                 root_expr,
             ),
         ));
-
-        let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
-
-        // Convert to physical
-        let mut physical_expr = logical_expr.into_physical().unwrap();
 
         let logs = LogsData::new(vec![
             ResourceLogs {
@@ -1893,25 +1571,9 @@ mod test {
         ]);
 
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
-        let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
 
         // get the expected column
         let expected_col = Arc::new(Int64Array::from(vec![14, 17, 34]));
-
-        // Should successfully evaluate
-        // assert!(result.is_ok());
-        let columnar_value = result.unwrap();
-        assert!(columnar_value.is_some());
-
-        // Verify it's a scalar value of 99
-        match columnar_value.unwrap().values {
-            ColumnarValue::Scalar(_) => {
-                panic!("Expected scalar, got array");
-            }
-            ColumnarValue::Array(arr) => {
-                assert_eq!(arr.as_ref(), expected_col.as_ref())
-            }
-        }
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
     }
 }
