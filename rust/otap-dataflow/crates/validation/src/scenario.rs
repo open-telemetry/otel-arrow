@@ -6,8 +6,8 @@
 
 use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
-use crate::traffic::MessageType;
 use crate::simulate::run_pipelines_with_timeout;
+use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator};
 use minijinja::{Environment, context};
 use portpicker::pick_unused_port;
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn render_template_requires_connected_labels() {
         let pipeline = Pipeline::from_yaml("nodes: {}\n");
-        let generator = Generator::new(MessageType::Logs).signals_per_second(1);
-        let capture = Capture::new();
+        let generator = Generator::logs();
+        let capture = Capture::default();
         let scenario = Scenario::new()
             .pipeline(pipeline)
             .add_generator("gen", generator)
@@ -376,8 +376,8 @@ mod tests {
     #[test]
     fn render_template_includes_added_generator_and_capture() {
         let pipeline = Pipeline::from_yaml("nodes: {}\n");
-        let generator = Generator::new(MessageType::Logs).signals_per_second(7);
-        let capture = Capture::new();
+        let generator = Generator::logs();
+        let capture = Capture::default();
 
         let rendered = Scenario::new()
             .pipeline(pipeline)

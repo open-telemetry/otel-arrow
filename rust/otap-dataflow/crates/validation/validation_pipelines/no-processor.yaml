@@ -1,21 +1,13 @@
 nodes:
   receiver:
-<<<<<<< HEAD
-    type: otlp:receiver
-=======
     type: "urn:otel:receiver:otlp"
->>>>>>> main
     config:
       protocols:
         grpc:
           listening_addr: 127.0.0.1:4317
 
   exporter:
-<<<<<<< HEAD
-    type: otlp:exporter
-=======
     type: "urn:otel:exporter:otlp"
->>>>>>> main
     config:
       grpc_endpoint: http://127.0.0.1:4318
 connections:

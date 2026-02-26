@@ -40,15 +40,9 @@ struct ValidationExporterConfig {
     suv_input: NodeName,
     #[serde(default)]
     control_inputs: Vec<NodeName>,
-    /// Validation rules to run. Defaults to a single equivalence check.
-    #[serde(default = "ValidationExporterConfig::default_validations")]
+    /// Validation rules to run.
+    #[serde(default)]
     validations: Vec<ValidationInstructions>,
-}
-
-impl ValidationExporterConfig {
-    fn default_validations() -> Vec<ValidationInstructions> {
-        vec![ValidationInstructions::Equivalence]
-    }
 }
 
 #[metric_set(name = "validation.exporter.metrics")]

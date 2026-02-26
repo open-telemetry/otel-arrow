@@ -6,7 +6,8 @@ asserting invariants.
 
 ## Framework components
 
-- `Scenario`: orchestrates end-to-end runs (render -> run -> validate).
+- `Scenario`: orchestrates end-to-end runs
+  - wire connections -> render pipeline group config -> validate
 - `Pipeline`: loads your SUV pipeline YAML and overrides endpoints.
 - `Generator` / `Capture`: configure traffic emission and capture/validation.
 
@@ -176,7 +177,7 @@ the keys under `nodes:` in your pipeline YAML.
   let capture = Capture::default()
       .otlp_grpc("node_name")   // required; must pass node name of exporter in your system-under-validation pipeline
       .core_range(3, 5)    // optional; default 1-1
-      .validate(vec![           // optional; only equivalence with be checked by default
+      .validate(vec![           // required; define your validation instructions
           ValidationInstructions::Equivalence,
           ValidationInstructions::SignalDrop { min_drop_ratio: None, max_drop_ratio: Some(0.5) },
           ValidationInstructions::AttributeRequireKeyValue {
@@ -194,7 +195,7 @@ the keys under `nodes:` in your pipeline YAML.
     - receiver type must match the exporter type
       - OTLP -> OTLP or OTAP -> OTAP
 - `validate(Vec<ValidationInstructions>)` - define validation instructions
-  - default: [Equivalence]
+  - default: []
 - `core_range(start, end)` - set the core range to use for pipeline
   - default: 1-1
 

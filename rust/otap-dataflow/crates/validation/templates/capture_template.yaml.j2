@@ -4,7 +4,7 @@
   {% set suv_receiver_plugin_urn = "urn:otel:receiver:otap" -%}
 {% endif -%}
 {% set suv_port = suv_port | default(4318) -%}
-{% set validate = validate | default("- equivalence") -%}
+{% set validate = validate | default("") -%}
 {% set control_ports = control_ports | default([]) -%}
 {% set capture_core_start = capture_core_start | default(1) -%}
 {% set capture_core_end = capture_core_end | default(1) -%}
@@ -48,8 +48,10 @@
 {% endfor %}
 {% endif %}
         suv_input: suv_receiver
+{% if validate | length > 0 %}
         validations:
 {{ validate | indent(10, true)}}
+{% endif %}
   connections:
   - from: suv_receiver
     to: {{ capture_label }}

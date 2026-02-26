@@ -26,6 +26,9 @@ nodes:
     type: "urn:otel:exporter:otap"
     config:
       grpc_endpoint: http://127.0.0.1:4318
+      compression_method: none
+      arrow:
+        payload_compression: none
 connections:
   - from: receiver
     to: filter

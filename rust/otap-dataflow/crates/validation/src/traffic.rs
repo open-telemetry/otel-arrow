@@ -218,6 +218,9 @@ impl Capture {
     /// Serialize the configured validations as JSON (for template contexts).
     #[must_use]
     pub fn validations_config(&self) -> String {
+        if self.validate.is_empty() {
+            return "".to_string();
+        }
         serde_yaml::to_string(&self.validate).unwrap_or_else(|_| "".to_string())
     }
 }
@@ -231,7 +234,7 @@ impl Default for Capture {
             core_end: 1,
             suv_port: DEFAULT_SUV_PORT,
             control_ports: vec![],
-            validate: vec![ValidationInstructions::Equivalence],
+            validate: vec![],
         }
     }
 }
