@@ -403,21 +403,29 @@ impl PhysicalDomainExpr {
                 (input_rb, data_domain_id.clone())
             }
             PhysicalExprDataSource::Join(left, right) => {
-                // TODO no unwrap - need null propagation
-                let left_result = left.execute(otap_batch, session_context, true)?.unwrap();
-                let right_result = right.execute(otap_batch, session_context, true)?.unwrap();
-
-                let (joined_rb, result_data_domain) =
-                    join(&left_result, &right_result, otap_batch)?;
-                (Some(Cow::Owned(joined_rb)), result_data_domain)
+                let left_result = left.execute(otap_batch, session_context, true)?;
+                let right_result = right.execute(otap_batch, session_context, true)?;
+                match (left_result, right_result) {
+                    (Some(left_result), Some(right_result)) => {
+                        let (joined_rb, result_data_domain) =
+                            join(&left_result, &right_result, otap_batch)?;
+                        (Some(Cow::Owned(joined_rb)), result_data_domain)
+                    }
+                    _ => return Ok(None),
+                }
             }
         };
 
         let source_rb = match source_rb {
             Some(rb) => rb,
-            None => return Ok(None),
+            None => {
+                // the source was not present, return None indicating the expression is evaluated
+                // as null for the entire input
+                return Ok(None);
+            }
         };
 
+        // project the source record batch into the schema expected by the physical expr
         let projected_rb = if result_data_domain != DataDomainId::StaticScalar {
             match self
                 .projection
@@ -427,13 +435,12 @@ impl PhysicalDomainExpr {
                 None => return Ok(None),
             }
         } else {
-            // TODO there must be a helper for this
-            match &source_rb {
-                Cow::Borrowed(rb) => Cow::Borrowed(*rb),
-                Cow::Owned(rb) => Cow::Borrowed(rb),
-            }
+            // don't project for scalar record batch, as it's just a placeholder with no columns
+            Cow::Borrowed(source_rb.as_ref())
         };
 
+        // plan the physical expressions from logical expression. This happens lazily the first
+        // time we receive a non-null batch
         if self.physical_expr.is_none() {
             let session_state = session_context.state();
             let df_schema = DFSchema::try_from(projected_rb.schema_ref().as_ref().clone())?;
@@ -444,10 +451,13 @@ impl PhysicalDomainExpr {
             )?;
             self.physical_expr = Some(physical_expr);
         }
+
+        // evaluate the expression
+        // safety: we've just initialized physical_expr, so it's safe to expect here
         let result_vals = self
             .physical_expr
             .as_ref()
-            .unwrap()
+            .expect("physical expr initialized")
             .evaluate(&projected_rb)?;
 
         // TODO this'd be cleaner as a constructor
@@ -1752,5 +1762,137 @@ mod test {
         let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
         let expected_col = Arc::new(Int64Array::from_iter([Some(4), None, Some(9)]));
         run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+    }
+
+    #[test]
+    fn test_arithmetic_null_propagation_null_result_on_join() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        // severity number not present
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                ])
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let result = run_scalar_expr_test(input_expr, &otap_batch);
+        assert!(result.is_none());
+    }
+
+    // TODO other test cases:
+    // - empty attributes on both side of join
+    // -
+
+    #[test]
+    fn test_arithmetic_type_mismatch_caught_planning() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_TEXT,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        // Check it returns an error when it detects at planning time that it won't be able to add
+        // these two fields.
+        //
+        // TODO - we should have better coverage of all combos in the type coercion module..
+        let mut planner = ExprLogicalPlanner {};
+        let err = planner
+            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    left_expr.clone(),
+                    right_expr.clone(),
+                ),
+            )))
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains(
+                "could not coerce types for arithmetic: left type String, right type AnyValue"
+            ),
+            "Unexpected error message: {:?}",
+            err_msg
+        );
+
+        // check it with swapped left/right arguments (for good measure):
+        let mut planner = ExprLogicalPlanner {};
+        let err = planner
+            .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
+                BinaryMathematicalScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    right_expr,
+                    left_expr,
+                ),
+            )))
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains(
+                "could not coerce types for arithmetic: left type AnyValue, right type String"
+            ),
+            "Unexpected error message: {:?}",
+            err_msg
+        )
     }
 }

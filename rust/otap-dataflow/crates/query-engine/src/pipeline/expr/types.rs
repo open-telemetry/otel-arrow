@@ -132,8 +132,9 @@ pub fn coerce_arithmetic(
                 Some(ExprLogicalType::Int64)
             }
 
-            other_right => {
-                todo!("todo left to other right {other_right:?}")
+            _ => {
+                // other types cannot be added to AnyValue
+                None
             }
         },
         // TODO this can probably be ExprLogicalType::UInt32 | ExprLogicalType::UInt64 ... etc.
@@ -176,8 +177,8 @@ pub fn coerce_arithmetic(
                 todo!()
             }
         },
-        other_left => {
-            todo!("no type handler for left {:?}", other_left)
-        }
+
+        // other types cannot be used as argument to arithmetic
+        _ => None,
     }
 }
