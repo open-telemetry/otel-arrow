@@ -62,7 +62,7 @@ use otap_df_telemetry::otel_warn;
 use crate::OTAP_EXPORTER_FACTORIES;
 use crate::metrics::ExporterPDataMetrics;
 use crate::otlp_exporter::InFlightExports;
-use crate::otlp_http::client_settings::HttpClientSettings;
+use crate::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use crate::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use crate::otlp_http_exporter::config::Config;
 use crate::pdata::{Context, OtapPdata};
@@ -668,7 +668,7 @@ impl HttpClientPool {
     async fn try_new(
         client_settings: &HttpClientSettings,
         pool_size: NonZeroUsize,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, HttpClientError> {
         let mut default_headers = HeaderMap::new();
 
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads

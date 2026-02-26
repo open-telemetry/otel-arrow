@@ -64,7 +64,7 @@ impl HttpClientSettings {
     }
 
     /// Returns a configured client-builder
-    pub async fn client_builder(&self) -> Result<ClientBuilder, Box<dyn std::error::Error>> {
+    pub async fn client_builder(&self) -> Result<ClientBuilder, HttpClientError> {
         let mut client_builder = ClientBuilder::new()
             .connect_timeout(self.connect_timeout)
             .tcp_nodelay(self.tcp_nodelay)
@@ -86,7 +86,6 @@ impl HttpClientSettings {
 
         #[cfg(feature = "experimental-tls")]
         if let Some(tls) = &self.tls {
-            let insecure = tls.insecure.unwrap_or(false);
             let mut certs = vec![];
 
             if let Some(ca_pem) = &tls.ca_pem {
@@ -206,6 +205,18 @@ impl HttpClientSettings {
 
         Ok(client_builder)
     }
+}
+
+/// Errors that occur configuring Http ClientBuilder
+#[derive(thiserror::Error, Debug)]
+pub enum HttpClientError {
+    /// Error occurred configuring reqwest client
+    #[error("http client build error: {0}")]
+    Reqwest(#[from] reqwest::Error),
+
+    /// IO Error occurred reading tls cert from file
+    #[error("http client build io error: {0}")]
+    Io(#[from] io::Error),
 }
 
 impl Default for HttpClientSettings {
