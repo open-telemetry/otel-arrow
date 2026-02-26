@@ -1,14 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, DictionaryArray, MutableArrayData, PrimitiveArray, RecordBatch, StructArray,
-    UInt32Array, make_array,
+    UInt16Array, UInt32Array, make_array,
 };
 use arrow::compute::SortColumn;
+use arrow::datatypes::ArrowNativeType;
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
@@ -160,60 +162,27 @@ fn sort_by_parent_then_id_impl(rb: RecordBatch) -> Result<RecordBatch> {
     }
 }
 
-/// Single-column sort. Sorts native/dict columns directly via `sort_unstable_by_key`
-/// on the primitive values, avoiding Arrow's `sort_to_indices` kernel overhead.
+/// Single-column sort. Uses `id_column_dispatch!` for type dispatch, then delegates
+/// to generic sort functions to avoid duplicating sort logic across macro arms.
 fn sort_single_column(rb: RecordBatch, col: &ArrayRef) -> Result<RecordBatch> {
-    let len = rb.num_rows();
-
     id_column_dispatch!(
         col,
         Native[T] => {
-            let vals = col.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap().values();
-            if vals.is_sorted() {
-                return Ok(rb);
-            }
-            let mut indices: Vec<u32> = (0..len as u32).collect();
-            indices.sort_unstable_by_key(|&i| vals[i as usize]);
-            let indices_arr = UInt32Array::from(indices);
-            return sort_record_batch_by_indices(rb, &indices_arr);
+            let arr = col.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
+            return sort_by_values(rb, arr.values());
         },
         Dictionary[KType, VType] => {
             let dict = col.as_any().downcast_ref::<DictionaryArray<KType>>().unwrap();
-            let keys = dict.keys().values();
             let vals = dict.values().as_any()
-                .downcast_ref::<PrimitiveArray<VType>>().unwrap().values();
-
-            let resolved_sorted = keys.windows(2).all(|w| {
-                vals[w[0] as usize] <= vals[w[1] as usize]
-            });
-            if resolved_sorted {
-                return Ok(rb);
-            }
-
-            let mut indices: Vec<u32> = (0..len as u32).collect();
-            indices.sort_unstable_by_key(|&i| vals[keys[i as usize] as usize]);
-            let indices_arr = UInt32Array::from(indices);
-            return sort_record_batch_by_indices(rb, &indices_arr);
+                .downcast_ref::<PrimitiveArray<VType>>().unwrap();
+            return sort_by_dict_values(rb, dict.keys().values(), vals.values());
         },
-        _ => {}
+        _ => {
+            return Err(Error::UnsupportedParentIdType {
+                actual: col.data_type().clone(),
+            });
+        }
     );
-
-    // Fallback for unsupported column types
-    let indices = arrow::compute::sort_to_indices(
-        col,
-        Some(SortOptions {
-            descending: false,
-            nulls_first: true,
-        }),
-        None,
-    )
-    .map_err(|e| Error::Batching { source: e })?;
-
-    if indices.values().is_sorted() {
-        return Ok(rb);
-    }
-
-    sort_record_batch_by_indices(rb, &indices)
 }
 
 /// Two-column sort. Uses packed u64 sort for dict-encoded parent_id, RowConverter otherwise.
@@ -264,8 +233,8 @@ fn sort_two_columns_row_converter(
 
 /// Packed u64 sort for dict-encoded parent_id + native id.
 ///
-/// Packs `resolved_parent_id` into the high bits and `id` into the low bits of a u64,
-/// then sorts the packed values. This avoids the RowConverter's dictionary expansion.
+/// Uses `id_column_dispatch!` to resolve the dictionary parent_id types. The id column
+/// is never dictionary-encoded, so a plain match extracts its values as u32.
 fn sort_two_columns_packed(
     rb: RecordBatch,
     parent_id_col: &ArrayRef,
@@ -274,20 +243,29 @@ fn sort_two_columns_packed(
     debug_assert_eq!(parent_id_col.null_count(), 0);
     debug_assert_eq!(id_col.null_count(), 0);
 
-    let len = rb.num_rows();
-    let id_shift = match id_col.data_type() {
-        DataType::UInt16 => 16u32,
-        DataType::UInt32 => 32u32,
-        _ => return sort_two_columns_row_converter(rb, parent_id_col, id_col),
+    // The id column is never dictionary-encoded. Read values as u32, casting u16 if needed.
+    let id_u32: Cow<'_, [u32]> = match id_col.data_type() {
+        DataType::UInt16 => {
+            let arr = id_col.as_any().downcast_ref::<UInt16Array>().unwrap();
+            Cow::Owned(arr.values().iter().map(|&v| v as u32).collect())
+        }
+        DataType::UInt32 => {
+            let arr = id_col.as_any().downcast_ref::<UInt32Array>().unwrap();
+            Cow::Borrowed(arr.values())
+        }
+        other => {
+            return Err(Error::UnsupportedParentIdType {
+                actual: other.clone(),
+            });
+        }
     };
-
-    let mut packed: Vec<u64> = Vec::with_capacity(len);
 
     id_column_dispatch!(
         parent_id_col,
         Native[_T] => {
-            // parent_id is native, not dict — caller should not have routed here
-            return sort_two_columns_row_converter(rb, parent_id_col, id_col);
+            return Err(Error::UnsupportedParentIdType {
+                actual: parent_id_col.data_type().clone(),
+            });
         },
         Dictionary[KType, VType] => {
             let dict = parent_id_col.as_any()
@@ -295,29 +273,74 @@ fn sort_two_columns_packed(
             let pid_keys = dict.keys().values();
             let pid_vals = dict.values().as_any()
                 .downcast_ref::<PrimitiveArray<VType>>().unwrap().values();
-
-            id_column_dispatch!(
-                id_col,
-                Native[IdType] => {
-                    let id_vals = id_col.as_any()
-                        .downcast_ref::<PrimitiveArray<IdType>>().unwrap().values();
-                    for i in 0..len {
-                        let pid = pid_vals[pid_keys[i] as usize] as u64;
-                        let id = id_vals[i] as u64;
-                        packed.push((pid << id_shift) | id);
-                    }
-                },
-                Dictionary[_K2, _V2] => {
-                    // id column is never dict-encoded, but handle gracefully
-                    return sort_two_columns_row_converter(rb, parent_id_col, id_col);
-                },
-                _ => return sort_two_columns_row_converter(rb, parent_id_col, id_col),
+            return sort_by_packed_dict_parent_native_id(
+                rb, pid_keys, pid_vals, &id_u32,
             );
         },
-        _ => return sort_two_columns_row_converter(rb, parent_id_col, id_col),
+        _ => {
+            return Err(Error::UnsupportedParentIdType {
+                actual: parent_id_col.data_type().clone(),
+            });
+        },
     );
+}
 
-    debug_assert_eq!(packed.len(), len);
+// ---------------------------------------------------------------------------
+// Generic sort implementations (called from type-dispatch sites above)
+// ---------------------------------------------------------------------------
+
+/// Sort a record batch by a single native column's values.
+fn sort_by_values<V: ArrowNativeType + Ord>(
+    rb: RecordBatch,
+    values: &[V],
+) -> Result<RecordBatch> {
+    if values.is_sorted() {
+        return Ok(rb);
+    }
+
+    let mut indices: Vec<u32> = (0..values.len() as u32).collect();
+    indices.sort_unstable_by_key(|&i| values[i as usize]);
+    let indices_arr = UInt32Array::from(indices);
+    sort_record_batch_by_indices(rb, &indices_arr)
+}
+
+/// Sort a record batch by resolving dictionary keys through a values array.
+fn sort_by_dict_values<K: ArrowNativeType, V: ArrowNativeType + Ord>(
+    rb: RecordBatch,
+    keys: &[K],
+    values: &[V],
+) -> Result<RecordBatch> {
+    let resolved_sorted = keys
+        .windows(2)
+        .all(|w| values[w[0].as_usize()] <= values[w[1].as_usize()]);
+
+    if resolved_sorted {
+        return Ok(rb);
+    }
+
+    let mut indices: Vec<u32> = (0..keys.len() as u32).collect();
+    indices.sort_unstable_by_key(|&i| values[keys[i as usize].as_usize()]);
+    let indices_arr = UInt32Array::from(indices);
+    sort_record_batch_by_indices(rb, &indices_arr)
+}
+
+/// Pack resolved dict parent_id + native id into u64 sort keys and sort.
+///
+/// High 32 bits hold the resolved `parent_id` value, low 32 bits hold the `id` value
+/// (already cast to u32 by the caller).
+fn sort_by_packed_dict_parent_native_id<K: ArrowNativeType, PV: ArrowNativeType>(
+    rb: RecordBatch,
+    pid_keys: &[K],
+    pid_vals: &[PV],
+    id_vals: &[u32],
+) -> Result<RecordBatch> {
+    let len = pid_keys.len();
+    let mut packed: Vec<u64> = Vec::with_capacity(len);
+    for i in 0..len {
+        let pid = pid_vals[pid_keys[i].as_usize()].as_usize() as u64;
+        let id = id_vals[i] as u64;
+        packed.push((pid << 32) | id);
+    }
 
     if packed.is_sorted() {
         return Ok(rb);
@@ -787,5 +810,87 @@ mod tests {
         let sorted = sort_by_parent_then_id(rb).unwrap();
         assert_eq!(col_u16(&sorted, "parent_id"), vec![1, 1, 2, 2]);
         assert_eq!(col_u16(&sorted, "id"), vec![1, 2, 1, 2]);
+    }
+
+    // -- nullable column tests --------------------------------------------------
+
+    use arrow::array::UInt16Array;
+    use arrow::datatypes::{Field, UInt8Type};
+    use std::sync::Arc;
+
+    /// Helper: build a RecordBatch from pre-built (name, array) pairs.
+    fn batch_from_arrays(cols: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(
+            cols.iter()
+                .map(|(name, arr)| Field::new(*name, arr.data_type().clone(), true))
+                .collect::<Vec<_>>(),
+        ));
+        let arrays: Vec<ArrayRef> = cols.into_iter().map(|(_, a)| a).collect();
+        RecordBatch::try_new(schema, arrays).unwrap()
+    }
+
+    /// Helper: extract a nullable u16 column as Vec<Option<u16>>.
+    fn col_u16_nullable(rb: &RecordBatch, name: &str) -> Vec<Option<u16>> {
+        let col = rb.column_by_name(name).unwrap();
+        let arr = col.as_primitive::<UInt16Type>();
+        (0..arr.len())
+            .map(|i| if arr.is_null(i) { None } else { Some(arr.value(i)) })
+            .collect()
+    }
+
+    #[test]
+    fn test_native_id_with_nulls() {
+        // id = [3, NULL, 1] → expected: [NULL, 1, 3]
+        let id: ArrayRef =
+            Arc::new(UInt16Array::from(vec![Some(3), None, Some(1)]));
+        let rb = batch_from_arrays(vec![("id", id)]);
+
+        let sorted = sort_by_parent_then_id(rb).unwrap();
+        assert_eq!(
+            col_u16_nullable(&sorted, "id"),
+            vec![None, Some(1), Some(3)]
+        );
+    }
+
+    #[test]
+    fn test_native_parent_id_with_nulls_and_id() {
+        // parent_id = [2, NULL, 1], id = [10, 20, 30]
+        // expected: (NULL, 20), (1, 30), (2, 10)
+        let pid: ArrayRef =
+            Arc::new(UInt16Array::from(vec![Some(2), None, Some(1)]));
+        let id: ArrayRef =
+            Arc::new(UInt16Array::from(vec![Some(10), Some(20), Some(30)]));
+        let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
+
+        let sorted = sort_by_parent_then_id(rb).unwrap();
+        assert_eq!(
+            col_u16_nullable(&sorted, "parent_id"),
+            vec![None, Some(1), Some(2)]
+        );
+        assert_eq!(
+            col_u16_nullable(&sorted, "id"),
+            vec![Some(20), Some(30), Some(10)]
+        );
+    }
+
+    #[test]
+    fn test_dict_parent_id_and_native_id_with_null_ids() {
+        // Dict parent_id resolves to [20, 10, 20, 10], id = [NULL, 3, 2, 1]
+        // expected by (parent_id, id): (10, 1), (10, 3), (20, NULL), (20, 2)
+        let pid: ArrayRef = Arc::new(
+            DictionaryArray::<UInt8Type>::new(
+                arrow::array::UInt8Array::from(vec![1, 0, 1, 0]),
+                Arc::new(UInt16Array::from(vec![10, 20])),
+            ),
+        );
+        let id: ArrayRef =
+            Arc::new(UInt16Array::from(vec![None, Some(3), Some(2), Some(1)]));
+        let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
+
+        let sorted = sort_by_parent_then_id(rb).unwrap();
+        assert_eq!(
+            col_u16_nullable(&sorted, "id"),
+            vec![Some(1), Some(3), None, Some(2)]
+        );
     }
 }

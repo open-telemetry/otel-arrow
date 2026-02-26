@@ -58,6 +58,21 @@ fn random_dict_u16_u32(rng: &mut StdRng, n: usize, n_values: usize) -> ArrayRef 
     Arc::new(DictionaryArray::new(keys_arr, values_arr))
 }
 
+/// Build a UInt32 array with `n` rows where ~25% are null.
+fn random_nullable_u32_array(rng: &mut StdRng, n: usize) -> UInt32Array {
+    UInt32Array::from(
+        (0..n)
+            .map(|_| {
+                if rng.random_range(0u8..4) == 0 {
+                    None
+                } else {
+                    Some(rng.random::<u32>())
+                }
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 fn make_batch(fields: Vec<(&str, DataType, ArrayRef)>) -> RecordBatch {
     let schema = Arc::new(Schema::new(
         fields
@@ -183,6 +198,24 @@ fn bench_sort(c: &mut Criterion) {
         ]);
         let _ = group.bench_with_input(
             BenchmarkId::new("u32_id_dict_u16_u32_pid", "random"),
+            &batch,
+            |b, batch| {
+                b.iter(|| sort_by_parent_then_id(batch.clone()).unwrap());
+            },
+        );
+    }
+
+    // 8) u32 id (25% null) + Dict<UInt8, UInt32> parent_id
+    {
+        let pid = random_dict_u8_u32(&mut rng, NUM_ROWS, 50);
+        let id_col = Arc::new(random_nullable_u32_array(&mut rng, NUM_ROWS)) as ArrayRef;
+        let dict_dt = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::UInt32));
+        let batch = make_batch(vec![
+            ("parent_id", dict_dt, pid),
+            ("id", DataType::UInt32, id_col),
+        ]);
+        let _ = group.bench_with_input(
+            BenchmarkId::new("u32_id_null25_dict_u8_u32_pid", "random"),
             &batch,
             |b, batch| {
                 b.iter(|| sort_by_parent_then_id(batch.clone()).unwrap());
