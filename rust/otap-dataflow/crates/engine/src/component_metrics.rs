@@ -361,3 +361,113 @@ pub(crate) fn record_produced_for_control_msg<PData>(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// W13 — Unit tests for level-gated component metrics
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::attributes::NodeAttributeSet;
+    use crate::entity_context::NodeTelemetryHandle;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    /// Helper: create a `ComponentMetricsHandle` at the given level using the real registry path.
+    fn handle_at_level(level: MetricLevel) -> ComponentMetricsHandle {
+        let registry = TelemetryRegistryHandle::new();
+        let entity_key = registry.register_entity(NodeAttributeSet::default());
+        let handle = NodeTelemetryHandle::new(registry, entity_key);
+        handle.register_component_metrics(level)
+    }
+
+    // -- None: nothing is registered --
+
+    #[test]
+    fn none_level_no_metric_sets() {
+        let h = handle_at_level(MetricLevel::None);
+        assert_eq!(h.metric_level(), MetricLevel::None);
+        // Recording should be a no-op — no panic.
+        h.record_consumed_success(100);
+        h.record_consumed_failure(50);
+        h.record_consumed_refused(25);
+        h.record_consumed_bytes(1024);
+        h.record_produced_success();
+        h.record_produced_refused();
+        h.record_produced_bytes(512);
+    }
+
+    // -- Basic: outcome counters present, no bytes/duration --
+
+    #[test]
+    fn basic_level_outcome_counters() {
+        let h = handle_at_level(MetricLevel::Basic);
+        assert_eq!(h.metric_level(), MetricLevel::Basic);
+        h.record_consumed_success(100);
+        h.record_consumed_failure(50);
+        h.record_consumed_refused(25);
+        h.record_produced_success();
+        h.record_produced_refused();
+
+        h.with_state(|s| {
+            let cr = s.consumed_requests.as_ref().expect("Basic should have consumed_requests");
+            assert_eq!(cr.success.get(), 1);
+            assert_eq!(cr.failure.get(), 1);
+            assert_eq!(cr.refused.get(), 1);
+
+            let pr = s.produced_requests.as_ref().expect("Basic should have produced_requests");
+            assert_eq!(pr.success.get(), 1);
+            assert_eq!(pr.refused.get(), 1);
+
+            assert!(s.consumed_bytes.is_none(), "Basic should not have consumed_bytes");
+            assert!(s.produced_bytes.is_none(), "Basic should not have produced_bytes");
+            assert!(s.consumed_duration.is_none(), "Basic should not have consumed_duration");
+        });
+    }
+
+    // -- Normal: + byte counters --
+
+    #[test]
+    fn normal_level_bytes_counters() {
+        let h = handle_at_level(MetricLevel::Normal);
+        assert_eq!(h.metric_level(), MetricLevel::Normal);
+        h.record_consumed_bytes(1024);
+        h.record_produced_bytes(512);
+        h.record_consumed_success(0);
+
+        h.with_state(|s| {
+            assert!(s.consumed_requests.is_some());
+            assert!(s.produced_requests.is_some());
+
+            let cb = s.consumed_bytes.as_ref().expect("Normal should have consumed_bytes");
+            assert_eq!(cb.bytes.get(), 1024);
+
+            let pb = s.produced_bytes.as_ref().expect("Normal should have produced_bytes");
+            assert_eq!(pb.bytes.get(), 512);
+
+            assert!(s.consumed_duration.is_none(), "Normal should not have consumed_duration");
+        });
+    }
+
+    // -- Detailed: + duration counters --
+
+    #[test]
+    fn detailed_level_duration_counters() {
+        let h = handle_at_level(MetricLevel::Detailed);
+        assert_eq!(h.metric_level(), MetricLevel::Detailed);
+        h.record_consumed_success(100);  // duration_ns = 100
+        h.record_consumed_failure(50);
+        h.record_consumed_refused(25);
+
+        h.with_state(|s| {
+            assert!(s.consumed_requests.is_some());
+            assert!(s.consumed_bytes.is_some());
+            assert!(s.produced_bytes.is_some());
+
+            let cd = s.consumed_duration.as_ref().expect("Detailed should have consumed_duration");
+            assert_eq!(cd.success_ns.get(), 100);
+            assert_eq!(cd.failure_ns.get(), 50);
+            assert_eq!(cd.refused_ns.get(), 25);
+        });
+    }
+}

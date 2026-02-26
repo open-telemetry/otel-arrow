@@ -97,25 +97,8 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type UserCallData = SmallVec<[Context8u8; 3]>;
 
-/// Engine-wide metric level controlling per-node instrumentation overhead.
-///
-/// Ordered so that `>=` comparisons gate incremental cost:
-/// - `None`: no instrumentation.
-/// - `Basic`: outcome counts (auto-subscribe to ACKS|NACKS).
-/// - `Normal`: + forward-path byte counting.
-/// - `Detailed`: + receive timestamp and duration histogram.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MetricLevel {
-    /// No instrumentation — zero overhead.
-    #[default]
-    None,
-    /// Outcome counts only (auto-subscribe to ACKS|NACKS).
-    Basic,
-    /// Outcome counts + forward-path byte counting.
-    Normal,
-    /// Outcome counts + bytes + receive timestamp and duration histogram.
-    Detailed,
-}
+/// Re-export from config crate.
+pub use otap_df_config::policy::MetricLevel;
 
 /// Engine-managed call data envelope. Wraps the component's opaque
 /// [`UserCallData`] with an engine-managed timestamp field used for

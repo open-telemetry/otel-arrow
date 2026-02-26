@@ -462,6 +462,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         self.validate_connection_wiring_contracts(&config)?;
 
         let channel_metrics_enabled = telemetry_policy.channel_metrics;
+        let component_metric_level = telemetry_policy.component_metrics;
 
         // First pass: allocate all node IDs from the build_state.
         let mut receiver_count = 0usize;
@@ -534,6 +535,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Receiver,
                         node_id.clone(),
                         channel_metrics_enabled,
+                        component_metric_level,
                         || {
                             self.create_receiver(
                                 &base_ctx,
@@ -553,6 +555,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Processor,
                         node_id.clone(),
                         channel_metrics_enabled,
+                        component_metric_level,
                         || {
                             self.create_processor(
                                 &base_ctx,
@@ -572,6 +575,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                         NodeType::Exporter,
                         node_id.clone(),
                         channel_metrics_enabled,
+                        component_metric_level,
                         || {
                             self.create_exporter(
                                 &base_ctx,
@@ -729,6 +733,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         node_type: NodeType,
         node_id: NodeId,
         channel_metrics_enabled: bool,
+        metric_level: MetricLevel,
         create_wrapper: F,
     ) -> Result<W, Error>
     where
@@ -739,9 +744,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let node_telemetry_handle =
             NodeTelemetryHandle::new(base_ctx.metrics_registry(), node_entity_key);
         // Register component metrics (consumed/produced) and collect the handle for reporting.
-        // TODO(W12): read MetricLevel from engine config instead of hardcoding None.
         let component_metrics_handle =
-            node_telemetry_handle.register_component_metrics(MetricLevel::None);
+            node_telemetry_handle.register_component_metrics(metric_level);
         build_state.component_metrics.push(component_metrics_handle);
         // Create the guard before any fallible work so failed builds still clean up.
         let mut node_guard = Some(NodeTelemetryGuard::new(node_telemetry_handle.clone()));

@@ -1622,4 +1622,133 @@ mod test {
         // Payload still intact for the retry processor
         assert_eq!(ack_msg.accepted.num_items(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // W13 — MetricLevel gating tests for push_entry_frame / subscribe_to
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn push_entry_frame_none_no_interests() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::None);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(
+            !frames[0].interests.contains(Interests::ACKS),
+            "None level should not auto-subscribe ACKS"
+        );
+        assert!(
+            !frames[0].interests.contains(Interests::NACKS),
+            "None level should not auto-subscribe NACKS"
+        );
+        assert_eq!(frames[0].calldata.time_ns, 0);
+    }
+
+    #[test]
+    fn push_entry_frame_basic_auto_subscribes() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Basic);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1);
+        assert!(
+            frames[0].interests.contains(Interests::ACKS),
+            "Basic level should auto-subscribe ACKS"
+        );
+        assert!(
+            frames[0].interests.contains(Interests::NACKS),
+            "Basic level should auto-subscribe NACKS"
+        );
+        assert_eq!(frames[0].calldata.time_ns, 0, "Basic should not stamp time");
+    }
+
+    #[test]
+    fn push_entry_frame_normal_same_as_basic() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Normal);
+        let frames = ctx.frames();
+        assert!(frames[0].interests.contains(Interests::ACKS));
+        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert_eq!(frames[0].calldata.time_ns, 0, "Normal should not stamp time");
+    }
+
+    #[test]
+    fn push_entry_frame_detailed_stamps_time() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Detailed);
+        let frames = ctx.frames();
+        assert!(frames[0].interests.contains(Interests::ACKS));
+        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert!(
+            frames[0].calldata.time_ns > 0,
+            "Detailed should stamp non-zero time"
+        );
+    }
+
+    #[test]
+    fn push_entry_frame_inherits_return_data() {
+        let mut ctx = Context::default();
+        // Source subscribes with RETURN_DATA.
+        ctx.subscribe_to(
+            Interests::ACKS | Interests::RETURN_DATA,
+            UserCallData::new(),
+            0,
+        );
+        // Entry frame at Basic inherits RETURN_DATA from predecessor.
+        ctx.push_entry_frame(1, MetricLevel::Basic);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 2);
+        assert!(
+            frames[1]
+                .interests
+                .contains(Interests::RETURN_DATA),
+            "entry frame should inherit RETURN_DATA"
+        );
+    }
+
+    #[test]
+    fn subscribe_to_merges_into_entry_frame() {
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Detailed);
+        let original_time = ctx.frames()[0].calldata.time_ns;
+        assert!(original_time > 0);
+
+        // Component subscribes on the same node — should merge, preserving time_ns.
+        let user = TestCallData::default();
+        ctx.subscribe_to(Interests::RETURN_DATA, user.into(), 1);
+        let frames = ctx.frames();
+        assert_eq!(frames.len(), 1, "same-node subscribe should merge");
+        assert!(frames[0].interests.contains(Interests::ACKS));
+        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert!(frames[0].interests.contains(Interests::RETURN_DATA));
+        assert_eq!(
+            frames[0].calldata.time_ns, original_time,
+            "merge must preserve engine time_ns"
+        );
+    }
+
+    #[test]
+    fn none_level_ack_nack_not_routable() {
+        let (test_data, mut pdata) = create_test();
+        // Receiver subscribes at node 0.
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
+        // Processor entry at None — no auto-subscribe.
+        pdata.context.push_entry_frame(1, MetricLevel::None);
+
+        // Ack from downstream: next_ack should skip node 1 (no interests)
+        // and land on node 0.
+        let ack = AckMsg::new(pdata);
+        let (node_id, _) = Context::next_ack(ack).expect("should find node 0");
+        assert_eq!(node_id, 0, "None-level entry frame should be skipped by next_ack");
+    }
+
+    #[test]
+    fn basic_level_ack_routable() {
+        let (test_data, mut pdata) = create_test();
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
+        pdata.context.push_entry_frame(1, MetricLevel::Basic);
+
+        let ack = AckMsg::new(pdata);
+        let (node_id, _) = Context::next_ack(ack).expect("should find node 1");
+        assert_eq!(node_id, 1, "Basic-level entry frame should be routable via next_ack");
+    }
 }

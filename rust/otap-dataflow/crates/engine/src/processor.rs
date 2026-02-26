@@ -11,7 +11,8 @@ use crate::channel_metrics::ChannelMetricsRegistry;
 use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
 use crate::config::ProcessorConfig;
 use crate::context::PipelineContext;
-use crate::control::{Controllable, MetricLevel, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::control::{Controllable, NodeControlMsg, PipelineCtrlMsgSender};
+use crate::entity_context::current_metric_level;
 use crate::effect_handler::SourceTagging;
 use crate::entity_context::NodeTelemetryGuard;
 use crate::error::{Error, ProcessorErrorKind};
@@ -419,7 +420,7 @@ impl<PData> ProcessorWrapper<PData> {
                     if let Message::PData(ref mut pdata) = msg {
                         pdata.received_at_node(
                             effect_handler.processor_id().index,
-                            MetricLevel::None, // TODO(W12): read from engine config
+                            current_metric_level(),
                         );
                     }
                     processor.process(msg, &mut effect_handler).await?;
@@ -452,7 +453,7 @@ impl<PData> ProcessorWrapper<PData> {
                     if let Message::PData(ref mut pdata) = msg {
                         pdata.received_at_node(
                             effect_handler.processor_id().index,
-                            MetricLevel::None, // TODO(W12): read from engine config
+                            current_metric_level(),
                         );
                     }
                     processor.process(msg, &mut effect_handler).await?;
