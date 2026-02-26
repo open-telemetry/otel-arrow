@@ -55,17 +55,23 @@ struct IdJoinLookup {
 
 // TODO eventually this will need to support u32 IDs
 impl IdJoinLookup {
-    /// Creates a new IdJoin from a slice of u16 parent IDs.
+    /// Creates a new IdJoin from a UInt16Array of parent IDs.
     ///
     /// # Arguments
-    /// * `parent_ids` - The parent_id values from the right side of the join
+    /// * `parent_ids` - The parent_id array from the right side of the join
     ///
     /// # Returns
-    /// A lookup structure mapping parent_id -> row index
-    fn new(parent_ids: &[u16]) -> Self {
+    /// A lookup structure mapping parent_id -> row index. Null values in the array are skipped.
+    fn new(parent_ids: &UInt16Array) -> Self {
         let mut lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>> = vec![None; NUM_PAGES];
 
-        for (row_idx, &parent_id) in parent_ids.iter().enumerate() {
+        for row_idx in 0..parent_ids.len() {
+            // Skip null values
+            if parent_ids.is_null(row_idx) {
+                continue;
+            }
+
+            let parent_id = parent_ids.value(row_idx);
             let outer = (parent_id >> PAGE_BITS) as usize;
             let inner = (parent_id & PAGE_MASK) as usize;
 
@@ -292,7 +298,7 @@ impl JoinExec for RootToAttributesJoin {
             .as_any()
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(right_parent_ids.data_type()))?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids.values());
+        let right_lookup = IdJoinLookup::new(right_parent_ids);
 
         // TODO need to inspect the attr ID to figure out the right column to join on
         let left_id_col = match self.attrs_id {
@@ -352,8 +358,7 @@ impl JoinExec for RootAttrsToRootJoin {
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
 
-        // TODO this might not be right if there are null IDs!!
-        let right_lookup = IdJoinLookup::new(right_ids.values());
+        let right_lookup = IdJoinLookup::new(right_ids);
 
         let left_parent_ids = left
             .parent_ids
@@ -402,7 +407,7 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             .as_any()
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(left_parent_ids.data_type()))?;
-        let left_lookup = IdJoinLookup::new(left_parent_ids.values());
+        let left_lookup = IdJoinLookup::new(left_parent_ids);
 
         let right_ids = match self.attrs_payload_type {
             ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
@@ -516,7 +521,7 @@ impl JoinExec for AttributeToSameAttributeJoin {
             .as_any()
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(right_parent_ids.data_type()))?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids.values());
+        let right_lookup = IdJoinLookup::new(right_parent_ids);
 
         let left_parent_ids = left
             .parent_ids
@@ -622,7 +627,7 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
             .as_any()
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(right_parent_ids.data_type()))?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids.values());
+        let right_lookup = IdJoinLookup::new(right_parent_ids);
 
         // Step 2: Get root batch and extract the id columns we need
         let root_batch = otap_batch
@@ -638,7 +643,7 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
 
         // // Step 4: Build mapping from left id -> right id using root batch as bridge
         // // Collect right_ids indexed by position, then build IdJoinLookup with left_ids
-        let inter_join_lookup = IdJoinLookup::new(left_root_ids.values());
+        let inter_join_lookup = IdJoinLookup::new(left_root_ids);
 
         // Step 5: For each left row, find corresponding right row
         let left_parent_ids = left
@@ -708,7 +713,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
             .as_any()
             .downcast_ref::<UInt16Array>()
             .ok_or_else(|| invalid_column_type_error(left_parent_ids.data_type()))?;
-        let left_lookup = IdJoinLookup::new(left_parent_ids.values());
+        let left_lookup = IdJoinLookup::new(left_parent_ids);
 
         // Step 2: Get root batch and extract the id columns we need
         let root_batch = otap_batch
@@ -736,7 +741,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         let mut to_take = Int32Array::builder(left_parent_ids.len());
 
         // Build intermediate lookup for reverse join
-        let inter_join_lookup = IdJoinLookup::new(right_root_ids.values());
+        let inter_join_lookup = IdJoinLookup::new(right_root_ids);
 
         right_parent_ids.iter().for_each(|right_parent_id_opt| {
             // TODO - could be re-written in a way where there's not so much crappy null handling
