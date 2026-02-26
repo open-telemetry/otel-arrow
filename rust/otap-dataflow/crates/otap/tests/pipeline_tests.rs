@@ -204,7 +204,7 @@ fn build_test_pipeline_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
             Some(receiver_config_value),
         )
-        .add_exporter("exporter", "urn:otel:noop:exporter", None)
+        .add_exporter("exporter", "urn:otel:exporter:noop", None)
         .one_of("receiver", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)
         .expect("failed to build pipeline config")
@@ -227,7 +227,7 @@ fn build_fan_in_pipeline_config(
             OTAP_FAKE_DATA_GENERATOR_URN,
             Some(receiver_config_value),
         )
-        .add_exporter("exporter", "urn:otel:noop:exporter", None)
+        .add_exporter("exporter", "urn:otel:exporter:noop", None)
         .one_of("receiver_a", ["exporter"])
         .one_of("receiver_b", ["exporter"])
         .build(PipelineType::Otap, pipeline_group_id, pipeline_id)

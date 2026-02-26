@@ -36,7 +36,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// URN for the flaky exporter (NACKs until switched to ACK mode).
-pub const FLAKY_EXPORTER_URN: &str = "urn:otel:flaky:exporter";
+pub const FLAKY_EXPORTER_URN: &str = "urn:otel:exporter:flaky";
 
 /// State for a single flaky exporter instance.
 struct FlakyState {

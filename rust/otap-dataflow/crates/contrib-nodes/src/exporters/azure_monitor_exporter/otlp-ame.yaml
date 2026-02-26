@@ -26,7 +26,7 @@ groups:
       main:
         nodes:
           otlp-receiver:
-            type: "urn:otel:otlp:receiver"
+            type: "urn:otel:receiver:otlp"
             config:
               protocols:
                 grpc:
@@ -34,7 +34,7 @@ groups:
                   listening_addr: "0.0.0.0:4317"
 
           azure-monitor-exporter:
-            type: "urn:microsoft_azure:monitor:exporter"
+            type: "urn:microsoft_azure:exporter:monitor"
             config:
               # API configuration - Update with your actual values
               api:

@@ -45,7 +45,7 @@ pub mod arrow_records_encoder;
 pub mod parser;
 
 /// URN for the syslog cef receiver
-pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:syslog_cef:receiver";
+pub const SYSLOG_CEF_RECEIVER_URN: &str = "urn:otel:receiver:syslog_cef";
 
 /// Default maximum time to wait before flushing an Arrow batch.
 const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_millis(100);

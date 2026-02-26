@@ -14,7 +14,7 @@ groups:
 
         nodes:
           receiver:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_signal_count: 10000
@@ -23,7 +23,7 @@ groups:
                 log_weight: 100
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           batch:
-            type: batch:processor
+            type: processor:batch
             config:
               otap:
                 # At the rate set above (100/s), min_size=1000 would emit a batch
@@ -33,12 +33,12 @@ groups:
               # The timeout causes 100/s, so we produce around 300 signals/batch.
               flush_timeout: 3s
           debug:
-            type: debug:processor
+            type: processor:debug
             config:
               verbosity: detailed
               mode: signal
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config:
 
         connections:
