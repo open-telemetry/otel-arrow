@@ -10,13 +10,14 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
+use datafusion::logical_expr::ColumnarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType};
 use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
-use crate::pipeline::expr::{CHILD_COLUMN_NAME, DataDomainId, PhysicalExprEvalResult};
+use crate::pipeline::expr::{DataDomainId, PhysicalExprEvalResult};
 use crate::pipeline::planner::AttributesIdentifier;
 
 /// Two-level lookup structure for joining u16 IDs.
@@ -108,14 +109,12 @@ pub fn is_one_to_many(
 }
 
 pub fn join(
-    left: &RecordBatch,
-    left_domain: &DataDomainId,
+    left: &PhysicalExprEvalResult,
     right: &PhysicalExprEvalResult,
-    right_domain: &DataDomainId,
     otap_batch: &OtapArrowRecords,
 ) -> Result<(RecordBatch, DataDomainId)> {
     // TODO - find a way to avoid cloning all the data domains here
-    match (left_domain, right_domain) {
+    match (&left.data_domain, &right.data_domain) {
         (
             DataDomainId::Attributes(left_attrs_id, _),
             DataDomainId::Attributes(right_attrs_id, _),
@@ -123,7 +122,7 @@ pub fn join(
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin {};
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left_domain.clone()))
+                Ok((join_result, left.data_domain.clone()))
             } else {
                 if is_one_to_many(left_attrs_id, right_attrs_id) {
                     let join_exec = AttributeToDifferentAttributeReverseJoin {
@@ -131,40 +130,40 @@ pub fn join(
                         right: right_attrs_id.clone(),
                     };
                     let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, right_domain.clone()))
+                    Ok((join_result, right.data_domain.clone()))
                 } else {
                     let join_exec = AttributeToDifferentAttributeJoin {
                         left: left_attrs_id.clone(),
                         right: right_attrs_id.clone(),
                     };
                     let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, left_domain.clone()))
+                    Ok((join_result, left.data_domain.clone()))
                 }
             }
         }
         (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
             // TODO do something with attr ID
-            let join_exec = RootToAttribtuesJoin {
+            let join_exec = RootToAttributesJoin {
                 // TODO - should the type just be copy?
                 // TODO - constructor instead?
                 attrs_id: attr_id.clone(),
             };
             let join_result = join_exec.join(left, right, otap_batch)?;
-            Ok((join_result, left_domain.clone()))
+            Ok((join_result, left.data_domain.clone()))
         }
         (DataDomainId::Attributes(attr_id, _), DataDomainId::Root) => {
             match attr_id {
                 AttributesIdentifier::Root => {
                     let join_exec = RootAttrsToRootJoin {};
                     let join_result = join_exec.join(left, right, otap_batch).unwrap();
-                    Ok((join_result, left_domain.clone()))
+                    Ok((join_result, left.data_domain.clone()))
                 }
                 AttributesIdentifier::NonRoot(payload_type) => {
                     let join_exec = NonRootAttrsToRootReverseJoin {
                         attrs_payload_type: *payload_type,
                     };
                     let join_result = join_exec.join(left, right, otap_batch).unwrap();
-                    Ok((join_result, right_domain.clone()))
+                    Ok((join_result, right.data_domain.clone()))
                 }
             }
             // TODO do something with attr ID
@@ -178,42 +177,89 @@ pub fn join(
     }
 }
 
-fn insert_joined_column(left: &RecordBatch, col: ArrayRef) -> RecordBatch {
-    let mut fields = left.schema().fields().to_vec();
-    fields.push(Arc::new(Field::new(
-        CHILD_COLUMN_NAME,
-        col.data_type().clone(),
-        true,
-    )));
+fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> RecordBatch {
+    // TODO preallocate
+    let mut columns = Vec::new();
+    let mut fields = Vec::new();
 
-    let mut columns = left.columns().to_vec();
-    columns.push(col);
+    match &left.values {
+        ColumnarValue::Array(arr) => {
+            fields.push(Field::new("left", arr.data_type().clone(), true));
+            columns.push(arr.clone());
+        }
+        _ => {
+            // TODO - not sure this is reachable?
+            todo!("scalar val in result conversion")
+        }
+    }
 
-    // TODO expect instead of unwrap
-    return RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    fields.push(Field::new("right", right_col.data_type().clone(), true));
+    columns.push(right_col);
+
+    if let Some(ids) = &left.ids {
+        fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
+        columns.push(ids.clone());
+    }
+
+    if let Some(parent_ids) = &left.parent_ids {
+        fields.push(Field::new(
+            consts::PARENT_ID,
+            parent_ids.data_type().clone(),
+            false,
+        ));
+        columns.push(parent_ids.clone());
+    }
+
+    if let Some(col) = &left.resource_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::RESOURCE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+
+    if let Some(col) = &left.scope_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::SCOPE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
 
 trait JoinExec {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch>;
 }
 
 // TODO this is almost xactly the same as AttributeToSameAttributeJoin
-struct RootToAttribtuesJoin {
+struct RootToAttributesJoin {
     attrs_id: AttributesIdentifier,
 }
 
-// TODO - is there a world where we should join from the smaller side?
-impl JoinExec for RootToAttribtuesJoin {
+impl JoinExec for RootToAttributesJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
-        otap_batch: &OtapArrowRecords,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_parent_ids = right
             .parent_ids
@@ -226,24 +272,17 @@ impl JoinExec for RootToAttribtuesJoin {
 
         // TODO need to inspect the attr ID to figure out the right column to join on
         let left_id_col = match self.attrs_id {
-            AttributesIdentifier::Root => left.column_by_name(consts::ID),
+            AttributesIdentifier::Root => &left.ids,
             AttributesIdentifier::NonRoot(payload_type) => match payload_type {
-                ArrowPayloadType::ResourceAttrs => {
-                    // TODO - handle case this isn't present
-                    let resource_col = get_required_struct_array(left, consts::RESOURCE).unwrap();
-                    resource_col.column_by_name(consts::ID)
-                }
-                ArrowPayloadType::ScopeAttrs => {
-                    // TODO - handle case this isn't present
-                    let scope_col = get_required_struct_array(left, consts::SCOPE).unwrap();
-                    scope_col.column_by_name(consts::ID)
-                }
+                ArrowPayloadType::ResourceAttrs => &left.resource_ids,
+                ArrowPayloadType::ScopeAttrs => &left.scope_ids,
                 _ => {
                     todo!()
                 }
             },
         };
         let left_parent_ids = left_id_col
+            .as_ref()
             .unwrap() // TODO - handle case column missing
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -268,7 +307,8 @@ impl JoinExec for RootToAttribtuesJoin {
         // TODO no unwrap
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap();
 
-        Ok(insert_joined_column(left, joined_arr))
+        // TODO this is an innefficent way to do this
+        Ok(to_join_result(&left, joined_arr))
     }
 }
 
@@ -277,9 +317,9 @@ struct RootAttrsToRootJoin {}
 impl JoinExec for RootAttrsToRootJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
-        otap_batch: &OtapArrowRecords,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let right_ids = right.ids.as_ref().unwrap(); // TODO no unwrap - return err
 
@@ -291,7 +331,8 @@ impl JoinExec for RootAttrsToRootJoin {
 
         // Left is attributes batch, scan its parent_id column
         let left_parent_ids = left
-            .column_by_name(consts::PARENT_ID)
+            .parent_ids
+            .as_ref()
             .unwrap() // TODO no unwrap - return err
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -300,12 +341,9 @@ impl JoinExec for RootAttrsToRootJoin {
         let mut to_take = Int32Array::builder(left_parent_ids.len());
 
         left_parent_ids.iter().for_each(|parent_id| {
-            // TODO this one shouldn't need the null handling actually
-            // TODO test if this null handling works ...
             if parent_id.is_none() {
                 to_take.append_null();
             } else {
-                // TODO crappy option handling
                 let parent_id = parent_id.unwrap();
                 let right_index = right_lookup.lookup(parent_id).map(|i| i as i32);
                 to_take.append_option(right_index);
@@ -317,7 +355,7 @@ impl JoinExec for RootAttrsToRootJoin {
         // TODO no unwrap
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap();
 
-        Ok(insert_joined_column(left, joined_arr))
+        Ok(to_join_result(left, joined_arr))
     }
 }
 
@@ -329,12 +367,13 @@ struct NonRootAttrsToRootReverseJoin {
 impl JoinExec for NonRootAttrsToRootReverseJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
-        otap_batch: &OtapArrowRecords,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
         let left_parent_ids = left
-            .column_by_name(consts::PARENT_ID)
+            .parent_ids
+            .as_ref()
             .unwrap()
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -410,20 +449,16 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
             new_columns.push(Arc::new(struct_arr));
         }
 
-        // TODO no unwrap
-        let joined_vals = take(left.column_by_name("value").unwrap(), &to_take, None).unwrap();
-        new_fields.push(Field::new("value", joined_vals.data_type().clone(), true));
+        // TODO use the correct length ...
+        let joined_vals = take(&left.values.to_array(100).unwrap(), &to_take, None).unwrap();
+        new_fields.push(Field::new("left", joined_vals.data_type().clone(), true));
         new_columns.push(joined_vals);
 
         // TODO have a match, assert right.values is an array, and use the array instead of
         // callling to_array wiht a random length (which will be ignored b/c we should know
         // that this is an array at this point)
         let child_col = right.values.to_array(100).unwrap();
-        new_fields.push(Field::new(
-            CHILD_COLUMN_NAME,
-            child_col.data_type().clone(),
-            true,
-        ));
+        new_fields.push(Field::new("right", child_col.data_type().clone(), true));
         new_columns.push(child_col);
 
         Ok(RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).unwrap())
@@ -435,7 +470,7 @@ struct AttributeToSameAttributeJoin {}
 impl JoinExec for AttributeToSameAttributeJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         _otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
@@ -451,7 +486,8 @@ impl JoinExec for AttributeToSameAttributeJoin {
         let right_lookup = IdJoinLookup::new(right_parent_ids.values());
 
         let left_parent_ids = left
-            .column_by_name(consts::PARENT_ID)
+            .parent_ids
+            .as_ref()
             .unwrap() // TODO no unwrap - return err
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -471,7 +507,7 @@ impl JoinExec for AttributeToSameAttributeJoin {
         // TODO no unwrap
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap();
 
-        Ok(insert_joined_column(left, joined_arr))
+        Ok(to_join_result(left, joined_arr))
     }
 }
 
@@ -518,7 +554,7 @@ struct AttributeToDifferentAttributeJoin {
 impl JoinExec for AttributeToDifferentAttributeJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
@@ -550,7 +586,8 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
 
         // Step 5: For each left row, find corresponding right row
         let left_parent_ids = left
-            .column_by_name(consts::PARENT_ID)
+            .parent_ids
+            .as_ref()
             .unwrap() // TODO no unwrap - return err
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -585,7 +622,7 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
         let right_values = right.values.to_array(right_parent_ids.len()).unwrap(); // TODO no unwrap
         let joined_arr = take(&right_values, &to_take.finish(), None).unwrap(); // TODO no unwrap
 
-        Ok(insert_joined_column(left, joined_arr))
+        Ok(to_join_result(left, joined_arr))
     }
 }
 
@@ -597,7 +634,7 @@ struct AttributeToDifferentAttributeReverseJoin {
 impl JoinExec for AttributeToDifferentAttributeReverseJoin {
     fn join(
         &self,
-        left: &RecordBatch,
+        left: &PhysicalExprEvalResult,
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
@@ -607,7 +644,8 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         // Path: left.parent_id (scope id) -> log.scope.id -> log.resource.id -> right.parent_id (resource id)
 
         let left_parent_ids = left
-            .column_by_name(consts::PARENT_ID)
+            .parent_ids
+            .as_ref()
             .unwrap() // TODO no unwrap - return err
             .as_any()
             .downcast_ref::<UInt16Array>()
@@ -667,19 +705,16 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         fields.push(Field::new(consts::PARENT_ID, DataType::UInt16, false));
         columns.push(right.parent_ids.as_ref().unwrap().clone());
 
-        let joined_vals = take(left.column_by_name("value").unwrap(), &to_take, None).unwrap();
-        fields.push(Field::new("value", joined_vals.data_type().clone(), true));
+        // TODO use actual length
+        let joined_vals = take(&left.values.to_array(100).unwrap(), &to_take, None).unwrap();
+        fields.push(Field::new("left", joined_vals.data_type().clone(), true));
         columns.push(joined_vals);
 
         // TODO have a match, assert right.values is an array, and use the array instead of
         // callling to_array wiht a random length (which will be ignored b/c we should know
         // that this is an array at this point)
         let child_col = right.values.to_array(100).unwrap();
-        fields.push(Field::new(
-            CHILD_COLUMN_NAME,
-            child_col.data_type().clone(),
-            true,
-        ));
+        fields.push(Field::new("right", child_col.data_type().clone(), true));
         columns.push(child_col);
 
         Ok(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
