@@ -150,28 +150,47 @@ pub fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
     }
 }
 
-/// Single-column sort. Uses `id_column_dispatch!` for type dispatch, then delegates
-/// to generic sort functions to avoid duplicating sort logic across macro arms.
+/// Single-column sort. Checks `is_sorted` for early return, then delegates to
+/// `arrow::compute::sort_to_indices` for the actual sort.
 fn sort_single_column(rb: RecordBatch, col: &ArrayRef) -> Result<RecordBatch> {
+    // Fast path: check if already sorted (only when non-null, to avoid resolving nullability).
     id_column_dispatch!(
         col,
         Native[T] => {
-            // safety: id_column_dispatch! matched the native data type
-            let arr = col.as_primitive::<T>();
-            sort_by_values(rb, col.as_ref(), arr.values())
+            if col.null_count() == 0 && col.as_primitive::<T>().values().is_sorted() {
+                return Ok(rb);
+            }
         },
         Dictionary[KType, VType] => {
-            // safety: id_column_dispatch! matched the dictionary key/value types
-            let dict = col.as_dictionary::<KType>();
-            let vals = dict.values().as_primitive::<VType>();
-            sort_by_dict_values(rb, col.as_ref(), dict.keys().values(), vals.values())
+            if col.null_count() == 0 {
+                // safety: id_column_dispatch! matched the dictionary key/value types
+                let dict = col.as_dictionary::<KType>();
+                let keys = dict.keys().values();
+                let vals = dict.values().as_primitive::<VType>().values();
+                if keys.windows(2).all(|w| vals[w[0].as_usize()] <= vals[w[1].as_usize()]) {
+                    return Ok(rb);
+                }
+            }
         },
         _ => {
-            Err(Error::UnsupportedParentIdType {
+            return Err(Error::UnsupportedParentIdType {
                 actual: col.data_type().clone(),
-            })
-        }
-    )
+            });
+        },
+    );
+
+    let options = Some(SortOptions {
+        descending: false,
+        nulls_first: true,
+    });
+    let indices = arrow::compute::sort_to_indices(col, options, None)
+        .map_err(|e| Error::Batching { source: e })?;
+
+    if indices.values().is_sorted() {
+        return Ok(rb);
+    }
+
+    sort_record_batch_by_indices(rb, &indices)
 }
 
 /// Two-column sort. Uses packed u64 sort for dict-encoded parent_id, RowConverter otherwise.
@@ -251,78 +270,6 @@ fn sort_two_columns_row_converter(
     }
 
     sort_record_batch_by_indices(rb, &indices)
-}
-
-// ---------------------------------------------------------------------------
-// Generic sort implementations (called from type-dispatch sites above)
-// ---------------------------------------------------------------------------
-
-/// Sort a record batch by a single native column's values.
-/// Nulls are placed first in the output (nulls_first semantics).
-fn sort_by_values<V: ArrowNativeType + Ord>(
-    rb: RecordBatch,
-    col: &dyn Array,
-    values: &[V],
-) -> Result<RecordBatch> {
-    if col.null_count() == 0 {
-        if values.is_sorted() {
-            return Ok(rb);
-        }
-        let mut indices: Vec<u32> = (0..values.len() as u32).collect();
-        indices.sort_unstable_by_key(|&i| values[i as usize]);
-        let indices_arr = UInt32Array::from(indices);
-        return sort_record_batch_by_indices(rb, &indices_arr);
-    }
-
-    let (mut valid_indices, null_indices) = partition_validity(col);
-    valid_indices.sort_unstable_by_key(|&i| values[i as usize]);
-
-    let mut indices: Vec<u32> = Vec::with_capacity(values.len());
-    indices.extend_from_slice(&null_indices);
-    indices.extend_from_slice(&valid_indices);
-
-    if indices.is_sorted() {
-        return Ok(rb);
-    }
-
-    let indices_arr = UInt32Array::from(indices);
-    sort_record_batch_by_indices(rb, &indices_arr)
-}
-
-/// Sort a record batch by resolving dictionary keys through a values array.
-/// Nulls are placed first in the output (nulls_first semantics).
-fn sort_by_dict_values<K: ArrowNativeType, V: ArrowNativeType + Ord>(
-    rb: RecordBatch,
-    col: &dyn Array,
-    keys: &[K],
-    values: &[V],
-) -> Result<RecordBatch> {
-    if col.null_count() == 0 {
-        let resolved_sorted = keys
-            .windows(2)
-            .all(|w| values[w[0].as_usize()] <= values[w[1].as_usize()]);
-        if resolved_sorted {
-            return Ok(rb);
-        }
-        let mut indices: Vec<u32> = (0..keys.len() as u32).collect();
-        indices.sort_unstable_by_key(|&i| values[keys[i as usize].as_usize()]);
-        let indices_arr = UInt32Array::from(indices);
-        return sort_record_batch_by_indices(rb, &indices_arr);
-    }
-
-    let (mut valid_indices, null_indices) = partition_validity(col);
-    valid_indices.sort_unstable_by_key(|&i| values[keys[i as usize].as_usize()]);
-
-    let mut indices: Vec<u32> = Vec::with_capacity(keys.len());
-    indices.extend_from_slice(&null_indices);
-    indices.extend_from_slice(&valid_indices);
-
-    if indices.is_sorted() {
-        return Ok(rb);
-    }
-
-    let indices_arr = UInt32Array::from(indices);
-    sort_record_batch_by_indices(rb, &indices_arr)
 }
 
 /// Pack resolved dict parent_id + native id into u64 sort keys and sort.
