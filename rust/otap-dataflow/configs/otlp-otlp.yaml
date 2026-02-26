@@ -19,7 +19,7 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 # OTLP/gRPC receiver only (default port: 4317)
@@ -47,7 +47,7 @@ groups:
                   #   reload_interval: "5m"
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               # Downstream OTLP/gRPC collector endpoint.
               # Uses a different port than this receiver to avoid accidental loops.

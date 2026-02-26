@@ -848,8 +848,9 @@ pub async fn serve(
                                 Err(_) => return,
                             };
                             let io = TokioIo::new(tls_stream);
-                            let conn = hyper::server::conn::http1::Builder::new()
-                                .serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
+                            let executor = hyper_util::rt::TokioExecutor::new();
+                            let conn = hyper_util::server::conn::auto::Builder::new(executor);
+                            let conn = conn.serve_connection(io, service_fn(move |req| handler.clone().handle(req)));
 
                             let mut conn = std::pin::pin!(conn);
 

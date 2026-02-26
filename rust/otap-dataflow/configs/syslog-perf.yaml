@@ -13,13 +13,13 @@ groups:
 
         nodes:
           receiver:
-            type: syslog_cef:receiver
+            type: receiver:syslog_cef
             config:
               protocol:
                 udp:
                   listening_addr: "0.0.0.0:5140"
           exporter:
-            type: perf:exporter
+            type: exporter:perf
             config:
               frequency: 1000
               cpu_usage: false

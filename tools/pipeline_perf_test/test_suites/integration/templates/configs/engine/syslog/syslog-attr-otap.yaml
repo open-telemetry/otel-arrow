@@ -15,13 +15,13 @@ groups:
       main:
         nodes:
           receiver:
-            type: urn:otel:syslog_cef:receiver
+            type: urn:otel:receiver:syslog_cef
             config:
               protocol:
                 udp:
                   listening_addr: "0.0.0.0:4317"
           attr:
-            type: urn:otel:attribute:processor
+            type: urn:otel:processor:attribute
             config:
               actions:
               - action: rename
@@ -30,7 +30,7 @@ groups:
                 apply_to:
                 - scope
           exporter:
-            type: urn:otel:otap:exporter
+            type: urn:otel:exporter:otap
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: zstd
