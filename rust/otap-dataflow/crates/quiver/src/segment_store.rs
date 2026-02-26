@@ -110,6 +110,8 @@ struct SegmentHandle {
     reader: SegmentReader,
     /// Number of bundles in this segment.
     bundle_count: u32,
+    /// Total number of logical data items across all bundles.
+    total_item_count: u64,
     /// Size of the segment file in bytes.
     file_size_bytes: u64,
     /// Time when the segment was finalized (from file modification time).
@@ -138,12 +140,18 @@ impl SegmentHandle {
         })?;
 
         let bundle_count = reader.manifest().len() as u32;
+        let total_item_count = reader
+            .manifest()
+            .iter()
+            .map(|entry| entry.item_count())
+            .sum::<u64>();
 
         Ok(Self {
             seq,
             path,
             reader,
             bundle_count,
+            total_item_count,
             file_size_bytes,
             finalized_at,
         })
@@ -764,6 +772,56 @@ impl SegmentProvider for SegmentStore {
             .get(&segment_seq)
             .map(|h| h.bundle_count)
             .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
+    }
+
+    fn total_item_count(&self, segment_seq: SegmentSeq) -> Result<u64> {
+        let segments = self.segments.read();
+        segments
+            .get(&segment_seq)
+            .map(|h| h.total_item_count)
+            .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))
+    }
+
+    fn bundle_item_count(&self, bundle_ref: BundleRef) -> Result<u64> {
+        let segments = self.segments.read();
+        let handle = segments
+            .get(&bundle_ref.segment_seq)
+            .ok_or_else(|| SubscriberError::segment_not_found(bundle_ref.segment_seq.raw()))?;
+        let idx = bundle_ref.bundle_index.raw() as usize;
+        Ok(handle
+            .reader
+            .manifest()
+            .get(idx)
+            .map(|e| e.item_count())
+            .unwrap_or(0))
+    }
+
+    fn bundle_metadata(
+        &self,
+        segment_seq: SegmentSeq,
+    ) -> Result<Vec<crate::subscriber::BundleMetadata>> {
+        let segments = self.segments.read();
+        let handle = segments
+            .get(&segment_seq)
+            .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))?;
+
+        Ok(handle
+            .reader
+            .manifest()
+            .iter()
+            .map(|entry| crate::subscriber::BundleMetadata {
+                item_count: entry.item_count(),
+                slot_ids: entry.slot_ids().collect(),
+            })
+            .collect())
+    }
+
+    fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
+        let segments = self.segments.read();
+        let handle = segments
+            .get(&segment_seq)
+            .ok_or_else(|| SubscriberError::segment_not_found(segment_seq.raw()))?;
+        Ok((handle.bundle_count, handle.total_item_count))
     }
 
     fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {

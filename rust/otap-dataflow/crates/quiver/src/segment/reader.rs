@@ -836,6 +836,7 @@ impl SegmentReader {
     /// Arrow IPC file with schema:
     ///
     /// - `bundle_index`: UInt32
+    /// - `item_count`: UInt64 (optional; defaults to 0 for legacy segments)
     /// - `slot_refs`: List<Struct<slot_id: UInt16, stream_id: UInt32, chunk_index: UInt32>>
     ///
     /// Each row represents one [`ManifestEntry`] describing which stream chunks
@@ -865,6 +866,10 @@ impl SegmentReader {
         // Parse manifest columns
         let bundle_indices =
             Self::get_primitive_column::<arrow_array::types::UInt32Type>(&batch, "bundle_index")?;
+
+        // item_count is optional for backward compatibility with legacy segments.
+        let item_counts: Option<Vec<u64>> =
+            Self::get_primitive_column::<arrow_array::types::UInt64Type>(&batch, "item_count").ok();
 
         // Get the slot_refs list column
         let slot_refs_col =
@@ -896,7 +901,8 @@ impl SegmentReader {
 
         let mut entries = Vec::with_capacity(batch.num_rows());
         for (i, &bundle_index) in bundle_indices.iter().enumerate() {
-            let mut entry = ManifestEntry::new(bundle_index);
+            let item_count = item_counts.as_ref().map(|counts| counts[i]).unwrap_or(0);
+            let mut entry = ManifestEntry::new(bundle_index, item_count);
 
             // Get the struct array for this bundle's slot refs
             let slot_refs_for_bundle = slot_refs_list.value(i);

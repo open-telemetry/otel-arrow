@@ -366,7 +366,7 @@ impl PipelineContext {
 
     /// Returns the node attribute set extended with custom telemetry attributes.
     ///
-    /// Only used when the node has non-empty `telemetry_attributes` configured.
+    /// Only used when the node has non-empty `entity.extend.identity_attributes` configured.
     #[must_use]
     pub fn node_with_custom_attribute_set(&self) -> NodeWithCustomAttributeSet {
         NodeWithCustomAttributeSet {

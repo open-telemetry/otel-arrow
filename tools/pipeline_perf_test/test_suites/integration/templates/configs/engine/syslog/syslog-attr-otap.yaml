@@ -17,8 +17,9 @@ groups:
           receiver:
             type: urn:otel:syslog_cef:receiver
             config:
-              listening_addr: 0.0.0.0:4317
-              protocol: udp
+              protocol:
+                udp:
+                  listening_addr: "0.0.0.0:4317"
           attr:
             type: urn:otel:attribute:processor
             config:
