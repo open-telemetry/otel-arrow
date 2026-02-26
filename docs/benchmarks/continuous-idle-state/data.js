@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772124120002,
+  "lastUpdate": 1772134667651,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "a.lockett@f5.com",
-            "name": "albertlockett",
-            "username": "albertlockett"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "716de95f90eedbe19e76db7b3ca7aef58e1274e6",
-          "message": "perf: some optimizations for `decode_transport_optimized_ids` (#1873)\n\n# Change Summary\n\nSome optimizations for the `decode_transport_optimized_ids` function,\nwhich is used to remove various forms of delta encoding from ID/Parent\nID columns (converting them to plain encoded arrays).\n\nAlso added a new benchmark for this function.\n\n#### Perf improvement summary/benchmark results:\n`materialize_parent_ids_for_attributes` (synthetic bench)\n\n| Size | Before | After | Improvement | Speedup |\n|------|--------|-------|-------------|---------|\n| 128 | 2.27 µs | 1.77 µs | 22% faster | 1.28× |\n| 1536 | 16.45 µs | 7.97 µs | 51% faster | 2.06× |\n| 8092 | 83.18 µs | 38.21 µs | 54% faster | 2.18× |\n\n`decode_transport_optimized_ids` (generated data using weaver)\n\n| Size | Before | After | Improvement | Speedup |\n|------|--------|-------|-------------|---------|\n| 127 | 15.61 µs | 4.36 µs | 72% faster | 3.58× |\n| 1536 | 54.85 µs | 10.19 µs | 82% faster | 5.38× |\n| 8096 | 229.98 µs | 36.73 µs | 84% faster | 6.26× |\n\nNote that I only tested this on Logs batches, which use a u16 parent_id\nfor attributes. Spans/Metrics have some batches which use u32 IDs (which\nI think we may dictionary encode), and the current code casts these to\nprimitive array.\n\n#### Discussion of optimizations\n\nThe majority of the time is spent in\n`materialize_parent_id_for_attributes` so this is where most of the\neffort was dedicated.\n\nThis function makes heavy use of `create_next_element_equality_array`,\nwhich is used to calculate a bitmask (BooleanArray) indicating which\nrows in a column are equal to the value in the previous row. It does\nthis using arrow's `eq` kernel, which is SIMD optimized. Much of the\nperformance gain came from optimizing how this method is invoked. For\nexample, when invoking it for the \"keys\" column, we were calling `eq` on\nthe DictionaryArray when it should have only been called on the\ndictionary keys.\n\nWe also call `create_next_element_equality_array` for the various values\ncolumns, and we were calling it for every individual range where\ntype/key were equal to one another. This meant an invocation for every\nunique key. This is less efficient than invoking it once per value\ncolumn. Also, since the batches _should_ be sorted by the type column,\nwhen we find that this is indeed the case, we only need to invoke this\non slices of the values columns where the type column indicates the\nattribute value is of a specific type. These ranges can be computed\nefficiently when the batch is sorted, and this PR makes this\noptimization.\n\nAdditionally, we now AND the null validity buffer into the equality bits\nduring the equality array computation. This treats null values as \"not\nequal\" for delta encoding purposes and eliminates the need to check\nnulls separately in the hot decoding loop.\n\nMuch of the rest of the optimization comes from accessing data more\nefficiently. For example, before this change we were using\n`PrimitiveBuilder` to build up the new parent ID column. This is slower\nthan simply copying the values buffer from the existing column into a\nVec and replacing values at indices only where they are delta encoded.\nSimilarly, we were accessing the existing values using\n`MaybeDictArrayAccessor::value_at`, so these method invocations are also\neliminated. A similar optimization is made for removing delta encoding\nfrom the ID column of the logs record batch.\n\nAlso, after we compute the equality bitmasks for various columns, the\nold code was calling BooleanArray::value_at for every index. Arrow has\nsome custom iterators for finding sequences or instances of set bits in\nbit buffers (`BitSliceIterator` and **`BitIndexIterator`**) and this PR\nuses these for yet another performance increase.\n\n## What issue does this PR close?\n\n<!--\nWe highly recommend correlation of every PR to an issue\n-->\n\n* relates to #1853\n\n## How are these changes tested?\n\nThe existing unit tests cover this code\n\n## Are there any user-facing changes?\n\nNo",
-          "timestamp": "2026-01-23T19:12:50Z",
-          "tree_id": "c5fac8d51e6536740d46a17d03e94a11f5ddaa0e",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/716de95f90eedbe19e76db7b3ca7aef58e1274e6"
-        },
-        "date": 1769197947713,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 2.410295791364223,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 2.809894786670819,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 621.7137276785714,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 622.73828125,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.018029,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - All Cores/Idle State Baseline - All Cores - Idle Test Duration"
-          },
-          {
-            "name": "idle_cpu_percentage_avg",
-            "value": 0.046002374822294564,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
-          },
-          {
-            "name": "idle_cpu_percentage_max",
-            "value": 0.07063095349198942,
-            "unit": "%",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
-          },
-          {
-            "name": "idle_ram_mib_avg",
-            "value": 27.372767857142858,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
-          },
-          {
-            "name": "idle_ram_mib_max",
-            "value": 27.390625,
-            "unit": "MiB",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
-          },
-          {
-            "name": "idle_test_duration",
-            "value": 15.000943,
-            "unit": "seconds",
-            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -16678,6 +16594,210 @@ window.BENCHMARK_DATA = {
           {
             "name": "idle_test_duration",
             "value": 15.001061,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "cijo.thomas@gmail.com",
+            "name": "Cijo Thomas",
+            "username": "cijothomas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45c3ea7b3beee63354c2c362f5e1f45cd091e017",
+          "message": "URN rename to microsoft:exporter:azure_monitor (#2119)\n\nChanges URN from urn:microsoft_azure:exporter:monitor to\nurn:microsoft:exporter:azure_monitor to align with the naming convention\nused by other Microsoft components (urn:microsoft:exporter:geneva,\nurn:microsoft:processor:recordset_kql)",
+          "timestamp": "2026-02-26T15:54:22Z",
+          "tree_id": "70825836e5ce53f3e2d1a1d5f942dbf21a078f03",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/45c3ea7b3beee63354c2c362f5e1f45cd091e017"
+        },
+        "date": 1772134666707,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2717207418397345,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.3621206129910541,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 92.51395089285714,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 92.81640625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000956,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 16 Cores/Idle State Baseline - 16 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.08400869289311007,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.0963777850518276,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 35.53515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 35.765625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001068,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 2 Cores/Idle State Baseline - 2 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.10574940761439472,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.15324896154444964,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 42.21484375,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 42.2890625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.00144,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 4 Cores/Idle State Baseline - 4 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.2080223781663893,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.2759997022332506,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 57.190848214285715,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 57.41015625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.006215,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 8 Cores/Idle State Baseline - 8 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.5220285769762228,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.6968648016181733,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 174.35825892857142,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 174.87890625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.001115,
+            "unit": "seconds",
+            "extra": "Continuous - Idle State Performance - 32 Cores/Idle State Baseline - 32 Cores - Idle Test Duration"
+          },
+          {
+            "name": "idle_cpu_percentage_avg",
+            "value": 0.06220399132370594,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Avg)"
+          },
+          {
+            "name": "idle_cpu_percentage_max",
+            "value": 0.08998590212401775,
+            "unit": "%",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle CPU % (Max)"
+          },
+          {
+            "name": "idle_ram_mib_avg",
+            "value": 27.712053571428573,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Avg)"
+          },
+          {
+            "name": "idle_ram_mib_max",
+            "value": 27.8515625,
+            "unit": "MiB",
+            "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle RAM (MiB) (Max)"
+          },
+          {
+            "name": "idle_test_duration",
+            "value": 15.000958,
             "unit": "seconds",
             "extra": "Continuous - Idle State Performance - Single Core/Idle State Baseline - Single Core - Idle Test Duration"
           }
