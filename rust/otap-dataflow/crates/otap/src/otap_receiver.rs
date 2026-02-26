@@ -237,7 +237,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         effect_handler: shared::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         otap_df_telemetry::otel_info!(
-            "receiver.start",
+            "otap.receiver.start",
             listening_addr = %self.config.listening_addr
         );
 
