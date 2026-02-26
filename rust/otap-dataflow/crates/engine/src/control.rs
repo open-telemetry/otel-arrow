@@ -97,17 +97,36 @@ impl From<Context8u8> for f64 {
 /// numbers, deadline, num_items, etc.
 pub type UserCallData = SmallVec<[Context8u8; 3]>;
 
+/// Engine-wide metric level controlling per-node instrumentation overhead.
+///
+/// Ordered so that `>=` comparisons gate incremental cost:
+/// - `None`: no instrumentation.
+/// - `Basic`: outcome counts (auto-subscribe to ACKS|NACKS).
+/// - `Normal`: + forward-path byte counting.
+/// - `Detailed`: + receive timestamp and duration histogram.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MetricLevel {
+    /// No instrumentation — zero overhead.
+    #[default]
+    None,
+    /// Outcome counts only (auto-subscribe to ACKS|NACKS).
+    Basic,
+    /// Outcome counts + forward-path byte counting.
+    Normal,
+    /// Outcome counts + bytes + receive timestamp and duration histogram.
+    Detailed,
+}
+
 /// Engine-managed call data envelope. Wraps the component's opaque
-/// [`UserCallData`] with engine-managed timestamp and byte-count fields
-/// used for pipeline component metrics.
+/// [`UserCallData`] with an engine-managed timestamp field used for
+/// pipeline component metrics.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CallData {
     /// Component-specific opaque data (formerly the entire `CallData`).
     pub user: UserCallData,
     /// Receive timestamp (monotonic nanos since process epoch).
+    /// Only populated when `MetricLevel >= Detailed`; 0 otherwise.
     pub time_ns: u64,
-    /// Request byte count (deferred — currently 0).
-    pub req_bytes: u64,
 }
 
 /// The ACK message.

@@ -33,7 +33,7 @@ pub use node::{test_node, test_nodes};
 pub struct TestMsg(pub String);
 
 impl crate::ReceivedAtNode for TestMsg {
-    fn received_at_node(&mut self, _node_id: usize, _time_ns: u64) {
+    fn received_at_node(&mut self, _node_id: usize, _metric_level: crate::control::MetricLevel) {
         // No-op for test messages.
     }
 }

@@ -257,8 +257,8 @@ impl ComponentMetricsHandle {
 /// Record produced metrics for an incoming control message.
 ///
 /// Call this in node run loops when a control message is received. Records
-/// `produced.success` for Ack messages and `produced.refused` for Nack messages,
-/// using `calldata.req_bytes` from the message.
+/// `produced.success` for Ack messages and `produced.refused` for Nack messages.
+/// Byte counts are recorded on the forward path, not here.
 pub(crate) fn record_produced_for_control_msg<PData>(
     msg: &crate::control::NodeControlMsg<PData>,
 ) {
@@ -267,11 +267,11 @@ pub(crate) fn record_produced_for_control_msg<PData>(
 
     if let Some(handle) = current_component_metrics() {
         match msg {
-            NodeControlMsg::Ack(ack) => {
-                handle.record_produced_success(ack.calldata.req_bytes);
+            NodeControlMsg::Ack(_) => {
+                handle.record_produced_success(0);
             }
-            NodeControlMsg::Nack(nack) => {
-                handle.record_produced_refused(nack.calldata.req_bytes);
+            NodeControlMsg::Nack(_) => {
+                handle.record_produced_refused(0);
             }
             _ => {}
         }

@@ -11,7 +11,7 @@ use crate::{
     },
     component_metrics::ComponentMetricsHandle,
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
-    control::{AckMsg, NackMsg, UserCallData},
+    control::{AckMsg, MetricLevel, NackMsg, UserCallData},
     effect_handler::SourceTagging,
     entity_context::{NodeTelemetryGuard, NodeTelemetryHandle, with_node_telemetry_handle},
     error::{Error, TypedError},
@@ -241,11 +241,11 @@ pub trait ProducerEffectHandlerExtension<PData> {
 }
 
 /// Called when PData arrives at a queue-consumer node (processor or exporter).
-/// Pushes an entry frame with a receive timestamp so that downstream
-/// consumer metrics can compute processing duration.
+/// Pushes an entry frame whose interests and timestamp depend on the
+/// engine's `MetricLevel`.
 pub trait ReceivedAtNode {
-    /// Record that this PData was received at the given node at the given time.
-    fn received_at_node(&mut self, node_id: usize, time_ns: u64);
+    /// Record that this PData was received at the given node with the given metric level.
+    fn received_at_node(&mut self, node_id: usize, metric_level: MetricLevel);
 }
 
 /// Effect handler extensions for consumers specific to data type.

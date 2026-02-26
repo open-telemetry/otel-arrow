@@ -18,11 +18,13 @@ use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
 use otap_df_engine::entity_context::current_component_metrics;
 use otap_df_engine::error::{Error, TypedError};
+use otap_df_engine::control::{
+    AckMsg, CallData, MetricLevel, NackMsg, UserCallData, nanos_since_epoch,
+};
 use otap_df_engine::{
     ConsumerEffectHandlerExtension, Interests,
     MessageSourceLocalEffectHandlerExtension,
     MessageSourceSharedEffectHandlerExtension, ProducerEffectHandlerExtension, ReceivedAtNode,
-    control::{AckMsg, CallData, NackMsg, UserCallData, nanos_since_epoch},
 };
 use otap_df_pdata::OtapPayload;
 
@@ -52,7 +54,7 @@ impl Context {
         if let Some(top) = self.stack.last_mut() {
             if top.node_id == node_id {
                 // Same node → merge interests, replace user data.
-                // Engine fields (time_ns, req_bytes) are preserved.
+                // Engine fields (time_ns) are preserved.
                 top.interests |= interests;
                 top.calldata.user = user_calldata;
                 return;
@@ -163,22 +165,31 @@ impl Context {
     }
 
     /// Push an entry frame for a queue-consumer node (processor/exporter).
-    /// The frame inherits RETURN_DATA from the predecessor and records
-    /// the receive timestamp. If the component later calls `subscribe_to`,
-    /// the same-node merge will fold interests into this frame while
-    /// preserving `time_ns`.
-    pub(crate) fn push_entry_frame(&mut self, node_id: usize, time_ns: u64, req_bytes: u64) {
+    /// The frame inherits RETURN_DATA from the predecessor. Interests and
+    /// timestamp are set according to `metric_level`:
+    /// - Basic+: ACKS|NACKS (auto-subscribe for outcome counting).
+    /// - Detailed: time_ns stamped with receive time.
+    /// If the component later calls `subscribe_to`, the same-node merge
+    /// will fold interests into this frame while preserving `time_ns`.
+    pub(crate) fn push_entry_frame(&mut self, node_id: usize, metric_level: MetricLevel) {
         let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
+        if metric_level >= MetricLevel::Basic {
+            interests |= Interests::ACKS | Interests::NACKS;
+        }
+        let time_ns = if metric_level >= MetricLevel::Detailed {
+            nanos_since_epoch()
+        } else {
+            0
+        };
         self.stack.push(Frame {
             interests,
             node_id,
             calldata: CallData {
                 user: UserCallData::new(),
                 time_ns,
-                req_bytes,
             },
         });
     }
@@ -355,9 +366,8 @@ impl OtapPdata {
 }
 
 impl ReceivedAtNode for OtapPdata {
-    fn received_at_node(&mut self, node_id: usize, time_ns: u64) {
-        let req_bytes = self.payload.num_bytes().unwrap_or(0) as u64;
-        self.context.push_entry_frame(node_id, time_ns, req_bytes);
+    fn received_at_node(&mut self, node_id: usize, metric_level: MetricLevel) {
+        self.context.push_entry_frame(node_id, metric_level);
     }
 }
 
@@ -410,23 +420,23 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
 /// Record a consumed.success metric from the current task-local component handle.
-fn record_consumed_success(req_bytes: u64, duration_ns: u64) {
+fn record_consumed_success(duration_ns: u64) {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_success(req_bytes, duration_ns);
+        handle.record_consumed_success(0, duration_ns);
     }
 }
 
 /// Record a consumed.failure metric from the current task-local component handle.
-fn record_consumed_failure(req_bytes: u64, duration_ns: u64) {
+fn record_consumed_failure(duration_ns: u64) {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_failure(req_bytes, duration_ns);
+        handle.record_consumed_failure(0, duration_ns);
     }
 }
 
 /// Record a consumed.refused metric from the current task-local component handle.
-fn record_consumed_refused(req_bytes: u64, duration_ns: u64) {
+fn record_consumed_refused(duration_ns: u64) {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_refused(req_bytes, duration_ns);
+        handle.record_consumed_refused(0, duration_ns);
     }
 }
 
@@ -437,7 +447,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if let Some(frame) = ack.accepted.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+            record_consumed_success(duration_ns);
         }
         self.route_ack(ack, Context::next_ack).await
     }
@@ -446,9 +456,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
         if let Some(frame) = nack.refused.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
             if nack.permanent {
-                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+                record_consumed_refused(duration_ns);
             } else {
-                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+                record_consumed_failure(duration_ns);
             }
         }
         self.route_nack(nack, Context::next_nack).await
@@ -462,7 +472,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if let Some(frame) = ack.accepted.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+            record_consumed_success(duration_ns);
         }
         self.route_ack(ack, Context::next_ack).await
     }
@@ -471,9 +481,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
         if let Some(frame) = nack.refused.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
             if nack.permanent {
-                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+                record_consumed_refused(duration_ns);
             } else {
-                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+                record_consumed_failure(duration_ns);
             }
         }
         self.route_nack(nack, Context::next_nack).await
@@ -487,7 +497,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if let Some(frame) = ack.accepted.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+            record_consumed_success(duration_ns);
         }
         self.route_ack(ack, Context::next_ack).await
     }
@@ -496,9 +506,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
         if let Some(frame) = nack.refused.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
             if nack.permanent {
-                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+                record_consumed_refused(duration_ns);
             } else {
-                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+                record_consumed_failure(duration_ns);
             }
         }
         self.route_nack(nack, Context::next_nack).await
@@ -512,7 +522,7 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
     async fn notify_ack(&self, ack: AckMsg<OtapPdata>) -> Result<(), Error> {
         if let Some(frame) = ack.accepted.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
-            record_consumed_success(frame.calldata.req_bytes, duration_ns);
+            record_consumed_success(duration_ns);
         }
         self.route_ack(ack, Context::next_ack).await
     }
@@ -521,9 +531,9 @@ impl ConsumerEffectHandlerExtension<OtapPdata>
         if let Some(frame) = nack.refused.context.peek_top() {
             let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
             if nack.permanent {
-                record_consumed_refused(frame.calldata.req_bytes, duration_ns);
+                record_consumed_refused(duration_ns);
             } else {
-                record_consumed_failure(frame.calldata.req_bytes, duration_ns);
+                record_consumed_failure(duration_ns);
             }
         }
         self.route_nack(nack, Context::next_nack).await
