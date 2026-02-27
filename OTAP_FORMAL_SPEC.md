@@ -20,15 +20,15 @@
 ### 1.1 Purpose
 
 The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting
-OpenTelemetry telemetry signals (logs, metrics, and traces) from a Client to a 
-Server. OTAP optimizes on multiple axis for compression efficiency, memory 
+OpenTelemetry telemetry signals (logs, metrics, and traces) from a Client to a
+Server. OTAP optimizes on multiple axis for compression efficiency, memory
 usage, and processing speed while being semantically equivalent to OpenTelemetry
 Protocol (OTLP).
 
 ### 1.2 Requirements Language
 
 The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD",
-"SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be 
+"SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be
 interpreted as described in
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
 
@@ -39,24 +39,23 @@ See [Appendix F: Glossary](#appendix-f-glossary) for terminology and
 
 ## 2. Data Model
 
-
 ### 2.1 Normalized Representation
 
-OTAP represents telemetry Signals as a set of normalized tables connected by 
-foreign key relationships. Each Signal type has a different number and set of 
+OTAP represents telemetry Signals as a set of normalized tables connected by
+foreign key relationships. Each Signal type has a different number and set of
 tables reflecting the data transported by that Signal.
 
-Each table within a Signal has a designated Payload Type that identifies it. 
-The foreign key relationships between these tables form a Rooted Directed 
-Acyclic Graph (DAG) with the Root Payload Type for each signal being the root 
+Each table within a Signal has a designated Payload Type that identifies it.
+The foreign key relationships between these tables form a Rooted Directed
+Acyclic Graph (DAG) with the Root Payload Type for each signal being the root
 of that graph.
 
-For example, the Logs signal type consists of four Payload Types: LOGS, 
-LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS. The LOGS table is the Root Payload 
-Type for Logs and fills a similar role as an OTLP Log. Each Log has an `id` 
-which identifies it, and links it to the LOG_ATTRS table  which defines the 
-log's attributes. LOGS similarly contains `resource` and `scope` fields, each 
-having an `id` which links them to the RESOURCE_ATTRS and SCOPE_ATTRS tables 
+For example, the Logs signal type consists of four Payload Types: LOGS,
+LOG_ATTRS, RESOURCE_ATTRS, and SCOPE_ATTRS. The LOGS table is the Root Payload
+Type for Logs and fills a similar role as an OTLP Log. Each Log has an `id`
+which identifies it, and links it to the LOG_ATTRS table  which defines the
+log's attributes. LOGS similarly contains `resource` and `scope` fields, each
+having an `id` which links them to the RESOURCE_ATTRS and SCOPE_ATTRS tables
 respectively.
 
 The Metrics and Traces signals have a similar structure, but with more tables.
@@ -917,19 +916,11 @@ These match gRPC status codes for consistency.
 
 ### 7.3 Error Handling Rules
 
+// TODO: We probably need to triage all of these
+
 #### 7.3.1 Schema Errors
 
-// TODO: We probably need to define behaviors for all of these
-
-**Invalid schema**:
-- **Cause**: Schema message is malformed or uses unsupported types
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST fix schema definition
-
-**Schema mismatch**:
-- **Cause**: RecordBatch doesn't match declared schema
-- **Status**: INVALID_ARGUMENT
-- **Action**: Client MUST ensure consistency between schema and data
+// TODO
 
 #### 7.3.2 Data Errors
 
