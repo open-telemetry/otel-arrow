@@ -595,9 +595,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             extensions.push(extension_wrapper);
         }
         // Extract handles from each extension and merge into the registry builder.
+        // Use the config node name (from node_id) as the registry key, not the
+        // plugin URN — this allows multiple extensions of the same type with
+        // different configurations (e.g., "auth_team_a" and "auth_team_b" both
+        // using "extension:bearer_auth").
         for ext in &mut extensions {
             if let Some(handles) = ext.take_handles() {
-                extension_registry_builder.merge(ext.name(), handles)?;
+                extension_registry_builder.merge(ext.node_id().name.as_ref(), handles)?;
             }
         }
         let extension_registry = extension_registry_builder.build();

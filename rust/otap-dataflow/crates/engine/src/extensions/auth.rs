@@ -29,6 +29,8 @@
 //! ## Receiver — validating incoming requests
 //!
 //! ```rust,ignore
+//! // Look up by config node name (the key in the YAML `nodes:` map),
+//! // not the plugin URN.
 //! let auth = extension_registry
 //!     .get::<ServerAuthenticatorHandle>("my_auth")?;
 //!
