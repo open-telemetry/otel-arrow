@@ -21,7 +21,7 @@ groups:
 
         nodes:
           receiver:
-            type: otlp:receiver
+            type: receiver:otlp
             config:
               protocols:
                 grpc:
@@ -37,7 +37,7 @@ groups:
                     include_system_ca_certs_pool: false
 
           exporter:
-            type: otlp:exporter
+            type: exporter:otlp
             config:
               # Send to another OTLP receiver with mTLS enabled
               # Uses port 4319 to avoid conflict with standard OTLP ports (4317=gRPC, 4318=HTTP)

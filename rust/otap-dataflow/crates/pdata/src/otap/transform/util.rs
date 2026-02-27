@@ -4,8 +4,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use arrow::array::{Array, ArrayRef, MutableArrayData, RecordBatch, StructArray, make_array};
-use arrow::compute::SortColumn;
+use arrow::array::{
+    Array, ArrayRef, AsArray, MutableArrayData, RecordBatch, StructArray, UInt32Array, make_array,
+};
+use arrow::compute::partition_validity;
+use arrow::datatypes::{ArrowNativeType, UInt16Type, UInt32Type};
 use arrow_schema::{DataType, FieldRef, Schema, SortOptions};
 
 use crate::error::{Error, Result};
@@ -121,42 +124,188 @@ pub(crate) fn sort_otap_batch_by_parent_then_id<const N: usize>(
     Ok(())
 }
 
-// TODO [JD]: Optimize this because doing a column sort with dictionary encoded
-// causes complete expansion of the dictionary. We can probably do this faster
-// for a two column sort. transport_optimize has some optimizations for this
-// and we can steal some techniques.
-pub(crate) fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
+/// Sorts a record batch by `parent_id` (primary) then `id` (secondary) columns.
+///
+/// Dispatches to specialized sort paths based on the column types:
+/// - No sort columns: returns batch unchanged.
+/// - Single column (native): sort via the normal arrow sort_to_indices with an
+///   early return check if we're already sorted.
+/// - Two columns (both native): Sort via a specialized two column sort that packs
+///   parent_id into the high bits and id into the low bits of a u64 and sorts that
+///   instead.
+pub fn sort_by_parent_then_id(rb: RecordBatch) -> Result<RecordBatch> {
     let schema = rb.schema();
-    let cols = rb.columns();
+
+    let parent_id_col = schema
+        .column_with_name(PARENT_ID)
+        .map(|(idx, _)| rb.column(idx).clone());
+    let id_col = schema
+        .column_with_name(ID)
+        .map(|(idx, _)| rb.column(idx).clone());
+
+    match (&parent_id_col, &id_col) {
+        (None, None) => Ok(rb),
+        (None, Some(col)) | (Some(col), None) => sort_single_column(rb, col),
+        (Some(pid), Some(id)) => sort_two_columns(rb, pid, id),
+    }
+}
+
+/// Single-column sort. Checks `is_sorted` for early return, then delegates to
+/// `arrow::compute::sort_to_indices` for the actual sort.
+fn sort_single_column(rb: RecordBatch, col: &ArrayRef) -> Result<RecordBatch> {
+    // Fast path: check if already sorted (only when non-null, to avoid resolving nullability).
+    id_column_dispatch!(
+        col,
+        Native[T] => {
+            if col.null_count() == 0 && col.as_primitive::<T>().values().is_sorted() {
+                return Ok(rb);
+            }
+        },
+        Dictionary[KType, VType] => {
+            if col.null_count() == 0 {
+                // safety: id_column_dispatch! matched the dictionary key/value types
+                let dict = col.as_dictionary::<KType>();
+                let keys = dict.keys().values();
+                let vals = dict.values().as_primitive::<VType>().values();
+                if keys.windows(2).all(|w| vals[w[0].as_usize()] <= vals[w[1].as_usize()]) {
+                    return Ok(rb);
+                }
+            }
+        },
+        _ => {
+            return Err(Error::UnsupportedParentIdType {
+                actual: col.data_type().clone(),
+            });
+        },
+    );
 
     let options = Some(SortOptions {
         descending: false,
         nulls_first: true,
     });
+    let indices = arrow::compute::sort_to_indices(col, options, None)
+        .map_err(|e| Error::Batching { source: e })?;
 
-    let mut sort_columns: Vec<SortColumn> = Vec::new();
-
-    if let Some((parent_id_idx, _)) = schema.column_with_name(PARENT_ID) {
-        sort_columns.push(SortColumn {
-            values: cols[parent_id_idx].clone(),
-            options,
-        });
-    }
-
-    if let Some((id_idx, _)) = schema.column_with_name(ID) {
-        sort_columns.push(SortColumn {
-            values: cols[id_idx].clone(),
-            options,
-        });
-    }
-
-    if sort_columns.is_empty() {
+    if indices.values().is_sorted() {
         return Ok(rb);
     }
 
-    let indices =
-        super::sort_to_indices(&sort_columns).map_err(|e| Error::Batching { source: e })?;
     sort_record_batch_by_indices(rb, &indices)
+}
+
+/// Two-column sort. Packs parent_id and id into u64 sort keys for a single-pass sort.
+fn sort_two_columns(
+    rb: RecordBatch,
+    parent_id_col: &ArrayRef,
+    id_col: &ArrayRef,
+) -> Result<RecordBatch> {
+    if parent_id_col.null_count() != 0 {
+        return Err(Error::NullParentId);
+    }
+
+    id_column_dispatch!(
+        parent_id_col,
+        Native[PType] => {
+            // safety: id_column_dispatch! matched the native data type
+            let pid_vals = parent_id_col.as_primitive::<PType>().values();
+            dispatch_id_and_pack(rb, |i| pid_vals[i as usize] as u64, id_col)
+        },
+        Dictionary[KType, VType] => {
+            // safety: id_column_dispatch! matched the dictionary key/value types
+            let dict = parent_id_col.as_dictionary::<KType>();
+            let pid_keys = dict.keys().values();
+            let pid_vals = dict.values().as_primitive::<VType>().values();
+            dispatch_id_and_pack(
+                rb,
+                |i| pid_vals[pid_keys[i as usize].as_usize()] as u64,
+                id_col,
+            )
+        },
+        _ => {
+            Err(Error::UnsupportedParentIdType {
+                actual: parent_id_col.data_type().clone(),
+            })
+        },
+    )
+}
+
+/// Dispatches on the id column's native type, then delegates to packed sort.
+fn dispatch_id_and_pack(
+    rb: RecordBatch,
+    resolve_pid: impl Fn(u32) -> u64,
+    id_col: &ArrayRef,
+) -> Result<RecordBatch> {
+    match id_col.data_type() {
+        DataType::UInt16 => {
+            let id_vals = id_col.as_primitive::<UInt16Type>().values();
+            sort_two_columns_packed(rb, resolve_pid, id_col.as_ref(), id_vals)
+        }
+        DataType::UInt32 => {
+            let id_vals = id_col.as_primitive::<UInt32Type>().values();
+            sort_two_columns_packed(rb, resolve_pid, id_col.as_ref(), id_vals)
+        }
+        other => Err(Error::UnsupportedParentIdType {
+            actual: other.clone(),
+        }),
+    }
+}
+
+/// Pack parent_id and id into u64 sort keys and sort.
+///
+/// High 32 bits hold the resolved `parent_id` value, low 32 bits hold the `id` value
+///
+/// Parent_id must be non-null (enforced by caller). When the id column has nulls,
+/// null-id rows cannot be packed (no valid id value), so we partition into two groups,
+/// sort each independently, then merge them with nulls_first semantics for id.
+fn sort_two_columns_packed<T: ArrowNativeType>(
+    rb: RecordBatch,
+    resolve_pid: impl Fn(u32) -> u64,
+    id_col: &dyn Array,
+    id_vals: &[T],
+) -> Result<RecordBatch> {
+    let len = id_vals.len();
+
+    let pack = |i: u32| -> u64 { (resolve_pid(i) << 32) | id_vals[i as usize].as_usize() as u64 };
+
+    // Partition by id nullability. When there are no nulls, null_indices is empty
+    // and valid_indices contains all row indices - the merge becomes a pass-through.
+    let (mut valid_indices, mut null_indices) = partition_validity(id_col);
+
+    // Sort null-id rows by parent_id only.
+    null_indices.sort_unstable_by_key(|&i| resolve_pid(i));
+
+    // Precompute packed keys for sorting. Only valid row slots are populated
+    let mut packed = vec![0u64; len];
+    for &i in &valid_indices {
+        packed[i as usize] = pack(i);
+    }
+    valid_indices.sort_unstable_by_key(|&i| packed[i as usize]);
+
+    // Merge: null-id rows first at equal parent_id (nulls_first for id column).
+    let mut indices: Vec<u32> = Vec::with_capacity(len);
+    let (mut ni, mut vi) = (0, 0);
+    while ni < null_indices.len() && vi < valid_indices.len() {
+        let parent_id = packed[valid_indices[vi] as usize] >> 32;
+        let null_parent_id = resolve_pid(null_indices[ni]);
+        if null_parent_id <= parent_id {
+            indices.push(null_indices[ni]);
+            ni += 1;
+        } else {
+            indices.push(valid_indices[vi]);
+            vi += 1;
+        }
+    }
+
+    // Add any leftovers
+    indices.extend_from_slice(&null_indices[ni..]);
+    indices.extend_from_slice(&valid_indices[vi..]);
+
+    if indices.is_sorted() {
+        return Ok(rb);
+    }
+
+    let indices_arr = UInt32Array::from(indices);
+    sort_record_batch_by_indices(rb, &indices_arr)
 }
 
 /// Extracts an ID column from a record batch
@@ -526,4 +675,167 @@ pub(crate) fn payload_to_idx(payload_type: ArrowPayloadType) -> usize {
     let pos = POSITION_LOOKUP[payload_type as usize];
     assert_ne!(pos, UNUSED_INDEX);
     pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record_batch;
+
+    use arrow::array::{DictionaryArray, UInt16Array};
+    use arrow::compute::SortColumn;
+    use arrow::datatypes::{Field, UInt8Type};
+    use arrow_schema::SortOptions;
+    use std::sync::Arc;
+
+    /// Oracle: the legacy RowConverter-based sort. Used as ground truth for all tests.
+    fn sort_oracle(rb: RecordBatch) -> RecordBatch {
+        let schema = rb.schema();
+        let cols = rb.columns();
+        let options = Some(SortOptions {
+            descending: false,
+            nulls_first: true,
+        });
+
+        let mut sort_columns: Vec<SortColumn> = Vec::new();
+        if let Some((idx, _)) = schema.column_with_name("parent_id") {
+            sort_columns.push(SortColumn {
+                values: cols[idx].clone(),
+                options,
+            });
+        }
+        if let Some((idx, _)) = schema.column_with_name("id") {
+            sort_columns.push(SortColumn {
+                values: cols[idx].clone(),
+                options,
+            });
+        }
+
+        if sort_columns.is_empty() {
+            return rb;
+        }
+
+        let indices = super::super::sort_to_indices(&sort_columns).expect("oracle sort failed");
+        let (schema, columns, _) = rb.into_parts();
+        let new_columns: Vec<_> = columns
+            .iter()
+            .map(|c| arrow::compute::take(c, &indices, None).expect("take failed"))
+            .collect();
+        RecordBatch::try_new(schema, new_columns).expect("valid record batch")
+    }
+
+    /// Assert that our optimized sort produces the same result as the oracle.
+    fn assert_matches_oracle(rb: RecordBatch) {
+        let expected = sort_oracle(rb.clone());
+        let actual = sort_by_parent_then_id(rb).expect("optimized sort failed");
+        assert_eq!(expected.num_columns(), actual.num_columns());
+        for i in 0..expected.num_columns() {
+            assert_eq!(
+                expected.column(i).as_ref(),
+                actual.column(i).as_ref(),
+                "column {} mismatch",
+                expected.schema().field(i).name(),
+            );
+        }
+    }
+
+    /// Helper: build a RecordBatch from pre-built (name, array) pairs.
+    fn batch_from_arrays(cols: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(
+            cols.iter()
+                .map(|(name, arr)| Field::new(*name, arr.data_type().clone(), true))
+                .collect::<Vec<_>>(),
+        ));
+        let arrays: Vec<ArrayRef> = cols.into_iter().map(|(_, a)| a).collect();
+        RecordBatch::try_new(schema, arrays).expect("valid record batch")
+    }
+
+    #[test]
+    fn test_dict_u8_u32() {
+        let rb = record_batch!(
+            ("parent_id", (UInt8, UInt32), ([1, 0, 1, 0], [10, 20])),
+            ("id", UInt16, [4, 3, 2, 1])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_dict_16_u32() {
+        let rb = record_batch!(
+            ("parent_id", (UInt16, UInt32), ([1, 0, 1, 0], [10, 20])),
+            ("id", UInt16, [4, 3, 2, 1])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_only_id_column() {
+        let rb = record_batch!(("id", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_only_parent_id_column() {
+        let rb = record_batch!(("parent_id", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_neither_column() {
+        let rb = record_batch!(("other", UInt16, [3, 1, 2])).unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_already_sorted() {
+        let rb = record_batch!(
+            ("parent_id", UInt16, [1, 1, 2, 2]),
+            ("id", UInt16, [1, 2, 1, 2])
+        )
+        .unwrap();
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_native_id_with_nulls() {
+        let id: ArrayRef = Arc::new(UInt16Array::from(vec![Some(3), None, Some(1)]));
+        let rb = batch_from_arrays(vec![("id", id)]);
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_native_parent_id_with_nulls_returns_error() {
+        let pid: ArrayRef = Arc::new(UInt16Array::from(vec![Some(2), None, Some(1)]));
+        let id: ArrayRef = Arc::new(UInt16Array::from(vec![Some(10), Some(20), Some(30)]));
+        let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
+
+        let result = sort_by_parent_then_id(rb);
+        assert!(matches!(result, Err(Error::NullParentId)));
+    }
+
+    #[test]
+    fn test_dict_parent_id_and_native_id_with_null_ids() {
+        let pid: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            arrow::array::UInt8Array::from(vec![1, 0, 1, 0]),
+            Arc::new(UInt16Array::from(vec![10, 20])),
+        ));
+        let id: ArrayRef = Arc::new(UInt16Array::from(vec![None, Some(3), Some(2), Some(1)]));
+        let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
+        assert_matches_oracle(rb);
+    }
+
+    #[test]
+    fn test_null_parent_id_returns_error() {
+        let pid: ArrayRef = Arc::new(DictionaryArray::<UInt8Type>::new(
+            arrow::array::UInt8Array::from(vec![Some(1), None, Some(1), Some(0)]),
+            Arc::new(UInt16Array::from(vec![10, 20])),
+        ));
+        let id: ArrayRef = Arc::new(UInt16Array::from(vec![4, 3, 2, 1]));
+        let rb = batch_from_arrays(vec![("parent_id", pid), ("id", id)]);
+
+        let result = sort_by_parent_then_id(rb);
+        assert!(matches!(result, Err(Error::NullParentId)));
+    }
 }

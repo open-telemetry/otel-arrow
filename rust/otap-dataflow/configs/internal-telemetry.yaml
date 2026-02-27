@@ -33,10 +33,10 @@ engine:
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
         telemetry:
-          type: "internal_telemetry:receiver"
+          type: "receiver:internal_telemetry"
           config: {}
         console:
-          type: "console:exporter"
+          type: "exporter:console"
           config: {}
       connections:
         - from: telemetry
@@ -47,7 +47,7 @@ groups:
       main:
         nodes:
           generator:
-            type: traffic_generator:receiver
+            type: receiver:traffic_generator
             config:
               traffic_config:
                 max_signal_count: 100000
@@ -63,7 +63,7 @@ groups:
                     brief: "Custom pipeline name for identification"
                   node_sequence: 1
           noop:
-            type: noop:exporter
+            type: exporter:noop
             config: {}
             entity:
               extend:

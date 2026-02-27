@@ -40,8 +40,6 @@ pub struct GzipResult {
     pub row_count: f64,
 }
 
-// TODO: Remove print_stdout after logging is set up
-#[allow(clippy::print_stdout)]
 impl GzipBatcher {
     pub fn new() -> Self {
         Self {

@@ -19,7 +19,7 @@ use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-const ERROR_EXPORTER_URN: &str = "urn:otel:error:exporter";
+const ERROR_EXPORTER_URN: &str = "urn:otel:exporter:error";
 
 /// The error exporter is an exporter that does nothing (like
 /// noop_exporter) but returns a NACK with a configurable message.

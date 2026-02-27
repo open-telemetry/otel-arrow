@@ -10,7 +10,7 @@ destinations after failures, supporting a broad range of failover policies.
 
 ```yaml
 processor:
-  urn: urn:otel:fanout:processor
+  urn: urn:otel:processor:fanout
   config:
     mode: parallel          # or "sequential"
     await_ack: all          # or "primary" or "none"

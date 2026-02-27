@@ -1,8 +1,8 @@
 #!/bin/bash
 # Validate all OtelDataflow configuration files in the repository.
 #
-# Finds every .yaml/.yml file containing "version: otel_dataflow/v1" under the
-# otap-dataflow tree and runs the engine binary with --validate-and-exit to
+# Finds every .yaml/.yml file containing "version: otel_dataflow/v1" across the
+# entire repository and runs the engine binary with --validate-and-exit to
 # verify that each config is structurally valid, references only known components,
 # and has correct component-specific configuration.
 #
@@ -15,7 +15,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Build or locate the binary
 if [ $# -ge 1 ]; then
@@ -26,8 +27,8 @@ else
     # mutually exclusive (compile_error! in non-test builds).
     cargo build \
         --features azure,aws,experimental-tls,contrib-exporters,contrib-processors,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor \
-        --manifest-path "$REPO_ROOT/Cargo.toml"
-    BINARY="$REPO_ROOT/target/debug/df_engine"
+        --manifest-path "$PROJECT_DIR/Cargo.toml"
+    BINARY="$PROJECT_DIR/target/debug/df_engine"
 fi
 
 if [ ! -x "$BINARY" ]; then

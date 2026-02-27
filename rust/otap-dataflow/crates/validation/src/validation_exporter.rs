@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
 /// URN that identifies the validation exporter within OTAP pipelines.
-pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:validation:exporter";
+pub const VALIDATION_EXPORTER_URN: &str = "urn:otel:exporter:validation";
 
 #[derive(Debug, Deserialize)]
 struct ValidationExporterConfig {

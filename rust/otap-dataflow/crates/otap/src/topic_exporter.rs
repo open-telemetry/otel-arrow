@@ -28,7 +28,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// URN for the topic exporter.
-pub const TOPIC_EXPORTER_URN: &str = "urn:otel:topic:exporter";
+pub const TOPIC_EXPORTER_URN: &str = "urn:otel:exporter:topic";
 
 /// Topic exporter configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
