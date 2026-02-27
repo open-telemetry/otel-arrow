@@ -10,16 +10,14 @@ use crate::proto::consts::{
     field_num::resource::{RESOURCE_ATTRIBUTES, RESOURCE_DROPPED_ATTRIBUTES_COUNT},
     wire_types,
 };
-use crate::views::{
-    otlp::bytes::{
-        common::{KeyValueIter, RawKeyValue},
-        decode::{
-            FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
-            from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
-        },
+use crate::views::otlp::bytes::{
+    common::{KeyValueIter, RawKeyValue},
+    decode::{
+        FieldRanges, ProtoBytesParser, RepeatedFieldProtoBytesParser,
+        from_option_nonzero_range_to_primitive, read_dropped_count, to_nonzero_range,
     },
-    resource::ResourceView,
 };
+use otap_pdata_views::views::resource::ResourceView;
 
 /// Implementation of `ResourceView` backed by protobuf serialized `Resource` message
 pub struct RawResource<'a> {

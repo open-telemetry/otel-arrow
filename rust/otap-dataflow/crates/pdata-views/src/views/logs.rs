@@ -13,11 +13,11 @@
 //!             └─ common::AnyValueView
 //! ```
 
-use crate::{SpanId, TraceId};
 use crate::views::{
     common::{AnyValueView, AttributeView, InstrumentationScopeView, Str},
     resource::ResourceView,
 };
+use crate::{SpanId, TraceId};
 
 /// View for top level LogsData
 pub trait LogsDataView {

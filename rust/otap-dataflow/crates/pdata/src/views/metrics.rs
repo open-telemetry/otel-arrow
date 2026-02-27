@@ -25,10 +25,9 @@
 
 use crate::proto::opentelemetry::metrics::v1 as proto;
 
-use crate::views::{
-    common::{AttributeView, InstrumentationScopeView, SpanId, Str, TraceId},
-    resource::ResourceView,
-};
+use otap_pdata_views::views::common::{AttributeView, InstrumentationScopeView, Str};
+use otap_pdata_views::views::resource::ResourceView;
+use otap_pdata_views::{SpanId, TraceId};
 
 /// View for top level MetricsData
 pub trait MetricsView {

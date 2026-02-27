@@ -20,11 +20,11 @@
 //!          └─ StatusView
 //! ```
 
-use crate::{SpanId, TraceId};
 use crate::views::{
     common::{AttributeView, InstrumentationScopeView, Str},
     resource::ResourceView,
 };
+use crate::{SpanId, TraceId};
 
 /// View for top level TracesData
 pub trait TracesView {

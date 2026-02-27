@@ -3,7 +3,7 @@
 
 use std::io::Write;
 
-use crate::views::common::{AnyValueView, AttributeView, ValueType};
+use otap_pdata_views::views::common::{AnyValueView, AttributeView, ValueType};
 use serde::ser::{Error as SerError, SerializeMap, SerializeSeq, Serializer};
 use serde_cbor::ser::IoWrite;
 
