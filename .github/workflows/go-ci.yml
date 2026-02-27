@@ -66,3 +66,31 @@ jobs:
         languages: go
     - uses: github/codeql-action/analyze@b20883b0cd1f46c72ae0ba6d1090936928f9fa30 # v4.32.0
       timeout-minutes: 60
+
+  # Aggregated status check for all Go CI jobs
+  # This job can be set as a required status check in GitHub branch protection
+  # to simplify maintenance - add/remove jobs from the needs list as needed
+  go-required-status-check:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - test_and_coverage
+      - gen_otelarrowcol
+      - codeql
+    steps:
+      - name: Check if all jobs succeeded
+        run: |
+          # Check if any required job failed or was cancelled
+          if [[ "${{ needs.test_and_coverage.result }}" != "success" ]]; then
+            echo "test_and_coverage failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.gen_otelarrowcol.result }}" != "success" ]]; then
+            echo "gen_otelarrowcol failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.codeql.result }}" != "success" ]]; then
+            echo "codeql failed or was cancelled"
+            exit 1
+          fi
+          echo "All required checks passed!"
