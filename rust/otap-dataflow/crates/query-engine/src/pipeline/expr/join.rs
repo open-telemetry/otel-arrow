@@ -1,17 +1,40 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Joining different data domains
+//! This module contains code used for joining different expression data domains.
+//!
+//! As the expression evaluates, we may encounter points that need to join data from different
+//! record batches. For example, in an expression like `severity_number + attributes["x"]`, we
+//! need to join the root record batch (which contains the severity_number column) with the
+//! attributes record batch on root.id == attributes.parent_id, before doing addition.
+//!
+//! This module contains a helper function called `join` which takes the results of two expression
+//! evaluations (left and right), and produces a resulting record batch by joining on the
+//! id/parent_id relationship.
+//!
+//! The schema of the produced record batch will have the following columns:
+//! - "left" - the result of the left input expression
+//! - "right" - the result of the right input expression
+//!
+//! As well as optional columns "id", "parent_id", "scope.id" and/or "resource.id", depending on
+//! whether the input expression evaluation result contained these columns.
+//!
+//! Note that in most cases, the joins will produce a result preserving the input order/ID columns
+//!  of the left input expression. However, if the left->right relationship is one->many, we
+//! produce a result preserving the input order of the right side input, to avoid losing any rows
+//! and to also avoid having ambiguity about the result.
 //!
 //! TODO
-//! - better module documentation
+//! - currently assumption is made that all IDs are u16, because we don't yet support evaluation on
+//!   any OTAP batches that uses u32 IDs. Eventually we'll need to support this, when the engine
+//!   behaviour becomes more sophisticated.
+//!
 use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
-use datafusion::logical_expr::ColumnarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -23,84 +46,64 @@ use crate::pipeline::expr::{
 };
 use crate::pipeline::planner::AttributesIdentifier;
 
-/// Two-level lookup structure for joining u16 IDs.
+/// Join the results of two expression evaluations.
 ///
+/// Returns a RecordBatch containing "left" and "right" from the values of the left/right
+/// expression evaluation results.
 ///
-/// TODO the comments about memory efficiency aren't right here. This is efficient for
-/// dense ranges that don't use the full ID range
-///
-/// This structure provides O(1) lookups while being memory-efficient for sparse ID ranges.
-/// The u16 space (0-65535) is divided into 64 pages of 1024 entries each.
-/// Pages are only allocated when IDs in that range are actually used.
-///
-/// # Memory Layout
-/// - Outer array: 64 entries (top 6 bits of u16)
-/// - Each page: 1024 entries (bottom 10 bits of u16)
-/// - Each page is ~8KB (Option<usize> is 8 bytes on 64-bit systems)
-///
-/// # Example
-/// For ID 5120 (binary: 00010100_00000000):
-/// - Outer index: 5120 >> 10 = 5
-/// - Inner index: 5120 & 0x3FF = 0
-const PAGE_SIZE: usize = 1024;
-const PAGE_BITS: u16 = 10;
-const PAGE_MASK: u16 = 0x3FF; // Bottom 10 bits
-const NUM_PAGES: usize = 64; // 2^16 / 2^10 = 2^6 = 64
-
-struct IdJoinLookup {
-    /// Two-level lookup: outer array indexed by top 6 bits, inner pages indexed by bottom 10 bits.
-    /// Each page maps parent_id -> row index in the right-side batch.
-    lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>>,
-}
-
-// TODO eventually this will need to support u32 IDs
-impl IdJoinLookup {
-    /// Creates a new IdJoin from a UInt16Array of parent IDs.
-    ///
-    /// # Arguments
-    /// * `parent_ids` - The parent_id array from the right side of the join
-    ///
-    /// # Returns
-    /// A lookup structure mapping parent_id -> row index. Null values in the array are skipped.
-    fn new(parent_ids: &UInt16Array) -> Self {
-        let mut lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>> = vec![None; NUM_PAGES];
-
-        for row_idx in 0..parent_ids.len() {
-            // Skip null values
-            if parent_ids.is_null(row_idx) {
-                continue;
+/// It preserves the IDs/row order from one of the sides, which will be indicated by the returned
+// DataDomainId. Normally this will be the left side, except in cases where left:right is one:many.
+pub fn join<'a>(
+    left: &'a PhysicalExprEvalResult,
+    right: &'a PhysicalExprEvalResult,
+    otap_batch: &'a OtapArrowRecords,
+) -> Result<(RecordBatch, Rc<DataDomainId>)> {
+    // determine the join strategy from the source of the data
+    match (left.data_domain.as_ref(), right.data_domain.as_ref()) {
+        (
+            DataDomainId::Attributes(left_attrs_id, _),
+            DataDomainId::Attributes(right_attrs_id, _),
+        ) => {
+            if left_attrs_id == right_attrs_id {
+                let join_exec = AttributeToSameAttributeJoin::new();
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, left.data_domain.clone()))
+            } else if is_one_to_many(left_attrs_id, right_attrs_id) {
+                let join_exec =
+                    AttributeToDifferentAttributeReverseJoin::new(*left_attrs_id, *right_attrs_id);
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, right.data_domain.clone()))
+            } else {
+                let join_exec =
+                    AttributeToDifferentAttributeJoin::new(*left_attrs_id, *right_attrs_id);
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, left.data_domain.clone()))
             }
-
-            let parent_id = parent_ids.value(row_idx);
-            let outer = (parent_id >> PAGE_BITS) as usize;
-            let inner = (parent_id & PAGE_MASK) as usize;
-
-            // Allocate page if needed
-            if lookup[outer].is_none() {
-                lookup[outer] = Some(Box::new([None; PAGE_SIZE]));
-            }
-
-            // Store the mapping
-            lookup[outer].as_mut().unwrap()[inner] = Some(row_idx);
         }
-
-        Self { lookup }
-    }
-
-    /// Looks up a left-side ID and returns the corresponding right-side row index.
-    ///
-    /// # Arguments
-    /// * `left_id` - The ID value from the left side to look up
-    ///
-    /// # Returns
-    /// * `Some(row_idx)` - The row index in the right batch if a match exists
-    /// * `None` - No matching parent_id found
-    #[inline]
-    fn lookup(&self, left_id: u16) -> Option<usize> {
-        let outer = (left_id >> PAGE_BITS) as usize;
-        let inner = (left_id & PAGE_MASK) as usize;
-
-        self.lookup[outer].as_ref().and_then(|page| page[inner])
+        (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
+            let join_exec = RootToAttributesJoin::new(*attr_id);
+            let join_result = join_exec.join(left, right, otap_batch)?;
+            Ok((join_result, left.data_domain.clone()))
+        }
+        (DataDomainId::Attributes(attr_id, _), DataDomainId::Root) => match attr_id {
+            AttributesIdentifier::Root => {
+                let join_exec = RootAttrsToRootJoin::new();
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, left.data_domain.clone()))
+            }
+            AttributesIdentifier::NonRoot(payload_type) => {
+                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
+                let join_result = join_exec.join(left, right, otap_batch)?;
+                Ok((join_result, right.data_domain.clone()))
+            }
+        },
+        (DataDomainId::Root, DataDomainId::Root) => {
+            todo!()
+        }
+        _ => {
+            // invalid
+            todo!()
+        }
     }
 }
 
@@ -127,13 +130,17 @@ pub fn is_one_to_many(
     }
 }
 
-pub fn missing_column_err(column_name: &str) -> Error {
+// helper functions for producing errors from results. Normally, we wouldn't produce these errors
+// unless we received invalid input record batches with missing ID/parent_id columns or batches
+// where these records are an unexpected type
+
+fn missing_column_err(column_name: &str) -> Error {
     Error::ExecutionError {
         cause: format!("Invalid record batch: missing required column {column_name}"),
     }
 }
 
-pub fn invalid_column_type_error(data_type: &DataType) -> Error {
+fn invalid_column_type_error(data_type: &DataType) -> Error {
     Error::ExecutionError {
         cause: format!("Invalid record batch. Expected u16 ID column, found {data_type:?}"),
     }
@@ -169,7 +176,8 @@ fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &IdJoinLookup
 }
 
 /// Helper function to build join indices for two-hop joins through an intermediate lookup
-/// Used when joining attributes from different domains (e.g., resource attrs + scope attrs)
+/// Used when joining attributes from different domains via the root record batch as an
+/// intermediary (e.g., resource attrs + scope attrs)
 fn build_two_hop_join_indices(
     left_ids: &UInt16Array,
     intermediate_lookup: &IdJoinLookup,
@@ -179,379 +187,23 @@ fn build_two_hop_join_indices(
     let mut to_take = Int32Array::builder(left_ids.len());
 
     left_ids.iter().for_each(|left_id_opt| {
-        if let Some(left_id) = left_id_opt {
-            if let Some(root_index) = intermediate_lookup.lookup(left_id) {
-                if right_root_ids.is_valid(root_index) {
-                    let right_id = right_root_ids.value(root_index);
-                    if let Some(right_index) = right_lookup.lookup(right_id) {
-                        to_take.append_value(right_index as i32);
-                    } else {
-                        to_take.append_null();
-                    }
-                } else {
-                    to_take.append_null();
-                }
-            } else {
-                to_take.append_null();
-            }
-        } else {
-            to_take.append_null();
+        let index = left_id_opt
+            .and_then(|id| intermediate_lookup.lookup(id))
+            .filter(|&i| right_root_ids.is_valid(i))
+            .map(|i| right_root_ids.value(i))
+            .and_then(|id| right_lookup.lookup(id))
+            .map(|i| i as i32);
+
+        match index {
+            Some(i) => to_take.append_value(i),
+            None => to_take.append_null(),
         }
     });
 
     to_take.finish()
 }
 
-pub fn join<'a>(
-    left: &'a PhysicalExprEvalResult,
-    right: &'a PhysicalExprEvalResult,
-    otap_batch: &'a OtapArrowRecords,
-) -> Result<(RecordBatch, Rc<DataDomainId>)> {
-    match (left.data_domain.as_ref(), right.data_domain.as_ref()) {
-        (
-            DataDomainId::Attributes(left_attrs_id, _),
-            DataDomainId::Attributes(right_attrs_id, _),
-        ) => {
-            if left_attrs_id == right_attrs_id {
-                let join_exec = AttributeToSameAttributeJoin::new();
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_domain.clone()))
-            } else {
-                if is_one_to_many(left_attrs_id, right_attrs_id) {
-                    let join_exec = AttributeToDifferentAttributeReverseJoin::new(
-                        left_attrs_id.clone(),
-                        right_attrs_id.clone(),
-                    );
-                    let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, right.data_domain.clone()))
-                } else {
-                    let join_exec = AttributeToDifferentAttributeJoin::new(
-                        left_attrs_id.clone(),
-                        right_attrs_id.clone(),
-                    );
-                    let join_result = join_exec.join(left, right, otap_batch)?;
-                    Ok((join_result, left.data_domain.clone()))
-                }
-            }
-        }
-        (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
-            let join_exec = RootToAttributesJoin::new(attr_id.clone());
-            let join_result = join_exec.join(left, right, otap_batch)?;
-            Ok((join_result, left.data_domain.clone()))
-        }
-        (DataDomainId::Attributes(attr_id, _), DataDomainId::Root) => match attr_id {
-            AttributesIdentifier::Root => {
-                let join_exec = RootAttrsToRootJoin::new();
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_domain.clone()))
-            }
-            AttributesIdentifier::NonRoot(payload_type) => {
-                let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
-                let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_domain.clone()))
-            }
-        },
-        _ => {
-            todo!()
-        }
-    }
-}
-
-fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> RecordBatch {
-    // TODO preallocate
-    let mut columns = Vec::new();
-    let mut fields = Vec::new();
-
-    match &left.values {
-        ColumnarValue::Array(arr) => {
-            fields.push(Field::new(LEFT_COLUMN_NAME, arr.data_type().clone(), true));
-            columns.push(arr.clone());
-        }
-        _ => {
-            // TODO - not sure this is reachable?
-            todo!("scalar val in result conversion")
-        }
-    }
-
-    fields.push(Field::new(
-        RIGHT_COLUMN_NAME,
-        right_col.data_type().clone(),
-        true,
-    ));
-    columns.push(right_col);
-
-    if let Some(ids) = &left.ids {
-        fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
-        columns.push(ids.clone());
-    }
-
-    if let Some(parent_ids) = &left.parent_ids {
-        fields.push(Field::new(
-            consts::PARENT_ID,
-            parent_ids.data_type().clone(),
-            false,
-        ));
-        columns.push(parent_ids.clone());
-    }
-
-    if let Some(col) = &left.resource_ids {
-        let struct_arr = StructArray::new(
-            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-            vec![col.clone()],
-            None,
-        );
-        fields.push(Field::new(
-            consts::RESOURCE,
-            struct_arr.data_type().clone(),
-            true,
-        ));
-        columns.push(Arc::new(struct_arr));
-    }
-
-    if let Some(col) = &left.scope_ids {
-        let struct_arr = StructArray::new(
-            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-            vec![col.clone()],
-            None,
-        );
-        fields.push(Field::new(
-            consts::SCOPE,
-            struct_arr.data_type().clone(),
-            true,
-        ));
-        columns.push(Arc::new(struct_arr));
-    }
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .map_err(|e| Error::ExecutionError {
-            cause: format!("Failed to create record batch: {e}"),
-        })
-        .expect("Failed to create join result record batch")
-}
-
-trait JoinExec {
-    fn join(
-        &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
-        otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch>;
-}
-
-struct RootToAttributesJoin {
-    attrs_id: AttributesIdentifier,
-}
-
-impl RootToAttributesJoin {
-    fn new(attrs_id: AttributesIdentifier) -> Self {
-        Self { attrs_id }
-    }
-}
-
-impl JoinExec for RootToAttributesJoin {
-    fn join(
-        &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
-        _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
-        // build the lookup for the right side of the join by parent ID
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids);
-
-        // get the ID column for which we should scan for join
-        let left_id_col = match self.attrs_id {
-            AttributesIdentifier::Root => &left.ids,
-            AttributesIdentifier::NonRoot(payload_type) => match payload_type {
-                ArrowPayloadType::ResourceAttrs => &left.resource_ids,
-                ArrowPayloadType::ScopeAttrs => &left.scope_ids,
-                _ => {
-                    todo!()
-                }
-            },
-        };
-        let left_parent_ids = extract_u16_array(left_id_col.as_ref(), consts::ID)?;
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
-        let right_values = right.values.to_array(right_parent_ids.len())?;
-        let joined_arr = take(&right_values, &to_take, None)?;
-
-        Ok(to_join_result(&left, joined_arr))
-    }
-}
-
-struct RootAttrsToRootJoin {}
-
-impl RootAttrsToRootJoin {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl JoinExec for RootAttrsToRootJoin {
-    fn join(
-        &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
-        _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
-        // build the lookup for the right side of the join by ID column
-        let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
-        let right_lookup = IdJoinLookup::new(right_ids);
-
-        // scan the parent_ID column from the attributes to determine which rows from the
-        // right values should be taken
-        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
-        let right_values = right.values.to_array(right_ids.len())?;
-        let joined_arr = take(&right_values, &to_take, None)?;
-
-        Ok(to_join_result(left, joined_arr))
-    }
-}
-
-struct NonRootAttrsToRootReverseJoin {
-    attrs_payload_type: ArrowPayloadType,
-}
-
-impl NonRootAttrsToRootReverseJoin {
-    fn new(attrs_payload_type: ArrowPayloadType) -> Self {
-        Self { attrs_payload_type }
-    }
-}
-
-impl JoinExec for NonRootAttrsToRootReverseJoin {
-    fn join(
-        &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
-        _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
-        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let left_lookup = IdJoinLookup::new(left_parent_ids);
-
-        let right_ids = match self.attrs_payload_type {
-            ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
-            ArrowPayloadType::ScopeAttrs => right.scope_ids.as_ref(),
-            _ => {
-                todo!()
-            }
-        };
-
-        let right_ids = right_ids.ok_or_else(|| missing_column_err(consts::ID))?;
-        let right_ids = right_ids
-            .as_any()
-            .downcast_ref::<UInt16Array>()
-            .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
-
-        // TODO - this could be computed by calling from_iter
-        let mut to_take = Int32Array::builder(right_ids.len());
-        right_ids.iter().for_each(|id| {
-            if id.is_none() {
-                to_take.append_null();
-            } else {
-                let right_id = id.expect("Checked for None above");
-                let right_index = left_lookup.lookup(right_id).map(|i| i as i32);
-                to_take.append_option(right_index);
-            }
-        });
-        let to_take = to_take.finish();
-
-        // TODO - rename
-        // TODO - preallocate
-        let mut new_fields = Vec::new();
-        let mut new_columns = Vec::new();
-
-        if let Some(col) = &right.ids {
-            new_fields.push(Field::new(consts::ID, col.data_type().clone(), true));
-            new_columns.push(col.clone());
-        }
-
-        if let Some(col) = &right.resource_ids {
-            let struct_arr = StructArray::new(
-                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-                vec![col.clone()],
-                None,
-            );
-            new_fields.push(Field::new(
-                consts::RESOURCE,
-                struct_arr.data_type().clone(),
-                true,
-            ));
-            new_columns.push(Arc::new(struct_arr));
-        }
-
-        if let Some(col) = &right.scope_ids {
-            let struct_arr = StructArray::new(
-                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
-                vec![col.clone()],
-                None,
-            );
-            new_fields.push(Field::new(
-                consts::SCOPE,
-                struct_arr.data_type().clone(),
-                true,
-            ));
-            new_columns.push(Arc::new(struct_arr));
-        }
-
-        let left_values = left.values.to_array(100)?;
-        let joined_vals = take(&left_values, &to_take, None)?;
-        new_fields.push(Field::new(
-            LEFT_COLUMN_NAME,
-            joined_vals.data_type().clone(),
-            true,
-        ));
-        new_columns.push(joined_vals);
-
-        // TODO have a match, assert right.values is an array, and use the array instead of
-        // callling to_array wiht a random length (which will be ignored b/c we should know
-        // that this is an array at this point)
-        let child_col = right.values.to_array(100)?;
-        new_fields.push(Field::new(
-            RIGHT_COLUMN_NAME,
-            child_col.data_type().clone(),
-            true,
-        ));
-        new_columns.push(child_col);
-
-        RecordBatch::try_new(Arc::new(Schema::new(new_fields)), new_columns).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("Failed to create record batch: {e}"),
-            }
-        })
-    }
-}
-
-struct AttributeToSameAttributeJoin {}
-
-impl AttributeToSameAttributeJoin {
-    fn new() -> Self {
-        Self {}
-    }
-}
-
-impl JoinExec for AttributeToSameAttributeJoin {
-    fn join(
-        &self,
-        left: &PhysicalExprEvalResult,
-        right: &PhysicalExprEvalResult,
-        _otap_batch: &OtapArrowRecords,
-    ) -> Result<RecordBatch> {
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-        let right_lookup = IdJoinLookup::new(right_parent_ids);
-
-        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-
-        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
-
-        let right_values = right.values.to_array(right_parent_ids.len())?;
-        let joined_arr = take(&right_values, &to_take, None)?;
-
-        Ok(to_join_result(left, joined_arr))
-    }
-}
-
-// Helper function to extract id column from root batch based on AttributesIdentifier
-// Returns owned Vec<u16> to avoid lifetime issues with temporary struct arrays
+/// Helper function to extract id column from root batch based on AttributesIdentifier.
 fn get_attrs_id_values<'a>(
     root_batch: &'a RecordBatch,
     attrs_id: &'a AttributesIdentifier,
@@ -602,6 +254,318 @@ fn get_attrs_id_values<'a>(
     }
 }
 
+/// Produce a record batch from the result of a join
+fn to_join_result(left: &PhysicalExprEvalResult, right_col: ArrayRef) -> Result<RecordBatch> {
+    // pre-allocate with enough capacity for left/right plus Id columns
+    let mut columns = Vec::with_capacity(5);
+    let mut fields = Vec::with_capacity(5);
+
+    let left_values = left.values.to_array(right_col.len())?;
+    fields.push(Field::new(
+        LEFT_COLUMN_NAME,
+        left_values.data_type().clone(),
+        true,
+    ));
+    columns.push(left_values.clone());
+
+    fields.push(Field::new(
+        RIGHT_COLUMN_NAME,
+        right_col.data_type().clone(),
+        true,
+    ));
+    columns.push(right_col);
+
+    if let Some(ids) = &left.ids {
+        fields.push(Field::new(consts::ID, ids.data_type().clone(), true));
+        columns.push(ids.clone());
+    }
+
+    if let Some(parent_ids) = &left.parent_ids {
+        fields.push(Field::new(
+            consts::PARENT_ID,
+            parent_ids.data_type().clone(),
+            false,
+        ));
+        columns.push(parent_ids.clone());
+    }
+
+    if let Some(col) = &left.resource_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::RESOURCE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+
+    if let Some(col) = &left.scope_ids {
+        let struct_arr = StructArray::new(
+            Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+            vec![col.clone()],
+            None,
+        );
+        fields.push(Field::new(
+            consts::SCOPE,
+            struct_arr.data_type().clone(),
+            true,
+        ));
+        columns.push(Arc::new(struct_arr));
+    }
+
+    Ok(RecordBatch::try_new(
+        Arc::new(Schema::new(fields)),
+        columns,
+    )?)
+}
+
+trait JoinExec {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch>;
+}
+
+// Join strategies ...
+
+/// Joins root record batch (logs/metrics/traces) to a child attributes record batch
+/// on root.id == attributes.parent_id
+struct RootToAttributesJoin {
+    attrs_id: AttributesIdentifier,
+}
+
+impl RootToAttributesJoin {
+    fn new(attrs_id: AttributesIdentifier) -> Self {
+        Self { attrs_id }
+    }
+}
+
+impl JoinExec for RootToAttributesJoin {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // build the lookup for the right side of the join by parent ID
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let right_lookup = IdJoinLookup::new(right_parent_ids);
+
+        // get the ID column for which we should scan for join
+        let left_id_col = match self.attrs_id {
+            AttributesIdentifier::Root => &left.ids,
+            AttributesIdentifier::NonRoot(payload_type) => match payload_type {
+                ArrowPayloadType::ResourceAttrs => &left.resource_ids,
+                ArrowPayloadType::ScopeAttrs => &left.scope_ids,
+                _ => {
+                    todo!()
+                }
+            },
+        };
+        let left_parent_ids = extract_u16_array(left_id_col.as_ref(), consts::ID)?;
+        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+        let right_values = right.values.to_array(right_parent_ids.len())?;
+        let joined_arr = take(&right_values, &to_take, None)?;
+
+        to_join_result(left, joined_arr)
+    }
+}
+
+/// Joins root attributes (e.g. log.attributes, span.attributes, or metric.attributes) to the root
+/// record batch on root.id == attributes.parent_id
+struct RootAttrsToRootJoin {}
+
+impl RootAttrsToRootJoin {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl JoinExec for RootAttrsToRootJoin {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // build the lookup for the right side of the join by ID column
+        let right_ids = extract_u16_array(right.ids.as_ref(), consts::ID)?;
+        let right_lookup = IdJoinLookup::new(right_ids);
+
+        // scan the parent_ID column from the attributes to determine which rows from the
+        // right values should be taken
+        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+        let right_values = right.values.to_array(right_ids.len())?;
+        let joined_arr = take(&right_values, &to_take, None)?;
+
+        to_join_result(left, joined_arr)
+    }
+}
+
+/// Joins non-root attributes (e.g. scope.attributes or resource.attributes) to the root.
+///
+/// This join uses the left side of the join as the lookup, and produces a result by scanning the
+/// right side over the lookup, creating a result where the row order/ID columns of the right side
+/// (in this case, the root batch) are preserved.
+///
+/// We do this because resource/scope -> log/span/metric is a one -> many relationship which means,
+/// if we had done the join the non-reversed way, scanning the left would result in ambiguity about
+/// which row to take from the right side, and we'd also lose rows from the right side as a result.
+struct NonRootAttrsToRootReverseJoin {
+    attrs_payload_type: ArrowPayloadType,
+}
+
+impl NonRootAttrsToRootReverseJoin {
+    fn new(attrs_payload_type: ArrowPayloadType) -> Self {
+        Self { attrs_payload_type }
+    }
+}
+
+impl JoinExec for NonRootAttrsToRootReverseJoin {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // build a lookup of ID to index for the left side
+        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let left_lookup = IdJoinLookup::new(left_parent_ids);
+
+        let right_ids = match self.attrs_payload_type {
+            ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
+            ArrowPayloadType::ScopeAttrs => right.scope_ids.as_ref(),
+            _ => {
+                todo!()
+            }
+        };
+
+        let right_ids = right_ids.ok_or_else(|| missing_column_err(consts::ID))?;
+        let right_ids = right_ids
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .ok_or_else(|| invalid_column_type_error(right_ids.data_type()))?;
+
+        // map right-side IDs to indices to take from left side values
+        let to_take = Int32Array::from_iter(
+            right_ids
+                .iter()
+                .map(|id| id.and_then(|id| left_lookup.lookup(id).map(|i| i as i32))),
+        );
+
+        // build the result record batch:
+
+        // pre-allocate with enough space for right/left + ID columns
+        let mut fields = Vec::with_capacity(5);
+        let mut columns = Vec::with_capacity(5);
+
+        if let Some(col) = &right.ids {
+            fields.push(Field::new(consts::ID, col.data_type().clone(), true));
+            columns.push(col.clone());
+        }
+
+        if let Some(col) = &right.resource_ids {
+            let struct_arr = StructArray::new(
+                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+                vec![col.clone()],
+                None,
+            );
+            fields.push(Field::new(
+                consts::RESOURCE,
+                struct_arr.data_type().clone(),
+                true,
+            ));
+            columns.push(Arc::new(struct_arr));
+        }
+
+        if let Some(col) = &right.scope_ids {
+            let struct_arr = StructArray::new(
+                Fields::from(vec![Field::new(consts::ID, col.data_type().clone(), true)]),
+                vec![col.clone()],
+                None,
+            );
+            fields.push(Field::new(
+                consts::SCOPE,
+                struct_arr.data_type().clone(),
+                true,
+            ));
+            columns.push(Arc::new(struct_arr));
+        }
+
+        let left_values = left.values.to_array(left_parent_ids.len())?;
+        let joined_vals = take(&left_values, &to_take, None)?;
+        fields.push(Field::new(
+            LEFT_COLUMN_NAME,
+            joined_vals.data_type().clone(),
+            true,
+        ));
+        columns.push(joined_vals);
+
+        let child_col = right.values.to_array(right_ids.len())?;
+        fields.push(Field::new(
+            RIGHT_COLUMN_NAME,
+            child_col.data_type().clone(),
+            true,
+        ));
+        columns.push(child_col);
+
+        Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            columns,
+        )?)
+    }
+}
+
+/// Join attributes that come from the same payload type on attrs.parent_id = attrs.parent_id.
+///
+/// Note, the reason we need to join these is because we may have a different set of rows selected
+/// on either side. This would happen for expressions like `attributes["x"] + attributes["y"]`.
+struct AttributeToSameAttributeJoin {}
+
+impl AttributeToSameAttributeJoin {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl JoinExec for AttributeToSameAttributeJoin {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        // build a mapping of right-side parent_ids to right-side indices
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let right_lookup = IdJoinLookup::new(right_parent_ids);
+
+        // determine which rows to take from the right side values
+        let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
+        let to_take = build_simple_join_indices(left_parent_ids, &right_lookup);
+
+        // take right side values and produce result
+        let right_values = right.values.to_array(right_parent_ids.len())?;
+        let joined_arr = take(&right_values, &to_take, None)?;
+        to_join_result(left, joined_arr)
+    }
+}
+
+/// Join rows from one set of attributes to another set that came from a different attributes
+/// record batch. For example, left side may be root attributes and right side may be resource
+/// attributes.
+///
+/// In this case, the parent_ids on both sides do not reference the same column on the root, so
+/// we need to do the join using another intermediate lookup built using ID columns from the root.
+///
+/// i.e. join on left.parent_id == root.id and right.parent_id = root.<scope/resource>.id
+///
 struct AttributeToDifferentAttributeJoin {
     left: AttributesIdentifier,
     right: AttributesIdentifier,
@@ -620,26 +584,25 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
+        // build mapping of the right side parent_id to right side index
         let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let right_lookup = IdJoinLookup::new(right_parent_ids);
 
-        // Step 2: Get root batch and extract the id columns we need
+        // get root batch and extract the id columns we need
         let root_batch = otap_batch
             .root_record_batch()
             .ok_or_else(|| Error::ExecutionError {
                 cause: "Missing root record batch".to_string(),
             })?;
 
-        // Step 3: Get the left and right id columns from root batch based on attribute identifiers
-        let left_root_ids = get_attrs_id_values(&root_batch, &self.left)?;
-        let right_root_ids = get_attrs_id_values(&root_batch, &self.right)?;
+        let left_root_ids = get_attrs_id_values(root_batch, &self.left)?;
+        let right_root_ids = get_attrs_id_values(root_batch, &self.right)?;
 
-        // Step 4: Build mapping from left id -> right id using root batch as bridge
+        // build mapping from left root id -> root index to use as bridge
         let inter_join_lookup = IdJoinLookup::new(left_root_ids);
 
-        // Step 5: For each left row, find corresponding right row
+        // determine indices of right side values to take
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
-
         let to_take = build_two_hop_join_indices(
             left_parent_ids,
             &inter_join_lookup,
@@ -647,14 +610,20 @@ impl JoinExec for AttributeToDifferentAttributeJoin {
             &right_lookup,
         );
 
-        // Step 6: Take from right values
         let right_values = right.values.to_array(right_parent_ids.len())?;
         let joined_arr = take(&right_values, &to_take, None)?;
 
-        Ok(to_join_result(left, joined_arr))
+        to_join_result(left, joined_arr)
     }
 }
 
+/// This performs the same kind of join as [`AttributeToDifferentAttributeJoin`] where we must use
+/// root ID columns as an intermediary bridge.
+///
+/// However, the difference with this join strategy is that the order & ID columns of the right
+/// side are what is preserved. This would be used if the relationship between left->right is
+/// one->many, for example if left side was resource attributes and right side was log attributes.
+///
 struct AttributeToDifferentAttributeReverseJoin {
     left: AttributesIdentifier,
     right: AttributesIdentifier,
@@ -673,28 +642,25 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         right: &PhysicalExprEvalResult,
         otap_batch: &OtapArrowRecords,
     ) -> Result<RecordBatch> {
-        // Two-hop reverse join through root batch
-        // For reverse join, we scan the right side and build indices into the left side
+        // build mapping of the left side parent_id to left side index
         let left_parent_ids = extract_u16_array(left.parent_ids.as_ref(), consts::PARENT_ID)?;
         let left_lookup = IdJoinLookup::new(left_parent_ids);
 
-        // Step 2: Get root batch and extract the id columns we need
+        // get root batch and extract the id columns we need
         let root_batch = otap_batch
             .root_record_batch()
             .ok_or_else(|| Error::ExecutionError {
                 cause: "Missing root record batch".to_string(),
             })?;
 
-        // Step 3: Get the left and right id columns from root batch based on attribute identifiers
-        let left_root_ids = get_attrs_id_values(&root_batch, &self.left)?;
-        let right_root_ids = get_attrs_id_values(&root_batch, &self.right)?;
+        let left_root_ids = get_attrs_id_values(root_batch, &self.left)?;
+        let right_root_ids = get_attrs_id_values(root_batch, &self.right)?;
 
-        // Step 4: For reverse join, iterate through right side
-        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
-
-        // Build intermediate lookup for reverse join (using right root IDs)
+        // build mapping from right root id -> root index to use as bridge
         let inter_join_lookup = IdJoinLookup::new(right_root_ids);
 
+        // determine indices of left side values to take
+        let right_parent_ids = extract_u16_array(right.parent_ids.as_ref(), consts::PARENT_ID)?;
         let to_take = build_two_hop_join_indices(
             right_parent_ids,
             &inter_join_lookup,
@@ -714,7 +680,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
                 .clone(),
         );
 
-        let left_values = left.values.to_array(100)?;
+        let left_values = left.values.to_array(left_parent_ids.len())?;
         let joined_vals = take(&left_values, &to_take, None)?;
         fields.push(Field::new(
             LEFT_COLUMN_NAME,
@@ -723,10 +689,7 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         ));
         columns.push(joined_vals);
 
-        // TODO have a match, assert right.values is an array, and use the array instead of
-        // callling to_array wiht a random length (which will be ignored b/c we should know
-        // that this is an array at this point)
-        let child_col = right.values.to_array(100)?;
+        let child_col = right.values.to_array(right_parent_ids.len())?;
         fields.push(Field::new(
             RIGHT_COLUMN_NAME,
             child_col.data_type().clone(),
@@ -734,10 +697,105 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
         ));
         columns.push(child_col);
 
-        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).map_err(|e| {
-            Error::ExecutionError {
-                cause: format!("Failed to create record batch: {e}"),
+        Ok(RecordBatch::try_new(
+            Arc::new(Schema::new(fields)),
+            columns,
+        )?)
+    }
+}
+
+/// Lookup structure for joining two record batches by ID.
+///
+/// The intention is for this to be a fast lookup of ID -> row.
+///
+/// The idea here is that we have something like a vector that can be indexed by the ID, however we
+/// don't allocate the entire vector. Instead we have allocate it in pages only when there is an ID
+/// in some given range.
+///
+/// This structure provides O(1) inserts and lookups while being memory-efficient for dense ID
+/// ranges, while still attempting to avoid allocating a lookup table for the entire ID range if
+/// the entire range isn't used.
+///
+/// The u16 space (0-65535) is divided into 64 pages of 1024 entries each.
+///
+/// # Memory Layout
+/// - Outer array: 64 entries (top 6 bits of u16)
+/// - Each page: 1024 entries (bottom 10 bits of u16)
+/// - Each page is ~8KB (Option<usize> is 8 bytes on 64-bit systems)
+///
+/// # Example
+/// For ID 5120 (binary: 00010100_00000000):
+/// - Outer index: 5120 >> 10 = 5
+/// - Inner index: 5120 & 0x3FF = 0
+///
+// TODO - benchmark performance against HashMap... HashMap could have been used for this as well
+// however, this might be slightly faster because we don't need to hash the IDs for every insert
+// and lookup. Also, if the join sides are mostly sorted by the ID columns, we'll get good page
+// CPU locality as we scan over the IDs.
+//
+// TODO - eventually this will need to support u32 IDs
+const PAGE_SIZE: usize = 1024;
+const PAGE_BITS: u16 = 10;
+const PAGE_MASK: u16 = 0x3FF; // Bottom 10 bits
+const NUM_PAGES: usize = 64; // 2^16 / 2^10 = 2^6 = 64
+
+struct IdJoinLookup {
+    /// Two-level lookup: outer array indexed by top 6 bits, inner pages indexed by bottom 10 bits.
+    /// Each page maps parent_id -> row index in the right-side batch.
+    lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>>,
+}
+
+impl IdJoinLookup {
+    /// Creates a new IdJoin from a UInt16Array of parent IDs.
+    ///
+    /// # Arguments
+    /// * `parent_ids` - The parent_id array from the right side of the join
+    ///
+    /// # Returns
+    /// A lookup structure mapping parent_id -> row index. Null values in the array are skipped.
+    fn new(ids: &UInt16Array) -> Self {
+        let mut lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>> = vec![None; NUM_PAGES];
+
+        // TODO bench this. There are probable some optimizations that we can make:
+        // 1 - have a loop that does no null check if there are no nulls
+        // 2 - if there are nulls, we might be able to avoid checking if each row is null by
+        //     using BitSliceIter on the null buffer to get ranges of non-null indices.
+
+        for row_idx in 0..ids.len() {
+            // Skip null values
+            if ids.is_null(row_idx) {
+                continue;
             }
-        })
+
+            let parent_id = ids.value(row_idx);
+            let outer = (parent_id >> PAGE_BITS) as usize;
+            let inner = (parent_id & PAGE_MASK) as usize;
+
+            // Allocate page if needed
+            if lookup[outer].is_none() {
+                lookup[outer] = Some(Box::new([None; PAGE_SIZE]));
+            }
+
+            // Store the mapping
+            lookup[outer].as_mut().unwrap()[inner] = Some(row_idx);
+        }
+
+        Self { lookup }
+    }
+
+    /// Looks up a left-side ID and returns the corresponding right-side row index.
+    ///
+    /// # Arguments
+    /// * `left_id` - The ID value from the left side to look up
+    ///
+    /// # Returns
+    /// * `Some(row_idx)` - The row index in the right batch if a match exists
+    /// * `None` - No matching parent_id found
+    #[inline]
+    fn lookup(&self, left_id: u16) -> Option<usize> {
+        let outer = (left_id >> PAGE_BITS) as usize;
+        let inner = (left_id & PAGE_MASK) as usize;
+
+        self.lookup[outer].as_ref().and_then(|page| page[inner])
     }
 }

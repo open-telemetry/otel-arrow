@@ -1214,8 +1214,6 @@ impl AdaptivePhysicalExprExec {
     }
 }
 
-/// This attempts to project the record batch to known schema schema that
-
 /// This trait makes some helper functions for filtering child [`RecordBatch`]s generic over the
 /// type of ID (u16/u32) that are used to make the relationship between parent and child
 trait ChildBatchFilterIdHelper: ArrowPrimitiveType + Sized {

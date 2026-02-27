@@ -707,7 +707,7 @@ mod test {
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         let result = physical_expr
-            .execute(&input_data, &session_ctx, false)
+            .execute(input_data, &session_ctx, false)
             .unwrap();
         result.map(|result| result.values)
     }
@@ -721,7 +721,7 @@ mod test {
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
         physical_expr
-            .execute(&input_data, &session_ctx, false)
+            .execute(input_data, &session_ctx, false)
             .unwrap_err()
     }
 
@@ -2162,7 +2162,7 @@ mod test {
                 ),
             ));
 
-            let err = run_scalar_expr_failure_test(input_expr, &otap_batch);
+            let err = run_scalar_expr_failure_test(input_expr, otap_batch);
             let err_msg = err.to_string();
             assert!(
                 err_msg.contains("Invalid arithmetic operation"),

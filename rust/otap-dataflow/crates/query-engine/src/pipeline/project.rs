@@ -261,21 +261,3 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
         schema
     }
 }
-
-// // TODO - the methods in this could maybe just be public or something ...
-// #[cfg(test)]
-// pub(crate) mod test {
-//     use super::*;
-
-//     impl Projection {
-//         /// Test helper to create a FilterProjection with a specific schema
-//         pub(crate) fn new_for_test(columns: Vec<String>) -> Self {
-//             Self {
-//                 schema: columns
-//                     .into_iter()
-//                     .map(ProjectedSchemaColumn::Root)
-//                     .collect(),
-//             }
-//         }
-//     }
-// }

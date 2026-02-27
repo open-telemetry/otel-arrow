@@ -30,10 +30,7 @@ pub enum ExprLogicalType {
 
 impl ExprLogicalType {
     fn is_integer(&self) -> bool {
-        match self {
-            Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32 => true,
-            _ => false,
-        }
+        matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
     }
 
     /// return the datatype associated with this type. returns None if the type
