@@ -53,12 +53,13 @@ impl Policies {
 
 /// Engine-wide metric level controlling per-node instrumentation overhead.
 ///
-/// Ordered so that `>=` comparisons gate incremental cost:
-/// - `None`: no instrumentation.
-/// - `Basic`: outcome counts (auto-subscribe to ACKS|NACKS).
-/// - `Normal`: + forward-path byte counting.
+/// - `None`: no pipeline metrics instrumentation
+/// - `Basic`: outcome counts (auto-subscribe to ACKS|NACKS)
+/// - `Normal`: same as Basic
 /// - `Detailed`: + receive timestamp and duration histogram.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricLevel {
     /// No instrumentation — zero overhead.

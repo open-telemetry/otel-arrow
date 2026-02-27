@@ -231,9 +231,13 @@ pub struct Interests: u8 {
     /// Return data
     const RETURN_DATA = 1 << 2;
 
-    /// Metrics interest — processor declares it may call subscribe_to.
-    /// When set AND metric_level >= Detailed, entry frame captures timestamp.
-    const METRICS = 1 << 3;
+    /// Entry-timestamp interest — when set, the entry frame captures
+    /// a wall-clock timestamp for consumer-duration metrics.
+    const ENTRY_TIMESTAMP = 1 << 3;
+
+    /// Pipeline-metrics interest — when set, the entry frame
+    /// auto-subscribes to ACKS_OR_NACKS for outcome counting.
+    const PIPELINE_METRICS = 1 << 4;
 }
 }
 
@@ -246,25 +250,16 @@ pub trait ProducerEffectHandlerExtension<PData> {
 
 /// Called when PData arrives at a queue-consumer node (processor or exporter).
 /// Pushes an entry frame whose interests and timestamp depend on the
-/// engine's `MetricLevel`.
+/// engine-computed `node_interests`.
 pub trait ReceivedAtNode {
-    /// Record that this PData was received at the given processor node.
+    /// Record that this PData was received at the given node.
     ///
-    /// `default_interests` declares whether the processor may subscribe.
-    /// If `default_interests.contains(METRICS) && metric_level >= Detailed`,
-    /// the entry frame captures a timestamp immediately.
-    fn received_at_node(
-        &mut self,
-        node_id: usize,
-        metric_level: MetricLevel,
-        default_interests: Interests,
-    );
-
-    /// Record that this PData was received at the given exporter node.
-    ///
-    /// For exporters: timestamp IS captured immediately (at Detailed level)
-    /// because exporters always need it for consumer metrics in `notify_ack`.
-    fn received_at_exporter(&mut self, node_id: usize, metric_level: MetricLevel);
+    /// `node_interests` is computed by the engine from the current `MetricLevel`:
+    /// - `None`     → empty (no frame pushed)
+    /// - `Basic`    → `PIPELINE_METRICS`
+    /// - `Normal`   → `PIPELINE_METRICS`
+    /// - `Detailed` → `PIPELINE_METRICS | ENTRY_TIMESTAMP`
+    fn received_at_node(&mut self, node_id: usize, node_interests: Interests);
 }
 
 /// Effect handler extensions for consumers specific to data type.

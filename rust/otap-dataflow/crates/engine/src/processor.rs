@@ -62,9 +62,6 @@ pub enum ProcessorWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Default interests declared by this processor.
-        /// If `METRICS` is set, entry frames capture timestamps at Detailed level.
-        default_interests: Interests,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -89,9 +86,6 @@ pub enum ProcessorWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Whether outgoing messages need source node tagging.
         source_tag: SourceTagging,
-        /// Default interests declared by this processor.
-        /// If `METRICS` is set, entry frames capture timestamps at Detailed level.
-        default_interests: Interests,
     },
 }
 
@@ -147,7 +141,6 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            default_interests: Interests::empty(),
         }
     }
 
@@ -176,7 +169,6 @@ impl<PData> ProcessorWrapper<PData> {
             pdata_receiver: None,
             telemetry: None,
             source_tag: SourceTagging::Disabled,
-            default_interests: Interests::empty(),
         }
     }
 
@@ -192,7 +184,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                default_interests,
                 ..
             } => ProcessorWrapper::Local {
                 node_id,
@@ -205,7 +196,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                default_interests,
             },
             ProcessorWrapper::Shared {
                 node_id,
@@ -217,7 +207,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_senders,
                 pdata_receiver,
                 source_tag,
-                default_interests,
                 ..
             } => ProcessorWrapper::Shared {
                 node_id,
@@ -230,7 +219,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 source_tag,
-                default_interests,
             },
         }
     }
@@ -260,7 +248,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                default_interests,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<LocalMode, PData>(
@@ -284,7 +271,6 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    default_interests,
                 }
             }
             ProcessorWrapper::Shared {
@@ -298,7 +284,6 @@ impl<PData> ProcessorWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
-                default_interests,
             } => {
                 let (control_sender, control_receiver) =
                     wrap_control_channel_metrics::<SharedMode, PData>(
@@ -322,7 +307,6 @@ impl<PData> ProcessorWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     source_tag,
-                    default_interests,
                 }
             }
         }
@@ -413,9 +397,19 @@ impl<PData> ProcessorWrapper<PData> {
     where
         PData: ReceivedAtNode,
     {
-        // Capture default_interests before consuming self.
-        let default_interests = self.default_interests();
         let runtime = self.prepare_runtime(metrics_reporter.clone()).await?;
+
+        // Derive node_interests from the engine's metric level.
+        let metric_level = current_metric_level();
+        let node_interests = match metric_level {
+            crate::control::MetricLevel::None => Interests::empty(),
+            crate::control::MetricLevel::Basic | crate::control::MetricLevel::Normal => {
+                Interests::PIPELINE_METRICS
+            }
+            crate::control::MetricLevel::Detailed => {
+                Interests::PIPELINE_METRICS | Interests::ENTRY_TIMESTAMP
+            }
+        };
 
         match runtime {
             ProcessorWrapperRuntime::Local {
@@ -436,8 +430,7 @@ impl<PData> ProcessorWrapper<PData> {
                     if let Message::PData(ref mut pdata) = msg {
                         pdata.received_at_node(
                             effect_handler.processor_id().index,
-                            current_metric_level(),
-                            default_interests,
+                            node_interests,
                         );
                     }
                     processor.process(msg, &mut effect_handler).await?;
@@ -470,8 +463,7 @@ impl<PData> ProcessorWrapper<PData> {
                     if let Message::PData(ref mut pdata) = msg {
                         pdata.received_at_node(
                             effect_handler.processor_id().index,
-                            current_metric_level(),
-                            default_interests,
+                            node_interests,
                         );
                     }
                     processor.process(msg, &mut effect_handler).await?;
@@ -586,36 +578,6 @@ impl<PData> NodeWithPDataSender<PData> for ProcessorWrapper<PData> {
         match self {
             ProcessorWrapper::Local { source_tag, .. } => *source_tag = value,
             ProcessorWrapper::Shared { source_tag, .. } => *source_tag = value,
-        }
-    }
-}
-
-impl<PData> ProcessorWrapper<PData> {
-    /// Set the default interests for this processor.
-    ///
-    /// If `METRICS` is included, entry frames will capture timestamps at
-    /// `Detailed` level, enabling consumer duration metrics.
-    pub fn set_default_interests(&mut self, value: Interests) {
-        match self {
-            ProcessorWrapper::Local {
-                default_interests, ..
-            } => *default_interests = value,
-            ProcessorWrapper::Shared {
-                default_interests, ..
-            } => *default_interests = value,
-        }
-    }
-
-    /// Get the default interests for this processor.
-    #[must_use]
-    pub fn default_interests(&self) -> Interests {
-        match self {
-            ProcessorWrapper::Local {
-                default_interests, ..
-            } => *default_interests,
-            ProcessorWrapper::Shared {
-                default_interests, ..
-            } => *default_interests,
         }
     }
 }
