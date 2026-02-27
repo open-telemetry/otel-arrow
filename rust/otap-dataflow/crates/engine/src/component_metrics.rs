@@ -50,7 +50,10 @@ pub struct ProducedRequestMetrics {
     /// Requests acknowledged by downstream.
     #[metric(name = "success", unit = "{1}")]
     pub success: Counter<u64>,
-    /// Requests refused by downstream (all nacks).
+    /// Requests that failed downstream (transient / retryable, i.e. non-permanent nack).
+    #[metric(name = "failure", unit = "{1}")]
+    pub failure: Counter<u64>,
+    /// Requests permanently refused by downstream (permanent nack).
     #[metric(name = "refused", unit = "{1}")]
     pub refused: Counter<u64>,
 }
@@ -194,7 +197,17 @@ impl ComponentMetricsState {
         }
     }
 
-    /// Record a refused production event (Basic+: count).
+    /// Record a failed production event (Basic+: count). Transient / retryable (non-permanent nack).
+    #[inline]
+    pub fn record_produced_failure(&mut self) {
+        match self {
+            Self::Basic(m) => m.produced_requests.failure.add(1),
+            Self::Normal(m) => m.produced_requests.failure.add(1),
+            Self::Detailed(m) => m.produced_requests.failure.add(1),
+        }
+    }
+
+    /// Record a refused production event (Basic+: count). Permanent nack.
     #[inline]
     pub fn record_produced_refused(&mut self) {
         match self {
@@ -218,6 +231,7 @@ impl ComponentMetricsState {
 
     /// Returns the configured metric level.
     #[inline]
+    #[must_use]
     pub fn metric_level(&self) -> MetricLevel {
         match self {
             Self::Basic(_) => MetricLevel::Basic,
@@ -332,7 +346,13 @@ impl ComponentMetricsHandle {
         self.with_state(|s| s.record_produced_success());
     }
 
-    /// Record a refused production event (Basic+: count).
+    /// Record a failed production event (Basic+: count). Transient / retryable (non-permanent nack).
+    #[inline]
+    pub fn record_produced_failure(&self) {
+        self.with_state(|s| s.record_produced_failure());
+    }
+
+    /// Record a refused production event (Basic+: count). Permanent nack.
     #[inline]
     pub fn record_produced_refused(&self) {
         self.with_state(|s| s.record_produced_refused());
@@ -346,6 +366,7 @@ impl ComponentMetricsHandle {
 
     /// Returns the configured metric level.
     #[inline]
+    #[must_use]
     pub fn metric_level(&self) -> MetricLevel {
         match self {
             ComponentMetricsHandle::Local(h) => {
@@ -391,8 +412,12 @@ pub(crate) fn record_produced_for_control_msg<PData>(
                 NodeControlMsg::Ack(_) => {
                     handle.record_produced_success();
                 }
-                NodeControlMsg::Nack(_) => {
-                    handle.record_produced_refused();
+                NodeControlMsg::Nack(nack) => {
+                    if nack.permanent {
+                        handle.record_produced_refused();
+                    } else {
+                        handle.record_produced_failure();
+                    }
                 }
                 _ => {}
             }
@@ -437,6 +462,7 @@ mod test {
         h.record_consumed_failure(50);
         h.record_consumed_refused(25);
         h.record_produced_success();
+        h.record_produced_failure();
         h.record_produced_refused();
 
         h.with_state(|s| {
@@ -448,6 +474,7 @@ mod test {
             assert_eq!(m.consumed_requests.failure.get(), 1);
             assert_eq!(m.consumed_requests.refused.get(), 1);
             assert_eq!(m.produced_requests.success.get(), 1);
+            assert_eq!(m.produced_requests.failure.get(), 1);
             assert_eq!(m.produced_requests.refused.get(), 1);
         });
     }

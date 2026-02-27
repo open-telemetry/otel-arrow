@@ -169,6 +169,7 @@ impl Context {
     /// timestamp are set according to `metric_level`:
     /// - Basic+: ACKS|NACKS (auto-subscribe for outcome counting).
     /// - Detailed: time_ns stamped with receive time.
+    ///
     /// If the component later calls `subscribe_to`, the same-node merge
     /// will fold interests into this frame while preserving `time_ns`.
     pub(crate) fn push_entry_frame(&mut self, node_id: usize, metric_level: MetricLevel) {
@@ -371,7 +372,7 @@ impl ReceivedAtNode for OtapPdata {
         // Forward-path byte counting (Normal+).
         if metric_level >= MetricLevel::Normal {
             if let Some(handle) = current_component_metrics() {
-                let bytes = self.payload.num_bytes().unwrap_or(0) as u64;
+                let bytes = self.payload.num_bytes() as u64;
                 handle.record_consumed_bytes(bytes);
             }
         }
