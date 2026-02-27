@@ -14,7 +14,6 @@ use crate::proto::opentelemetry::metrics::v1::{
 };
 
 use crate::views::{
-    common::{SpanId, Str, TraceId},
     metrics::{
         BucketsView, DataPointFlags, DataType, DataView, ExemplarView,
         ExponentialHistogramDataPointView, ExponentialHistogramView, GaugeView,
@@ -28,6 +27,8 @@ use crate::views::{
     otlp::proto::resource::ObjResource,
     otlp::proto::wrappers::{GenericIterator, GenericObj, Wraps},
 };
+use otap_df_pdata_views::views::common::Str;
+use otap_df_pdata_views::{SpanId, TraceId};
 
 /* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
 
