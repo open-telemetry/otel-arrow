@@ -7,6 +7,7 @@ mod backend;
 mod broker;
 mod handle;
 mod subscription;
+#[allow(clippy::module_inception)] // topic/topic.rs holds the core topic-state internals.
 mod topic;
 mod topic_set;
 mod types;
@@ -14,6 +15,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+pub use backend::{InMemoryBackend, SubscriptionBackend, TopicBackend, TopicState};
 pub use broker::TopicBroker;
 pub use handle::TopicHandle;
 pub use subscription::Subscription;

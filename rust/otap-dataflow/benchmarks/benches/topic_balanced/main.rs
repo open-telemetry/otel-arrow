@@ -6,7 +6,7 @@
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
     RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicMode, TopicOptions,
 };
@@ -37,7 +37,7 @@ async fn run_broker_case(case: BenchCase) {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .expect("benchmark topic creation failed");
 
     // Create subscribers.
     let mut subs: Vec<_> = (0..case.num_subs)
@@ -47,7 +47,7 @@ async fn run_broker_case(case: BenchCase) {
                     SubscriptionMode::Balanced { group: "g1".into() },
                     SubscriberOptions::default(),
                 )
-                .unwrap()
+                .expect("benchmark subscription failed")
         })
         .collect();
 
@@ -67,14 +67,17 @@ async fn run_broker_case(case: BenchCase) {
     // Publish.
     let payload = make_payload(case.msg_size);
     for _ in 0..MSG_COUNT {
-        topic.publish(Arc::clone(&payload)).await.unwrap();
+        topic
+            .publish(Arc::clone(&payload))
+            .await
+            .expect("benchmark publish failed");
     }
     topic.close();
 
     // Wait for subscribers.
     let mut total = 0u64;
     for h in sub_handles {
-        total += h.await.unwrap();
+        total += h.await.expect("subscriber task panicked");
     }
     assert_eq!(total, MSG_COUNT);
 }
@@ -101,14 +104,16 @@ async fn run_flume_case(case: BenchCase) {
     // Publish.
     let payload = make_payload(case.msg_size);
     for _ in 0..MSG_COUNT {
-        tx.send_async(Arc::clone(&payload)).await.unwrap();
+        tx.send_async(Arc::clone(&payload))
+            .await
+            .expect("flume send failed");
     }
     drop(tx);
 
     // Wait for subscribers.
     let mut total = 0u64;
     for h in sub_handles {
-        total += h.await.unwrap();
+        total += h.await.expect("subscriber task panicked");
     }
     assert_eq!(total, MSG_COUNT);
 }
@@ -123,12 +128,12 @@ fn bench_topic_balanced_vs_flume(c: &mut Criterion) {
             let case = BenchCase { msg_size, num_subs };
 
             _ = group.bench_with_input(BenchmarkId::new("broker", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt).iter(|| run_broker_case(*case));
             });
 
             _ = group.bench_with_input(BenchmarkId::new("flume", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt).iter(|| run_flume_case(*case));
             });
         }

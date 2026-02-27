@@ -67,6 +67,7 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     /// a new handle whose publishes will encode the assigned `publisher_id`
     /// into message IDs. When a subscriber acks one of these messages, the ack
     /// event is routed to this sender instead of the topic-level default.
+    #[must_use]
     pub fn with_ack_sender(&self, sender: mpsc::Sender<AckEvent>) -> Self {
         let id = self.inner.register_publisher(sender);
         Self {
@@ -88,7 +89,8 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
     /// - `mode`: `SubscriptionMode::Balanced { group }` or `SubscriptionMode::Broadcast`.
     /// - `opts`: subscriber options.
     ///
-    /// Returns an error if the subscription mode is incompatible with the topic's `TopicMode`.
+    /// Returns an error if the subscription mode is incompatible with the topic's
+    /// `TopicMode` or if the topic is already closed.
     pub fn subscribe(
         &self,
         mode: SubscriptionMode,
@@ -101,12 +103,13 @@ impl<T: Send + Sync + 'static> TopicHandle<T> {
         Ok(Subscription::new(backend))
     }
 
-    /// Close the topic. After closing, further publishes will return `PublishError::Closed`.
+    /// Close the topic. After closing, further publishes return `Error::TopicClosed`.
     pub fn close(&self) {
         self.inner.close();
     }
 
     /// Get the topic name.
+    #[must_use]
     pub fn name(&self) -> &TopicName {
         self.inner.name()
     }

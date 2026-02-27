@@ -85,6 +85,7 @@ impl<T: Send + Sync + 'static> TopicSet<T> {
     }
 
     /// The name of this topic set.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.inner.name
     }
@@ -111,36 +112,42 @@ impl<T: Send + Sync + 'static> TopicSet<T> {
     ///
     /// Does **not** close the underlying topic — it may be shared with other
     /// sets. Only `broker.remove_topic()` or `handle.close()` closes a topic.
+    #[must_use]
     pub fn remove(&self, local_name: &str) -> Option<TopicHandle<T>> {
         let mut topics = self.inner.topics.write();
         topics.remove(local_name)
     }
 
     /// Get a cloned handle for the given local name. Cheap: `Arc` + `u16`.
+    #[must_use]
     pub fn get(&self, local_name: &str) -> Option<TopicHandle<T>> {
         let topics = self.inner.topics.read();
         topics.get(local_name).cloned()
     }
 
     /// Check whether a topic with the given local name exists in this set.
+    #[must_use]
     pub fn contains(&self, local_name: &str) -> bool {
         let topics = self.inner.topics.read();
         topics.contains_key(local_name)
     }
 
     /// Snapshot of all local topic names in this set.
+    #[must_use]
     pub fn topic_names(&self) -> Vec<TopicName> {
         let topics = self.inner.topics.read();
         topics.keys().cloned().collect()
     }
 
     /// Number of topics in this set.
+    #[must_use]
     pub fn len(&self) -> usize {
         let topics = self.inner.topics.read();
         topics.len()
     }
 
     /// Whether this set is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         let topics = self.inner.topics.read();
         topics.is_empty()

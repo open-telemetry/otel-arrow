@@ -68,14 +68,8 @@ pub enum SubscriptionMode {
 }
 
 /// Options provided at subscription time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SubscriberOptions {}
-
-impl Default for SubscriberOptions {
-    fn default() -> Self {
-        Self {}
-    }
-}
 
 /// Status of an ack/nack event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

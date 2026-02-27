@@ -23,15 +23,15 @@
 //! - **TopicSet**: insert/get/remove semantics, overwrite returns previous,
 //!   remove-does-not-close, per-set ack routing, clone-shares-state.
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use tokio::sync::mpsc;
 use crate::error::Error;
 use crate::topic::backend::InMemoryBackend;
-use crate::topic::{TopicBroker, TopicSet};
 use crate::topic::types::{
     AckEvent, AckStatus, RecvItem, SubscriberOptions, SubscriptionMode, TopicMode, TopicOptions,
 };
+use crate::topic::{TopicBroker, TopicSet};
+use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
 // =========================================================================
 // Balanced mode – single group
@@ -406,6 +406,76 @@ async fn broadcast_slow_subscriber_does_not_block_fast_subscriber() {
         }
     }
     // If slow_sub blocked the publisher, we'd never get here.
+}
+
+// In Mixed mode, broadcast delivery remains non-blocking even if balanced
+// consumer-group backpressure stalls publish completion.
+#[tokio::test]
+async fn mixed_broadcast_not_blocked_by_balanced_backpressure() {
+    let broker = TopicBroker::new();
+    let topic = broker
+        .create_topic(
+            "mixed-bcast-priority",
+            TopicOptions {
+                mode: TopicMode::Mixed,
+                balanced_capacity: 1,
+                broadcast_capacity: 16,
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+
+    let mut balanced = topic
+        .subscribe(
+            SubscriptionMode::Balanced { group: "g1".into() },
+            SubscriberOptions::default(),
+        )
+        .unwrap();
+    let mut broadcast = topic
+        .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
+        .unwrap();
+
+    // Fill the balanced queue.
+    topic.publish(Arc::new(1u64)).await.unwrap();
+
+    // Second publish should block on balanced delivery, but broadcast should
+    // still observe it promptly.
+    let topic_clone = topic.clone();
+    let second_publish = tokio::spawn(async move {
+        topic_clone.publish(Arc::new(2u64)).await.unwrap();
+    });
+
+    // First message.
+    match broadcast.recv().await {
+        Ok(RecvItem::Message(env)) => assert_eq!(*env.payload, 1),
+        other => panic!("unexpected: {:?}", other),
+    }
+
+    // Second message should arrive before balanced queue is drained.
+    let second = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+        loop {
+            match broadcast.recv().await {
+                Ok(RecvItem::Message(env)) => break *env.payload,
+                Ok(RecvItem::Lagged { .. }) => continue,
+                Err(e) => panic!("unexpected recv error: {e:?}"),
+            }
+        }
+    })
+    .await
+    .expect("broadcast delivery should not wait on balanced backpressure");
+    assert_eq!(second, 2);
+
+    // Publisher task should still be blocked on balanced queue.
+    assert!(
+        !second_publish.is_finished(),
+        "second publish should still be blocked by balanced backpressure"
+    );
+
+    // Drain balanced queue to unblock publisher.
+    _ = balanced.recv().await.unwrap();
+    _ = balanced.recv().await.unwrap();
+    second_publish.await.unwrap();
+    topic.close();
 }
 
 // =========================================================================
@@ -910,6 +980,58 @@ async fn balanced_only_rejects_second_group() {
         Err(Error::SubscribeSingleGroupViolation) => {}
         Ok(_) => panic!("expected SingleGroupViolation, got Ok"),
         Err(e) => panic!("expected SingleGroupViolation, got Err({e:?})"),
+    }
+}
+
+// A closed BalancedOnly topic rejects new balanced subscriptions.
+#[tokio::test]
+async fn balanced_only_rejects_balanced_subscribe_after_close() {
+    let broker: TopicBroker<u64> = TopicBroker::new();
+    let topic = broker
+        .create_topic(
+            "bo-closed-subscribe",
+            TopicOptions {
+                mode: TopicMode::BalancedOnly,
+                ..Default::default()
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+    topic.close();
+
+    match topic.subscribe(
+        SubscriptionMode::Balanced { group: "g1".into() },
+        SubscriberOptions::default(),
+    ) {
+        Err(Error::TopicClosed) => {}
+        Ok(_) => panic!("expected TopicClosed, got Ok"),
+        Err(e) => panic!("expected TopicClosed, got Err({e:?})"),
+    }
+}
+
+// A closed Mixed topic rejects new balanced subscriptions.
+#[tokio::test]
+async fn mixed_rejects_balanced_subscribe_after_close() {
+    let broker: TopicBroker<u64> = TopicBroker::new();
+    let topic = broker
+        .create_topic(
+            "mixed-closed-subscribe",
+            TopicOptions {
+                mode: TopicMode::Mixed,
+                ..Default::default()
+            },
+            InMemoryBackend,
+        )
+        .unwrap();
+    topic.close();
+
+    match topic.subscribe(
+        SubscriptionMode::Balanced { group: "g1".into() },
+        SubscriberOptions::default(),
+    ) {
+        Err(Error::TopicClosed) => {}
+        Ok(_) => panic!("expected TopicClosed, got Ok"),
+        Err(e) => panic!("expected TopicClosed, got Err({e:?})"),
     }
 }
 

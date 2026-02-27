@@ -34,6 +34,7 @@ struct BrokerInner<T: Send + Sync + 'static> {
 
 impl<T: Send + Sync + 'static> TopicBroker<T> {
     /// Create a new broker.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(BrokerInner {
@@ -87,9 +88,9 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
         topics.contains_key(&name)
     }
 
-    /// Close and remove a topic. Subscribers get `RecvError::Closed`,
-    /// publishers get `PublishError::Closed`. Returns `true` if the topic
-    /// was found (and closed + removed).
+    /// Close and remove a topic. Subscribers eventually get
+    /// `Error::SubscriptionClosed`, publishers get `Error::TopicClosed`.
+    /// Returns `true` if the topic was found (and closed + removed).
     pub fn remove_topic(&self, name: impl Into<TopicName>) -> bool {
         let name: TopicName = name.into();
         let mut topics = self.inner.topics.write();
@@ -102,6 +103,7 @@ impl<T: Send + Sync + 'static> TopicBroker<T> {
     }
 
     /// Snapshot of all topic names currently in the broker.
+    #[must_use]
     pub fn topic_names(&self) -> Vec<TopicName> {
         let topics = self.inner.topics.read();
         topics.keys().cloned().collect()

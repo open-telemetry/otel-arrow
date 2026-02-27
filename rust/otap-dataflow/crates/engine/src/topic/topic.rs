@@ -417,9 +417,9 @@ impl<T: Send + Sync + 'static> TopicState<T> for TopicInner<T> {
                 .subscribe_balanced(group, opts)
                 .map(|sub| Box::new(sub) as Box<dyn SubscriptionBackend<T>>),
             TopicInner::BroadcastOnly(_) => Err(SubscribeBalancedNotSupported),
-            TopicInner::Mixed(t) => {
-                Ok(Box::new(t.subscribe_balanced(group, opts)) as Box<dyn SubscriptionBackend<T>>)
-            }
+            TopicInner::Mixed(t) => t
+                .subscribe_balanced(group, opts)
+                .map(|sub| Box::new(sub) as Box<dyn SubscriptionBackend<T>>),
         }
     }
 
@@ -508,6 +508,10 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
         group: Arc<str>,
         _opts: SubscriberOptions,
     ) -> Result<BalancedSub<T>, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
         let sg = self.group.get_or_init(|| {
             let (tx, rx) = async_channel::bounded(self.balanced_capacity);
             SingleGroup {
@@ -648,7 +652,11 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         let seq = self.next_id.fetch_add(1, Ordering::Relaxed);
         let id = message_id::encode(publisher_id, seq);
 
-        // 1) Deliver to balanced consumer groups only if any exist.
+        // 1) Write to broadcast ring buffer first (non-blocking, overwrites oldest).
+        //    This keeps broadcast delivery independent from balanced backpressure.
+        self.broadcast_ring.publish_with_id(id, Arc::clone(&msg));
+
+        // 2) Deliver to balanced consumer groups only if any exist.
         //    Collect senders under a short read lock, then drop the guard
         //    before any .await so the future stays Send.
         //    When no groups are subscribed we skip the Vec alloc + Arc::clone.
@@ -670,13 +678,18 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             }
         }
 
-        // 2) Write to broadcast ring buffer (non-blocking, overwrites oldest).
-        self.broadcast_ring.publish_with_id(id, msg);
-
         Ok(())
     }
 
-    fn subscribe_balanced(&self, group: Arc<str>, _opts: SubscriberOptions) -> BalancedSub<T> {
+    fn subscribe_balanced(
+        &self,
+        group: Arc<str>,
+        _opts: SubscriberOptions,
+    ) -> Result<BalancedSub<T>, Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(TopicClosed);
+        }
+
         let rx = {
             let mut groups = self.groups.write();
             if let Some((_name, g)) = groups.iter().find(|(n, _)| *n == group) {
@@ -692,10 +705,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             registry: Arc::clone(&self.registry),
         };
 
-        BalancedSub {
+        Ok(BalancedSub {
             rx: Box::pin(rx),
             ack_state,
-        }
+        })
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {

@@ -6,7 +6,7 @@
 use std::hint::black_box;
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use otap_df_engine::topic::{
     RecvItem, SubscriberOptions, SubscriptionMode, TopicBroker, TopicMode, TopicOptions,
 };
@@ -41,13 +41,13 @@ async fn run_topic_broadcast_case(case: BenchCase, mode: TopicMode) {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .expect("benchmark topic creation failed");
 
     let mut subs: Vec<_> = (0..case.num_subs)
         .map(|_| {
             topic
                 .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
-                .unwrap()
+                .expect("benchmark subscription failed")
         })
         .collect();
 
@@ -72,13 +72,16 @@ async fn run_topic_broadcast_case(case: BenchCase, mode: TopicMode) {
 
     let payload = make_payload(case.msg_size);
     for _ in 0..MSG_COUNT {
-        topic.publish(Arc::clone(&payload)).await.unwrap();
+        topic
+            .publish(Arc::clone(&payload))
+            .await
+            .expect("benchmark publish failed");
     }
     topic.close();
 
     let mut total = 0u64;
     for h in sub_handles {
-        total += h.await.unwrap();
+        total += h.await.expect("subscriber task panicked");
     }
     assert_eq!(total, MSG_COUNT * case.num_subs as u64);
 }
@@ -115,7 +118,7 @@ async fn run_tokio_broadcast_case(case: BenchCase) {
 
     let mut total = 0u64;
     for h in sub_handles {
-        total += h.await.unwrap();
+        total += h.await.expect("subscriber task panicked");
     }
     assert_eq!(total, MSG_COUNT * case.num_subs as u64);
 }
@@ -131,19 +134,22 @@ async fn run_topic_broadcast_lag_case(msg_size: usize) {
                 ..Default::default()
             },
         )
-        .unwrap();
+        .expect("benchmark topic creation failed");
 
     let mut subs: Vec<_> = (0..LAG_SUBSCRIBERS)
         .map(|_| {
             topic
                 .subscribe(SubscriptionMode::Broadcast, SubscriberOptions::default())
-                .unwrap()
+                .expect("benchmark subscription failed")
         })
         .collect();
 
     let payload = make_payload(msg_size);
     for _ in 0..MSG_COUNT {
-        topic.publish(Arc::clone(&payload)).await.unwrap();
+        topic
+            .publish(Arc::clone(&payload))
+            .await
+            .expect("benchmark publish failed");
     }
     topic.close();
 
@@ -209,13 +215,13 @@ fn bench_topic_broadcast_vs_tokio(c: &mut Criterion) {
             let case = BenchCase { msg_size, num_subs };
 
             _ = group.bench_with_input(BenchmarkId::new("broker", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt)
                     .iter(|| run_topic_broadcast_case(*case, TopicMode::BroadcastOnly));
             });
 
             _ = group.bench_with_input(BenchmarkId::new("tokio", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt).iter(|| run_tokio_broadcast_case(*case));
             });
         }
@@ -234,13 +240,13 @@ fn bench_topic_mixed_broadcast_vs_tokio(c: &mut Criterion) {
             let case = BenchCase { msg_size, num_subs };
 
             _ = group.bench_with_input(BenchmarkId::new("mixed", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt)
                     .iter(|| run_topic_broadcast_case(*case, TopicMode::Mixed));
             });
 
             _ = group.bench_with_input(BenchmarkId::new("tokio", num_subs), &case, |b, case| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt).iter(|| run_tokio_broadcast_case(*case));
             });
         }
@@ -259,7 +265,7 @@ fn bench_topic_broadcast_lag_vs_tokio(c: &mut Criterion) {
             BenchmarkId::new("broker", LAG_SUBSCRIBERS),
             &msg_size,
             |b, msg_size| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt)
                     .iter(|| run_topic_broadcast_lag_case(*msg_size));
             },
@@ -269,7 +275,7 @@ fn bench_topic_broadcast_lag_vs_tokio(c: &mut Criterion) {
             BenchmarkId::new("tokio", LAG_SUBSCRIBERS),
             &msg_size,
             |b, msg_size| {
-                let rt = Runtime::new().unwrap();
+                let rt = Runtime::new().expect("tokio runtime creation failed");
                 b.to_async(&rt)
                     .iter(|| run_tokio_broadcast_lag_case(*msg_size));
             },
