@@ -1,7 +1,8 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO we'll use this eventually
+// TODO we'll use this eventually when evaluating attribute insertions and advanced filtering
+// but for now, this isn't called anywhere, so override the dead_code warning.
 #![allow(dead_code)]
 
 //! Implementation of expression evaluation for OTAP (OpenTelemetry Arrow Protocol) batches.
@@ -430,7 +431,6 @@ impl PhysicalDomainExpr {
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_context: &SessionContext,
-        include_ids: bool,
     ) -> Result<Option<PhysicalExprEvalResult>> {
         // TODO need to avoid cloning the data domain Id here
         let (source_rb, result_data_domain) = match &mut self.source {
@@ -468,8 +468,8 @@ impl PhysicalDomainExpr {
                 (input_rb, data_domain_id.clone())
             }
             PhysicalExprDataSource::Join(left, right) => {
-                let left_result = left.execute(otap_batch, session_context, true)?;
-                let right_result = right.execute(otap_batch, session_context, true)?;
+                let left_result = left.execute(otap_batch, session_context)?;
+                let right_result = right.execute(otap_batch, session_context)?;
                 match (left_result, right_result) {
                     (Some(left_result), Some(right_result)) => {
                         let (joined_rb, result_data_domain) =
@@ -727,9 +727,6 @@ mod test {
         BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
         SourceScalarExpression, StaticScalarExpression, StringScalarExpression, ValueAccessor,
     };
-    // TODO ugly imports
-    use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
-    use crate::pipeline::Pipeline;
     use otap_df_pdata::{
         otap::Logs,
         proto::{
@@ -741,6 +738,9 @@ mod test {
         testing::round_trip::{otlp_to_otap, to_logs_data},
     };
 
+    use crate::consts::{ATTRIBUTES_FIELD_NAME, RESOURCES_FIELD_NAME, SCOPE_FIELD_NAME};
+    use crate::pipeline::Pipeline;
+
     fn run_scalar_expr_test(
         input_expr: ScalarExpression,
         input_data: &OtapArrowRecords,
@@ -749,9 +749,7 @@ mod test {
         let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr
-            .execute(input_data, &session_ctx, false)
-            .unwrap();
+        let result = physical_expr.execute(input_data, &session_ctx).unwrap();
         result.map(|result| result.values)
     }
 
@@ -763,9 +761,7 @@ mod test {
         let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
-        physical_expr
-            .execute(input_data, &session_ctx, false)
-            .unwrap_err()
+        physical_expr.execute(input_data, &session_ctx).unwrap_err()
     }
 
     fn run_scalar_expr_success_test(
@@ -784,12 +780,8 @@ mod test {
         }
     }
 
-    // TODO the name the LLM generated for these tests is a bit hokey ...
-    // "_to_physical_expr" ugh
-    // I think we can
-
     #[test]
-    fn test_planner_static_to_physical_execute() {
+    fn test_expr_eval_static_scalar() {
         // Plan the scalar expression
         let planner = ExprLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
@@ -804,7 +796,7 @@ mod test {
         // Execute
         let otap_batch = OtapArrowRecords::Logs(Logs::default());
         let session_ctx = Pipeline::create_session_context();
-        let result = physical_expr.execute(&otap_batch, &session_ctx, false);
+        let result = physical_expr.execute(&otap_batch, &session_ctx);
 
         // Should successfully evaluate
         assert!(result.is_ok());
@@ -823,7 +815,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_root_source_to_physical_execute() {
+    fn test_expr_eval_source_column() {
         let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -849,7 +841,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_root_struct_to_physical_execute() {
+    fn test_expr_eval_struct_source_column() {
         let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -898,7 +890,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_attribute_source_to_physical_execute() {
+    fn test_expr_eval_attr_value() {
         let input_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -942,7 +934,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_column_to_scalar() {
+    fn test_expr_eval_arithmetic_column_scalar() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -984,7 +976,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_scalar_to_column() {
+    fn test_expr_eval_arithmetic_scalar_root_column() {
         let left_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
             IntegerScalarExpression::new(QueryLocation::new_fake(), 2),
         ));
@@ -1025,7 +1017,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_same_attributes() {
+    fn test_expr_eval_arithmetic_root_attributes() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1087,7 +1079,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_root_to_attribute() {
+    fn test_expr_eval_arithmetic_root_with_attribute() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -1150,7 +1142,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_attribute_to_root() {
+    fn test_expr_eval_arithmetic_attribute_with_root() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1381,7 +1373,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_root_to_nonroot_attrs() {
+    fn test_expr_eval_arithmetic_root_to_nonroot_attrs() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
@@ -1459,7 +1451,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_nonroot_attrs_to_root() {
+    fn test_expr_eval_arithmetic_nonroot_attrs_to_root() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1537,7 +1529,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_attrs_to_nonroot_attrs() {
+    fn test_expr_eval_arithmetic_attrs_to_nonroot_attrs() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1628,7 +1620,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_nonroot_attrs_to_root_attrs() {
+    fn test_expr_eval_arithmetic_nonroot_attrs_to_root_attrs() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1719,7 +1711,7 @@ mod test {
     }
 
     #[test]
-    fn test_planner_binary_expr_deeply_nested_expr() {
+    fn test_expr_eval_arithmetic_deeply_nested_expr() {
         let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
             ValueAccessor::new_with_selectors(vec![
@@ -1828,7 +1820,98 @@ mod test {
     }
 
     #[test]
-    fn test_deeply_nested_binary_expr_that_forces_root_to_root_join() {
+    fn test_arithmetic_expr_with_changing_column_orders() {
+        // basically this test is ensuring that we correctly project the input batches
+        // before evaluating the expression
+
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_number(10)
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
+                .finish(),
+            LogRecord::build()
+                .severity_number(20)
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        let logs_input_1 = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+
+        run_scalar_expr_success_test(
+            input_expr.clone(),
+            &otap_batch,
+            Arc::new(Int64Array::from(vec![13, 27])),
+        );
+
+        // send a second batch where the column order will have changed
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .severity_text("info")
+                .severity_number(30)
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(3))])
+                .finish(),
+            LogRecord::build()
+                .severity_text("debug")
+                .severity_number(40)
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(7))])
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let logs_input_2 = otap_batch.get(ArrowPayloadType::Logs).unwrap();
+        // ensure the column isn't in the same location
+        assert_eq!(
+            logs_input_1
+                .schema()
+                .index_of(consts::SEVERITY_NUMBER)
+                .unwrap(),
+            logs_input_2
+                .schema()
+                .index_of(consts::SEVERITY_NUMBER)
+                .unwrap()
+        );
+
+        // ensure we succeed to evaluate the expression despite the column order changing
+        run_scalar_expr_success_test(
+            input_expr,
+            &otap_batch,
+            Arc::new(Int64Array::from(vec![33, 47])),
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_arithmetic_expr_that_forces_root_to_root_join() {
         // in this expression, root+resource.attrs should evaluate first, then we
         // which should produce an intermediate result with the same row order as
         // the input root batch, which means we can do a special join that just concats
