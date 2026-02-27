@@ -35,6 +35,7 @@ use std::sync::Arc;
 use arrow::array::{Array, ArrayRef, Int32Array, RecordBatch, StructArray, UInt16Array};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Field, Fields, Schema};
+use datafusion::logical_expr::ColumnarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::arrays::get_required_struct_array;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -58,6 +59,12 @@ pub fn join<'a>(
     right: &'a PhysicalExprEvalResult,
     otap_batch: &'a OtapArrowRecords,
 ) -> Result<(RecordBatch, Rc<DataDomainId>)> {
+    // handle special case where both sides have same source/row order
+    if left.data_domain == right.data_domain {
+        let join_result = EqualDataDomainJoin::default().join(left, right, otap_batch)?;
+        return Ok((join_result, left.data_domain.clone()));
+    }
+
     // determine the join strategy from the source of the data
     match (left.data_domain.as_ref(), right.data_domain.as_ref()) {
         (
@@ -97,12 +104,13 @@ pub fn join<'a>(
                 Ok((join_result, right.data_domain.clone()))
             }
         },
-        (DataDomainId::Root, DataDomainId::Root) => {
-            todo!()
-        }
-        _ => {
-            // invalid
-            todo!()
+        (left, right) => {
+            // Note: with expression trees created by our logical expression planner, we shouldn't
+            // end up in this error case, non-handled combinations of data domains don't end up
+            // added to expressions in ways that require joins
+            Err(Error::ExecutionError {
+                cause: format!("Invalid data domains for join: left {left:?} right {right:?}"),
+            })
         }
     }
 }
@@ -334,6 +342,36 @@ trait JoinExec {
 
 // Join strategies ...
 
+/// When both sides of the join come from the same "data domain", meaning that that they select
+/// the same rows from the same record batch in the same order, we use this specialized "join"
+/// which just selects the values columns from both sides with no reordering
+#[derive(Default)]
+struct EqualDataDomainJoin {}
+
+impl JoinExec for EqualDataDomainJoin {
+    fn join(
+        &self,
+        left: &PhysicalExprEvalResult,
+        right: &PhysicalExprEvalResult,
+        _otap_batch: &OtapArrowRecords,
+    ) -> Result<RecordBatch> {
+        let right_values = match &right.values {
+            ColumnarValue::Array(arr) => Arc::clone(arr),
+            ColumnarValue::Scalar(_) => {
+                // Note: given how the current expression planner works, this shouldn't happen
+                // because scalars exprs should always be included directly in the expression of
+                // one side without any need for join
+                return Err(Error::ExecutionError {
+                    cause: "JoinExec expected right-side values to be Array but found Scalar"
+                        .into(),
+                });
+            }
+        };
+
+        to_join_result(left, right_values)
+    }
+}
+
 /// Joins root record batch (logs/metrics/traces) to a child attributes record batch
 /// on root.id == attributes.parent_id
 struct RootToAttributesJoin {
@@ -363,8 +401,12 @@ impl JoinExec for RootToAttributesJoin {
             AttributesIdentifier::NonRoot(payload_type) => match payload_type {
                 ArrowPayloadType::ResourceAttrs => &left.resource_ids,
                 ArrowPayloadType::ScopeAttrs => &left.scope_ids,
-                _ => {
-                    todo!()
+                other => {
+                    return Err(Error::ExecutionError {
+                        cause: format!(
+                            "RootToAttributesJoin received invalid attrs payload type {other:?}"
+                        ),
+                    });
                 }
             },
         };
@@ -442,8 +484,12 @@ impl JoinExec for NonRootAttrsToRootReverseJoin {
         let right_ids = match self.attrs_payload_type {
             ArrowPayloadType::ResourceAttrs => right.resource_ids.as_ref(),
             ArrowPayloadType::ScopeAttrs => right.scope_ids.as_ref(),
-            _ => {
-                todo!()
+            other => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "NonRootAttrsToRootReverseJoin received invalid attrs id payload type {other:?}"
+                    ),
+                });
             }
         };
 
@@ -756,7 +802,7 @@ impl IdJoinLookup {
     fn new(ids: &UInt16Array) -> Self {
         let mut lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>> = vec![None; NUM_PAGES];
 
-        // TODO bench this. There are probable some optimizations that we can make:
+        // TODO bench this. There are probably some optimizations that we can make:
         // 1 - have a loop that does no null check if there are no nulls
         // 2 - if there are nulls, we might be able to avoid checking if each row is null by
         //     using BitSliceIter on the null buffer to get ranges of non-null indices.
@@ -777,7 +823,8 @@ impl IdJoinLookup {
             }
 
             // Store the mapping
-            lookup[outer].as_mut().unwrap()[inner] = Some(row_idx);
+            // safety: we've initialized lookup[outer] in the block above, so safe to expect
+            lookup[outer].as_mut().expect("allocated")[inner] = Some(row_idx);
         }
 
         Self { lookup }

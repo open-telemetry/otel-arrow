@@ -6,6 +6,36 @@
 
 //! Implementation of expression evaluation for OTAP (OpenTelemetry Arrow Protocol) batches.
 //!
+//! # Expression Tree
+//!
+//! The expressions are planned an executed as a tree of different expression types. The input
+//! for planning is an AST of expressions from the [`data_engine_expressions`]. The planning stage
+//! converts this into a tree of datafusion logical plans ([`Expr`]s). At runtime, these logical
+//! plans are converted to datafusion [`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)
+//! during evaluation.
+//!
+//! However, typically with datafusion expression evaluation, there would be a single
+//! [`RecordBatch`] as input and a single expression tree which produces the resulting
+//! [`ColumnValue`]. In this case, are some additional challenges that need to be overcome.
+//! Notably, in the OTAP data-model, not all data is in one [`RecordBatch`].
+//!
+//! It means that when evaluating an expression like `severity_number + attributes["x"]`, before
+//! invoking the  datafusion expression which does the addition, we need to join multiple
+//! [`RecordBatch`]s together.
+//!
+//! ## Data Domains
+//!
+//! To handle this, the datafusion expression trees are organized inside nodes in a higher level
+//! expression tree where each node is scoped to a "data domain". These data domains indicate the
+//! source of the data for the expression.
+//!
+//! Note, the data domain is not simply an indicator of the arrow payload type for the record
+//! batch. A given payload type can have multiple data domains, for example `attributes["x"]` and
+//! `attributes["y"]` would produce a different set of filtered rows from the same record batch.
+//!
+//! When evaluating a binary expression with inputs from different data domains, the execution
+//! will join the two inputs before executing the datafusion expression on the join result.
+//!
 
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -46,81 +76,100 @@ pub(crate) const VALUE_COLUMN_NAME: &str = "value";
 pub(crate) const LEFT_COLUMN_NAME: &str = "left";
 pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 
-/// Identifies which OTAP RecordBatch domain an expression operates on.
+/// Identifies portion OTAP domain an expression operates on.
 ///
-/// OTAP batches contain multiple RecordBatches. This enum identifies which batch
-/// provides the data for an expression:
-/// - Root: The main telemetry batch (Logs/Spans/Metrics)
-/// - Attributes: Attribute batches (LogAttrs, ResourceAttrs, etc.) filtered by key
-/// - StaticScalar: Constant values that don't come from any batch
+/// OTAP batches contain multiple RecordBatches, and within a given record batch, some expression
+/// may indicate a different set of rows. This type is used to identify both the payload type of
+/// the record batch, and which rows may have been selected from it.
+///
+/// This type is used in many places in both expression planning and expression evaluation.
 #[derive(Clone, Debug, PartialEq)]
 enum DataDomainId {
     /// Main telemetry batch (e.g., Logs with columns like severity_number, severity_text)
     Root,
+
     /// Attribute batch identified by AttributesIdentifier and filtered by the String key.
     /// For example, (AttributesIdentifier::Root, "http.method") refers to log attributes
     /// with key="http.method"
     Attributes(AttributesIdentifier, String),
-    /// Constant scalar value that doesn't require any input batch
+
+    /// A special data domain indicating the data produced by some expression comes not from an
+    /// input OTAP batch, but from a static scalar value defined in the input expression tree.
     StaticScalar,
 }
 
-/// Wrapper around DataDomainId used during logical planning phase.
-/// Provides helper methods for determining if domains can be combined.
-#[derive(Debug, Clone)]
-struct LogicalDataDomain {
-    domain_id: DataDomainId,
-}
-
-impl LogicalDataDomain {
-    /// Determines if two domains can be combined in a single expression.
+impl DataDomainId {
+    /// Determines if expressions for two domains can be combined into a single expression without
+    /// performing a join.
     ///
     /// Rules:
     /// - Any domain can combine with StaticScalar (constants)
-    /// - Same domains can combine (e.g., Root + Root)
-    /// - Different non-scalar domains cannot combine (require parent-child structure)
-    fn can_combine(&self, other: &LogicalDataDomain) -> bool {
-        if self.is_scalar() || other.is_scalar() {
-            return true;
-        }
-
-        if self.domain_id == other.domain_id {
-            return true;
-        }
-
-        false
+    /// - Same domains can combine (e.g., Root + Root), because the row order is the same.
+    fn can_combine(&self, other: &Self) -> bool {
+        self.is_scalar() || other.is_scalar() || (self == other)
     }
 
     /// Returns true if this domain represents a static scalar value.
     fn is_scalar(&self) -> bool {
-        self.domain_id == DataDomainId::StaticScalar
+        *self == Self::StaticScalar
     }
 }
 
+/// Identifier of the incoming source data for some data domain scoped expression.
 #[derive(Debug)]
 enum LogicalExprDataSource {
-    DataSource(LogicalDataDomain),
+    /// This indicates the input to the expression data from the incoming OTAP batch
+    DataSource(DataDomainId),
+
+    /// The input to the expression is the result of joining two child expressions
     Join(Box<LogicalDomainExpr>, Box<LogicalDomainExpr>),
 }
 
 /// Represents an expression during the logical planning phase.
 ///
-/// This combines a DataFusion logical expression with domain information.
-/// When expressions span multiple domains (e.g., Root + Attributes), a parent-child
-/// structure is used where the parent references the child via col("child").
+/// This combines a DataFusion logical expression with data source and type/type coercion info
 #[derive(Debug)]
 struct LogicalDomainExpr {
+    /// the definition of the datafusion that should be applied to the input data
     logical_expr: Expr,
+
+    /// the type that the expression will produce.
+    ///
+    /// this is used during planning to check for cases where certain operations/expressions may be
+    /// invalid for a given input, to ensure any input types that require coercion are correctly
+    /// casted.
+    ///
+    /// note: type checking during planning is best-effort and there are some expressions where the
+    /// expression type validity cannot be guaranteed before we see the data. this is especially
+    /// true for expressions involving AnyValues (attributes, log body).
     expr_type: ExprLogicalType,
+
+    /// identifies the source for the incoming data
     source: LogicalExprDataSource,
+
+    /// flag for whether the type of expression requires that dictionary encoding is removed from
+    /// the input columns.
+    ///
+    /// For example, arrow's numeric compute kernels do not work on dictionary encoded primitive
+    /// arrays, so arithmetic expressions require converting the columns to the non-dict encoded
+    /// arrow type.
+    //
+    // TODO: it would be cleaner to just have an expression type we could add to the plan to remove
+    // dictionary encoding from some column, instead of passing this flag down and doing it during
+    // projection.
     requires_dict_downcast: bool,
 }
 
 impl LogicalDomainExpr {
+    /// Convert the logical expression (used during planning) into the physical expression
+    /// which is used during evaluation.
+    ///
+    /// Note that for now, the actual conversion of the underlying datafusion [`Expr`] to the
+    /// `PhysicalDomainExpr` happens lazily when we actually receive the incoming batch.
     fn into_physical(self) -> Result<PhysicalDomainExpr> {
         let source = match self.source {
             LogicalExprDataSource::DataSource(domain) => {
-                PhysicalExprDataSource::DataSource(Rc::new(domain.domain_id))
+                PhysicalExprDataSource::DataSource(Rc::new(domain))
             }
             LogicalExprDataSource::Join(left, right) => PhysicalExprDataSource::Join(
                 Box::new(left.into_physical()?),
@@ -142,17 +191,10 @@ impl LogicalDomainExpr {
 }
 
 /// Logical planner that converts AST expressions into LogicalDomainExpr.
-///
-/// This is Phase 1 of the planning process. It walks the expression AST and
-/// determines the data domain for each sub-expression, then builds a
-/// DataFusion logical expression that can operate on that domain.
 struct ExprLogicalPlanner {}
 
 impl ExprLogicalPlanner {
-    fn plan_scalar_expr(
-        &mut self,
-        scalar_expression: &ScalarExpression,
-    ) -> Result<LogicalDomainExpr> {
+    fn plan_scalar_expr(&self, scalar_expression: &ScalarExpression) -> Result<LogicalDomainExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();
@@ -171,9 +213,7 @@ impl ExprLogicalPlanner {
                         Ok(LogicalDomainExpr {
                             logical_expr: col(column_name),
                             requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                                domain_id: DataDomainId::Root,
-                            }),
+                            source: LogicalExprDataSource::DataSource(DataDomainId::Root),
                             expr_type: field_type,
                         })
                     }
@@ -188,18 +228,16 @@ impl ExprLogicalPlanner {
                         Ok(LogicalDomainExpr {
                             logical_expr: col(column_name).field(struct_field_name),
                             requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                                domain_id: DataDomainId::Root,
-                            }),
+                            source: LogicalExprDataSource::DataSource(DataDomainId::Root),
                             expr_type: field_type,
                         })
                     }
                     ColumnAccessor::Attributes(attrs_id, key) => Ok(LogicalDomainExpr {
                         logical_expr: col(VALUE_COLUMN_NAME),
                         requires_dict_downcast: false,
-                        source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                            domain_id: DataDomainId::Attributes(attrs_id, key),
-                        }),
+                        source: LogicalExprDataSource::DataSource(DataDomainId::Attributes(
+                            attrs_id, key,
+                        )),
                         expr_type: ExprLogicalType::AnyValue,
                     }),
                 }
@@ -231,9 +269,7 @@ impl ExprLogicalPlanner {
                 Ok(LogicalDomainExpr {
                     logical_expr,
                     expr_type,
-                    source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                        domain_id: DataDomainId::StaticScalar,
-                    }),
+                    source: LogicalExprDataSource::DataSource(DataDomainId::StaticScalar),
                     requires_dict_downcast: false,
                 })
             }
@@ -264,7 +300,7 @@ impl ExprLogicalPlanner {
     }
 
     fn plan_binary_math_expr(
-        &mut self,
+        &self,
         binary_math_expr: &BinaryMathematicalScalarExpression,
         operator: Operator,
     ) -> Result<LogicalDomainExpr> {
@@ -282,7 +318,12 @@ impl ExprLogicalPlanner {
             }
         })?;
 
-        // TODO comment about what we're doing here
+        // determine if we can execute the binary expression without joining data from a different
+        // data domain. We'd be able to do this if, the left/right side either have the same input
+        // RecordBatch & row order, or if one/both sides are a scalar.
+        //
+        // for example, we had an expression like:
+        // `severity_text * 2` or `attributes["x"] + attributes["x"]`.
         let possible_combined_expr_domain = match (&left.source, &right.source) {
             (
                 LogicalExprDataSource::DataSource(left_domain),
@@ -327,40 +368,56 @@ impl ExprLogicalPlanner {
 ///
 /// This is a thin wrapper that delegates to LogicalDomainExpr::into_physical().
 /// Could potentially be removed, but provides a clear separation of concerns.
-struct AssignmentPhysicalPlanner {}
+struct ExprPhysicalPlanner {}
 
-impl AssignmentPhysicalPlanner {
+impl ExprPhysicalPlanner {
     /// Converts a LogicalDomainExpr into an executable PhysicalDomainExpr.
     fn plan(&self, logical_expr: LogicalDomainExpr) -> Result<PhysicalDomainExpr> {
         logical_expr.into_physical()
     }
 }
 
+/// A node in the expression tree used for expression evaluation.
+///
+/// This encapsulates a datafusion PhysicalExpr, which is responsible for evaluating some segment
+/// of the overall expression tree which uses single `RecordBatch` can be used as a source. This
+/// type is responsible for organizing source data into this single `RecordBatch`, which it does in
+/// one of three ways:
+/// - select the appropriate RecordBatch from the OTAP batch
+/// - recursively evaluate left/right child expressions and join them
+/// - create a dummy empty record batch (special case for scalar-only expressions)
+///
 struct PhysicalDomainExpr {
+    /// Identifier of the data source from which the input to the PhysicalExpr will be crafted
     source: PhysicalExprDataSource,
 
-    logical_expr: Expr,
-
+    /// The datafusion PhysicalExpr that computes this segment of the expression tree. This is
+    /// planned lazily from the logical expression when we receive data (because an actual Arrow
+    /// is needed to do the planning)
     physical_expr: Option<PhysicalExprRef>,
 
+    /// The logical representation of this segment of the expression tree. Used to lazily plan the
+    /// physical expression
+    logical_expr: Expr,
+
+    /// This projection will attempt to select the required columns from the input record batch in
+    /// the correct order before evaluating the physical expression. This is necessary because OTAP
+    /// record batches are not guaranteed to always have the same set of columns in the same order
+    /// across subsequent batches, but this consistent schema is expected by the physical expr.
     projection: Projection,
 
+    /// Options for projection, including whether to remove dictionary encoding (which is required
+    /// for arrow numeric compute kernels).
     projection_opts: ProjectionOptions,
 }
 
+/// Identifies the source for the input to the physical expression
 enum PhysicalExprDataSource {
+    /// Source the data from the incoming OTAP record batch
     DataSource(Rc<DataDomainId>),
-    Join(Box<PhysicalDomainExpr>, Box<PhysicalDomainExpr>),
-}
 
-#[derive(Debug)]
-pub(crate) struct PhysicalExprEvalResult {
-    values: ColumnarValue,
-    ids: Option<ArrayRef>,
-    data_domain: Rc<DataDomainId>,
-    parent_ids: Option<ArrayRef>,
-    scope_ids: Option<ArrayRef>,
-    resource_ids: Option<ArrayRef>,
+    /// Source the data by evaluating left/right child expressions and joining the results
+    Join(Box<PhysicalDomainExpr>, Box<PhysicalDomainExpr>),
 }
 
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
@@ -468,45 +525,30 @@ impl PhysicalDomainExpr {
             .expect("physical expr initialized")
             .evaluate(&projected_rb)?;
 
-        // TODO this'd be cleaner as a constructor
-        let mut result = PhysicalExprEvalResult {
-            values: result_vals,
-            ids: None,
-            parent_ids: None,
-            scope_ids: None,
-            resource_ids: None,
-            // TODO - the only reason this is cloned is b/c we use it below to figure out whether
-            // to tack the scope/resource IDs onto the result. There's gotta be a better way
-            data_domain: result_data_domain.clone(),
-        };
-
-        // TODO -- need to coerce values back into the dict type?
-
-        // TODO test this is returned
-        // if include_ids {
-        result.ids = source_rb.column_by_name(consts::ID).cloned();
-        result.parent_ids = source_rb.column_by_name(consts::PARENT_ID).cloned();
-
-        if *result_data_domain == DataDomainId::Root {
-            result.scope_ids = get_optional_array_from_struct_array_from_record_batch(
-                &source_rb,
-                consts::SCOPE,
-                consts::ID,
-            )
-            .unwrap()
-            .cloned();
-            result.resource_ids = get_optional_array_from_struct_array_from_record_batch(
-                &source_rb,
-                consts::SCOPE,
-                consts::ID,
-            )
-            .unwrap()
-            .cloned();
-        }
-        // }
-        Ok(Some(result))
+        Ok(Some(PhysicalExprEvalResult::new(
+            result_vals,
+            result_data_domain,
+            &source_rb,
+        )))
     }
 
+    /// Filters the record batch by key, and then projects the column containing values of the
+    /// type for this attribute to a column called "values".
+    ///
+    /// For example, if we had an input batch like:
+    /// key:        ["a", "a", "b", "b"]
+    /// type:       [1, 1, 1, 1] // type 1 = str
+    /// str:        ["x", "x", y", "z"]
+    /// parent_id:  [0, 1, 0, 1]
+    ///
+    /// If the "key" argument to this function was "b", the result would be:
+    /// value:     ["y", "z"]
+    /// parent_id: [0, 1]
+    ///
+    // TODO - we're making an assumptions here that will need to be later revisited which is:
+    // if a type is present for some key, then all attributes for this key have the same
+    // type. Normally this would be the case and this is definitely best practice, eventually
+    // we'll need to relax this assumption for correctness.
     fn try_project_attrs(
         record_batch: &RecordBatch,
         key: &str,
@@ -523,8 +565,7 @@ impl PhysicalDomainExpr {
 
         // If no rows match the key, handle empty case
         if filtered_batch.num_rows() == 0 {
-            // TODO: Decide if this should be Ok(None) or an error
-            todo!("Handle empty filtered batch - no matching attribute key")
+            return Ok(None);
         }
 
         // Get the type column to determine which value column to use
@@ -545,17 +586,6 @@ impl PhysicalDomainExpr {
                 ),
             })?;
 
-        // TODO - we're making two big (and potentially invalid) assumptions here:
-        // 1. if a type is present for some key, then all attributes for this key have the same
-        // type. Normally this would be the case and this is definitely best practice, but some
-        // users might just choose to do something bizarre so we'll need to handle that
-        // 2. we're assuming that if the type column indicates some value type, that the values
-        // column is supposed to be present. This isn't necessarily the case, because we might
-        // have a case where all the attribute values are either null or default value. This is
-        // actually a problem because when we relax this assumption, we still won't know whether
-        // it's null or default value, and won't be able to just guess either way w/out sometimes
-        // guessing wrong. For now, just punting the problem ...
-
         // Find the first non-null type value
         let type_value = type_col
             .iter()
@@ -569,89 +599,42 @@ impl PhysicalDomainExpr {
         })?;
 
         // Based on type value, select the appropriate value column
-
-        // TODO - we could use helper functions to cut down on all this repeated error handling
-        // code -- although, see the TODO above about whethere we _actually_ want this error
-        // handling code or whether we just return None ...
-        // (it's LLM generated so needs cleaned up)
         let value_array = match type_value {
-            AttributeValueType::Str => {
-                // Str type
-                let arr = filtered_batch
-                    .column_by_name(consts::ATTRIBUTE_STR)
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("Missing {} column for str type", consts::ATTRIBUTE_STR),
-                    })?;
-                arr.clone()
-            }
-            AttributeValueType::Int => {
-                // Int type
-                let arr = filtered_batch
-                    .column_by_name(consts::ATTRIBUTE_INT)
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("Missing {} column for int type", consts::ATTRIBUTE_INT),
-                    })?;
-                arr.clone()
-            }
-            AttributeValueType::Double => {
-                // Double type
-                let arr = filtered_batch
-                    .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!(
-                            "Missing {} column for double type",
-                            consts::ATTRIBUTE_DOUBLE
-                        ),
-                    })?;
-                arr.clone()
-            }
-            AttributeValueType::Bool => {
-                // Bool type
-                let arr = filtered_batch
-                    .column_by_name(consts::ATTRIBUTE_BOOL)
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("Missing {} column for bool type", consts::ATTRIBUTE_BOOL),
-                    })?;
-                arr.clone()
-            }
-            AttributeValueType::Bytes => {
-                // Bytes type
-                let arr = filtered_batch
-                    .column_by_name(consts::ATTRIBUTE_BYTES)
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("Missing {} column for bytes type", consts::ATTRIBUTE_BYTES),
-                    })?;
-                arr.clone()
-            }
-            AttributeValueType::Empty => {
-                // Empty type
-                todo!("Handle Empty attribute type")
-            }
-            AttributeValueType::Map => {
-                // Map type
-                todo!("Handle Map attribute type")
-            }
-            AttributeValueType::Slice => {
-                // Slice type
-                todo!("Handle Slice attribute type")
+            AttributeValueType::Str => filtered_batch.column_by_name(consts::ATTRIBUTE_STR),
+            AttributeValueType::Int => filtered_batch.column_by_name(consts::ATTRIBUTE_INT),
+            AttributeValueType::Double => filtered_batch.column_by_name(consts::ATTRIBUTE_DOUBLE),
+            AttributeValueType::Bool => filtered_batch.column_by_name(consts::ATTRIBUTE_BOOL),
+            AttributeValueType::Bytes => filtered_batch.column_by_name(consts::ATTRIBUTE_BYTES),
+            AttributeValueType::Empty => return Ok(None),
+            AttributeValueType::Map | AttributeValueType::Slice => {
+                return Err(Error::NotYetSupportedError {
+                    message:
+                        "expression evaluation on non-scalar type attributes (Map/Slice) not yet supported".into()
+                    ,
+                });
             }
         };
+
+        let value_array = value_array.cloned().ok_or_else(|| Error::ExecutionError {
+            cause: format!("Missing values column for type {type_value:?}",),
+        })?;
 
         // Build new schema with parent_id (if present) and value column renamed to "value"
         let mut fields = Vec::new();
         let mut columns = Vec::new();
 
-        // Keep parent_id column if it exists
-        // TODO - the LLM Agent added this "Exists" check, but the column should pretty much
-        // always be there so this check should go away.
-        if let Some(parent_id_col) = filtered_batch.column_by_name(consts::PARENT_ID) {
-            fields.push(Arc::new(Field::new(
-                consts::PARENT_ID,
-                parent_id_col.data_type().clone(),
-                false,
-            )));
-            columns.push(parent_id_col.clone());
-        }
+        let parent_id_col = filtered_batch
+            .column_by_name(consts::PARENT_ID)
+            .cloned()
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "Invalid attributes record batch: missing values parent_id column".into(),
+            })?;
+        fields.push(Arc::new(Field::new(
+            consts::PARENT_ID,
+            parent_id_col.data_type().clone(),
+            false,
+        )));
+        columns.push(parent_id_col.clone());
 
         // Add the value column renamed to "value"
         fields.push(Arc::new(Field::new(
@@ -666,19 +649,79 @@ impl PhysicalDomainExpr {
         }
 
         let schema = Arc::new(Schema::new(fields));
-        let projected_batch =
-            RecordBatch::try_new(schema, columns).map_err(|e| Error::ExecutionError {
-                cause: format!("Failed to create projected batch: {}", e),
-            })?;
+        let projected_batch = RecordBatch::try_new(schema, columns)?;
 
         Ok(Some(projected_batch))
+    }
+}
+
+/// Result of the evaluation of some physical expression
+///
+/// This structure contains the resulting array of values, plus identifiers such as data domain and
+/// a set of IDs to help identify to which row the resulting values correspond.
+///
+/// For example, if we had
+/// - values: ["a", "b" ... ]
+/// - data_domain: DataDomain::Attributes,
+/// - parent_ids: Some([0, 1 ...])
+///
+/// This would indicate that log/trace/metric row with ID 0 corresponds to value "a", and the row
+/// with ID 1 corresponds to value "b", and so on.
+#[derive(Debug)]
+pub(crate) struct PhysicalExprEvalResult {
+    /// expression evaluation result values
+    values: ColumnarValue,
+
+    /// identifies with which arrow record batch should be associated, as well as which rows were
+    /// selected (in the case of attributes)
+    data_domain: Rc<DataDomainId>,
+
+    // ID columns populated from the source data
+    ids: Option<ArrayRef>,
+    parent_ids: Option<ArrayRef>,
+    scope_ids: Option<ArrayRef>,
+    resource_ids: Option<ArrayRef>,
+}
+
+impl PhysicalExprEvalResult {
+    fn new(values: ColumnarValue, data_domain: Rc<DataDomainId>, source: &RecordBatch) -> Self {
+        let is_root = *data_domain == DataDomainId::Root;
+
+        let mut result = Self {
+            values,
+            data_domain,
+            ids: source.column_by_name(consts::ID).cloned(),
+            parent_ids: source.column_by_name(consts::PARENT_ID).cloned(),
+            scope_ids: None,
+            resource_ids: None,
+        };
+
+        if is_root {
+            if let Ok(Some(resource_ids)) = get_optional_array_from_struct_array_from_record_batch(
+                source,
+                consts::RESOURCE,
+                consts::ID,
+            ) {
+                result.resource_ids = Some(Arc::clone(resource_ids))
+            }
+
+            if let Ok(Some(scope_ids)) = get_optional_array_from_struct_array_from_record_batch(
+                source,
+                consts::SCOPE,
+                consts::ID,
+            ) {
+                result.scope_ids = Some(Arc::clone(scope_ids))
+            }
+        }
+
+        result
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray};
+    use arrow::array::{Float64Array, Int32Array, Int64Array, StructArray, UInt8Array};
     use arrow::compute::take;
     use data_engine_expressions::{
         BinaryMathematicalScalarExpression, IntegerScalarExpression, QueryLocation,
@@ -702,7 +745,7 @@ mod test {
         input_expr: ScalarExpression,
         input_data: &OtapArrowRecords,
     ) -> Option<ColumnarValue> {
-        let mut planner = ExprLogicalPlanner {};
+        let planner = ExprLogicalPlanner {};
         let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
@@ -716,7 +759,7 @@ mod test {
         input_expr: ScalarExpression,
         input_data: &OtapArrowRecords,
     ) -> Error {
-        let mut planner = ExprLogicalPlanner {};
+        let planner = ExprLogicalPlanner {};
         let logical_expr = planner.plan_scalar_expr(&input_expr).unwrap();
         let mut physical_expr = logical_expr.into_physical().unwrap();
         let session_ctx = Pipeline::create_session_context();
@@ -748,7 +791,7 @@ mod test {
     #[test]
     fn test_planner_static_to_physical_execute() {
         // Plan the scalar expression
-        let mut planner = ExprLogicalPlanner {};
+        let planner = ExprLogicalPlanner {};
         let static_expr = ScalarExpression::Static(StaticScalarExpression::Integer(
             IntegerScalarExpression::new(QueryLocation::new_fake(), 99),
         ));
@@ -1785,6 +1828,108 @@ mod test {
     }
 
     #[test]
+    fn test_deeply_nested_binary_expr_that_forces_root_to_root_join() {
+        // in this expression, root+resource.attrs should evaluate first, then we
+        // which should produce an intermediate result with the same row order as
+        // the input root batch, which means we can do a special join that just concats
+        // the vec of columns together from both input sides
+
+        let resource_attrs_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), RESOURCES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let root_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                StaticScalarExpression::String(StringScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    consts::SEVERITY_NUMBER,
+                )),
+            )]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                ScalarExpression::Math(MathScalarExpression::Add(
+                    BinaryMathematicalScalarExpression::new(
+                        QueryLocation::new_fake(),
+                        resource_attrs_expr,
+                        root_expr.clone(),
+                    ),
+                )),
+                root_expr,
+            ),
+        ));
+
+        let logs = LogsData::new(vec![
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(10))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(1))])
+                            .severity_number(3)
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(2))])
+                            .severity_number(5)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+            ResourceLogs {
+                resource: Some(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("k1", AnyValue::new_int(20))])
+                        .finish(),
+                ),
+
+                scope_logs: vec![ScopeLogs::new(
+                    InstrumentationScope {
+                        name: "scope1".into(),
+                        ..Default::default()
+                    },
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("k2", AnyValue::new_int(7))])
+                            .severity_number(7)
+                            .finish(),
+                    ],
+                )],
+                ..Default::default()
+            },
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        // get the expected column
+        let expected_col = Arc::new(Int64Array::from(vec![16, 20, 34]));
+        run_scalar_expr_success_test(input_expr, &otap_batch, expected_col.clone());
+    }
+
+    #[test]
     fn test_arithmetic_null_propagation_null_values_no_join() {
         let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
             QueryLocation::new_fake(),
@@ -2011,9 +2156,131 @@ mod test {
         assert!(result.is_none());
     }
 
-    // TODO other test cases:
-    // - empty attributes on both side of join
-    // -
+    #[test]
+    fn test_null_propagation_no_attributes_existing() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "nonexist"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(1)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("k1", AnyValue::new_int(9))])
+                .severity_text("INFO")
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k1", AnyValue::new_int(2)),
+                ])
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        let result = run_scalar_expr_test(input_expr, &otap_batch);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_null_propagation_empty_attributes() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue { value: None }),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                    KeyValue::new("k2", AnyValue { value: None }),
+                ])
+                .severity_text("DEBUG")
+                .finish(),
+        ]);
+
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+
+        // ensure the attribute values are what we expect
+        let log_attrs = otap_batch.get(ArrowPayloadType::LogAttrs).unwrap();
+        let type_col = log_attrs
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap();
+        assert_eq!(type_col.value(1), AttributeValueType::Empty as u8);
+        assert_eq!(type_col.value(3), AttributeValueType::Empty as u8);
+
+        let result = run_scalar_expr_test(input_expr, &otap_batch);
+        assert!(result.is_none());
+    }
 
     #[test]
     fn test_arithmetic_type_mismatch_caught_planning() {
@@ -2041,9 +2308,7 @@ mod test {
 
         // Check it returns an error when it detects at planning time that it won't be able to add
         // these two fields.
-        //
-        // TODO - we should have better coverage of all combos in the type coercion module..
-        let mut planner = ExprLogicalPlanner {};
+        let planner = ExprLogicalPlanner {};
         let err = planner
             .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathematicalScalarExpression::new(
@@ -2064,7 +2329,7 @@ mod test {
         );
 
         // check it with swapped left/right arguments (for good measure):
-        let mut planner = ExprLogicalPlanner {};
+        let planner = ExprLogicalPlanner {};
         let err = planner
             .plan_scalar_expr(&ScalarExpression::Math(MathScalarExpression::Add(
                 BinaryMathematicalScalarExpression::new(

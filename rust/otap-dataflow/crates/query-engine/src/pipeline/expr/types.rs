@@ -283,9 +283,7 @@ mod test {
     use super::*;
     use datafusion::logical_expr::Expr;
 
-    use crate::pipeline::expr::{
-        DataDomainId, LogicalDataDomain, LogicalDomainExpr, LogicalExprDataSource,
-    };
+    use crate::pipeline::expr::{DataDomainId, LogicalDomainExpr, LogicalExprDataSource};
 
     fn test_expr(expr_type: ExprLogicalType) -> LogicalDomainExpr {
         LogicalDomainExpr {
@@ -293,9 +291,7 @@ mod test {
 
             // rest of fields are just placeholder values
             logical_expr: Expr::default(),
-            source: LogicalExprDataSource::DataSource(LogicalDataDomain {
-                domain_id: DataDomainId::StaticScalar,
-            }),
+            source: LogicalExprDataSource::DataSource(DataDomainId::StaticScalar),
             requires_dict_downcast: false,
         }
     }
