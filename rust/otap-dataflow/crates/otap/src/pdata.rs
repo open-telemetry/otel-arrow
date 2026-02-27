@@ -389,26 +389,12 @@ impl ReceivedAtNode for OtapPdata {
         // Timestamp stamped if METRICS declared AND Detailed level.
         self.context
             .push_entry_frame(node_id, metric_level, default_interests);
-        // Forward-path byte counting (Normal+).
-        if metric_level >= MetricLevel::Normal {
-            if let Some(handle) = current_component_metrics() {
-                let bytes = self.payload.num_bytes() as u64;
-                handle.record_consumed_bytes(bytes);
-            }
-        }
     }
 
     fn received_at_exporter(&mut self, node_id: usize, metric_level: MetricLevel) {
         // Exporters always declare METRICS interest for consumer duration metrics.
         self.context
             .push_entry_frame(node_id, metric_level, Interests::METRICS);
-        // Forward-path byte counting (Normal+).
-        if metric_level >= MetricLevel::Normal {
-            if let Some(handle) = current_component_metrics() {
-                let bytes = self.payload.num_bytes() as u64;
-                handle.record_consumed_bytes(bytes);
-            }
-        }
     }
 }
 

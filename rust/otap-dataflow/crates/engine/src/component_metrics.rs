@@ -58,28 +58,6 @@ pub struct ProducedRequestMetrics {
     pub refused: Counter<u64>,
 }
 
-// -- Normal+ : forward-path byte counts --
-
-/// Consumer byte counter (Normal+). Recorded on the forward path when data
-/// enters the node — no outcome breakdown.
-#[metric_set(name = "component.consumed")]
-#[derive(Debug, Default, Clone)]
-pub struct ConsumedBytesMetrics {
-    /// Cumulative bytes entering this node.
-    #[metric(name = "bytes", unit = "{By}")]
-    pub bytes: Counter<u64>,
-}
-
-/// Producer byte counter (Normal+). Recorded on the forward path when data
-/// is sent — no outcome breakdown.
-#[metric_set(name = "component.produced")]
-#[derive(Debug, Default, Clone)]
-pub struct ProducedBytesMetrics {
-    /// Cumulative bytes sent by this node.
-    #[metric(name = "bytes", unit = "{By}")]
-    pub bytes: Counter<u64>,
-}
-
 // -- Detailed : duration per outcome --
 
 /// Consumer duration summary (Detailed). Recorded at ack/nack time using the
@@ -102,20 +80,16 @@ pub struct BasicComponentMetrics {
     pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
 }
 
-/// Normal-level component metrics: request outcome counters + byte counters.
+/// Normal-level component metrics: request outcome counters.
 pub struct NormalComponentMetrics {
     pub(crate) consumed_requests: MetricSet<ConsumedRequestMetrics>,
     pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
-    pub(crate) consumed_bytes: MetricSet<ConsumedBytesMetrics>,
-    pub(crate) produced_bytes: MetricSet<ProducedBytesMetrics>,
 }
 
-/// Detailed-level component metrics: request counters + byte counters + duration counters.
+/// Detailed-level component metrics: request counters + duration counters.
 pub struct DetailedComponentMetrics {
     pub(crate) consumed_requests: MetricSet<ConsumedRequestMetrics>,
     pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
-    pub(crate) consumed_bytes: MetricSet<ConsumedBytesMetrics>,
-    pub(crate) produced_bytes: MetricSet<ProducedBytesMetrics>,
     pub(crate) consumed_duration: MetricSet<ConsumedDurationMetrics>,
 }
 
@@ -175,16 +149,6 @@ impl ComponentMetricsState {
         }
     }
 
-    /// Record consumed bytes on the forward path (Normal+).
-    #[inline]
-    pub fn record_consumed_bytes(&mut self, bytes: u64) {
-        match self {
-            Self::Basic(_) => {}
-            Self::Normal(m) => m.consumed_bytes.bytes.add(bytes),
-            Self::Detailed(m) => m.consumed_bytes.bytes.add(bytes),
-        }
-    }
-
     // -- Producer-side recording --
 
     /// Record a successful production event (Basic+: count).
@@ -217,16 +181,6 @@ impl ComponentMetricsState {
         }
     }
 
-    /// Record produced bytes on the forward path (Normal+).
-    #[inline]
-    pub fn record_produced_bytes(&mut self, bytes: u64) {
-        match self {
-            Self::Basic(_) => {}
-            Self::Normal(m) => m.produced_bytes.bytes.add(bytes),
-            Self::Detailed(m) => m.produced_bytes.bytes.add(bytes),
-        }
-    }
-
     // -- Accessors --
 
     /// Returns the configured metric level.
@@ -255,14 +209,10 @@ impl ComponentMetricsState {
             Self::Normal(m) => {
                 reporter.report(&mut m.consumed_requests)?;
                 reporter.report(&mut m.produced_requests)?;
-                reporter.report(&mut m.consumed_bytes)?;
-                reporter.report(&mut m.produced_bytes)?;
             }
             Self::Detailed(m) => {
                 reporter.report(&mut m.consumed_requests)?;
                 reporter.report(&mut m.produced_requests)?;
-                reporter.report(&mut m.consumed_bytes)?;
-                reporter.report(&mut m.produced_bytes)?;
                 reporter.report(&mut m.consumed_duration)?;
             }
         }
@@ -334,12 +284,6 @@ impl ComponentMetricsHandle {
         self.with_state(|s| s.record_consumed_refused(duration_ns));
     }
 
-    /// Record consumed bytes on the forward path (Normal+).
-    #[inline]
-    pub fn record_consumed_bytes(&self, bytes: u64) {
-        self.with_state(|s| s.record_consumed_bytes(bytes));
-    }
-
     /// Record a successful production event (Basic+: count).
     #[inline]
     pub fn record_produced_success(&self) {
@@ -356,12 +300,6 @@ impl ComponentMetricsHandle {
     #[inline]
     pub fn record_produced_refused(&self) {
         self.with_state(|s| s.record_produced_refused());
-    }
-
-    /// Record produced bytes on the forward path (Normal+).
-    #[inline]
-    pub fn record_produced_bytes(&self, bytes: u64) {
-        self.with_state(|s| s.record_produced_bytes(bytes));
     }
 
     /// Returns the configured metric level.
@@ -479,15 +417,14 @@ mod test {
         });
     }
 
-    // -- Normal: + byte counters --
+    // -- Normal: same as Basic (byte counters removed) --
 
     #[test]
-    fn normal_level_bytes_counters() {
+    fn normal_level_outcome_counters() {
         let h = handle_at_level(MetricLevel::Normal).expect("Normal should create a handle");
         assert_eq!(h.metric_level(), MetricLevel::Normal);
-        h.record_consumed_bytes(1024);
-        h.record_produced_bytes(512);
         h.record_consumed_success(0);
+        h.record_produced_success();
 
         h.with_state(|s| {
             let m = match s {
@@ -495,8 +432,7 @@ mod test {
                 _ => panic!("expected Normal variant"),
             };
             assert_eq!(m.consumed_requests.success.get(), 1);
-            assert_eq!(m.consumed_bytes.bytes.get(), 1024);
-            assert_eq!(m.produced_bytes.bytes.get(), 512);
+            assert_eq!(m.produced_requests.success.get(), 1);
         });
     }
 

@@ -6,9 +6,9 @@
 //! input/output channel entities.
 
 use crate::component_metrics::{
-    BasicComponentMetrics, ComponentMetricsHandle, ComponentMetricsState, ConsumedBytesMetrics,
+    BasicComponentMetrics, ComponentMetricsHandle, ComponentMetricsState,
     ConsumedDurationMetrics, ConsumedRequestMetrics, DetailedComponentMetrics,
-    LocalComponentMetricsHandle, NormalComponentMetrics, ProducedBytesMetrics,
+    LocalComponentMetricsHandle, NormalComponentMetrics,
     ProducedRequestMetrics,
 };
 use crate::control::MetricLevel;
@@ -286,16 +286,12 @@ impl NodeTelemetryHandle {
                 ComponentMetricsState::Normal(NormalComponentMetrics {
                     consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
                     produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                    consumed_bytes: self.register_metric_set::<ConsumedBytesMetrics>(),
-                    produced_bytes: self.register_metric_set::<ProducedBytesMetrics>(),
                 })
             }
             MetricLevel::Detailed => {
                 ComponentMetricsState::Detailed(DetailedComponentMetrics {
                     consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
                     produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                    consumed_bytes: self.register_metric_set::<ConsumedBytesMetrics>(),
-                    produced_bytes: self.register_metric_set::<ProducedBytesMetrics>(),
                     consumed_duration: self.register_metric_set::<ConsumedDurationMetrics>(),
                 })
             }
