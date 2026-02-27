@@ -1585,7 +1585,7 @@ where
     }
 }
 
-async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
+pub(crate) async fn read_file_with_limit_async(path: &Path) -> Result<Vec<u8>, io::Error> {
     let metadata = tokio::fs::metadata(path).await?;
     if metadata.len() > MAX_TLS_FILE_SIZE {
         return Err(io::Error::new(

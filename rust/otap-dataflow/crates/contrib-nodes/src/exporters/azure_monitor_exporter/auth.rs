@@ -6,11 +6,12 @@ use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId,
 };
-use otap_df_telemetry::{otel_info, otel_warn};
+use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use std::sync::Arc;
 
 use super::Error;
 use super::config::{AuthConfig, AuthMethod};
+use super::metrics::AzureMonitorExporterMetricsRc;
 
 /// Minimum delay between token refresh retry attempts in seconds.
 const MIN_RETRY_DELAY_SECS: f64 = 5.0;
@@ -24,21 +25,34 @@ const MAX_RETRY_JITTER_RATIO: f64 = 0.10;
 pub struct Auth {
     credential: Arc<dyn TokenCredential>,
     scope: String,
+    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl Auth {
-    pub fn new(auth_config: &AuthConfig) -> Result<Self, Error> {
+    pub fn new(
+        auth_config: &AuthConfig,
+        metrics: AzureMonitorExporterMetricsRc,
+    ) -> Result<Self, Error> {
         let credential = Self::create_credential(auth_config)?;
 
         Ok(Self {
             credential,
             scope: auth_config.scope.clone(),
+            metrics,
         })
     }
 
     #[cfg(test)]
-    pub fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
-        Self { credential, scope }
+    pub fn from_credential(
+        credential: Arc<dyn TokenCredential>,
+        scope: String,
+        metrics: AzureMonitorExporterMetricsRc,
+    ) -> Self {
+        Self {
+            credential,
+            scope,
+            metrics,
+        }
     }
 
     async fn get_token_internal(&self) -> Result<AccessToken, Error> {
@@ -56,16 +70,20 @@ impl Auth {
 
     pub async fn get_token(&mut self) -> Result<AccessToken, Error> {
         let mut attempt = 0_i32;
+        let start = tokio::time::Instant::now();
         loop {
             attempt += 1;
 
             match self.get_token_internal().await {
                 Ok(token) => {
-                    otel_info!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
+                    otel_debug!("azure_monitor_exporter.auth.get_token_succeeded", expires_on = %token.expires_on);
+                    let mut m = self.metrics.borrow_mut();
+                    m.add_auth_success_latency(start.elapsed().as_millis() as f64);
                     return Ok(token);
                 }
                 Err(e) => {
                     otel_warn!("azure_monitor_exporter.auth.get_token_failed", attempt = attempt, error = %e);
+                    self.metrics.borrow_mut().add_auth_failure();
                 }
             }
 
@@ -127,10 +145,24 @@ impl Auth {
 
 #[cfg(test)]
 mod tests {
+    use super::super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsTracker};
     use super::*;
     use azure_core::credentials::TokenRequestOptions;
     use azure_core::time::OffsetDateTime;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::testing::EmptyAttributes;
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
+        let registry = TelemetryRegistryHandle::new();
+        let metric_set =
+            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
+            metric_set,
+        )))
+    }
 
     #[derive(Debug)]
     struct MockCredential {
@@ -178,7 +210,8 @@ mod tests {
             Arc::new(AtomicUsize::new(0)),
         );
 
-        let auth = Auth::from_credential(credential, "test_scope".to_string());
+        let auth =
+            Auth::from_credential(credential, "test_scope".to_string(), create_test_metrics());
         assert_eq!(auth.scope, "test_scope");
     }
 
@@ -190,7 +223,7 @@ mod tests {
             scope: "https://test.scope".to_string(),
         };
 
-        let auth = Auth::new(&auth_config);
+        let auth = Auth::new(&auth_config, create_test_metrics());
         assert!(auth.is_ok());
         let auth = auth.unwrap();
         assert_eq!(auth.scope, "https://test.scope");
@@ -204,7 +237,7 @@ mod tests {
             scope: "https://test.scope".to_string(),
         };
 
-        let auth = Auth::new(&auth_config);
+        let auth = Auth::new(&auth_config, create_test_metrics());
         assert!(auth.is_ok());
     }
 
@@ -217,7 +250,7 @@ mod tests {
         };
 
         // May fail if Azure CLI not installed - both outcomes are valid
-        let result = Auth::new(&auth_config);
+        let result = Auth::new(&auth_config, create_test_metrics());
         match result {
             Ok(auth) => assert_eq!(auth.scope, "https://test.scope"),
             Err(Error::Auth {
@@ -241,7 +274,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
 
         let token = auth.get_token_internal().await.unwrap();
         assert_eq!(token.token.secret(), "test_token");
@@ -257,7 +290,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
 
         // Each call to get_token_internal should call the credential
         let _ = auth.get_token_internal().await.unwrap();
@@ -278,7 +311,7 @@ mod tests {
             Arc::new(AtomicUsize::new(0)),
         );
 
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
 
         let token1 = auth.get_token_internal().await.unwrap();
         let token2 = auth.get_token_internal().await.unwrap();
@@ -310,7 +343,7 @@ mod tests {
 
         let cred = FailingCredential;
         let credential: Arc<dyn TokenCredential> = Arc::new(cred);
-        let auth = Auth::from_credential(credential, "scope".to_string());
+        let auth = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
 
         let result = auth.get_token_internal().await;
         assert!(result.is_err());
@@ -334,7 +367,7 @@ mod tests {
             call_count.clone(),
         );
 
-        let auth1 = Auth::from_credential(credential, "scope".to_string());
+        let auth1 = Auth::from_credential(credential, "scope".to_string(), create_test_metrics());
         let auth2 = auth1.clone();
 
         // Both auth instances share the same credential
