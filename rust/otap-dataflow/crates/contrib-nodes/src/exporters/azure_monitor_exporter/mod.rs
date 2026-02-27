@@ -26,8 +26,8 @@ mod exporter;
 mod gzip_batcher;
 mod heartbeat;
 mod in_flight_exports;
+mod metrics;
 mod state;
-mod stats;
 mod transformer;
 
 pub use client::LogsIngestionClient;
@@ -35,11 +35,11 @@ pub use config::Config;
 pub use error::Error;
 pub use exporter::AzureMonitorExporter;
 pub use heartbeat::Heartbeat;
-pub use stats::AzureMonitorExporterStats;
+pub use metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 pub use transformer::Transformer;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
-pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft_azure:monitor:exporter";
+pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monitor";
 
 /// Register Azure Monitor Exporter with the OTAP exporter factory.
 ///
@@ -48,7 +48,7 @@ pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft_azure:monitor:export
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
     name: AZURE_MONITOR_EXPORTER_URN,
-    create: |_: PipelineContext,
+    create: |pipeline_ctx: PipelineContext,
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig| {
@@ -60,7 +60,7 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
         })?;
 
         Ok(ExporterWrapper::local(
-            AzureMonitorExporter::new(cfg).map_err(|e| {
+            AzureMonitorExporter::new(pipeline_ctx, cfg).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
@@ -82,7 +82,7 @@ mod tests {
     fn test_urn_constant() {
         assert_eq!(
             AZURE_MONITOR_EXPORTER_URN,
-            "urn:microsoft_azure:monitor:exporter"
+            "urn:microsoft:exporter:azure_monitor"
         );
     }
 }

@@ -14,7 +14,7 @@ groups:
 
           nodes:
             receiver:
-              type: otlp:receiver
+              type: receiver:otlp
               config:
                 protocols:
                   grpc:
@@ -24,7 +24,7 @@ groups:
                       key_file: "./test-certs/server.key"
 
             exporter:
-              type: otlp:exporter
+              type: exporter:otlp
               config:
                 grpc_endpoint: "https://127.0.0.1:4319"
                 tls:

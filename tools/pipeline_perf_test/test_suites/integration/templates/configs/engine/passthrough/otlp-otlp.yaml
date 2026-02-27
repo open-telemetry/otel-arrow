@@ -15,7 +15,7 @@ groups:
       main:
         nodes:
           receiver:
-            type: urn:otel:otlp:receiver
+            type: urn:otel:receiver:otlp
             config:
               protocols:
                 grpc:
@@ -23,7 +23,7 @@ groups:
                   request_compression: gzip
                   wait_for_result: true
           exporter:
-            type: urn:otel:otlp:exporter
+            type: urn:otel:exporter:otlp
             config:
               grpc_endpoint: http://{{backend_hostname}}:1235
               compression_method: gzip

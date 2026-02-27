@@ -134,7 +134,7 @@ Topic declaration precedence (for a pipeline in a given group):
 
 - `groups.<group>.topics.<name>` -> `topics.<name>`
 
-`topic:exporter` node config can optionally override `queue_on_full` locally:
+`exporter:topic` node config can optionally override `queue_on_full` locally:
 
 - `config.queue_on_full`: `block` | `drop_newest`
 - effective precedence:
@@ -154,8 +154,8 @@ It is represented in resolved output as a role-tagged internal pipeline.
 
 Accepted forms:
 
-- Full: `urn:<namespace>:<id>:<kind>`
-- OTel shortcut: `<id>:<kind>` (expanded to `urn:otel:<id>:<kind>`)
+- Full: `urn:<namespace>:<kind>:<id>`
+- OTel shortcut: `<kind>:<id>` (expanded to `urn:otel:<kind>:<id>`)
 
 See also:
 

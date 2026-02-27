@@ -8,12 +8,12 @@ dataflow configuration files. All nodes MUST use the format below.
 Full form (always valid):
 
 ```xml
-urn:<namespace>:<id>:<kind>
+urn:<namespace>:<kind>:<id>
 ```
 
 Where:
 
-- `<namespace>` is a vendor or vendor+product identifier (e.g., `otel`, `microsoft_azure`).
+- `<namespace>` is a vendor or vendor+product identifier (e.g., `otel`, `microsoft`).
 - `otel` is reserved for OpenTelemetry-provided nodes.
 - `<id>` identifies the node type.
 - `<kind>` is one of: `receiver`, `processor`, `exporter`.
@@ -27,13 +27,13 @@ Rust crate or module that implements it. OpenTelemetry-provided nodes use the
 For OpenTelemetry nodes only, a shortcut form is permitted:
 
 ```xml
-<id>:<kind>
+<kind>:<id>
 ```
 
 This is expanded internally to:
 
 ```xml
-urn:otel:<id>:<kind>
+urn:otel:<kind>:<id>
 ```
 
 The shortcut form MUST NOT be used for any namespace other than `otel`.
@@ -51,15 +51,15 @@ Identifiers starting with `urn:` are always treated as fully-qualified URNs.
 Full form examples:
 
 ```text
-urn:otel:otlp:receiver
-urn:otel:debug:processor
-urn:otel:otap:exporter
-urn:microsoft_azure:monitor:exporter
+urn:otel:receiver:otlp
+urn:otel:processor:debug
+urn:otel:exporter:otap
+urn:microsoft:exporter:azure_monitor
 ```
 
 Shortcut form (OTel only):
 
 ```text
-otlp:receiver
-debug:processor
+receiver:otlp
+processor:debug
 ```

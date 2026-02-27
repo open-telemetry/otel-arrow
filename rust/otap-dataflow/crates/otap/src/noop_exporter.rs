@@ -19,7 +19,7 @@ use otap_df_engine::{ConsumerEffectHandlerExtension, ExporterFactory};
 use std::sync::Arc;
 
 /// The URN for the noop exporter
-pub const NOOP_EXPORTER_URN: &str = "urn:otel:noop:exporter";
+pub const NOOP_EXPORTER_URN: &str = "urn:otel:exporter:noop";
 
 /// Exporter that does nothing
 pub struct NoopExporter;

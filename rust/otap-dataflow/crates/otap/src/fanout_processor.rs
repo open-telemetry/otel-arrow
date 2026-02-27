@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use crate::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 
 /// URN for the fan-out processor.
-pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:fanout:processor";
+pub const FANOUT_PROCESSOR_URN: &str = "urn:otel:processor:fanout";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

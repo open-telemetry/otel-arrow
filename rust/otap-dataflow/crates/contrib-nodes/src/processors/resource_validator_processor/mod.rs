@@ -82,7 +82,7 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 
 /// URN identifier for the Resource Validator processor
-pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:resource_validator:processor";
+pub const RESOURCE_VALIDATOR_PROCESSOR_URN: &str = "urn:otel:processor:resource_validator";
 
 /// Source of allowed values for validation.
 ///
