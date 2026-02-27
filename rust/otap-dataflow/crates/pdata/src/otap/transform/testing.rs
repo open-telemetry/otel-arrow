@@ -428,9 +428,12 @@ pub fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
 ) {
     for &payload_type in S::allowed_payload_types() {
         let idx = payload_to_idx(payload_type);
+        let info = payload_relations(payload_type);
+        let primary_id_name = info.primary_id.as_ref().map(|p| p.name);
 
-        for relation in payload_relations(payload_type).relations {
-            let mut seen = HashSet::new();
+        for relation in info.relations {
+            let is_primary = primary_id_name == Some(relation.key_col);
+            let mut seen_across_batches = HashSet::new();
 
             for group in batches.iter() {
                 let Some(batch) = &group[idx] else {
@@ -443,10 +446,23 @@ pub fn assert_no_id_overlaps<S: OtapBatchStore, const N: usize>(
                 };
 
                 let ids = collect_row_ids(col.as_ref());
-                for id in ids {
+                let unique: HashSet<u32> = ids.iter().copied().collect();
+
+                // Primary ID columns must have no duplicates within a batch.
+                if is_primary {
+                    assert_eq!(
+                        ids.len(),
+                        unique.len(),
+                        "Duplicate IDs within batch for primary column '{}'",
+                        relation.key_col,
+                    );
+                }
+
+                // Unique IDs must not overlap across batches.
+                for &id in &unique {
                     assert!(
-                        seen.insert(id),
-                        "Overlapping ID in column '{}'",
+                        seen_across_batches.insert(id),
+                        "Overlapping ID {id} in column '{}' across batches",
                         relation.key_col,
                     );
                 }

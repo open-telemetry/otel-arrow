@@ -5,11 +5,14 @@ use std::ops::{Add, AddAssign, Range, Sub, SubAssign};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, AsArray, DictionaryArray, PrimitiveArray, RecordBatch,
+    Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, AsArray, DictionaryArray,
+    PrimitiveArray, RecordBatch,
 };
 use arrow::buffer::ScalarBuffer;
+use arrow::compute::kernels::aggregate::{max_array, min_array};
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, ArrowNativeType, DataType, UInt8Type, UInt16Type, UInt32Type,
+    ArrowDictionaryKeyType, ArrowNativeType, ArrowNumericType, DataType, UInt8Type, UInt16Type,
+    UInt32Type,
 };
 
 use crate::error::{Error, Result};
@@ -22,7 +25,7 @@ use crate::otap::{Logs, Metrics, OtapBatchStore, Traces};
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::schema::consts::{ID, PARENT_ID};
 
-use super::util::{PrimaryIdInfo, payload_relations};
+use super::util::{PrimaryIdInfo, id_column_dispatch, payload_relations};
 
 /// Reindex the provided record batches in place such that all IDs are unique
 /// for each payload type across all batches. This makes it safe to concatenate
@@ -118,26 +121,27 @@ where
         store.remove_transport_optimized_encodings(*payload_type)?;
     }
 
-    // Iterate over all allowed payload types for this signal
     for &payload_type in S::allowed_payload_types() {
-        // Get all relations (parent-child relationships) for this payload type
         let info = payload_relations(payload_type);
 
-        // Check for obvious overflow.
-        //
-        // FIXME: We are vulnerable to issues here with resource and scope id
-        // columns which do not have a primary id column defining them in any
-        // payload type. This is planned to be addressed alongside some upcoming
-        // optimizations.
+        // Check for obvious overflow on primary id columns. Non-primary
+        // columns (resource.id, scope.id) are checked inside create_mappings
+        // during the slow path, which detects overflow via u64 arithmetic.
         //
         // See: https://github.com/open-telemetry/otel-arrow/pull/2021#discussion_r2800261547
         // See: https://github.com/open-telemetry/otel-arrow/issues/1926
-        if let Some(primary_id_info) = info.primary_id {
-            check_primary_id_for_overflow(store, payload_type, &primary_id_info)?;
+        if let Some(ref primary_id_info) = info.primary_id {
+            check_primary_id_for_overflow(store, payload_type, primary_id_info)?;
         }
 
         for relation in info.relations {
-            reindex_id_column_dynamic(store, payload_type, relation.child_types, relation.key_col)?;
+            reindex_id_column::<S, { N }>(
+                store,
+                payload_type,
+                relation.child_types,
+                info.primary_id.as_ref().map(|id| id.name),
+                relation.key_col,
+            )?
         }
     }
 
@@ -187,11 +191,11 @@ where
     Ok(())
 }
 
-/// Helper function that inspects the ID column type and dispatches to the appropriate generic function
-fn reindex_id_column_dynamic<S, const N: usize>(
+fn reindex_id_column<S, const N: usize>(
     store: &mut MultiBatchStore<'_, S, N>,
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
+    primary_id: Option<&str>,
     id_column_path: &str,
 ) -> Result<()>
 where
@@ -200,87 +204,59 @@ where
     // Find the first batch with the parent payload to inspect the ID column type
     let parent_idx = payload_to_idx(parent_payload_type);
     for i in 0..store.len() {
-        if let Some(parent_batch) = &store.batches[i][parent_idx] {
-            if let Ok(id_col) = extract_id_column(parent_batch, id_column_path) {
-                // Inspect the column type and dispatch to the appropriate generic function
-                let data_type = id_col.data_type();
-                match data_type {
-                    DataType::UInt16 => {
-                        return reindex_id_column::<UInt16Type, S, N>(
-                            store,
-                            parent_payload_type,
-                            child_payload_types,
-                            id_column_path,
-                        );
-                    }
-                    DataType::UInt32 => {
-                        return reindex_id_column::<UInt32Type, S, N>(
-                            store,
-                            parent_payload_type,
-                            child_payload_types,
-                            id_column_path,
-                        );
-                    }
-                    DataType::Dictionary(_, value_type) => match value_type.as_ref() {
-                        DataType::UInt16 => {
-                            return reindex_id_column::<UInt16Type, S, N>(
-                                store,
-                                parent_payload_type,
-                                child_payload_types,
-                                id_column_path,
-                            );
-                        }
-                        DataType::UInt32 => {
-                            return reindex_id_column::<UInt32Type, S, N>(
-                                store,
-                                parent_payload_type,
-                                child_payload_types,
-                                id_column_path,
-                            );
-                        }
-                        _ => {
-                            return Err(Error::UnsupportedDictionaryValueType {
-                                expect_oneof: vec![DataType::UInt16, DataType::UInt32],
-                                actual: value_type.as_ref().clone(),
-                            });
-                        }
-                    },
-                    _ => {
-                        return Err(Error::ColumnDataTypeMismatch {
-                            name: id_column_path.to_string(),
-                            expect: DataType::UInt16, // or UInt32
-                            actual: data_type.clone(),
-                        });
-                    }
-                }
-            }
-        }
+        let Some(parent_batch) = &store.batches[i][parent_idx] else {
+            continue;
+        };
+
+        let Ok(id_col) = extract_id_column(parent_batch, id_column_path) else {
+            continue;
+        };
+
+        id_column_dispatch!(
+            id_col,
+            Native[T] => {
+                reindex_id_column_impl::<T, S, N>(
+                    store, parent_payload_type, child_payload_types,
+                    primary_id, id_column_path
+                )?;
+            },
+            Dictionary[_K, V] => {
+                reindex_id_column_impl::<V, S, N>(
+                    store, parent_payload_type, child_payload_types,
+                    primary_id, id_column_path
+                )?;
+            },
+            _ => {
+                return Err(Error::InvalidIdColumnType {
+                    data_type: id_col.data_type().clone(),
+                });
+            },
+        );
     }
 
-    // No batches found with this ID column - that's okay, nothing to reindex
     Ok(())
 }
 
-/// Generic function to reindex an ID column and its corresponding parent_id columns in child tables
+/// Generic function to reindex an ID column and its corresponding parent_id
+/// columns in child tables.
 ///
-/// # Type Parameters
-/// * `T` - The Arrow primitive type for the ID (e.g., UInt16Type or UInt32Type)
-/// * `S` - The OtapBatchStore type (e.g., Logs, Metrics, Traces)
-/// * `N` - The number of batches (const generic)
+/// Uses a single-pass approach: for each batch, computes min/max inline and
+/// attempts the fast path (uniform offset, no sort). Falls back to the slow
+/// path (sort + create_mappings) per-batch when the fast path cannot be used.
 ///
-/// # Arguments
-/// * `store` - The batch store containing the record batches
-/// * `parent_payload_type` - The payload type of the parent table (e.g., Logs)
-/// * `child_payload_types` - The payload types of the child tables (e.g., [LogAttrs, SpanEvents])
-/// * `id_column_path` - The path to the ID column in the parent table (e.g., "id", "resource.id")
-fn reindex_id_column<T, S, const N: usize>(
+/// The fast path is only eligible for primary ID columns (where values are
+/// unique). Non-primary ID columns (e.g. resource.id, scope.id) may contain
+/// duplicates, so `span == len` does not prove contiguity -- they always use
+/// the slow path.
+fn reindex_id_column_impl<T, S, const N: usize>(
     store: &mut MultiBatchStore<'_, S, N>,
     parent_payload_type: ArrowPayloadType,
     child_payload_types: &[ArrowPayloadType],
+    primary_id_name: Option<&str>,
     id_column_path: &str,
 ) -> Result<()>
 where
-    T: ArrowPrimitiveType,
+    T: ArrowNumericType,
     T::Native: Ord
         + Copy
         + Add<Output = T::Native>
@@ -288,7 +264,7 @@ where
         + AddAssign
         + SubAssign
         + From<u8>
-        + ArrowNativeType,
+        + ArrowNativeTypeOp,
     S: OtapBatchStore,
 {
     let parent_idx = payload_to_idx(parent_payload_type);
@@ -299,61 +275,169 @@ where
             continue;
         };
 
-        // TODO: Consider unwrapping if we feel like id being present is an invariant.
-        // that needs to be upheld at this point.
-        // Extract ID column - if it doesn't exist, skip reindexing for this batch
         let id_col = match extract_id_column(&parent_rb, id_column_path) {
             Ok(col) => col,
             Err(_) => {
-                // No ID column, put the batch back and continue
                 store.get_mut(i)[parent_idx] = Some(parent_rb);
                 continue;
             }
         };
 
-        // TODO: We can optimize here by reusing some storage:
-        //
-        //  - The vectors to store the sort indices and to hold the sorted Ids is
-        //  while we create mappings is just scratch space and reusasble. We may
-        //  need one scratch buffer per Native type
-        //  - The vector to hold the mappings is also reusable and just scratch
-        //  space
-        //
-        // Create mappings for the parent IDs
-        let mut ids = materialize_id_values::<T>(id_col.as_ref())?
-            .values()
-            .to_vec();
-        let sort_indices = sort_vec_to_indices(&ids);
-        let mut sorted_ids = vec![T::Native::default(); ids.len()];
-        take_vec(&ids, &mut sorted_ids, &sort_indices);
+        let Some((min, max)) = id_column_min_max::<T>(id_col.as_ref()) else {
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
+            continue;
+        };
 
-        let (mappings, new_offset) = create_mappings::<T>(&sorted_ids, offset)?;
-        offset = new_offset;
+        let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+        let slice = id_values.values();
 
-        // safety: Mappings should always be valid when applied to the ids that
-        // generated them. If not then we've made a serious error.
-        assert!(apply_mappings::<T>(&mut sorted_ids, &mappings).is_none());
+        // The contiguity check (span == len) is only valid for primary ID
+        // columns where values are unique. Non-primary columns (resource.id,
+        // scope.id) can have duplicates that make span == len even with gaps,
+        // e.g. [0, 1, 1, 4, 4] has span=5, len=5, but is not contiguous.
+        let is_primary = primary_id_name == Some(id_column_path);
+        let use_fast_path = is_primary && {
+            let span = max.as_usize() - min.as_usize() + 1;
+            let is_contiguous = span == slice.len();
+            is_contiguous
+                && child_payload_types
+                    .iter()
+                    .all(|&ct| children_in_parent_range::<T, S, N>(store, i, ct, min, max))
+        };
 
-        untake_vec(&sorted_ids, &mut ids, &sort_indices);
-        let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+        if use_fast_path {
+            // Fast path: apply a uniform offset to parent and child columns.
+            let (off, sign) = if min <= offset {
+                (offset - min, Sign::Positive)
+            } else {
+                (min - offset, Sign::Negative)
+            };
 
-        // Put parent batch back
-        store.get_mut(i)[parent_idx] = Some(parent_rb);
+            let mut ids = slice.to_vec();
+            apply_uniform_offset(&mut ids, off, sign);
+            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
 
-        // Apply mappings to each child record batch one at a time
-        for &child_payload_type in child_payload_types {
-            let child_idx = payload_to_idx(child_payload_type);
+            for &child_payload_type in child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
+                    let child_rb = fast_path_reindex_child::<T>(child_rb, PARENT_ID, off, sign)?;
+                    store.get_mut(i)[child_idx] = Some(child_rb);
+                }
+            }
 
-            if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
-                let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
+            let span = max - min + T::Native::from(1);
+            offset += span;
+        } else {
+            // Slow path: create explicit old->new ID mappings.
+            let mut ids = slice.to_vec();
+            let (mappings, new_offset) = if ids.is_sorted() {
+                let (m, o) =
+                    create_mappings::<T>(&ids, offset, parent_payload_type, id_column_path)?;
+                assert!(apply_mappings::<T>(&mut ids, &m).is_none());
+                (m, o)
+            } else {
+                let sort_indices = sort_vec_to_indices(&ids);
+                let mut sorted_ids = vec![T::Native::default(); ids.len()];
+                take_vec(&ids, &mut sorted_ids, &sort_indices);
+                let (m, o) =
+                    create_mappings::<T>(&sorted_ids, offset, parent_payload_type, id_column_path)?;
+                assert!(apply_mappings::<T>(&mut sorted_ids, &m).is_none());
+                untake_vec(&sorted_ids, &mut ids, &sort_indices);
+                (m, o)
+            };
+            offset = new_offset;
 
-                // Put child batch back
-                store.get_mut(i)[child_idx] = Some(child_rb);
+            let parent_rb = replace_id_column::<T>(parent_rb, id_column_path, ids)?;
+            store.get_mut(i)[parent_idx] = Some(parent_rb);
+
+            for &child_payload_type in child_payload_types {
+                let child_idx = payload_to_idx(child_payload_type);
+                if let Some(child_rb) = store.get_mut(i)[child_idx].take() {
+                    let child_rb = reindex_child_column::<T>(child_rb, PARENT_ID, &mappings)?;
+                    store.get_mut(i)[child_idx] = Some(child_rb);
+                }
             }
         }
     }
 
     Ok(())
+}
+
+/// Returns (min, max) of an ID column, handling nulls and dictionary encoding.
+///
+/// Returns `None` if the column is empty or all null.
+fn id_column_min_max<T>(col: &dyn Array) -> Option<(T::Native, T::Native)>
+where
+    T: ArrowNumericType,
+    T::Native: ArrowNativeTypeOp,
+{
+    let Ok(values) = materialize_id_values::<T>(col) else {
+        return None;
+    };
+
+    let min = min_array::<T, _>(values)?;
+    // SAFETY: presence of a min value implies at least one non-null element,
+    // so max must also be Some.
+    let max = max_array::<T, _>(values).expect("max must exist when min exists");
+    Some((min, max))
+}
+
+/// Apply a uniform offset to every element in the slice.
+fn apply_uniform_offset<T>(values: &mut [T], offset: T, sign: Sign)
+where
+    T: Copy + AddAssign + SubAssign,
+{
+    match sign {
+        Sign::Positive => values.iter_mut().for_each(|v| *v += offset),
+        Sign::Negative => values.iter_mut().for_each(|v| *v -= offset),
+    }
+}
+
+/// Fast-path child reindex: apply a uniform offset to the child's parent_id
+/// column without sorting or violation checking.
+fn fast_path_reindex_child<T>(
+    rb: RecordBatch,
+    column_path: &str,
+    offset: T::Native,
+    sign: Sign,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Ord + Copy + AddAssign + SubAssign + ArrowNativeType,
+{
+    let id_col = extract_id_column(&rb, column_path)?;
+    let id_values = materialize_id_values::<T>(id_col.as_ref())?;
+    let mut new_values = id_values.values().to_vec();
+    apply_uniform_offset(&mut new_values, offset, sign);
+    replace_id_column::<T>(rb, column_path, new_values)
+}
+
+/// Check if all of a child's parent_id values for batch_index are within
+/// [min, max]. Returns false if the child has orphan references.
+fn children_in_parent_range<T, S, const N: usize>(
+    store: &MultiBatchStore<'_, S, N>,
+    batch_index: usize,
+    child_payload_type: ArrowPayloadType,
+    parent_min: T::Native,
+    parent_max: T::Native,
+) -> bool
+where
+    T: ArrowNumericType,
+    T::Native: Ord + Copy + ArrowNativeTypeOp,
+    S: OtapBatchStore,
+{
+    let child_idx = payload_to_idx(child_payload_type);
+    let Some(child_batch) = &store.batches[batch_index][child_idx] else {
+        return true;
+    };
+    let Ok(child_col) = extract_id_column(child_batch, PARENT_ID) else {
+        return true;
+    };
+    let Some((child_min, child_max)) = id_column_min_max::<T>(child_col.as_ref()) else {
+        return true;
+    };
+    child_min >= parent_min && child_max <= parent_max
 }
 
 /// Reindexes a child id column in a record batch using the provided mappings.
@@ -375,77 +459,161 @@ where
     let id_values = materialize_id_values::<T>(id_col.as_ref())?;
     let mut id_values = id_values.values().to_vec();
 
+    // When IDs are already sorted we skip the O(n log n) sort, one Vec
+    // allocation, and two O(n) gather/scatter copies.
+    if id_values.is_sorted() {
+        return reindex_child_column_sorted::<T>(rb, column_path, &id_col, mappings, id_values);
+    }
+
     let value_sort_indices = sort_vec_to_indices(&id_values);
     let value_sort_indices = PrimitiveArray::from(value_sort_indices);
     let mut new_ids = vec![T::Native::default(); id_values.len()];
     take_vec(&id_values, &mut new_ids, value_sort_indices.values());
     if let Some(violations) = apply_mappings::<T>(&mut new_ids, mappings) {
-        // We may have integrity violations in some number of ranges. We need to eliminate
-        // them because we're on the reindexing path where we're squashing all ids
-        // to contiguous ranges starting at 0, so any strays left behind may accidentally
-        // be associated to ids in other batches if we apply some offset to them.
-        //
-        // For primitive columns the violation ranges correspond directly to rows in
-        // the sorted record batch so we sort, remove the rows, compact new_ids, and
-        // replace the column.
-        //
-        // For dictionary columns the violations are in the values array, not the
-        // keys. In this case the violations could be for unreferenced dict values,
-        // so we map value-level redactions to key-level redactions to see what
-        // needs to be removed.
-        match id_col.data_type() {
-            DataType::Dictionary(key_type, _) => {
-                // Determine which value violations correspond to actual rows.
-                let key_redactions = match key_type.as_ref() {
-                    DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
-                    DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
-                        id_col.as_ref(),
-                        &violations,
-                    ),
-                    _ => {
-                        return Err(Error::UnsupportedDictionaryKeyType {
-                            expect_oneof: vec![DataType::UInt8, DataType::UInt16],
-                            actual: key_type.as_ref().clone(),
-                        });
-                    }
-                };
-
-                // Unsort the remapped values back to original order. Violation
-                // positions contain garbage but no key references them.
-                untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
-
-                let rb = if !key_redactions.is_empty() {
-                    // Genuine violations - sort batch by the same key order
-                    // used to produce the key redaction ranges, then remove.
-                    let sort_indices = arrow::compute::sort_to_indices(&id_col, None, None)
-                        .map_err(|e| Error::Batching { source: e })?;
-                    let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
-                    remove_record_batch_ranges(&rb, &key_redactions)
-                        .map_err(|e| Error::Batching { source: e })?
-                } else {
-                    rb
-                };
-
-                return replace_id_column::<T>(rb, column_path, id_values);
-            }
-            _ => {
-                // Primitive column: sort batch, remove violation rows, compact.
-                let rb = sort_record_batch_by_indices(rb, &value_sort_indices)?;
-                let rb = remove_record_batch_ranges(&rb, &violations)
-                    .map_err(|e| Error::Batching { source: e })?;
-                remove_vec_ranges(&mut new_ids, &violations);
-                return replace_id_column::<T>(rb, column_path, new_ids);
-            }
-        }
+        return handle_child_violations::<T>(
+            rb,
+            column_path,
+            &id_col,
+            &value_sort_indices,
+            id_values,
+            new_ids,
+            violations,
+        );
     }
 
     // Unsort the IDs. Note that since `take` and `untake` can't be done
     // in place, we re-use the original id vec as the destination.
     untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
     replace_id_column::<T>(rb, column_path, id_values)
+}
+
+/// Sorted fast-path for child column reindexing. IDs are already in order so
+/// we apply mappings directly without sorting or copying.
+fn reindex_child_column_sorted<T>(
+    rb: RecordBatch,
+    column_path: &str,
+    id_col: &ArrayRef,
+    mappings: &[IdMapping<T::Native>],
+    mut id_values: Vec<T::Native>,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
+{
+    if let Some(violations) = apply_mappings::<T>(&mut id_values, mappings) {
+        match id_col.data_type() {
+            DataType::Dictionary(_, _) => {
+                // Dictionary violations are extremely rare and the unsorted
+                // path handles them correctly. Fall through by re-doing the
+                // work with the general (unsorted) codepath. We accept the
+                // double-work because this case is near-impossible in practice.
+                let id_values_orig = materialize_id_values::<T>(id_col.as_ref())?;
+                let id_values_copy = id_values_orig.values().to_vec();
+                let sort_indices = sort_vec_to_indices(&id_values_copy);
+                let sort_indices = PrimitiveArray::from(sort_indices);
+                let mut new_ids = vec![T::Native::default(); id_values_copy.len()];
+                take_vec(&id_values_copy, &mut new_ids, sort_indices.values());
+                // violations guaranteed here since we already detected them
+                let violations = apply_mappings::<T>(&mut new_ids, mappings)
+                    .expect("violations must still exist");
+                return handle_child_violations::<T>(
+                    rb,
+                    column_path,
+                    id_col,
+                    &sort_indices,
+                    id_values_copy,
+                    new_ids,
+                    violations,
+                );
+            }
+            _ => {
+                // Primitive column: rows are already in sorted order so we can
+                // remove violation ranges directly without sorting the batch.
+                let rb = remove_record_batch_ranges(&rb, &violations)
+                    .map_err(|e| Error::Batching { source: e })?;
+                remove_vec_ranges(&mut id_values, &violations);
+                return replace_id_column::<T>(rb, column_path, id_values);
+            }
+        }
+    }
+
+    replace_id_column::<T>(rb, column_path, id_values)
+}
+
+/// Handle integrity violations found during child column reindexing.
+fn handle_child_violations<T>(
+    rb: RecordBatch,
+    column_path: &str,
+    id_col: &ArrayRef,
+    value_sort_indices: &PrimitiveArray<UInt32Type>,
+    mut id_values: Vec<T::Native>,
+    mut new_ids: Vec<T::Native>,
+    violations: Vec<Range<usize>>,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Ord + Copy + Add<Output = T::Native> + AddAssign + SubAssign + ArrowNativeType,
+{
+    // We may have integrity violations in some number of ranges. We need to eliminate
+    // them because we're on the reindexing path where we're squashing all ids
+    // to contiguous ranges starting at 0, so any strays left behind may accidentally
+    // be associated to ids in other batches if we apply some offset to them.
+    //
+    // For primitive columns the violation ranges correspond directly to rows in
+    // the sorted record batch so we sort, remove the rows, compact new_ids, and
+    // replace the column.
+    //
+    // For dictionary columns the violations are in the values array, not the
+    // keys. In this case the violations could be for unreferenced dict values,
+    // so we map value-level redactions to key-level redactions to see what
+    // needs to be removed.
+    match id_col.data_type() {
+        DataType::Dictionary(key_type, _) => {
+            // Determine which value violations correspond to actual rows.
+            let key_redactions = match key_type.as_ref() {
+                DataType::UInt8 => map_value_redactions_to_key_redactions::<UInt8Type>(
+                    id_col.as_ref(),
+                    &violations,
+                ),
+                DataType::UInt16 => map_value_redactions_to_key_redactions::<UInt16Type>(
+                    id_col.as_ref(),
+                    &violations,
+                ),
+                _ => {
+                    return Err(Error::UnsupportedDictionaryKeyType {
+                        expect_oneof: vec![DataType::UInt8, DataType::UInt16],
+                        actual: key_type.as_ref().clone(),
+                    });
+                }
+            };
+
+            // Unsort the remapped values back to original order. Violation
+            // positions contain garbage but no key references them.
+            untake_vec(&new_ids, &mut id_values, value_sort_indices.values());
+
+            let rb = if !key_redactions.is_empty() {
+                // Genuine violations - sort batch by the same key order
+                // used to produce the key redaction ranges, then remove.
+                let sort_indices = arrow::compute::sort_to_indices(id_col, None, None)
+                    .map_err(|e| Error::Batching { source: e })?;
+                let rb = sort_record_batch_by_indices(rb, &sort_indices)?;
+                remove_record_batch_ranges(&rb, &key_redactions)
+                    .map_err(|e| Error::Batching { source: e })?
+            } else {
+                rb
+            };
+
+            replace_id_column::<T>(rb, column_path, id_values)
+        }
+        _ => {
+            // Primitive column: sort batch, remove violation rows, compact.
+            let rb = sort_record_batch_by_indices(rb, value_sort_indices)?;
+            let rb = remove_record_batch_ranges(&rb, &violations)
+                .map_err(|e| Error::Batching { source: e })?;
+            remove_vec_ranges(&mut new_ids, &violations);
+            replace_id_column::<T>(rb, column_path, new_ids)
+        }
+    }
 }
 
 /// Removes elements at the given ranges from a vector in place.
@@ -695,15 +863,24 @@ struct IdMapping<T> {
 /// Given a sorted slice of IDs, this identifies consecutive ranges (no gaps)
 /// and calculates the offset needed to make them sequential starting from `offset`.
 ///
-/// Returns (mappings, max_new_id)
+/// Returns (mappings, next_offset) or an error if the remapped IDs would
+/// overflow the native type.
 fn create_mappings<T>(
     sorted_ids: &[T::Native],
     offset: T::Native,
+    payload_type: ArrowPayloadType,
+    id_column_path: &str,
 ) -> Result<(Vec<IdMapping<T::Native>>, T::Native)>
 where
     T: ArrowPrimitiveType,
     T::Native: Ord + Copy + Add<Output = T::Native> + Sub<Output = T::Native> + From<u8>,
 {
+    let type_max: u64 = match size_of::<T::Native>() {
+        2 => u16::MAX as u64,
+        4 => u32::MAX as u64,
+        _ => unreachable!("Unexpected native type size for ID column"),
+    };
+
     let mut mappings = Vec::new();
     let mut current_offset = offset;
     let one = T::Native::from(1);
@@ -725,7 +902,38 @@ where
             sign,
         });
 
-        // Calculate the next offset based on where this range ends
+        // Compute the remapped end value and next offset in u64 space to
+        // detect overflow before it happens in the native type.
+        let new_end_u64 = match sign {
+            Sign::Positive => {
+                let result = end_id.as_usize() as u64 + offset.as_usize() as u64;
+                if result > type_max {
+                    return Err(Error::TooManyItems {
+                        payload_type,
+                        count: result as usize,
+                        max: type_max,
+                        message: format!(
+                            "ID column '{}' overflow during reindexing",
+                            id_column_path,
+                        ),
+                    });
+                }
+                result
+            }
+            Sign::Negative => end_id.as_usize() as u64 - offset.as_usize() as u64,
+        };
+
+        let next_offset_u64 = new_end_u64 + 1;
+        if next_offset_u64 > type_max {
+            return Err(Error::TooManyItems {
+                payload_type,
+                count: next_offset_u64 as usize,
+                max: type_max,
+                message: format!("ID column '{}' overflow during reindexing", id_column_path,),
+            });
+        }
+
+        // Safe to compute in the native type now -- overflow is impossible.
         let new_end = match sign {
             Sign::Positive => end_id + offset,
             Sign::Negative => end_id - offset,
@@ -2033,5 +2241,409 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- Contiguous ID tests (fast path scenarios) ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_contiguous_ids() {
+        // Contiguous IDs starting at 0 -- the common case produced by OTAP encoders.
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 1, 2]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 0, 2, 2]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_contiguous_ids() {
+        test_reindex_traces(&mut [
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1, 2])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1, 2])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_contiguous_ids() {
+        test_reindex_metrics(&mut [
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
+                (NumberDpAttrs, ("parent_id", UInt32, vec![0u32, 1, 2]))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 1, 1])),
+                (NumberDpAttrs, ("parent_id", UInt32, vec![0u32, 1, 2]))
+            ),
+        ]);
+    }
+
+    // ---- Parent + child matching / mismatched ranges ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_parent_child_matching_ranges() {
+        // Parent and child have the same ID range -> no orphans
+        let parent_ids = vec![0u16, 1, 2, 3];
+        let child_ids  = vec![0u16, 1, 2, 3, 0, 1];
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_parent_child_mismatched_ranges() {
+        // Child references parent_ids outside parent's range -> orphan rows redacted
+        let parent_ids = vec![0u16, 1, 2];
+        let child_ids  = vec![0u16, 1, 2, 5, 10]; // 5 and 10 are orphans
+
+        let parent_set: HashSet<u16> = parent_ids.iter().copied().collect();
+        let expected_child_count = child_ids.iter().filter(|id| parent_set.contains(id)).count();
+
+        let mut batches = vec![
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids.clone())),
+                (LogAttrs, ("parent_id", UInt16, child_ids.clone()))
+            ),
+        ];
+
+        reindex_logs(&mut batches).unwrap();
+        assert_no_id_overlaps::<Logs, { Logs::COUNT }>(&batches);
+
+        let child_idx = payload_to_idx(ArrowPayloadType::LogAttrs);
+        for group in &batches {
+            let child_batch = group[child_idx].as_ref().unwrap();
+            assert_eq!(child_batch.num_rows(), expected_child_count);
+        }
+    }
+
+    // ---- Mix of contiguous and holey batches ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_mixed_contiguous_and_holey() {
+        // First batch: contiguous [0,1,2], second batch: holey [0,2,5]
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 2, 5])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 2, 5]))
+            ),
+        ]);
+    }
+
+    // ---- Many-to-many: resource.id / scope.id ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_many_to_many_resource_id() {
+        // resource.id is many-to-many: multiple logs can share the same resource.id.
+        // The child ResourceAttrs has many rows per parent resource.id.
+        let parent_ids     = vec![0u16, 1, 2];
+        let resource_ids   = vec![0u16, 1, 2];
+        let res_attr_pids  = vec![0u16, 0, 1, 1, 2];
+
+        let parent_ids_2   = vec![0u16, 1, 2];
+        let resource_ids_2 = vec![0u16, 1, 2];
+        let res_attr_pids_2 = vec![0u16, 1, 2, 2];
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, parent_ids), ("resource.id", UInt16, resource_ids)),
+                (ResourceAttrs, ("parent_id", UInt16, res_attr_pids))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2), ("resource.id", UInt16, resource_ids_2)),
+                (ResourceAttrs, ("parent_id", UInt16, res_attr_pids_2))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_many_to_many_scope_id() {
+        // scope.id is many-to-many: child ScopeAttrs has many rows per scope.id
+        let parent_ids    = vec![0u16, 1, 2];
+        let scope_ids     = vec![0u16, 1, 2];
+        let scope_attr_pids = vec![0u16, 0, 1, 2, 2];
+
+        let parent_ids_2  = vec![0u16, 1, 2];
+        let scope_ids_2   = vec![0u16, 1, 2];
+        let scope_attr_pids_2 = vec![0u16, 1, 1, 2];
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, parent_ids), ("scope.id", UInt16, scope_ids)),
+                (ScopeAttrs, ("parent_id", UInt16, scope_attr_pids))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2), ("scope.id", UInt16, scope_ids_2)),
+                (ScopeAttrs, ("parent_id", UInt16, scope_attr_pids_2))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_many_to_many_resource_id_with_gaps_and_duplicates() {
+        // Regression: resource.id [0, 1, 1, 4, 4] has span=5 and len=5, so the
+        // old `span == len` contiguity check would pass even though there are
+        // gaps (IDs 2 and 3 are missing). The fast path must NOT be used here
+        // because a uniform offset would produce invalid child parent_id
+        // references.
+        let parent_ids    = vec![0u16, 1, 2, 3, 4];
+        let resource_ids  = vec![0u16, 1, 1, 4, 4];
+        let res_attr_pids = vec![0u16, 1, 4];
+
+        let parent_ids_2    = vec![0u16, 1, 2];
+        let resource_ids_2  = vec![0u16, 0, 1];
+        let res_attr_pids_2 = vec![0u16, 1];
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, parent_ids), ("resource.id", UInt16, resource_ids)),
+                (ResourceAttrs, ("parent_id", UInt16, res_attr_pids))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, parent_ids_2), ("resource.id", UInt16, resource_ids_2)),
+                (ResourceAttrs, ("parent_id", UInt16, res_attr_pids_2))
+            ),
+        ]);
+    }
+
+    // ---- Non-primary ID column boundary tests ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_non_primary_id_contiguity_with_gaps_and_duplicates() {
+        // resource.ids [0, 1, 1, 4, 4] have span=5 and len=5, but only 3
+        // unique values (0, 1, 4). The is_primary check forces non-primary
+        // columns onto the slow path which correctly compacts the gaps.
+        let mut batches = vec![
+            logs!(
+                (Logs,
+                    ("id", UInt16, vec![0u16, 1, 2]),
+                    ("resource.id", UInt16, vec![0u16, 1, 2])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+            logs!(
+                (Logs,
+                    ("id", UInt16, vec![0u16, 1, 2, 3, 4]),
+                    ("resource.id", UInt16, vec![0u16, 1, 1, 4, 4])),
+                (ResourceAttrs, ("parent_id", UInt16, vec![0u16, 1, 4]))
+            ),
+        ];
+
+        test_reindex_logs(&mut batches);
+    }
+
+    #[test]
+    fn test_non_primary_overflow_in_create_mappings() {
+        // Test create_mappings directly with inputs that would overflow u16.
+        // Through the normal reindex pipeline with native-only columns,
+        // overflow of non-primary IDs is prevented by the primary ID check
+        // bounding total rows. But create_mappings must still detect overflow
+        // for defense-in-depth (e.g. if called with a high starting offset).
+
+        // Starting offset near u16::MAX with values that push past it.
+        let sorted_ids: Vec<u16> = vec![0, 1, 2];
+        let offset: u16 = u16::MAX - 1; // 65534
+        let result = create_mappings::<UInt16Type>(
+            &sorted_ids,
+            offset,
+            ArrowPayloadType::Logs,
+            "resource.id",
+        );
+        assert!(matches!(result, Err(Error::TooManyItems { .. })));
+
+        // Offset that exactly fills the range should also fail because
+        // next_offset (new_end + 1) would exceed u16::MAX.
+        let sorted_ids: Vec<u16> = vec![0, 1];
+        let offset: u16 = u16::MAX - 1; // 65534
+        let result = create_mappings::<UInt16Type>(
+            &sorted_ids,
+            offset,
+            ArrowPayloadType::Logs,
+            "resource.id",
+        );
+        assert!(matches!(result, Err(Error::TooManyItems { .. })));
+
+        // One less should succeed: maps [0, 1] -> [65533, 65534],
+        // next_offset = 65535 = u16::MAX which is within bounds.
+        let sorted_ids: Vec<u16> = vec![0, 1];
+        let offset: u16 = u16::MAX - 2; // 65533
+        let result = create_mappings::<UInt16Type>(
+            &sorted_ids,
+            offset,
+            ArrowPayloadType::Logs,
+            "resource.id",
+        );
+        assert!(result.is_ok());
+        let (_, next_offset) = result.unwrap();
+        assert_eq!(next_offset, u16::MAX);
+    }
+
+    // ---- Edge cases ----
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_single_row_batches() {
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_empty_batches_mixed_with_nonempty() {
+        // Empty batch (no Logs payload) mixed with non-empty batches
+        let empty: [Option<RecordBatch>; Logs::COUNT] = std::array::from_fn(|_| None);
+
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2]))
+            ),
+            empty,
+            logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_min_equals_max() {
+        // All IDs the same value (min == max)
+        test_reindex_logs(&mut [
+            logs!(
+                (Logs, ("id", UInt16, vec![5u16])),
+                (LogAttrs, ("parent_id", UInt16, vec![5u16, 5]))
+            ),
+            logs!(
+                (Logs, ("id", UInt16, vec![5u16])),
+                (LogAttrs, ("parent_id", UInt16, vec![5u16]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_contiguous_with_events_and_links() {
+        // Contiguous IDs at all levels: Spans -> SpanEvents -> SpanEventAttrs
+        let span_ids     = vec![0u16, 1, 2];
+        let event_pids   = vec![0u16, 0, 1, 2];
+        let event_ids    = vec![0u32, 1, 2, 3];
+        let event_attr_pids = vec![0u32, 1, 2, 3];
+        let link_pids    = vec![1u16, 2];
+        let link_ids     = vec![0u32, 1];
+
+        test_reindex_traces(&mut [
+            traces!(
+                (Spans, ("id", UInt16, span_ids.clone())),
+                (SpanEvents, ("id", UInt32, event_ids.clone()), ("parent_id", UInt16, event_pids.clone())),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids.clone())),
+                (SpanLinks, ("id", UInt32, link_ids.clone()), ("parent_id", UInt16, link_pids.clone()))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, span_ids)),
+                (SpanEvents, ("id", UInt32, event_ids), ("parent_id", UInt16, event_pids)),
+                (SpanEventAttrs, ("parent_id", UInt32, event_attr_pids)),
+                (SpanLinks, ("id", UInt32, link_ids), ("parent_id", UInt16, link_pids))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_metrics_contiguous_full_chain() {
+        // Contiguous IDs through the full chain:
+        // Metrics -> NumberDataPoints -> NumberDpExemplars -> NumberDpExemplarAttrs
+        test_reindex_metrics(&mut [
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 0, 1])),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt32, vec![0u32, 1, 2])),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, vec![0u32, 1, 2]))
+            ),
+            metrics!(
+                (UnivariateMetrics, ("id", UInt16, vec![0u16, 1])),
+                (NumberDataPoints, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt16, vec![0u16, 1, 1])),
+                (NumberDpExemplars, ("id", UInt32, vec![0u32, 1, 2]), ("parent_id", UInt32, vec![0u32, 1, 2])),
+                (NumberDpExemplarAttrs, ("parent_id", UInt32, vec![0u32, 1, 2]))
+            ),
+        ]);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_logs_many_batches_contiguous() {
+        // Many batches (5) with contiguous IDs to exercise the multi-batch fast path
+        let mut batches = Vec::new();
+        for _ in 0..5 {
+            batches.push(logs!(
+                (Logs, ("id", UInt16, vec![0u16, 1, 2, 3])),
+                (LogAttrs, ("parent_id", UInt16, vec![0u16, 1, 2, 3, 0, 1]))
+            ));
+        }
+        test_reindex_logs(&mut batches);
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_traces_three_batches_contiguous() {
+        test_reindex_traces(&mut [
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+            traces!(
+                (Spans, ("id", UInt16, vec![0u16, 1])),
+                (SpanAttrs, ("parent_id", UInt16, vec![0u16, 1]))
+            ),
+        ]);
     }
 }
