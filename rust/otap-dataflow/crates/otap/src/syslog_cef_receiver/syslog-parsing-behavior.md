@@ -6,11 +6,14 @@ The top-level `parse()` function in
 `crates/otap/src/syslog_cef_receiver/parser/mod.rs`
 tries formats in this order:
 
+<!-- markdownlint-disable MD038 -->
+
 1. **Pure CEF** — input starts with `CEF:`
-<!-- markdownlint-disable-next-line MD038 -->
 2. **RFC 5424** — requires `<PRI>VERSION ` structure
 3. **RFC 3164** — very lenient fallback (accepts almost anything non-empty)
 4. **Error** — only if all three fail (practically only on empty input)
+
+<!-- markdownlint-enable MD038 -->
 
 ---
 
@@ -83,7 +86,7 @@ tries formats in this order:
 | 22 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|=` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
 | 23 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|===value` | Succeeds, 0 extensions | Empty key skipped |
 | 24 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
-| 25 | `CEF:0\|V\|P\|1.0\|100\|name\\|10\|` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = `name\|10`, severity = empty |
+| 25 | ```CEF:0\|V\|P\|1.0\|100\|name\\|10\|``` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = `name\|10`, severity = empty |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -140,8 +143,8 @@ tries formats in this order:
 - **CEF parsing failures are non-fatal** — if CEF header
   parsing fails (wrong version, too few pipes), the input
   falls through to RFC 5424 / RFC 3164.
-<!-- markdownlint-disable-next-line MD038 -->
 - **RFC 5424 is strict on PRI+VERSION** — requires valid
+<!-- markdownlint-disable-next-line MD038 -->
   `<PRI>VERSION ` structure; any deviation causes it to
   fall through to RFC 3164.
 - **Structured data is lenient** — unclosed brackets are
