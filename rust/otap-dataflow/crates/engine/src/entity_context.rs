@@ -6,8 +6,9 @@
 //! input/output channel entities.
 
 use crate::component_metrics::{
-    ComponentMetricsHandle, ComponentMetricsState, ConsumedBytesMetrics, ConsumedDurationMetrics,
-    ConsumedRequestMetrics, LocalComponentMetricsHandle, ProducedBytesMetrics,
+    BasicComponentMetrics, ComponentMetricsHandle, ComponentMetricsState, ConsumedBytesMetrics,
+    ConsumedDurationMetrics, ConsumedRequestMetrics, DetailedComponentMetrics,
+    LocalComponentMetricsHandle, NormalComponentMetrics, ProducedBytesMetrics,
     ProducedRequestMetrics,
 };
 use crate::control::MetricLevel;
@@ -267,48 +268,42 @@ impl NodeTelemetryHandle {
 
     /// Register level-gated component metric sets for this node and store the handle.
     /// Only metric sets appropriate for the given `MetricLevel` are registered.
-    /// Returns a clone of the handle for centralized reporting.
-    pub(crate) fn register_component_metrics(&self, level: MetricLevel) -> ComponentMetricsHandle {
-        // Basic+: outcome request counters
-        let consumed_requests = if level >= MetricLevel::Basic {
-            Some(self.register_metric_set::<ConsumedRequestMetrics>())
-        } else {
-            None
-        };
-        let produced_requests = if level >= MetricLevel::Basic {
-            Some(self.register_metric_set::<ProducedRequestMetrics>())
-        } else {
-            None
-        };
-        // Normal+: forward-path byte counters
-        let consumed_bytes = if level >= MetricLevel::Normal {
-            Some(self.register_metric_set::<ConsumedBytesMetrics>())
-        } else {
-            None
-        };
-        let produced_bytes = if level >= MetricLevel::Normal {
-            Some(self.register_metric_set::<ProducedBytesMetrics>())
-        } else {
-            None
-        };
-        // Detailed: duration counters per outcome
-        let consumed_duration = if level >= MetricLevel::Detailed {
-            Some(self.register_metric_set::<ConsumedDurationMetrics>())
-        } else {
-            None
-        };
-        let state = ComponentMetricsState {
-            metric_level: level,
-            consumed_requests,
-            produced_requests,
-            consumed_bytes,
-            produced_bytes,
-            consumed_duration,
+    /// Returns `None` at `MetricLevel::None`; otherwise returns a handle for
+    /// centralized reporting.
+    pub(crate) fn register_component_metrics(
+        &self,
+        level: MetricLevel,
+    ) -> Option<ComponentMetricsHandle> {
+        let state = match level {
+            MetricLevel::None => return None,
+            MetricLevel::Basic => {
+                ComponentMetricsState::Basic(BasicComponentMetrics {
+                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
+                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
+                })
+            }
+            MetricLevel::Normal => {
+                ComponentMetricsState::Normal(NormalComponentMetrics {
+                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
+                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
+                    consumed_bytes: self.register_metric_set::<ConsumedBytesMetrics>(),
+                    produced_bytes: self.register_metric_set::<ProducedBytesMetrics>(),
+                })
+            }
+            MetricLevel::Detailed => {
+                ComponentMetricsState::Detailed(DetailedComponentMetrics {
+                    consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
+                    produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
+                    consumed_bytes: self.register_metric_set::<ConsumedBytesMetrics>(),
+                    produced_bytes: self.register_metric_set::<ProducedBytesMetrics>(),
+                    consumed_duration: self.register_metric_set::<ConsumedDurationMetrics>(),
+                })
+            }
         };
         let handle: LocalComponentMetricsHandle = Rc::new(RefCell::new(state));
         let handle = ComponentMetricsHandle::Local(handle);
         self.state.borrow_mut().component_metrics = Some(handle.clone());
-        handle
+        Some(handle)
     }
 
     /// Return the component metrics handle, if registered.

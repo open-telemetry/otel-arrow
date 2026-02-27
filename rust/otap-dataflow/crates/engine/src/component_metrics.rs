@@ -13,7 +13,7 @@
 //! At `MetricLevel::None`, no metric sets are registered.
 
 use crate::control::MetricLevel;
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
@@ -79,39 +79,55 @@ pub struct ProducedBytesMetrics {
 
 // -- Detailed : duration per outcome --
 
-/// Consumer duration counters (Detailed). Recorded at ack/nack time using the
-/// entry frame's `time_ns`.
-/// TODO: Replace Counter<u64> with Histogram<f64> once otap-df-telemetry supports histograms.
-#[metric_set(name = "component.consumed.duration")]
+/// Consumer duration summary (Detailed). Recorded at ack/nack time using the
+/// entry frame's `time_ns`. Tracks min/max/sum/count across all outcomes.
+#[metric_set(name = "component.consumed")]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedDurationMetrics {
-    /// Cumulative duration (ns) for successful consumption.
-    #[metric(name = "success_ns", unit = "ns")]
-    pub success_ns: Counter<u64>,
-    /// Cumulative duration (ns) for failed consumption.
-    #[metric(name = "failure_ns", unit = "ns")]
-    pub failure_ns: Counter<u64>,
-    /// Cumulative duration (ns) for refused consumption.
-    #[metric(name = "refused_ns", unit = "ns")]
-    pub refused_ns: Counter<u64>,
+    /// Duration (ns) of consumed requests (min/max/sum/count).
+    #[metric(unit = "ns")]
+    pub duration_ns: Mmsc,
 }
 
 // ---------------------------------------------------------------------------
-// Aggregated state — level-gated
+// Aggregated state — level-gated enum
 // ---------------------------------------------------------------------------
 
-/// Aggregated state holding level-gated component metric sets.
-/// Only the metric sets appropriate for the configured `MetricLevel` are populated.
-pub struct ComponentMetricsState {
-    pub(crate) metric_level: MetricLevel,
-    // Basic+ (always present when metric_level >= Basic)
-    pub(crate) consumed_requests: Option<MetricSet<ConsumedRequestMetrics>>,
-    pub(crate) produced_requests: Option<MetricSet<ProducedRequestMetrics>>,
-    // Normal+
-    pub(crate) consumed_bytes: Option<MetricSet<ConsumedBytesMetrics>>,
-    pub(crate) produced_bytes: Option<MetricSet<ProducedBytesMetrics>>,
-    // Detailed
-    pub(crate) consumed_duration: Option<MetricSet<ConsumedDurationMetrics>>,
+/// Basic-level component metrics: request outcome counters only.
+pub struct BasicComponentMetrics {
+    pub(crate) consumed_requests: MetricSet<ConsumedRequestMetrics>,
+    pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
+}
+
+/// Normal-level component metrics: request outcome counters + byte counters.
+pub struct NormalComponentMetrics {
+    pub(crate) consumed_requests: MetricSet<ConsumedRequestMetrics>,
+    pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
+    pub(crate) consumed_bytes: MetricSet<ConsumedBytesMetrics>,
+    pub(crate) produced_bytes: MetricSet<ProducedBytesMetrics>,
+}
+
+/// Detailed-level component metrics: request counters + byte counters + duration counters.
+pub struct DetailedComponentMetrics {
+    pub(crate) consumed_requests: MetricSet<ConsumedRequestMetrics>,
+    pub(crate) produced_requests: MetricSet<ProducedRequestMetrics>,
+    pub(crate) consumed_bytes: MetricSet<ConsumedBytesMetrics>,
+    pub(crate) produced_bytes: MetricSet<ProducedBytesMetrics>,
+    pub(crate) consumed_duration: MetricSet<ConsumedDurationMetrics>,
+}
+
+/// Level-gated component metrics state.
+///
+/// Each variant stores a flat struct with exactly the metric sets required
+/// for that level — no `Option` or `Box` needed.  Only created when
+/// `MetricLevel >= Basic`.
+pub enum ComponentMetricsState {
+    /// Basic level: request outcome counters only.
+    Basic(BasicComponentMetrics),
+    /// Normal level: request + byte counters.
+    Normal(NormalComponentMetrics),
+    /// Detailed level: request + byte + duration counters.
+    Detailed(DetailedComponentMetrics),
 }
 
 impl ComponentMetricsState {
@@ -120,41 +136,49 @@ impl ComponentMetricsState {
     /// Record a successful consumption event (Basic+: count, Detailed: + duration).
     #[inline]
     pub fn record_consumed_success(&mut self, duration_ns: u64) {
-        if let Some(ref mut m) = self.consumed_requests {
-            m.success.add(1);
-        }
-        if let Some(ref mut m) = self.consumed_duration {
-            m.success_ns.add(duration_ns);
+        match self {
+            Self::Basic(m) => m.consumed_requests.success.add(1),
+            Self::Normal(m) => m.consumed_requests.success.add(1),
+            Self::Detailed(m) => {
+                m.consumed_requests.success.add(1);
+                m.consumed_duration.duration_ns.record(duration_ns as f64);
+            }
         }
     }
 
     /// Record a failed consumption event (Basic+: count, Detailed: + duration).
     #[inline]
     pub fn record_consumed_failure(&mut self, duration_ns: u64) {
-        if let Some(ref mut m) = self.consumed_requests {
-            m.failure.add(1);
-        }
-        if let Some(ref mut m) = self.consumed_duration {
-            m.failure_ns.add(duration_ns);
+        match self {
+            Self::Basic(m) => m.consumed_requests.failure.add(1),
+            Self::Normal(m) => m.consumed_requests.failure.add(1),
+            Self::Detailed(m) => {
+                m.consumed_requests.failure.add(1);
+                m.consumed_duration.duration_ns.record(duration_ns as f64);
+            }
         }
     }
 
     /// Record a permanently refused consumption event (Basic+: count, Detailed: + duration).
     #[inline]
     pub fn record_consumed_refused(&mut self, duration_ns: u64) {
-        if let Some(ref mut m) = self.consumed_requests {
-            m.refused.add(1);
-        }
-        if let Some(ref mut m) = self.consumed_duration {
-            m.refused_ns.add(duration_ns);
+        match self {
+            Self::Basic(m) => m.consumed_requests.refused.add(1),
+            Self::Normal(m) => m.consumed_requests.refused.add(1),
+            Self::Detailed(m) => {
+                m.consumed_requests.refused.add(1);
+                m.consumed_duration.duration_ns.record(duration_ns as f64);
+            }
         }
     }
 
     /// Record consumed bytes on the forward path (Normal+).
     #[inline]
     pub fn record_consumed_bytes(&mut self, bytes: u64) {
-        if let Some(ref mut m) = self.consumed_bytes {
-            m.bytes.add(bytes);
+        match self {
+            Self::Basic(_) => {}
+            Self::Normal(m) => m.consumed_bytes.bytes.add(bytes),
+            Self::Detailed(m) => m.consumed_bytes.bytes.add(bytes),
         }
     }
 
@@ -163,24 +187,30 @@ impl ComponentMetricsState {
     /// Record a successful production event (Basic+: count).
     #[inline]
     pub fn record_produced_success(&mut self) {
-        if let Some(ref mut m) = self.produced_requests {
-            m.success.add(1);
+        match self {
+            Self::Basic(m) => m.produced_requests.success.add(1),
+            Self::Normal(m) => m.produced_requests.success.add(1),
+            Self::Detailed(m) => m.produced_requests.success.add(1),
         }
     }
 
     /// Record a refused production event (Basic+: count).
     #[inline]
     pub fn record_produced_refused(&mut self) {
-        if let Some(ref mut m) = self.produced_requests {
-            m.refused.add(1);
+        match self {
+            Self::Basic(m) => m.produced_requests.refused.add(1),
+            Self::Normal(m) => m.produced_requests.refused.add(1),
+            Self::Detailed(m) => m.produced_requests.refused.add(1),
         }
     }
 
     /// Record produced bytes on the forward path (Normal+).
     #[inline]
     pub fn record_produced_bytes(&mut self, bytes: u64) {
-        if let Some(ref mut m) = self.produced_bytes {
-            m.bytes.add(bytes);
+        match self {
+            Self::Basic(_) => {}
+            Self::Normal(m) => m.produced_bytes.bytes.add(bytes),
+            Self::Detailed(m) => m.produced_bytes.bytes.add(bytes),
         }
     }
 
@@ -189,7 +219,11 @@ impl ComponentMetricsState {
     /// Returns the configured metric level.
     #[inline]
     pub fn metric_level(&self) -> MetricLevel {
-        self.metric_level
+        match self {
+            Self::Basic(_) => MetricLevel::Basic,
+            Self::Normal(_) => MetricLevel::Normal,
+            Self::Detailed(_) => MetricLevel::Detailed,
+        }
     }
 
     // -- Reporting --
@@ -199,20 +233,24 @@ impl ComponentMetricsState {
         &mut self,
         reporter: &mut MetricsReporter,
     ) -> Result<(), otap_df_telemetry::error::Error> {
-        if let Some(ref mut m) = self.consumed_requests {
-            reporter.report(m)?;
-        }
-        if let Some(ref mut m) = self.produced_requests {
-            reporter.report(m)?;
-        }
-        if let Some(ref mut m) = self.consumed_bytes {
-            reporter.report(m)?;
-        }
-        if let Some(ref mut m) = self.produced_bytes {
-            reporter.report(m)?;
-        }
-        if let Some(ref mut m) = self.consumed_duration {
-            reporter.report(m)?;
+        match self {
+            Self::Basic(m) => {
+                reporter.report(&mut m.consumed_requests)?;
+                reporter.report(&mut m.produced_requests)?;
+            }
+            Self::Normal(m) => {
+                reporter.report(&mut m.consumed_requests)?;
+                reporter.report(&mut m.produced_requests)?;
+                reporter.report(&mut m.consumed_bytes)?;
+                reporter.report(&mut m.produced_bytes)?;
+            }
+            Self::Detailed(m) => {
+                reporter.report(&mut m.consumed_requests)?;
+                reporter.report(&mut m.produced_requests)?;
+                reporter.report(&mut m.consumed_bytes)?;
+                reporter.report(&mut m.produced_bytes)?;
+                reporter.report(&mut m.consumed_duration)?;
+            }
         }
         Ok(())
     }
@@ -373,8 +411,8 @@ mod test {
     use crate::entity_context::NodeTelemetryHandle;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
 
-    /// Helper: create a `ComponentMetricsHandle` at the given level using the real registry path.
-    fn handle_at_level(level: MetricLevel) -> ComponentMetricsHandle {
+    /// Helper: create an `Option<ComponentMetricsHandle>` at the given level using the real registry path.
+    fn handle_at_level(level: MetricLevel) -> Option<ComponentMetricsHandle> {
         let registry = TelemetryRegistryHandle::new();
         let entity_key = registry.register_entity(NodeAttributeSet::default());
         let handle = NodeTelemetryHandle::new(registry, entity_key);
@@ -386,22 +424,14 @@ mod test {
     #[test]
     fn none_level_no_metric_sets() {
         let h = handle_at_level(MetricLevel::None);
-        assert_eq!(h.metric_level(), MetricLevel::None);
-        // Recording should be a no-op — no panic.
-        h.record_consumed_success(100);
-        h.record_consumed_failure(50);
-        h.record_consumed_refused(25);
-        h.record_consumed_bytes(1024);
-        h.record_produced_success();
-        h.record_produced_refused();
-        h.record_produced_bytes(512);
+        assert!(h.is_none(), "None level should not create a handle");
     }
 
     // -- Basic: outcome counters present, no bytes/duration --
 
     #[test]
     fn basic_level_outcome_counters() {
-        let h = handle_at_level(MetricLevel::Basic);
+        let h = handle_at_level(MetricLevel::Basic).expect("Basic should create a handle");
         assert_eq!(h.metric_level(), MetricLevel::Basic);
         h.record_consumed_success(100);
         h.record_consumed_failure(50);
@@ -410,18 +440,15 @@ mod test {
         h.record_produced_refused();
 
         h.with_state(|s| {
-            let cr = s.consumed_requests.as_ref().expect("Basic should have consumed_requests");
-            assert_eq!(cr.success.get(), 1);
-            assert_eq!(cr.failure.get(), 1);
-            assert_eq!(cr.refused.get(), 1);
-
-            let pr = s.produced_requests.as_ref().expect("Basic should have produced_requests");
-            assert_eq!(pr.success.get(), 1);
-            assert_eq!(pr.refused.get(), 1);
-
-            assert!(s.consumed_bytes.is_none(), "Basic should not have consumed_bytes");
-            assert!(s.produced_bytes.is_none(), "Basic should not have produced_bytes");
-            assert!(s.consumed_duration.is_none(), "Basic should not have consumed_duration");
+            let m = match s {
+                ComponentMetricsState::Basic(m) => m,
+                _ => panic!("expected Basic variant"),
+            };
+            assert_eq!(m.consumed_requests.success.get(), 1);
+            assert_eq!(m.consumed_requests.failure.get(), 1);
+            assert_eq!(m.consumed_requests.refused.get(), 1);
+            assert_eq!(m.produced_requests.success.get(), 1);
+            assert_eq!(m.produced_requests.refused.get(), 1);
         });
     }
 
@@ -429,23 +456,20 @@ mod test {
 
     #[test]
     fn normal_level_bytes_counters() {
-        let h = handle_at_level(MetricLevel::Normal);
+        let h = handle_at_level(MetricLevel::Normal).expect("Normal should create a handle");
         assert_eq!(h.metric_level(), MetricLevel::Normal);
         h.record_consumed_bytes(1024);
         h.record_produced_bytes(512);
         h.record_consumed_success(0);
 
         h.with_state(|s| {
-            assert!(s.consumed_requests.is_some());
-            assert!(s.produced_requests.is_some());
-
-            let cb = s.consumed_bytes.as_ref().expect("Normal should have consumed_bytes");
-            assert_eq!(cb.bytes.get(), 1024);
-
-            let pb = s.produced_bytes.as_ref().expect("Normal should have produced_bytes");
-            assert_eq!(pb.bytes.get(), 512);
-
-            assert!(s.consumed_duration.is_none(), "Normal should not have consumed_duration");
+            let m = match s {
+                ComponentMetricsState::Normal(m) => m,
+                _ => panic!("expected Normal variant"),
+            };
+            assert_eq!(m.consumed_requests.success.get(), 1);
+            assert_eq!(m.consumed_bytes.bytes.get(), 1024);
+            assert_eq!(m.produced_bytes.bytes.get(), 512);
         });
     }
 
@@ -453,21 +477,25 @@ mod test {
 
     #[test]
     fn detailed_level_duration_counters() {
-        let h = handle_at_level(MetricLevel::Detailed);
+        let h = handle_at_level(MetricLevel::Detailed).expect("Detailed should create a handle");
         assert_eq!(h.metric_level(), MetricLevel::Detailed);
         h.record_consumed_success(100);  // duration_ns = 100
         h.record_consumed_failure(50);
         h.record_consumed_refused(25);
 
         h.with_state(|s| {
-            assert!(s.consumed_requests.is_some());
-            assert!(s.consumed_bytes.is_some());
-            assert!(s.produced_bytes.is_some());
-
-            let cd = s.consumed_duration.as_ref().expect("Detailed should have consumed_duration");
-            assert_eq!(cd.success_ns.get(), 100);
-            assert_eq!(cd.failure_ns.get(), 50);
-            assert_eq!(cd.refused_ns.get(), 25);
+            let m = match s {
+                ComponentMetricsState::Detailed(m) => m,
+                _ => panic!("expected Detailed variant"),
+            };
+            assert_eq!(m.consumed_requests.success.get(), 1);
+            assert_eq!(m.consumed_requests.failure.get(), 1);
+            assert_eq!(m.consumed_requests.refused.get(), 1);
+            let snap = m.consumed_duration.duration_ns.get();
+            assert_eq!(snap.count, 3);
+            assert_eq!(snap.sum, 175.0); // 100 + 50 + 25
+            assert_eq!(snap.min, 25.0);
+            assert_eq!(snap.max, 100.0);
         });
     }
 }
