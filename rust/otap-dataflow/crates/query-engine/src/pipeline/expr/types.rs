@@ -1,20 +1,37 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Utilities for dealing with the types of expressions
-//!
-//! TODO more fleshed out docs
+//! Utilities for identifying and coercing expression types
 
 use crate::pipeline::expr::LogicalDomainExpr;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::cast;
 use otap_df_pdata::schema::consts;
 
-/// TODO comments on what this is
+/// Identifier of the logical type of some expression/column.
+///
+/// Note: This is different than the actual Arrow DataType. In many OTAP columns, the type
+/// could use dictionary encoding so for example a column with the type variant
+/// ExprLogicalType::String may have arrow DataType Dictionary<u8/16, Utf8> or simply Utf8.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprLogicalType {
+    /// This type represents the type of an expression involving attribute value whose
+    /// concrete type could not be determined by static analysis of the expression. The actual
+    /// type may be one of String, Int64, Float64, Boolean, or Binary
     AnyValue,
+
+    /// The type of an expression that involves an AnyValue that is at least known to be
+    /// numeric. The actual type may be one of Int64 or Float64
     AnyValueNumeric,
+
+    /// This type represents the value of an integer scalar expression that could not be determined
+    /// to be a concrete type. When parsing, we may receive an expression such as `1`, and will
+    /// consider the type to be this generic unknown Int type until such time ias it is used in
+    /// conjunction with a place that a known type is expected. For example `1 + severity_number`
+    /// would result in static scalar `1`'s type being resolved to Int32, because that is the type
+    /// of severity number.
+    ScalarInt,
+
     Boolean,
     Binary,
     FixedSizeBinary(usize),
@@ -23,7 +40,6 @@ pub enum ExprLogicalType {
     Int64,
     UInt8,
     UInt32,
-    ScalarInt,
     String,
     TimestampNanosecond,
 }
@@ -31,6 +47,24 @@ pub enum ExprLogicalType {
 impl ExprLogicalType {
     fn is_integer(&self) -> bool {
         matches!(self, Self::Int32 | Self::Int64 | Self::UInt8 | Self::UInt32)
+    }
+
+    fn is_signed_integer(&self) -> bool {
+        matches!(self, Self::Int32 | Self::Int64)
+    }
+
+    fn is_unsigned_integer(&self) -> bool {
+        matches!(self, Self::UInt8 | Self::UInt32)
+    }
+
+    /// Returns the bit width of integer types
+    fn integer_bit_width(&self) -> Option<u8> {
+        match self {
+            Self::UInt8 => Some(8),
+            Self::Int32 | Self::UInt32 => Some(32),
+            Self::Int64 => Some(64),
+            _ => None,
+        }
     }
 
     /// return the datatype associated with this type. returns None if the type
@@ -111,6 +145,43 @@ pub fn nested_struct_field_type(field_name: &str) -> Option<ExprLogicalType> {
     })
 }
 
+/// Coerce two integer types to a common type for arithmetic operations.
+/// Rules:
+/// - If either type is signed, result is signed
+/// - Result has the larger bit width of the two types
+/// - Special case: UInt32 + any signed type -> Int64 (to avoid overflow, since UInt32 max > Int32 max)
+/// - UInt8 + Int32 -> Int32 (signed wins, larger width sufficient)
+/// - UInt8 + UInt32 -> UInt32 (both unsigned, larger width)
+fn coerce_integer_types(left: &ExprLogicalType, right: &ExprLogicalType) -> ExprLogicalType {
+    let left_signed = left.is_signed_integer();
+    let right_signed = right.is_signed_integer();
+    let left_width = left.integer_bit_width().expect("left is integer");
+    let right_width = right.integer_bit_width().expect("right is integer");
+
+    let any_signed = left_signed || right_signed;
+    let has_uint32 =
+        matches!(left, ExprLogicalType::UInt32) || matches!(right, ExprLogicalType::UInt32);
+
+    // Special case: if mixing UInt32 with any signed type, must use Int64
+    // because UInt32's max value (~4,2 million) doesn't fit in Int32
+    if any_signed && has_uint32 {
+        return ExprLogicalType::Int64;
+    }
+
+    let max_width = left_width.max(right_width);
+
+    match (any_signed, max_width) {
+        // If any is signed, use signed type with appropriate width
+        (true, w) if w <= 32 => ExprLogicalType::Int32,
+        (true, _) => ExprLogicalType::Int64,
+        // Both unsigned
+        (false, w) if w <= 8 => ExprLogicalType::UInt8,
+        (false, w) if w <= 32 => ExprLogicalType::UInt32,
+        // Note: we don't have UInt64, so this shouldn't happen with current types
+        (false, _) => ExprLogicalType::UInt32,
+    }
+}
+
 /// Adds a cast logical expression to cast the value of the expression to the passed data type.
 ///
 /// This is used when coercing the input types for expression operations.
@@ -118,16 +189,32 @@ fn cast_expr(expr: &mut LogicalDomainExpr, data_type: DataType) {
     expr.logical_expr = cast(std::mem::take(&mut expr.logical_expr), data_type)
 }
 
-/// Attempt to coerce the types of the passed expressions into types that can be arguments to an
-/// arithmetic expression
+/// Attempt to determine the type of the result of an arithmetic expression performed on the passed
+/// left and right arguments.
 ///
-/// Note, the current rules are that ... (TODO)
+/// This function will also coerce either the left or right side into a type that is compatible
+/// with the other side for arithmetic operation, by adding casts in the logical expression tree.
 ///
-/// This function may add casts to the passed expressions in order to coerce the arguments to the
-/// correct type
+/// Type coercion rules for integer arithmetic:
+/// - Same types: No coercion (e.g., UInt8 + UInt8 → UInt8)
+/// - Both unsigned: Coerce to larger bit width (e.g., UInt8 + UInt32 → UInt32)
+/// - Both signed: Coerce to larger bit width (e.g., Int32 + Int64 → Int64)
+/// - Mixed signedness with UInt32: Always use Int64 to avoid overflow (e.g., UInt32 + Int32 → Int64)
+/// - Mixed signedness without UInt32: Use signed type with larger width (e.g., UInt8 + Int32 → Int32)
+/// - Unresolved scalar integers: Coerced to match the concrete type on the other side
+/// - AnyValue with integers: Coerced to Int64 (the only integer type AnyValue can represent)
 ///
-/// Returns the type that the arithmetic operation will produce if it were to evaluate successfully.
+/// Returns the type the arithmetic operation will produce IF it were to evaluate successfully.
 /// This returns None if it can be detected that arithmetic can be performed on the passed types.
+///
+/// However, also note that just because this function returns Some(type), does not automatically
+/// mean that the expression evaluation will succeed. It only indicates that if the expression
+/// evaluation were to succeed, its result would be of the returned type.
+///
+/// For example, consider an expression such as `attributes["x"] + 1`. Because we're adding an
+/// integer to an `AnyValue`, and we know the only integer type an AnyValue can take on is Int64,
+/// this function will return `Some(Int64)`. However, if at runtime `attributes["x"]` turns out to
+/// not be an Int64 type attribute, the expression evaluation will fail.
 pub fn coerce_arithmetic(
     left: &mut LogicalDomainExpr,
     right: &mut LogicalDomainExpr,
@@ -256,15 +343,19 @@ pub fn coerce_arithmetic(
                     // nothing to do, types already equal
                     Some(left_int_type.clone())
                 } else {
-                    // TODO - this probably isn't the right thing to do long term. For now just
-                    // cast both sides to int64
-                    cast_expr(left, DataType::Int64);
-                    left.expr_type = ExprLogicalType::Int64;
+                    // Coerce to the appropriate type based on signedness and bit width
+                    let coerced_type = coerce_integer_types(left_int_type, right_int_type);
 
-                    cast_expr(right, DataType::Int64);
-                    right.expr_type = ExprLogicalType::Int64;
+                    // Cast both sides to the coerced type
+                    let target_datatype =
+                        coerced_type.datatype().expect("integer type has datatype");
+                    cast_expr(left, target_datatype.clone());
+                    left.expr_type = coerced_type.clone();
 
-                    Some(ExprLogicalType::Int64)
+                    cast_expr(right, target_datatype);
+                    right.expr_type = coerced_type.clone();
+
+                    Some(coerced_type)
                 }
             }
             _ => {
@@ -587,6 +678,74 @@ mod test {
     #[test]
     fn test_coerce_arithmetic_left_any_value_numeric_right_int64() {
         let mut left_expr = test_expr(ExprLogicalType::AnyValueNumeric);
+        let mut right_expr = test_expr(ExprLogicalType::Int64);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::Int64));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
+    }
+
+    // Tests for mixed integer type coercion
+
+    #[test]
+    fn test_coerce_arithmetic_uint8_plus_uint32() {
+        // Both unsigned, coerce to larger width (UInt32)
+        let mut left_expr = test_expr(ExprLogicalType::UInt8);
+        let mut right_expr = test_expr(ExprLogicalType::UInt32);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::UInt32));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::UInt32);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::UInt32);
+    }
+
+    #[test]
+    fn test_coerce_arithmetic_uint8_plus_int32() {
+        // Unsigned + signed, coerce to signed with same width (Int32)
+        let mut left_expr = test_expr(ExprLogicalType::UInt8);
+        let mut right_expr = test_expr(ExprLogicalType::Int32);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::Int32));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::Int32);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::Int32);
+    }
+
+    #[test]
+    fn test_coerce_arithmetic_uint32_plus_int32() {
+        // Unsigned + signed with same width, need to upsize to avoid overflow (Int64)
+        let mut left_expr = test_expr(ExprLogicalType::UInt32);
+        let mut right_expr = test_expr(ExprLogicalType::Int32);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::Int64));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
+    }
+
+    #[test]
+    fn test_coerce_arithmetic_int32_plus_uint32() {
+        // Signed + unsigned with same width (reverse order), should give same result
+        let mut left_expr = test_expr(ExprLogicalType::Int32);
+        let mut right_expr = test_expr(ExprLogicalType::UInt32);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::Int64));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
+    }
+
+    #[test]
+    fn test_coerce_arithmetic_uint8_plus_int64() {
+        // Small unsigned + large signed, coerce to larger signed (Int64)
+        let mut left_expr = test_expr(ExprLogicalType::UInt8);
+        let mut right_expr = test_expr(ExprLogicalType::Int64);
+        let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
+        assert_eq!(result, Some(ExprLogicalType::Int64));
+        assert_eq!(left_expr.expr_type, ExprLogicalType::Int64);
+        assert_eq!(right_expr.expr_type, ExprLogicalType::Int64);
+    }
+
+    #[test]
+    fn test_coerce_arithmetic_uint32_plus_int64() {
+        // Unsigned 32 + signed 64, coerce to larger signed (Int64)
+        let mut left_expr = test_expr(ExprLogicalType::UInt32);
         let mut right_expr = test_expr(ExprLogicalType::Int64);
         let result = coerce_arithmetic(&mut left_expr, &mut right_expr);
         assert_eq!(result, Some(ExprLogicalType::Int64));
