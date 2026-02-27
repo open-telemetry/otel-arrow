@@ -130,6 +130,11 @@ pub(crate) enum BroadcastReadResult<T> {
 /// common case in high-throughput scenarios). `register()` deduplicates via
 /// `Waker::will_wake()` to prevent unbounded Vec growth when a subscriber is
 /// polled repeatedly between publishes.
+///
+/// Correctness invariant: `has_waiters` must be set/cleared under the same
+/// Mutex that guards the waker Vec, so that drain + flag-clear in `wake_all()`
+/// is atomic with respect to pushes in `register()`. `register()` always sets
+/// `has_waiters = true` (even on the dedup path) as defense-in-depth.
 struct WakerSet {
     has_waiters: AtomicBool,
     wakers: Mutex<Vec<Waker>>,
@@ -151,6 +156,7 @@ impl WakerSet {
         for existing in wakers.iter_mut() {
             if existing.will_wake(waker) {
                 existing.clone_from(waker);
+                self.has_waiters.store(true, Ordering::Release);
                 return;
             }
         }
@@ -162,8 +168,11 @@ impl WakerSet {
         if !self.has_waiters.load(Ordering::Acquire) {
             return;
         }
-        let wakers = std::mem::take(&mut *self.wakers.lock());
-        self.has_waiters.store(false, Ordering::Release);
+        let wakers = {
+            let mut guard = self.wakers.lock();
+            self.has_waiters.store(false, Ordering::Release);
+            std::mem::take(&mut *guard)
+        };
         for waker in wakers {
             waker.wake();
         }
