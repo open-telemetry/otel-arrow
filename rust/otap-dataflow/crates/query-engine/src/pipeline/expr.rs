@@ -1921,6 +1921,85 @@ mod test {
     }
 
     #[test]
+    fn test_two_subsequent_batches_with_attributes_same_name_different_types() {
+        let left_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k1"),
+                )),
+            ]),
+        ));
+
+        let right_expr = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), ATTRIBUTES_FIELD_NAME),
+                )),
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "k2"),
+                )),
+            ]),
+        ));
+
+        let input_expr = ScalarExpression::Math(MathScalarExpression::Add(
+            BinaryMathematicalScalarExpression::new(
+                QueryLocation::new_fake(),
+                left_expr,
+                right_expr,
+            ),
+        ));
+
+        // batch 1 - attributes are ints
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(3)),
+                    KeyValue::new("k2", AnyValue::new_int(3)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_int(7)),
+                    KeyValue::new("k2", AnyValue::new_int(7)),
+                ])
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        run_scalar_expr_success_test(
+            input_expr.clone(),
+            &otap_batch,
+            Arc::new(Int64Array::from(vec![6, 14])),
+        );
+
+        // batch 2 - attributes are floats
+        let logs = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(4.0)),
+                    KeyValue::new("k2", AnyValue::new_double(4.0)),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new("k1", AnyValue::new_double(5.0)),
+                    KeyValue::new("k2", AnyValue::new_double(7.0)),
+                ])
+                .finish(),
+        ]);
+        let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(logs));
+        run_scalar_expr_success_test(
+            input_expr.clone(),
+            &otap_batch,
+            Arc::new(Float64Array::from(vec![8.0, 12.0])),
+        );
+    }
+
+    #[test]
     fn test_deeply_nested_arithmetic_expr_that_forces_root_to_root_join() {
         // in this expression, root+resource.attrs should evaluate first, then we
         // which should produce an intermediate result with the same row order as
