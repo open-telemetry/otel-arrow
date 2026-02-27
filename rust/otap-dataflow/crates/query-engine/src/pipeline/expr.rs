@@ -386,7 +386,7 @@ impl ExprPhysicalPlanner {
 
 /// A node in the expression tree used for expression evaluation.
 ///
-/// This encapsulates a datafusion PhysicalExpr that evaluates some section of of the overall
+/// This encapsulates a datafusion PhysicalExpr that evaluates some section of the overall
 /// expression tree (the section delineation being expressions where a single, scoped `RecordBatch`
 /// can be used as a source without doing any joins).
 ///
