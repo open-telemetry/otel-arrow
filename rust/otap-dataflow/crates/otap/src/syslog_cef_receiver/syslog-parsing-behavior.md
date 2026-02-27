@@ -2,9 +2,12 @@
 
 ## Format Detection Order
 
-The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/mod.rs` tries formats in this order:
+The top-level `parse()` function in
+`crates/otap/src/syslog_cef_receiver/parser/mod.rs`
+tries formats in this order:
 
 1. **Pure CEF** — input starts with `CEF:`
+<!-- markdownlint-disable-next-line MD038 -->
 2. **RFC 5424** — requires `<PRI>VERSION ` structure
 3. **RFC 3164** — very lenient fallback (accepts almost anything non-empty)
 4. **Error** — only if all three fail (practically only on empty input)
@@ -12,6 +15,8 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 ---
 
 ## Positive Cases (Successful Parsing)
+
+<!-- markdownlint-disable MD013 -->
 
 | # | Input Example | Detected As | Parsed Fields | Body Set? | Notes |
 |---|---|---|---|---|---|
@@ -31,11 +36,15 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 | 14 | `<34>Oct 11 22:14:15 fw CEF: CEF:0\|V\|P\|1.0\|100\|name\|10\|` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | CEF embedded in RFC 3164 content |
 | 15 | `<34>Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|` | `CefWithRfc3164` | RFC 3164 fields + CEF fields | No | Special case: TAG=`CEF`, parser reconstructs full CEF from input |
 
+<!-- markdownlint-enable MD013 -->
+
 ---
 
 ## Negative / Edge Cases
 
 ### Cases That Return Errors (Message Rejected)
+
+<!-- markdownlint-disable MD013 -->
 
 | # | Input Example | Error | Notes |
 |---|---|---|---|
@@ -54,6 +63,7 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 | 8 | `<192>1 - - - - - - msg` (PRI > 191) | `Rfc3164` | RFC 5424 PRI validation fails; RFC 3164 also treats PRI as invalid → content-only | **Yes** | `false` |
 | 9 | `Oct 11 22:14:15 host su: msg` (no PRI, has structure) | `Rfc3164` | No priority but timestamp/hostname/tag/content parsed | **Yes** | `false` |
 | 10 | `Oct 11 22:14:15 host CEF:0\|V\|P\|1.0\|100\|name\|10\|k=v` (CEF+3164 no PRI) | `CefWithRfc3164` | Both 3164 & CEF parsed, but no priority | **Yes** | `false` |
+<!-- markdownlint-disable-next-line MD038 -->
 | 11 | `<34>1 - - - - - [id@123 key="value" ` (unclosed SD) | `Rfc5424` | Unclosed structured data → entire remainder captured as SD; message=None | No | `true` |
 | 12 | `<34>1 - - - - - [ Message` (single open bracket) | `Rfc5424` | Unclosed bracket → everything after `[` treated as SD; message=None | No | `true` |
 | 13 | `<34>Oct 11 22:14:15 host app[worker-1]: msg` (non-numeric PID) | `Rfc3164` | tag=`app[worker-1]`, app_name=`app`, proc_id=**None** (non-numeric rejected) | No | `true` |
@@ -69,15 +79,19 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 | 18 | `CEF:0\|vendor\|product\|version\|id` (only 4 pipes) | `InvalidCef` → falls to RFC 3164 | Fewer than 7 required fields |
 | 19 | `CEF:0\|vendor\|product\|version\|id\|name` (only 5 pipes) | `InvalidCef` → falls to RFC 3164 | Missing severity field |
 | 20 | `CEF:2.0\|V\|P\|1.0\|100\|name\|10\|` | `InvalidCef` → falls to RFC 3164 | CEF version must be 0 or 1 |
-| 21 | `CEF:0\|\|\|\|\|\|\|` (all empty fields) | **Succeeds** as `Cef` | All 7 header fields present but empty; valid per parser |
+| 21 | ```CEF:0\|\|\|\|\|\|\|``` (all empty fields) | **Succeeds** as `Cef` | All 7 header fields present but empty; valid per parser |
 | 22 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|=` (ext: only `=` sign) | Succeeds, 0 extensions | Empty key skipped gracefully |
 | 23 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|===value` | Succeeds, 0 extensions | Empty key skipped |
 | 24 | `CEF:0\|V\|P\|1.0\|100\|name\|10\|key=value\\` (trailing backslash) | Succeeds, 1 extension | Trailing `\` preserved as-is in value |
 | 25 | `CEF:0\|V\|P\|1.0\|100\|name\\|10\|` (escaped pipe in header) | Succeeds, but pipe becomes part of `name` field | `name` = `name\|10`, severity = empty |
 
+<!-- markdownlint-enable MD013 -->
+
 ---
 
 ## Priority Parsing Edge Cases
+
+<!-- markdownlint-disable MD013 -->
 
 | Input PRI | Valid? | facility | severity | Notes |
 |---|---|---|---|---|
@@ -90,9 +104,13 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 | `<>` | No | — | — | Empty value, `end < 2` check fails |
 | `<1234>` | No | — | — | Too many digits (`end > 4`) |
 
+<!-- markdownlint-enable MD013 -->
+
 ---
 
 ## Syslog Severity → OTel Severity Mapping
+
+<!-- markdownlint-disable MD013 -->
 
 | Syslog Severity | Syslog Name | OTel Severity Number | OTel Severity Text |
 |---|---|---|---|
@@ -105,12 +123,28 @@ The top-level `parse()` function in `crates/otap/src/syslog_cef_receiver/parser/
 | 6 | Informational | 9 | `INFO` |
 | 7 | Debug | 5 | `DEBUG` |
 
+<!-- markdownlint-enable MD013 -->
+
 ---
 
 ## Key Behavioral Summary
 
-- **RFC 3164 is the ultimate fallback** — it accepts any non-empty input, even completely unstructured text. When PRI is missing/invalid, priority is `None`, `is_fully_parsed()` returns `false`, and the log **body** is set to the raw input for debugging.
-- **Empty input is the only true rejection** — `parse()` returns `Err` only for empty input (since RFC 3164 catches everything else).
-- **CEF parsing failures are non-fatal** — if CEF header parsing fails (wrong version, too few pipes), the input falls through to RFC 5424 / RFC 3164.
-- **RFC 5424 is strict on PRI+VERSION** — requires valid `<PRI>VERSION ` structure; any deviation causes it to fall through to RFC 3164.
-- **Structured data is lenient** — unclosed brackets are captured as-is rather than causing errors; escaped characters (`\"`, `\]`, `\\`) inside quoted values are handled correctly.
+- **RFC 3164 is the ultimate fallback** — it accepts any
+  non-empty input, even completely unstructured text. When
+  PRI is missing/invalid, priority is `None`,
+  `is_fully_parsed()` returns `false`, and the log **body**
+  is set to the raw input for debugging.
+- **Empty input is the only true rejection** —
+  `parse()` returns `Err` only for empty input (since
+  RFC 3164 catches everything else).
+- **CEF parsing failures are non-fatal** — if CEF header
+  parsing fails (wrong version, too few pipes), the input
+  falls through to RFC 5424 / RFC 3164.
+<!-- markdownlint-disable-next-line MD038 -->
+- **RFC 5424 is strict on PRI+VERSION** — requires valid
+  `<PRI>VERSION ` structure; any deviation causes it to
+  fall through to RFC 3164.
+- **Structured data is lenient** — unclosed brackets are
+  captured as-is rather than causing errors; escaped
+  characters (`\"`, `\]`, `\\`) inside quoted values
+  are handled correctly.
