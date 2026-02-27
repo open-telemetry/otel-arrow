@@ -10,21 +10,18 @@ use arrow::array::{
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::{and, filter_record_batch, not, or};
-use arrow::datatypes::{Schema, UInt16Type, UInt32Type};
+use arrow::datatypes::{UInt16Type, UInt32Type};
 use async_trait::async_trait;
 use data_engine_expressions::{
     ContainsLogicalExpression, Expression, LogicalExpression, MatchesLogicalExpression,
     ScalarExpression, StaticScalarExpression,
 };
+use datafusion::common::DFSchema;
 use datafusion::common::cast::as_boolean_array;
-use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{DFSchema, HashMap, HashSet};
 use datafusion::config::ConfigOptions;
-use datafusion::error::DataFusionError;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SessionContext;
 use datafusion::functions::core::expr_ext::FieldAccessor;
-use datafusion::functions::core::getfield::GetFieldFunc;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
 use datafusion::physical_expr::{PhysicalExprRef, create_physical_expr};
 use datafusion::prelude::binary_expr;
@@ -4651,7 +4648,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: Projection::new_for_test(vec!["x".into()]),
+                projection: Projection::from(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4678,7 +4675,7 @@ mod test {
             FilterExec::from(AdaptivePhysicalExprExec {
                 logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                 physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                projection: Projection::new_for_test(vec!["x".into()]),
+                projection: Projection::from(vec!["x".into()]),
                 missing_data_passes: false,
             }),
         );
@@ -4710,7 +4707,7 @@ mod test {
                 filter: AdaptivePhysicalExprExec {
                     logical_expr: lit("should panic"), // placeholder b/c physical is already planned
                     physical_expr: Some(Arc::new(PanickingPhysicalExpr {})),
-                    projection: Projection::new_for_test(vec!["x".into()]),
+                    projection: Projection::from(vec!["x".into()]),
                     missing_data_passes: false,
                 },
             },

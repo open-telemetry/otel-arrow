@@ -153,10 +153,7 @@ fn extract_u16_array<'a>(
 
 /// Helper function to perform a simple left-to-right join using parent IDs
 /// Builds a lookup from right_ids, scans left_ids, and creates a take array
-fn build_simple_join_indices(
-    left_ids: &UInt16Array,
-    right_lookup: &IdJoinLookup,
-) -> Int32Array {
+fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &IdJoinLookup) -> Int32Array {
     let mut to_take = Int32Array::builder(left_ids.len());
 
     left_ids.iter().for_each(|id| {

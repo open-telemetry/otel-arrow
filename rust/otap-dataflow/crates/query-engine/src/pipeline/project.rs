@@ -30,6 +30,17 @@ pub struct Projection {
     schema: ProjectedSchema,
 }
 
+impl From<Vec<String>> for Projection {
+    fn from(columns: Vec<String>) -> Self {
+        Self {
+            schema: columns
+                .into_iter()
+                .map(ProjectedSchemaColumn::Root)
+                .collect(),
+        }
+    }
+}
+
 impl Projection {
     /// Attempt to create a new instance of [`FilterProjection`]. It will return an error if
     /// there is some form of [`Expr`] tree which is not recognized
@@ -251,36 +262,20 @@ impl From<ProjectedSchemaExprVisitor> for ProjectedSchema {
     }
 }
 
-// TODO - the methods in this could maybe just be public or something ...
-#[cfg(test)]
-pub(crate) mod test {
-    use super::*;
+// // TODO - the methods in this could maybe just be public or something ...
+// #[cfg(test)]
+// pub(crate) mod test {
+//     use super::*;
 
-    impl Projection {
-        /// Test helper to create a FilterProjection with a specific schema
-        pub(crate) fn new_for_test(columns: Vec<String>) -> Self {
-            Self {
-                schema: columns
-                    .into_iter()
-                    .map(ProjectedSchemaColumn::Root)
-                    .collect(),
-            }
-        }
-    }
-
-    // TODO - LLM hallucinated this type....?
-    pub(crate) use super::ProjectedSchemaColumn;
-
-    #[cfg(test)]
-    impl ProjectedSchemaColumn {
-        /// Test helper to create a Root column
-        pub(crate) fn root(name: impl Into<String>) -> Self {
-            ProjectedSchemaColumn::Root(name.into())
-        }
-
-        /// Test helper to create a Struct column
-        pub(crate) fn struct_column(name: impl Into<String>, fields: Vec<String>) -> Self {
-            ProjectedSchemaColumn::Struct(name.into(), fields)
-        }
-    }
-}
+//     impl Projection {
+//         /// Test helper to create a FilterProjection with a specific schema
+//         pub(crate) fn new_for_test(columns: Vec<String>) -> Self {
+//             Self {
+//                 schema: columns
+//                     .into_iter()
+//                     .map(ProjectedSchemaColumn::Root)
+//                     .collect(),
+//             }
+//         }
+//     }
+// }

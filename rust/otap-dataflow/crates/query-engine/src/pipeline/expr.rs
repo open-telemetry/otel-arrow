@@ -17,7 +17,8 @@ use arrow::compute::filter_record_batch;
 use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{Field, Schema};
 use data_engine_expressions::{
-    BinaryMathematicalScalarExpression, Expression, MathScalarExpression, ScalarExpression,
+    BinaryMathematicalScalarExpression, BooleanValue, DoubleValue, Expression, IntegerValue,
+    MathScalarExpression, ScalarExpression, StaticScalarExpression, StringValue,
 };
 use datafusion::common::DFSchema;
 use datafusion::functions::core::expr_ext::FieldAccessor;
@@ -204,25 +205,23 @@ impl ExprLogicalPlanner {
                 }
             }
             ScalarExpression::Static(static_scalar_expr) => {
-                use data_engine_expressions::StaticScalarExpression as SSE;
-
                 let (logical_expr, expr_type) = match static_scalar_expr {
-                    SSE::Integer(int_expr) => {
+                    StaticScalarExpression::Integer(int_expr) => {
                         (lit(int_expr.get_value()), ExprLogicalType::ScalarInt)
                     }
-                    SSE::Double(double_expr) => {
+                    StaticScalarExpression::Double(double_expr) => {
                         (lit(double_expr.get_value()), ExprLogicalType::Float64)
                     }
-                    SSE::Boolean(bool_expr) => {
+                    StaticScalarExpression::Boolean(bool_expr) => {
                         (lit(bool_expr.get_value()), ExprLogicalType::Boolean)
                     }
-                    SSE::String(string_expr) => {
+                    StaticScalarExpression::String(string_expr) => {
                         (lit(string_expr.get_value()), ExprLogicalType::String)
                     }
                     _ => {
-                        return Err(Error::ExecutionError {
-                            cause: format!(
-                                "Unsupported static scalar expression type: {:?}",
+                        return Err(Error::NotYetSupportedError {
+                            message: format!(
+                                "static scalar expression type not yet supported: {:?}",
                                 static_scalar_expr
                             ),
                         });

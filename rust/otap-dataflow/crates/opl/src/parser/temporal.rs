@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use data_engine_expressions::date_utils::parse_date_time;
-use data_engine_expressions::{DateTimeScalarExpression, StaticScalarExpression};
+use data_engine_expressions::{DateTimeScalarExpression, StaticScalarExpression, StringValue};
 use data_engine_parser_abstractions::{
     ParserError, parse_standard_string_literal, to_query_location,
 };
