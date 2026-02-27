@@ -22,7 +22,7 @@
 The OpenTelemetry Arrow Protocol (OTAP) defines a wire protocol for transmitting
 OpenTelemetry telemetry signals (logs, metrics, and traces) from a Client to a 
 Server. OTAP optimizes on multiple axis for compression efficiency, memory 
-usage, and processing speed while being semanticallyequivalent to OpenTelemetry
+usage, and processing speed while being semantically equivalent to OpenTelemetry
 Protocol (OTLP).
 
 ### 1.2 Requirements Language
@@ -98,9 +98,9 @@ service ArrowMetricsService {
 Clients create an OTAP connection by intiating a gRPC connection and starting a
 gRPC stream for one or more services. `BatchArrowRecords` (BAR) messages are
 streamed from the client with corresponding `BatchStatus` acknowledgments
-streamed back from the server. The bi-directional streaming pattern allows the
-client to continue sending BARs while waiting for acknowledgments, which may
-come out of order enabling high throughput with backpressure control.
+streamed back from the server. The bi-directional statefule streaming pattern 
+allows the client to continue sending BARs while waiting for acknowledgments, 
+which may come out of order enabling high throughput with backpressure control.
 
 ### 3.1 BatchArrowRecords
 
@@ -656,12 +656,12 @@ The mappings between `type` discriminants and Active Fields is as follows:
 | 2 | int | int |
 | 3 | double | double |
 | 4 | bool | bool |
-| 5 | map | bytes |
-| 6 | slice | bytes |
+| 5 | map | ser |
+| 6 | slice | ser |
 | 7 | bytes | bytes |
 
-The complex types of `map` (5) and `slice` (6) additionally indicate that the
-bytes field is CBOR encoded according to RFC 8949. If the type is `bytes` (7)
+The `ser` types for `map` (5) and `slice` (6) additionally indicate that the
+field is CBOR encoded according to RFC 8949. If the type is `bytes` (7)
 then the structure of the field is unknown at the OTAP level.
 
 A `type` of `0` indicates that the value for the attribute is empty.
@@ -724,14 +724,9 @@ Resource and scope entities are **not** represented as separate payload types.
 Instead, they are embedded as struct fields within root tables (LOGS, SPANS, 
 or METRICS).
 
-Each root table contains:
-
-- `resource.id` (UInt16): Identifier for the resource
-- `scope.id` (UInt16): Identifier for the instrumentation scope
-
-Note that there are no RESOURCE or SCOPE payload types. Resources and scopes
-are defined implicitly by their presence in root table rows and can be shared
-among items of the same type. This gives them some special characteristics:
+Resources and scopes are defined implicitly by their presence in root table 
+rows and can be shared among items of the same type. This gives them some 
+special characteristics:
 
 1. There is a many-to-many relationship relationship between 
    RESOURCE_ATTRS/SCOPE_ATTRS tables and their parent payload types
