@@ -165,21 +165,35 @@ impl Context {
     }
 
     /// Push an entry frame for a queue-consumer node (processor/exporter).
-    /// The frame inherits RETURN_DATA from the predecessor. Interests and
-    /// timestamp are set according to `metric_level`:
-    /// - Basic+: ACKS|NACKS (auto-subscribe for outcome counting).
-    /// - Detailed: time_ns stamped with receive time.
+    /// The frame inherits RETURN_DATA from the predecessor.
+    ///
+    /// # Parameters
+    /// - `node_id`: The node's index.
+    /// - `metric_level`: Current metric level.
+    /// - `default_interests`: Node's declared interests. If `METRICS` is set
+    ///   AND `metric_level >= Detailed`, the entry frame captures a timestamp.
+    ///
+    /// Note: ACKS|NACKS auto-subscribe is NOT done here. Processors that
+    /// call `subscribe_to` will get auto-subscribed there (at Basic+).
+    /// Exporters don't receive ACKs (they originate them), so they don't
+    /// need ACKS|NACKS subscription.
+    ///
     /// If the component later calls `subscribe_to`, the same-node merge
     /// will fold interests into this frame while preserving `time_ns`.
-    pub(crate) fn push_entry_frame(&mut self, node_id: usize, metric_level: MetricLevel) {
+    pub(crate) fn push_entry_frame(
+        &mut self,
+        node_id: usize,
+        metric_level: MetricLevel,
+        default_interests: Interests,
+    ) {
         let mut interests = Interests::empty();
         if let Some(last) = self.stack.last() {
             interests = last.interests & Interests::RETURN_DATA;
         }
-        if metric_level >= MetricLevel::Basic {
-            interests |= Interests::ACKS | Interests::NACKS;
-        }
-        let time_ns = if metric_level >= MetricLevel::Detailed {
+        // Timestamp: only if METRICS interest is declared AND Detailed level.
+        let time_ns = if default_interests.contains(Interests::METRICS)
+            && metric_level >= MetricLevel::Detailed
+        {
             nanos_since_epoch()
         } else {
             0
@@ -366,12 +380,32 @@ impl OtapPdata {
 }
 
 impl ReceivedAtNode for OtapPdata {
-    fn received_at_node(&mut self, node_id: usize, metric_level: MetricLevel) {
-        self.context.push_entry_frame(node_id, metric_level);
+    fn received_at_node(
+        &mut self,
+        node_id: usize,
+        metric_level: MetricLevel,
+        default_interests: Interests,
+    ) {
+        // Timestamp stamped if METRICS declared AND Detailed level.
+        self.context
+            .push_entry_frame(node_id, metric_level, default_interests);
         // Forward-path byte counting (Normal+).
         if metric_level >= MetricLevel::Normal {
             if let Some(handle) = current_component_metrics() {
-                let bytes = self.payload.num_bytes().unwrap_or(0) as u64;
+                let bytes = self.payload.num_bytes() as u64;
+                handle.record_consumed_bytes(bytes);
+            }
+        }
+    }
+
+    fn received_at_exporter(&mut self, node_id: usize, metric_level: MetricLevel) {
+        // Exporters always declare METRICS interest for consumer duration metrics.
+        self.context
+            .push_entry_frame(node_id, metric_level, Interests::METRICS);
+        // Forward-path byte counting (Normal+).
+        if metric_level >= MetricLevel::Normal {
+            if let Some(handle) = current_component_metrics() {
+                let bytes = self.payload.num_bytes() as u64;
                 handle.record_consumed_bytes(bytes);
             }
         }
@@ -384,9 +418,20 @@ impl ReceivedAtNode for OtapPdata {
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::local::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+        let level = current_metric_level();
+        // At Basic+, auto-subscribe for outcome counting.
+        if level >= MetricLevel::Basic {
+            int |= Interests::ACKS | Interests::NACKS;
+        }
         data.context
-            .subscribe_to(int, ctx, self.processor_id().index)
+            .subscribe_to(int, ctx, self.processor_id().index);
+        // At Detailed, stamp receive time if not already stamped.
+        // (Entry frame should already have time_ns, but this handles
+        // the case where subscribe_to is called on a new frame.)
+        if level >= MetricLevel::Detailed {
+            data.context.stamp_top_time(nanos_since_epoch());
+        }
     }
 }
 
@@ -413,9 +458,18 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 impl ProducerEffectHandlerExtension<OtapPdata>
     for otap_df_engine::shared::processor::EffectHandler<OtapPdata>
 {
-    fn subscribe_to(&self, int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+    fn subscribe_to(&self, mut int: Interests, ctx: UserCallData, data: &mut OtapPdata) {
+        let level = current_metric_level();
+        // At Basic+, auto-subscribe for outcome counting.
+        if level >= MetricLevel::Basic {
+            int |= Interests::ACKS | Interests::NACKS;
+        }
         data.context
-            .subscribe_to(int, ctx, self.processor_id().index)
+            .subscribe_to(int, ctx, self.processor_id().index);
+        // At Detailed, stamp receive time if not already stamped.
+        if level >= MetricLevel::Detailed {
+            data.context.stamp_top_time(nanos_since_epoch());
+        }
     }
 }
 
@@ -1630,7 +1684,7 @@ mod test {
     #[test]
     fn push_entry_frame_none_no_interests() {
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, MetricLevel::None);
+        ctx.push_entry_frame(1, MetricLevel::None, Interests::empty());
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
         assert!(
@@ -1645,42 +1699,60 @@ mod test {
     }
 
     #[test]
-    fn push_entry_frame_basic_auto_subscribes() {
+    fn push_entry_frame_basic_no_auto_subscribe() {
+        // push_entry_frame does NOT auto-subscribe ACKS|NACKS.
+        // Processors get auto-subscribed via subscribe_to instead.
+        // Exporters don't need it (they produce ACKs, not receive them).
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, MetricLevel::Basic);
+        ctx.push_entry_frame(1, MetricLevel::Basic, Interests::empty());
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1);
         assert!(
-            frames[0].interests.contains(Interests::ACKS),
-            "Basic level should auto-subscribe ACKS"
+            !frames[0].interests.contains(Interests::ACKS),
+            "Basic entry frame should NOT auto-subscribe ACKS (moved to subscribe_to)"
         );
         assert!(
-            frames[0].interests.contains(Interests::NACKS),
-            "Basic level should auto-subscribe NACKS"
+            !frames[0].interests.contains(Interests::NACKS),
+            "Basic entry frame should NOT auto-subscribe NACKS (moved to subscribe_to)"
         );
         assert_eq!(frames[0].calldata.time_ns, 0, "Basic should not stamp time");
     }
 
     #[test]
-    fn push_entry_frame_normal_same_as_basic() {
+    fn push_entry_frame_normal_no_auto_subscribe() {
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, MetricLevel::Normal);
+        ctx.push_entry_frame(1, MetricLevel::Normal, Interests::empty());
         let frames = ctx.frames();
-        assert!(frames[0].interests.contains(Interests::ACKS));
-        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert!(!frames[0].interests.contains(Interests::ACKS));
+        assert!(!frames[0].interests.contains(Interests::NACKS));
         assert_eq!(frames[0].calldata.time_ns, 0, "Normal should not stamp time");
     }
 
     #[test]
-    fn push_entry_frame_detailed_stamps_time() {
+    fn push_entry_frame_processor_detailed_no_timestamp() {
+        // For processors without METRICS interest at Detailed, entry frame does NOT stamp time.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, MetricLevel::Detailed);
+        ctx.push_entry_frame(1, MetricLevel::Detailed, Interests::empty());
         let frames = ctx.frames();
-        assert!(frames[0].interests.contains(Interests::ACKS));
-        assert!(frames[0].interests.contains(Interests::NACKS));
+        assert!(!frames[0].interests.contains(Interests::ACKS));
+        assert!(!frames[0].interests.contains(Interests::NACKS));
+        assert_eq!(
+            frames[0].calldata.time_ns, 0,
+            "Entry frame without METRICS interest should not stamp time"
+        );
+    }
+
+    #[test]
+    fn push_entry_frame_with_metrics_interest_stamps_time() {
+        // Processors/exporters declaring METRICS interest at Detailed stamp time.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Detailed, Interests::METRICS);
+        let frames = ctx.frames();
+        assert!(!frames[0].interests.contains(Interests::ACKS));
+        assert!(!frames[0].interests.contains(Interests::NACKS));
         assert!(
             frames[0].calldata.time_ns > 0,
-            "Detailed should stamp non-zero time"
+            "Entry frame with METRICS interest should stamp non-zero time"
         );
     }
 
@@ -1694,7 +1766,7 @@ mod test {
             0,
         );
         // Entry frame at Basic inherits RETURN_DATA from predecessor.
-        ctx.push_entry_frame(1, MetricLevel::Basic);
+        ctx.push_entry_frame(1, MetricLevel::Basic, Interests::empty());
         let frames = ctx.frames();
         assert_eq!(frames.len(), 2);
         assert!(
@@ -1703,18 +1775,23 @@ mod test {
                 .contains(Interests::RETURN_DATA),
             "entry frame should inherit RETURN_DATA"
         );
+        // But no ACKS|NACKS (moved to subscribe_to).
+        assert!(!frames[1].interests.contains(Interests::ACKS));
     }
 
     #[test]
     fn subscribe_to_merges_into_entry_frame() {
+        // Simulate exporter case: METRICS interest stamps time, then subscribe merges.
         let mut ctx = Context::default();
-        ctx.push_entry_frame(1, MetricLevel::Detailed);
+        ctx.push_entry_frame(1, MetricLevel::Detailed, Interests::METRICS);
         let original_time = ctx.frames()[0].calldata.time_ns;
         assert!(original_time > 0);
 
         // Component subscribes on the same node — should merge, preserving time_ns.
+        // Note: Context::subscribe_to does NOT auto-add ACKS|NACKS.
+        // That's done by the processor effect handler's subscribe_to.
         let user = TestCallData::default();
-        ctx.subscribe_to(Interests::RETURN_DATA, user.into(), 1);
+        ctx.subscribe_to(Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA, user.into(), 1);
         let frames = ctx.frames();
         assert_eq!(frames.len(), 1, "same-node subscribe should merge");
         assert!(frames[0].interests.contains(Interests::ACKS));
@@ -1727,12 +1804,27 @@ mod test {
     }
 
     #[test]
+    fn processor_subscribe_stamps_time() {
+        // For processors without METRICS, time can still be stamped manually.
+        let mut ctx = Context::default();
+        ctx.push_entry_frame(1, MetricLevel::Detailed, Interests::empty());
+        assert_eq!(ctx.frames()[0].calldata.time_ns, 0, "initially no time");
+
+        // Simulate processor subscribe_to stamping time.
+        ctx.stamp_top_time(nanos_since_epoch());
+        assert!(
+            ctx.frames()[0].calldata.time_ns > 0,
+            "after stamp_top_time, should have non-zero time"
+        );
+    }
+
+    #[test]
     fn none_level_ack_nack_not_routable() {
         let (test_data, mut pdata) = create_test();
         // Receiver subscribes at node 0.
         pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
         // Processor entry at None — no auto-subscribe.
-        pdata.context.push_entry_frame(1, MetricLevel::None);
+        pdata.context.push_entry_frame(1, MetricLevel::None, Interests::empty());
 
         // Ack from downstream: next_ack should skip node 1 (no interests)
         // and land on node 0.
@@ -1742,13 +1834,30 @@ mod test {
     }
 
     #[test]
-    fn basic_level_ack_routable() {
+    fn basic_level_ack_routable_after_subscribe() {
+        // Entry frames no longer auto-subscribe. Processor must call subscribe_to
+        // (via effect handler) to receive ACKs. This test simulates that.
         let (test_data, mut pdata) = create_test();
-        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
-        pdata.context.push_entry_frame(1, MetricLevel::Basic);
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.clone().into(), 0);
+        pdata.context.push_entry_frame(1, MetricLevel::Basic, Interests::empty());
+        // Simulate processor calling subscribe_to (adds ACKS|NACKS).
+        pdata.context.subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 1);
 
         let ack = AckMsg::new(pdata);
         let (node_id, _) = Context::next_ack(ack).expect("should find node 1");
-        assert_eq!(node_id, 1, "Basic-level entry frame should be routable via next_ack");
+        assert_eq!(node_id, 1, "After subscribe_to, entry frame should be routable via next_ack");
+    }
+
+    #[test]
+    fn basic_level_entry_frame_without_subscribe_skipped() {
+        // Entry frames without explicit subscribe_to should be skipped by next_ack.
+        let (test_data, mut pdata) = create_test();
+        pdata = pdata.test_subscribe_to(Interests::ACKS | Interests::NACKS, test_data.into(), 0);
+        pdata.context.push_entry_frame(1, MetricLevel::Basic, Interests::empty());
+        // No subscribe_to called — ACKs should skip node 1.
+
+        let ack = AckMsg::new(pdata);
+        let (node_id, _) = Context::next_ack(ack).expect("should find node 0");
+        assert_eq!(node_id, 0, "Entry frame without subscribe_to should be skipped by next_ack");
     }
 }

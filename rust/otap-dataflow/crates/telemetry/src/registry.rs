@@ -104,7 +104,7 @@ impl TelemetryRegistryHandle {
 
     /// Registers a metric set type with the given static attributes and returns a `MetricSet`
     /// instance that can be used to report metrics for that type.
-    pub fn wregister_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
         attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> MetricSet<T> {

@@ -69,12 +69,16 @@ pub fn create_debug_processor(
     node_config: Arc<NodeUserConfig>,
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-    Ok(ProcessorWrapper::local(
-        DebugProcessor::from_config(pipeline_ctx, &node_config.config)?,
-        node,
-        node_config,
-        processor_config,
-    ))
+    let processor = DebugProcessor::from_config(pipeline_ctx, &node_config.config)?;
+    // Processors with Detailed verbosity need METRICS interest to stamp time on entry.
+    let default_interests = if processor.config.verbosity() == Verbosity::Detailed {
+        Interests::METRICS
+    } else {
+        Interests::empty()
+    };
+    let mut wrapper = ProcessorWrapper::local(processor, node, node_config, processor_config);
+    wrapper.set_default_interests(default_interests);
+    Ok(wrapper)
 }
 
 /// Register AttributesProcessor as an OTAP processor factory

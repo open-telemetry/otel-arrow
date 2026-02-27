@@ -45,10 +45,17 @@ use std::time::{Duration, Instant};
 /// at boot, so it can be queried once and cached in a `const` or
 /// `OnceLock`. Conversion: `nanos = ticks * 1_000_000_000 / freq`.
 /// This is what `Instant::now()` calls on Windows under the hood.
+///
+/// # Return value
+///
+/// Always returns a value >= 1 to distinguish from the default "no timestamp"
+/// value of 0 used when `MetricLevel < Detailed`.
 pub fn nanos_since_epoch() -> u64 {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let epoch = EPOCH.get_or_init(Instant::now);
-    epoch.elapsed().as_nanos() as u64
+    // Add 1 so the first call (elapsed ~0) returns 1, not 0.
+    // This distinguishes "timestamp at epoch" from "no timestamp".
+    epoch.elapsed().as_nanos() as u64 + 1
 }
 
 /// A 8-byte context value. Supports conversion to and from plain data

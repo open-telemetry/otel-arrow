@@ -230,6 +230,10 @@ pub struct Interests: u8 {
 
     /// Return data
     const RETURN_DATA = 1 << 2;
+
+    /// Metrics interest — processor declares it may call subscribe_to.
+    /// When set AND metric_level >= Detailed, entry frame captures timestamp.
+    const METRICS = 1 << 3;
 }
 }
 
@@ -244,8 +248,23 @@ pub trait ProducerEffectHandlerExtension<PData> {
 /// Pushes an entry frame whose interests and timestamp depend on the
 /// engine's `MetricLevel`.
 pub trait ReceivedAtNode {
-    /// Record that this PData was received at the given node with the given metric level.
-    fn received_at_node(&mut self, node_id: usize, metric_level: MetricLevel);
+    /// Record that this PData was received at the given processor node.
+    ///
+    /// `default_interests` declares whether the processor may subscribe.
+    /// If `default_interests.contains(METRICS) && metric_level >= Detailed`,
+    /// the entry frame captures a timestamp immediately.
+    fn received_at_node(
+        &mut self,
+        node_id: usize,
+        metric_level: MetricLevel,
+        default_interests: Interests,
+    );
+
+    /// Record that this PData was received at the given exporter node.
+    ///
+    /// For exporters: timestamp IS captured immediately (at Detailed level)
+    /// because exporters always need it for consumer metrics in `notify_ack`.
+    fn received_at_exporter(&mut self, node_id: usize, metric_level: MetricLevel);
 }
 
 /// Effect handler extensions for consumers specific to data type.
