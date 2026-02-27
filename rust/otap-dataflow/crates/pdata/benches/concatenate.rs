@@ -1,127 +1,107 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmarks for concatenation (reindex + merge) of OTAP record batches.
+//! Benchmarks for concatenation and reindexing.
 //!
-//! 1000 batches per benchmark. All signal types vary data points per batch
-//! (5, 100, 1000).
-//!
-//! Reindex benchmarks include contiguous (encoder-produced) and gapped
-//! (doubled IDs) variants to exercise different code paths.
+//! Reindex benchmarks include contiguous and gapped (doubled IDs) variants
+//! to exercise different code paths.
 
+use std::ops::Mul;
 use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, AsArray, DictionaryArray, PrimitiveArray, RecordBatch, StructArray,
 };
 use arrow::buffer::ScalarBuffer;
-use arrow::datatypes::{DataType, UInt16Type, UInt32Type};
+use arrow::datatypes::{ArrowPrimitiveType, DataType, UInt16Type, UInt32Type};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otap::transform::concatenate::concatenate;
-use otap_df_pdata::otap::transform::reindex::{reindex_logs, reindex_metrics, reindex_traces};
+use otap_df_pdata::otap::transform::reindex::reindex;
 use otap_df_pdata::otap::{Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces};
 use otap_df_pdata::schema::consts::{ID, PARENT_ID};
 use otap_df_pdata::testing::fixtures::{DataGenerator, LogsConfig, MetricsConfig, TracesConfig};
 use otap_df_pdata::testing::round_trip::otlp_to_otap;
 
 const NUM_BATCHES: usize = 10;
-const BATCH_SIZES: &[usize] = &[5, 100, 1000];
+const BATCH_SIZES: &[usize] = &[100, 1000];
 
-criterion_group!(benches, bench_metrics, bench_logs, bench_traces);
+criterion_group!(benches, bench_all);
 criterion_main!(benches);
 
-fn bench_metrics(c: &mut Criterion) {
-    for points in BATCH_SIZES {
-        let contiguous = generate_metrics(*points);
-        let gapped: Vec<_> = contiguous.iter().map(|b| introduce_gaps(b)).collect();
+fn bench_all(c: &mut Criterion) {
+    for &size in BATCH_SIZES {
+        let metrics = generate_metrics(size);
+        let logs = generate_logs(size);
+        let traces = generate_traces(size);
 
-        let mut group = c.benchmark_group(format!("metrics/{points}pts"));
-        bench_signal(&mut group, &contiguous, &gapped, |batches| {
-            reindex_metrics::<{ Metrics::COUNT }>(batches).expect("reindex failed")
+        let metrics_gapped: Vec<_> = metrics.iter().map(|b| introduce_gaps(b)).collect();
+        let logs_gapped: Vec<_> = logs.iter().map(|b| introduce_gaps(b)).collect();
+        let traces_gapped: Vec<_> = traces.iter().map(|b| introduce_gaps(b)).collect();
+
+        bench_group(c, &format!("reindex/{size}items/contiguous"), |group| {
+            bench_reindex(group, "metrics", &metrics);
+            bench_reindex(group, "logs", &logs);
+            bench_reindex(group, "traces", &traces);
         });
-        group.finish();
+
+        bench_group(c, &format!("reindex/{size}items/gapped"), |group| {
+            bench_reindex(group, "metrics", &metrics_gapped);
+            bench_reindex(group, "logs", &logs_gapped);
+            bench_reindex(group, "traces", &traces_gapped);
+        });
+
+        bench_group(c, &format!("concatenate/{size}items/contiguous"), |group| {
+            bench_concatenate(group, "metrics", &metrics);
+            bench_concatenate(group, "logs", &logs);
+            bench_concatenate(group, "traces", &traces);
+        });
+
+        bench_group(c, &format!("concatenate/{size}items/gapped"), |group| {
+            bench_concatenate(group, "metrics", &metrics_gapped);
+            bench_concatenate(group, "logs", &logs_gapped);
+            bench_concatenate(group, "traces", &traces_gapped);
+        });
     }
 }
 
-fn bench_logs(c: &mut Criterion) {
-    for num_logs in BATCH_SIZES {
-        let contiguous = generate_logs(*num_logs);
-        let gapped: Vec<_> = contiguous.iter().map(|b| introduce_gaps(b)).collect();
-
-        let mut group = c.benchmark_group(format!("logs/{num_logs}logs"));
-        bench_signal(&mut group, &contiguous, &gapped, |batches| {
-            reindex_logs::<{ Logs::COUNT }>(batches).expect("reindex failed")
-        });
-        group.finish();
-    }
-}
-
-fn bench_traces(c: &mut Criterion) {
-    for num_spans in BATCH_SIZES {
-        let contiguous = generate_traces(*num_spans);
-        let gapped: Vec<_> = contiguous.iter().map(|b| introduce_gaps(b)).collect();
-
-        let mut group = c.benchmark_group(format!("traces/{num_spans}spans"));
-        bench_signal(&mut group, &contiguous, &gapped, |batches| {
-            reindex_traces::<{ Traces::COUNT }>(batches).expect("reindex failed")
-        });
-        group.finish();
-    }
-}
-
-fn bench_signal<const N: usize>(
-    group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
-    contiguous: &[[Option<RecordBatch>; N]],
-    gapped: &[[Option<RecordBatch>; N]],
-    reindex_fn: impl Fn(&mut Vec<[Option<RecordBatch>; N]>) + Clone,
+fn bench_group(
+    c: &mut Criterion,
+    name: &str,
+    f: impl FnOnce(&mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>),
 ) {
-    let reindex_clone = reindex_fn.clone();
+    let mut group = c.benchmark_group(name);
+    f(&mut group);
+    group.finish();
+}
 
-    let _ = group.bench_with_input(
-        BenchmarkId::new("reindex", "contiguous"),
-        contiguous,
-        |b, data| {
-            let f = reindex_fn.clone();
-            b.iter_batched(
-                || data.to_vec(),
-                |mut batches| f(&mut batches),
-                BatchSize::SmallInput,
-            )
-        },
-    );
-
-    let _ = group.bench_with_input(BenchmarkId::new("reindex", "gapped"), gapped, |b, data| {
-        let f = reindex_clone.clone();
+fn bench_reindex<const N: usize>(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    signal_name: &str,
+    data: &[[Option<RecordBatch>; N]],
+) {
+    let _ = group.bench_with_input(BenchmarkId::from_parameter(signal_name), data, |b, data| {
         b.iter_batched(
             || data.to_vec(),
-            |mut batches| f(&mut batches),
+            |mut batches| reindex(&mut batches).expect("reindex failed"),
             BatchSize::SmallInput,
         )
     });
+}
 
-    let _ = group.bench_with_input(
-        BenchmarkId::new("concatenate", "contiguous"),
-        contiguous,
-        |b, data| {
-            b.iter_batched(
-                || data.to_vec(),
-                |mut batches| concatenate::<N>(&mut batches).expect("concat failed"),
-                BatchSize::SmallInput,
-            )
-        },
-    );
-
-    let _ = group.bench_with_input(
-        BenchmarkId::new("concatenate", "gapped"),
-        gapped,
-        |b, data| {
-            b.iter_batched(
-                || data.to_vec(),
-                |mut batches| concatenate::<N>(&mut batches).expect("concat failed"),
-                BatchSize::SmallInput,
-            )
-        },
-    );
+fn bench_concatenate<const N: usize>(
+    group: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
+    signal_name: &str,
+    data: &[[Option<RecordBatch>; N]],
+) {
+    let _ = group.bench_with_input(BenchmarkId::from_parameter(signal_name), data, |b, data| {
+        b.iter_batched(
+            || data.to_vec(),
+            |mut batches| {
+                let _ = concatenate::<N>(&mut batches).expect("concat failed");
+            },
+            BatchSize::SmallInput,
+        )
+    });
 }
 
 fn generate_metrics(points_per_gauge: usize) -> Vec<[Option<RecordBatch>; Metrics::COUNT]> {
@@ -195,24 +175,20 @@ fn double_struct_ids(arr: &StructArray) -> StructArray {
     StructArray::try_new(fields.clone(), columns, arr.nulls().cloned()).unwrap()
 }
 
+fn double_primitive<T>(arr: &PrimitiveArray<T>) -> PrimitiveArray<T>
+where
+    T: ArrowPrimitiveType,
+    T::Native: Mul<Output = T::Native> + From<u8>,
+{
+    let two = T::Native::from(2u8);
+    let doubled: Vec<T::Native> = arr.values().iter().map(|x| *x * two).collect();
+    PrimitiveArray::<T>::new(ScalarBuffer::from(doubled), None)
+}
+
 fn double_array(arr: &ArrayRef) -> ArrayRef {
     match arr.data_type() {
-        DataType::UInt16 => {
-            let v = arr.as_primitive::<UInt16Type>().values();
-            let doubled: Vec<u16> = v.iter().map(|x| x * 2).collect();
-            Arc::new(PrimitiveArray::<UInt16Type>::new(
-                ScalarBuffer::from(doubled),
-                None,
-            ))
-        }
-        DataType::UInt32 => {
-            let v = arr.as_primitive::<UInt32Type>().values();
-            let doubled: Vec<u32> = v.iter().map(|x| x * 2).collect();
-            Arc::new(PrimitiveArray::<UInt32Type>::new(
-                ScalarBuffer::from(doubled),
-                None,
-            ))
-        }
+        DataType::UInt16 => Arc::new(double_primitive(arr.as_primitive::<UInt16Type>())),
+        DataType::UInt32 => Arc::new(double_primitive(arr.as_primitive::<UInt32Type>())),
         DataType::Dictionary(key_type, value_type) => {
             match (key_type.as_ref(), value_type.as_ref()) {
                 (_, DataType::UInt16) => double_dict_values::<UInt16Type>(arr, key_type),
@@ -226,16 +202,13 @@ fn double_array(arr: &ArrayRef) -> ArrayRef {
 
 fn double_dict_values<V>(arr: &ArrayRef, key_type: &DataType) -> ArrayRef
 where
-    V: arrow::datatypes::ArrowPrimitiveType,
-    V::Native: std::ops::Mul<Output = V::Native> + From<u8>,
+    V: ArrowPrimitiveType,
+    V::Native: Mul<Output = V::Native> + From<u8>,
 {
-    let two = V::Native::from(2u8);
     match key_type {
         DataType::UInt8 => {
             let dict = arr.as_dictionary::<arrow::datatypes::UInt8Type>();
-            let vals = dict.values().as_primitive::<V>().values();
-            let doubled: Vec<V::Native> = vals.iter().map(|x| *x * two).collect();
-            let new_vals = PrimitiveArray::<V>::new(ScalarBuffer::from(doubled), None);
+            let new_vals = double_primitive::<V>(dict.values().as_primitive());
             Arc::new(DictionaryArray::new(
                 dict.keys().clone(),
                 Arc::new(new_vals),
@@ -243,9 +216,7 @@ where
         }
         DataType::UInt16 => {
             let dict = arr.as_dictionary::<UInt16Type>();
-            let vals = dict.values().as_primitive::<V>().values();
-            let doubled: Vec<V::Native> = vals.iter().map(|x| *x * two).collect();
-            let new_vals = PrimitiveArray::<V>::new(ScalarBuffer::from(doubled), None);
+            let new_vals = double_primitive::<V>(dict.values().as_primitive());
             Arc::new(DictionaryArray::new(
                 dict.keys().clone(),
                 Arc::new(new_vals),
