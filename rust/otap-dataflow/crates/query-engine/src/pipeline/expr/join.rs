@@ -777,16 +777,16 @@ impl JoinExec for AttributeToDifferentAttributeReverseJoin {
 // CPU locality as we scan over the IDs.
 //
 // TODO - eventually this will need to support u32 IDs
-const PAGE_SIZE: usize = 1024;
-const PAGE_BITS: u16 = 10;
-const PAGE_MASK: u16 = 0x3FF; // Bottom 10 bits
-const NUM_PAGES: usize = 64; // 2^16 / 2^10 = 2^6 = 64
-
 struct IdJoinLookup {
     /// Two-level lookup: outer array indexed by top 6 bits, inner pages indexed by bottom 10 bits.
     /// Each page maps parent_id -> row index in the right-side batch.
     lookup: Vec<Option<Box<[Option<usize>; PAGE_SIZE]>>>,
 }
+
+const PAGE_SIZE: usize = 1024;
+const PAGE_BITS: u16 = 10;
+const PAGE_MASK: u16 = 0x3FF; // Bottom 10 bits
+const NUM_PAGES: usize = 64; // 2^16 / 2^10 = 2^6 = 64
 
 impl IdJoinLookup {
     /// Creates a new IdJoin from a UInt16Array of parent IDs.

@@ -11,8 +11,8 @@
 //! logical plans are converted to datafusion physical expressions
 //! ([`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)) during evaluation.
 //!
-//! There is an additional layer of abstraction in the expression tree containing around these
-//! datafusion logical/physical expressions. This is necessary because typically with datafusion
+//! There is an additional layer of abstraction in the expression tree containing these datafusion
+//! logical/physical expressions. This is necessary because typically with typical datafusion
 //! expression evaluation, there would be a single [`RecordBatch`] as input and a single expression
 //! tree which produces the resulting [`ColumnValue`]. However, in the OTAP data-model, not all
 //! data is in one [`RecordBatch`].
@@ -27,9 +27,9 @@
 //! The "data scope" represents the source of the data for a given section of the expression tree.
 //! It indicates both the source record batch, and the rows that will be selected.
 //!
-//! For example, consider when evaluating an expression like `severity_number + attributes["x"]`,
-//! The data scope of the left side of this expression is the root record batch, and for the right
-//! side it is the attributes record batch, filtered where `key=="x"`.
+//! For example, consider evaluating an expression like `severity_number + attributes["x"]`. The
+//! data scope of the left side of is the root record batch, and for the right side it's the
+//! attributes record batch, filtered where `key=="x"`.
 //!
 //! Note, the data scope is _not_ simply an indicator of the arrow payload type for the record
 //! batch. A given payload type can have multiple data scopes, for example `attributes["x"]` and
@@ -133,7 +133,7 @@ enum LogicalExprDataSource {
 
 /// Represents an expression during the logical planning phase.
 ///
-/// This combines a DataFusion logical expression with data source and result type/input type
+/// This combines a DataFusion logical expression with data source, result type and input type
 /// coercion information
 #[derive(Debug)]
 struct ScopedLogicalExpr {
@@ -143,11 +143,11 @@ struct ScopedLogicalExpr {
     /// the type that the expression will produce.
     ///
     /// this is used during planning to check for cases where certain operations/expressions may be
-    /// invalid for a given input, to ensure any input types that require coercion are correctly
+    /// invalid for a given input and to ensure any input types that require coercion are correctly
     /// casted.
     ///
     /// note: type checking during planning is best-effort and there are some expressions where the
-    /// expression type validity cannot be guaranteed before we see the data. this is especially
+    /// expression's type validity cannot be guaranteed before we see the data. this is especially
     /// true for expressions involving AnyValues (attributes/logs body).
     expr_type: ExprLogicalType,
 
@@ -326,8 +326,8 @@ impl ExprLogicalPlanner {
         })?;
 
         // determine if we can execute the binary expression without joining data from a different
-        // data scope. We'd be able to do this if, the left/right side either have the same input
-        // RecordBatch & row order, or if one/both sides are a scalar.
+        // data scope. We'd be able to do this when the left/right side either have the same input
+        // RecordBatch & row order or if one/both sides are a scalar.
         //
         // for example, we had an expression like:
         // `attributes["x"] * 2` or `observed_timestamp_unix_nano - timestamp_unix_nano`.
@@ -373,7 +373,7 @@ impl ExprLogicalPlanner {
 
 /// Physical planner that converts ScopedLogicalExpr into ScopedPhysicalExpr.
 ///
-/// This is a thin wrapper that delegates to ScopedLogicalExpr::into_physical().
+/// This is just a thin wrapper that delegates to ScopedLogicalExpr::into_physical().
 /// Could potentially be removed, but provides a clear separation of concerns.
 struct ExprPhysicalPlanner {}
 
@@ -386,11 +386,13 @@ impl ExprPhysicalPlanner {
 
 /// A node in the expression tree used for expression evaluation.
 ///
-/// This encapsulates a datafusion PhysicalExpr, which is responsible for evaluating some segment
-/// of the overall expression tree which uses single `RecordBatch` can be used as a source. This
-/// type is responsible for organizing source data into this single `RecordBatch`, which it does in
-/// one of three ways:
-/// - select the appropriate RecordBatch from the OTAP batch
+/// This encapsulates a datafusion PhysicalExpr that evaluates some section of of the overall
+/// expression tree (the section delineation being expressions where a single, scoped `RecordBatch`
+/// can be used as a source without doing any joins).
+///
+/// This type is responsible for organizing source data into this single input `RecordBatch`, which
+/// it does in one of three ways:
+/// - select the appropriate data from the incoming OTAP batch
 /// - recursively evaluate left/right child expressions and join them
 /// - create a dummy empty record batch (special case for scalar-only expressions)
 ///
@@ -438,7 +440,6 @@ impl ScopedPhysicalExpr {
         otap_batch: &OtapArrowRecords,
         session_context: &SessionContext,
     ) -> Result<Option<PhysicalExprEvalResult>> {
-        // TODO need to avoid cloning the data scope Id here
         let (source_rb, result_data_scope) = match &mut self.source {
             PhysicalExprDataSource::DataSource(data_scope_id) => {
                 let input_rb = match data_scope_id.as_ref() {
@@ -471,7 +472,7 @@ impl ScopedPhysicalExpr {
                     }
                 };
 
-                (input_rb, data_scope_id.clone())
+                (input_rb, Rc::clone(data_scope_id))
             }
             PhysicalExprDataSource::Join(left, right) => {
                 let left_result = left.execute(otap_batch, session_context)?;
@@ -552,10 +553,10 @@ impl ScopedPhysicalExpr {
     /// value:     ["y", "z"]
     /// parent_id: [0, 1]
     ///
-    // TODO - we're making an assumptions here that will need to be later revisited which is:
-    // if a type is present for some key, then all attributes for this key have the same
-    // type. Normally this would be the case and this is definitely best practice, eventually
-    // we'll need to relax this assumption for correctness.
+    // TODO - we're making an assumptions here that will need to be later revisited. We assume
+    // if a type is present for some key, then all attributes for this key have the same type
+    // Normally this would be the case and this is definitely best practice, eventually we'll
+    // need to relax this assumption for the sake of correctness.
     fn try_project_attrs(
         record_batch: &RecordBatch,
         key: &str,
