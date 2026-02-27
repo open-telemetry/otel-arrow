@@ -13,6 +13,7 @@ use tokio::time::{Duration, Instant};
 
 use super::config::ApiConfig;
 use super::error::Error;
+use super::metrics::AzureMonitorExporterMetricsRc;
 
 const MAX_RETRIES: u32 = 5;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(3);
@@ -30,16 +31,21 @@ pub struct LogsIngestionClient {
 
     // Pre-formatted authorization header provider
     auth_header: HeaderValue,
+
+    /// Shared metrics tracker for recording HTTP status codes and latency.
+    metrics: AzureMonitorExporterMetricsRc,
 }
 
 pub struct LogsIngestionClientPool {
     clients: Vec<LogsIngestionClient>,
+    metrics: AzureMonitorExporterMetricsRc,
 }
 
 impl LogsIngestionClientPool {
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, metrics: AzureMonitorExporterMetricsRc) -> Self {
         Self {
             clients: Vec::with_capacity(capacity),
+            metrics,
         }
     }
 
@@ -66,7 +72,7 @@ impl LogsIngestionClientPool {
         let http_clients = self.create_http_clients(self.clients.capacity())?;
 
         for http_client in http_clients {
-            let client = LogsIngestionClient::new(config, http_client)?;
+            let client = LogsIngestionClient::new(config, http_client, self.metrics.clone())?;
             self.clients.push(client);
         }
 
@@ -103,11 +109,16 @@ impl LogsIngestionClient {
     /// # Returns
     /// A configured client instance with a placeholder auth header
     #[must_use]
-    pub fn from_parts(http_client: Client, endpoint: String) -> Self {
+    pub fn from_parts(
+        http_client: Client,
+        endpoint: String,
+        metrics: AzureMonitorExporterMetricsRc,
+    ) -> Self {
         Self {
             http_client,
             endpoint,
             auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
+            metrics,
         }
     }
 
@@ -123,7 +134,11 @@ impl LogsIngestionClient {
     /// # Returns
     /// * `Ok(LogsIngestionClient)` - A configured client instance
     /// * `Err(Error)` - If client initialization fails
-    pub fn new(config: &ApiConfig, http_client: Client) -> Result<Self, Error> {
+    pub fn new(
+        config: &ApiConfig,
+        http_client: Client,
+        metrics: AzureMonitorExporterMetricsRc,
+    ) -> Result<Self, Error> {
         let endpoint = format!(
             "{}/dataCollectionRules/{}/streams/{}?api-version=2021-11-01-preview",
             config.dcr_endpoint, config.dcr, config.stream_name
@@ -133,6 +148,7 @@ impl LogsIngestionClient {
             http_client,
             endpoint,
             auth_header: HeaderValue::from_static("Bearer "), // placeholder, will be updated on first use
+            metrics,
         })
     }
 
@@ -204,6 +220,7 @@ impl LogsIngestionClient {
 
     /// Single export attempt without retry logic.
     async fn try_export(&mut self, body: Bytes) -> Result<Duration, Error> {
+        let body_len = body.len();
         let start = Instant::now();
 
         let response = self
@@ -217,8 +234,21 @@ impl LogsIngestionClient {
             .await
             .map_err(Error::network)?;
 
+        let status_code = response.status().as_u16();
+        let elapsed = start.elapsed();
+
+        // Record per-attempt status code and batch size
+        {
+            let mut m = self.metrics.borrow_mut();
+            m.record_laclient_status_code(status_code);
+            m.add_batch_size(body_len as f64);
+        }
+
         if response.status().is_success() {
-            return Ok(start.elapsed());
+            self.metrics
+                .borrow_mut()
+                .add_client_success_latency(elapsed.as_millis() as f64);
+            return Ok(elapsed);
         }
 
         // Extract Retry-After header before consuming response
@@ -255,10 +285,25 @@ impl LogsIngestionClient {
 
 #[cfg(test)]
 mod tests {
+    use super::super::metrics::AzureMonitorExporterMetrics;
+    use super::super::metrics::AzureMonitorExporterMetricsTracker;
     use super::*;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::testing::EmptyAttributes;
     use reqwest::header::HeaderValue;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     // ==================== Test Helpers ====================
+
+    fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
+        let registry = TelemetryRegistryHandle::new();
+        let metric_set =
+            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
+            metric_set,
+        )))
+    }
 
     fn create_test_api_config() -> ApiConfig {
         ApiConfig {
@@ -289,8 +334,8 @@ mod tests {
 
         let http_client = create_test_http_client();
 
-        let client =
-            LogsIngestionClient::new(&api_config, http_client).expect("failed to create client");
+        let client = LogsIngestionClient::new(&api_config, http_client, create_test_metrics())
+            .expect("failed to create client");
 
         assert_eq!(
             client.endpoint,
@@ -309,7 +354,8 @@ mod tests {
 
         let http_client = create_test_http_client();
 
-        let client = LogsIngestionClient::new(&api_config, http_client).unwrap();
+        let client =
+            LogsIngestionClient::new(&api_config, http_client, create_test_metrics()).unwrap();
 
         assert!(client.endpoint.contains("dcr-abc-123-def"));
         assert!(client.endpoint.contains("Custom-Stream_Name"));
@@ -320,6 +366,7 @@ mod tests {
         let client = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com/endpoint".to_string(),
+            create_test_metrics(),
         );
 
         assert_eq!(client.endpoint, "https://example.com/endpoint");
@@ -332,7 +379,8 @@ mod tests {
         let http_client = create_test_http_client();
         let api_config = create_test_api_config();
 
-        let client = LogsIngestionClient::new(&api_config, http_client).unwrap();
+        let client =
+            LogsIngestionClient::new(&api_config, http_client, create_test_metrics()).unwrap();
 
         // Auth header is placeholder
         assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
@@ -345,6 +393,7 @@ mod tests {
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com".to_string(),
+            create_test_metrics(),
         );
 
         assert_eq!(client.auth_header, HeaderValue::from_static("Bearer "));
@@ -362,6 +411,7 @@ mod tests {
         let mut client = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com".to_string(),
+            create_test_metrics(),
         );
 
         client.update_auth(HeaderValue::from_static("Bearer token1"));
@@ -387,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_pool_new_creates_empty_pool() {
-        let pool = LogsIngestionClientPool::new(5);
+        let pool = LogsIngestionClientPool::new(5, create_test_metrics());
 
         assert_eq!(pool.clients.capacity(), 5);
         assert_eq!(pool.clients.len(), 0);
@@ -396,7 +446,7 @@ mod tests {
     #[test]
     fn test_pool_new_various_capacities() {
         for capacity in [1, 4, 8, 32, 100] {
-            let pool = LogsIngestionClientPool::new(capacity);
+            let pool = LogsIngestionClientPool::new(capacity, create_test_metrics());
             assert_eq!(pool.clients.capacity(), capacity);
         }
     }
@@ -405,8 +455,13 @@ mod tests {
     fn test_pool_take_and_release_single() {
         let api_config = create_test_api_config();
 
-        let mut pool = LogsIngestionClientPool::new(1);
-        let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
+        let mut pool = LogsIngestionClientPool::new(1, create_test_metrics());
+        let client = LogsIngestionClient::new(
+            &api_config,
+            create_test_http_client(),
+            create_test_metrics(),
+        )
+        .unwrap();
         pool.clients.push(client);
 
         assert_eq!(pool.clients.len(), 1);
@@ -422,9 +477,14 @@ mod tests {
     fn test_pool_take_and_release_multiple() {
         let api_config = create_test_api_config();
 
-        let mut pool = LogsIngestionClientPool::new(3);
+        let mut pool = LogsIngestionClientPool::new(3, create_test_metrics());
         for _ in 0..3 {
-            let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
+            let client = LogsIngestionClient::new(
+                &api_config,
+                create_test_http_client(),
+                create_test_metrics(),
+            )
+            .unwrap();
             pool.clients.push(client);
         }
 
@@ -447,11 +507,16 @@ mod tests {
     fn test_pool_release_beyond_capacity() {
         let api_config = create_test_api_config();
 
-        let mut pool = LogsIngestionClientPool::new(1);
+        let mut pool = LogsIngestionClientPool::new(1, create_test_metrics());
 
         // Release more than capacity (Vec will grow)
         for _ in 0..5 {
-            let client = LogsIngestionClient::new(&api_config, create_test_http_client()).unwrap();
+            let client = LogsIngestionClient::new(
+                &api_config,
+                create_test_http_client(),
+                create_test_metrics(),
+            )
+            .unwrap();
             pool.release(client);
         }
 
@@ -465,6 +530,7 @@ mod tests {
         let client1 = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com/endpoint".to_string(),
+            create_test_metrics(),
         );
 
         let client2 = client1.clone();
@@ -477,6 +543,7 @@ mod tests {
         let mut client1 = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com".to_string(),
+            create_test_metrics(),
         );
 
         client1.update_auth(HeaderValue::from_static("Bearer test_token"));
@@ -490,6 +557,7 @@ mod tests {
         let mut client1 = LogsIngestionClient::from_parts(
             create_test_http_client(),
             "https://example.com".to_string(),
+            create_test_metrics(),
         );
 
         client1.update_auth(HeaderValue::from_static("Bearer token1"));
@@ -513,14 +581,18 @@ mod tests {
 
     #[test]
     fn test_client_with_empty_endpoint() {
-        let client = LogsIngestionClient::from_parts(create_test_http_client(), "".to_string());
+        let client = LogsIngestionClient::from_parts(
+            create_test_http_client(),
+            "".to_string(),
+            create_test_metrics(),
+        );
 
         assert_eq!(client.endpoint, "");
     }
 
     #[test]
     fn test_pool_create_http_clients() {
-        let pool = LogsIngestionClientPool::new(4);
+        let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(4);
 
@@ -531,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_pool_create_http_clients_zero() {
-        let pool = LogsIngestionClientPool::new(4);
+        let pool = LogsIngestionClientPool::new(4, create_test_metrics());
 
         let result = pool.create_http_clients(0);
 
