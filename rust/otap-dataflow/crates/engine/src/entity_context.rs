@@ -5,9 +5,10 @@
 //! to associate metrics and events with the correct pipeline entity, node entity or the correct
 //! input/output channel entities.
 
+use crate::channel_metrics::InputChannelReceiverMetrics;
 use crate::component_metrics::{
     BasicComponentMetrics, ComponentMetricsHandle, ComponentMetricsState,
-    ConsumedDurationMetrics, ConsumedRequestMetrics, DetailedComponentMetrics,
+    ConsumedRequestMetrics, DetailedComponentMetrics,
     LocalComponentMetricsHandle, NormalComponentMetrics,
     ProducedRequestMetrics,
 };
@@ -76,6 +77,8 @@ pub(crate) struct NodeTaskContext {
     output_channel_keys: Vec<(PortName, EntityKey)>,
     /// Per-node component metrics handle (consumed/produced counters).
     component_metrics: Option<ComponentMetricsHandle>,
+    /// Channel receiver metrics handle for recording consumed.duration_ns.
+    input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     /// Engine-wide metric level for this node.
     metric_level: MetricLevel,
 }
@@ -91,12 +94,16 @@ impl NodeTaskContext {
         let component_metrics = telemetry_handle
             .as_ref()
             .and_then(|h| h.component_metrics());
+        let input_channel_receiver_metrics = telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_receiver_metrics());
         Self {
             entity_key,
             telemetry_handle,
             input_channel_key,
             output_channel_keys,
             component_metrics,
+            input_channel_receiver_metrics,
             metric_level,
         }
     }
@@ -163,6 +170,17 @@ pub fn current_metric_level() -> MetricLevel {
         .unwrap_or_default()
 }
 
+/// Record consumed duration (ns) to the input channel's receiver metrics.
+/// No-op if no channel receiver metrics handle is present in the current task context.
+#[inline]
+pub fn record_consumed_duration(duration_ns: u64) {
+    let _ = NODE_TASK_CONTEXT.try_with(|ctx| {
+        if let Some(ref handle) = ctx.input_channel_receiver_metrics {
+            handle.record_consumed_duration(duration_ns);
+        }
+    });
+}
+
 /// Runs the given future with the provided node task context in task-local storage.
 pub(crate) fn instrument_with_node_context<F, T>(
     ctx: NodeTaskContext,
@@ -224,6 +242,7 @@ struct NodeTelemetryState {
     output_channel_keys: Vec<(PortName, EntityKey)>,
     control_channel_key: Option<EntityKey>,
     component_metrics: Option<ComponentMetricsHandle>,
+    input_channel_receiver_metrics: Option<InputChannelReceiverMetrics>,
     cleaned: bool,
 }
 
@@ -239,6 +258,7 @@ impl NodeTelemetryHandle {
                 output_channel_keys: Vec::new(),
                 control_channel_key: None,
                 component_metrics: None,
+                input_channel_receiver_metrics: None,
                 cleaned: false,
             })),
         }
@@ -292,7 +312,6 @@ impl NodeTelemetryHandle {
                 ComponentMetricsState::Detailed(DetailedComponentMetrics {
                     consumed_requests: self.register_metric_set::<ConsumedRequestMetrics>(),
                     produced_requests: self.register_metric_set::<ProducedRequestMetrics>(),
-                    consumed_duration: self.register_metric_set::<ConsumedDurationMetrics>(),
                 })
             }
         };
@@ -305,6 +324,16 @@ impl NodeTelemetryHandle {
     /// Return the component metrics handle, if registered.
     pub(crate) fn component_metrics(&self) -> Option<ComponentMetricsHandle> {
         self.state.borrow().component_metrics.clone()
+    }
+
+    /// Store the input channel's receiver metrics handle for task-local access.
+    pub(crate) fn set_input_channel_receiver_metrics(&self, handle: InputChannelReceiverMetrics) {
+        self.state.borrow_mut().input_channel_receiver_metrics = Some(handle);
+    }
+
+    /// Return the input channel receiver metrics handle, if set.
+    pub(crate) fn input_channel_receiver_metrics(&self) -> Option<InputChannelReceiverMetrics> {
+        self.state.borrow().input_channel_receiver_metrics.clone()
     }
 
     /// Associate the inbound channel entity key with this node for task-local scoping.

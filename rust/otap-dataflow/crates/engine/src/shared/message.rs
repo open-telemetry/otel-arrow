@@ -213,6 +213,11 @@ impl<T> SharedReceiver<T> {
         }
     }
 
+    /// Returns a clone of the receiver metrics handle, if present.
+    pub(crate) fn receiver_metrics_handle(&self) -> Option<SharedChannelReceiverMetricsHandle> {
+        self.metrics.clone()
+    }
+
     /// Receives a message from the channel.
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         let result = match &mut self.inner {

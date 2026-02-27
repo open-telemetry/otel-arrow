@@ -16,7 +16,9 @@
 use async_trait::async_trait;
 use otap_df_config::PortName;
 use otap_df_config::{SignalFormat, SignalType};
-use otap_df_engine::entity_context::{current_component_metrics, current_metric_level};
+use otap_df_engine::entity_context::{
+    current_component_metrics, current_metric_level, record_consumed_duration,
+};
 use otap_df_engine::error::{Error, TypedError};
 use otap_df_engine::control::{
     AckMsg, CallData, MetricLevel, NackMsg, UserCallData, nanos_since_epoch,
@@ -477,24 +479,24 @@ impl ProducerEffectHandlerExtension<OtapPdata>
 /* -------- Consumer effect handler extensions (shared, local) -------- */
 
 /// Record a consumed.success metric from the current task-local component handle.
-/// Only fires at Basic+ (outcome count) and Detailed (+ duration).
-fn record_consumed_success(duration_ns: u64) {
+/// Only fires at Basic+ (outcome count).
+fn record_consumed_success() {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_success(duration_ns);
+        handle.record_consumed_success();
     }
 }
 
 /// Record a consumed.failure metric from the current task-local component handle.
-fn record_consumed_failure(duration_ns: u64) {
+fn record_consumed_failure() {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_failure(duration_ns);
+        handle.record_consumed_failure();
     }
 }
 
 /// Record a consumed.refused metric from the current task-local component handle.
-fn record_consumed_refused(duration_ns: u64) {
+fn record_consumed_refused() {
     if let Some(handle) = current_component_metrics() {
-        handle.record_consumed_refused(duration_ns);
+        handle.record_consumed_refused();
     }
 }
 
@@ -503,12 +505,11 @@ fn record_consumer_ack_metrics(context: &Context) {
     let level = current_metric_level();
     if level >= MetricLevel::Basic {
         if let Some(frame) = context.peek_top() {
-            let duration_ns = if level >= MetricLevel::Detailed {
-                nanos_since_epoch().saturating_sub(frame.calldata.time_ns)
-            } else {
-                0
-            };
-            record_consumed_success(duration_ns);
+            record_consumed_success();
+            if level >= MetricLevel::Detailed {
+                let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+                record_consumed_duration(duration_ns);
+            }
         }
     }
 }
@@ -518,15 +519,14 @@ fn record_consumer_nack_metrics(context: &Context, permanent: bool) {
     let level = current_metric_level();
     if level >= MetricLevel::Basic {
         if let Some(frame) = context.peek_top() {
-            let duration_ns = if level >= MetricLevel::Detailed {
-                nanos_since_epoch().saturating_sub(frame.calldata.time_ns)
-            } else {
-                0
-            };
             if permanent {
-                record_consumed_refused(duration_ns);
+                record_consumed_refused();
             } else {
-                record_consumed_failure(duration_ns);
+                record_consumed_failure();
+            }
+            if level >= MetricLevel::Detailed {
+                let duration_ns = nanos_since_epoch().saturating_sub(frame.calldata.time_ns);
+                record_consumed_duration(duration_ns);
             }
         }
     }

@@ -9,12 +9,13 @@
 
 use crate::node::NodeId;
 use otap_df_telemetry::error::Error as TelemetryError;
-use otap_df_telemetry::instrument::{Counter, Gauge};
+use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::fmt;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -31,7 +32,7 @@ pub struct ChannelSenderMetrics {
     #[metric(name = "send.error_closed", unit = "{1}")]
     pub send_error_closed: Counter<u64>,
     // Total bytes successfully sent (when message size is known).
-    // TODO: Populate in a future PR when message sizes are tracked.
+    // TODO: Populate this at normal MetricLevel.
     // #[metric(name = "send.bytes", unit = "{By}")]
     // pub send_bytes: Counter<u64>,
 }
@@ -49,16 +50,22 @@ pub struct ChannelReceiverMetrics {
     #[metric(name = "recv.error_closed", unit = "{1}")]
     pub recv_error_closed: Counter<u64>,
     // Total bytes successfully received (when message size is known).
-    // TODO: Populate in a future PR when message sizes are tracked.
+    // TODO: Populate this at normal MetricLevel.
     // #[metric(name = "recv.bytes", unit = "{By}")]
     // pub recv_bytes: Counter<u64>,
     // Current number of buffered messages.
     // TODO: Populate in a future PR when queue depth is tracked.
     // #[metric(name = "queue.depth", unit = "{message}")]
-    // pub queue_depth: Gauge<u64>,
+    // pub queue_depth: UpDownCounter<u64>,
     /// Maximum channel capacity (buffer size).
+    /// TODO: UpDownCounter
     #[metric(name = "capacity", unit = "{message}")]
     pub capacity: Gauge<u64>,
+    /// Duration (ns) of consumed requests (min/max/sum/count).
+    /// Recorded at ack/nack time using the entry frame timestamp.
+    /// Only populated at `MetricLevel::Detailed`.
+    #[metric(name = "consumed.duration_ns", unit = "ns")]
+    pub consumed_duration_ns: Mmsc,
 }
 
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";
@@ -134,6 +141,11 @@ impl ChannelReceiverMetricsState {
     }
 
     #[inline]
+    pub(crate) fn record_consumed_duration(&mut self, duration_ns: u64) {
+        self.metrics.consumed_duration_ns.record(duration_ns as f64);
+    }
+
+    #[inline]
     pub(crate) fn report(
         &mut self,
         metrics_reporter: &mut MetricsReporter,
@@ -179,6 +191,43 @@ impl ChannelMetricsHandle {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
+        }
+    }
+}
+
+/// Handle to a pdata channel's receiver metrics, supporting both local and shared modes.
+/// Stored in the node task context so that ack/nack processing can record
+/// `consumed.duration_ns` back to the input channel's metrics.
+#[derive(Clone)]
+pub(crate) enum InputChannelReceiverMetrics {
+    Local(LocalChannelReceiverMetricsHandle),
+    Shared(SharedChannelReceiverMetricsHandle),
+}
+
+impl fmt::Debug for InputChannelReceiverMetrics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Local(_) => f.debug_tuple("Local").field(&"...").finish(),
+            Self::Shared(_) => f.debug_tuple("Shared").field(&"...").finish(),
+        }
+    }
+}
+
+impl InputChannelReceiverMetrics {
+    /// Record consumed duration (ns) to the channel receiver metrics.
+    #[inline]
+    pub(crate) fn record_consumed_duration(&self, duration_ns: u64) {
+        match self {
+            Self::Local(h) => {
+                if let Ok(mut state) = h.try_borrow_mut() {
+                    state.record_consumed_duration(duration_ns);
+                }
+            }
+            Self::Shared(h) => {
+                if let Ok(mut state) = h.try_lock() {
+                    state.record_consumed_duration(duration_ns);
+                }
+            }
         }
     }
 }
