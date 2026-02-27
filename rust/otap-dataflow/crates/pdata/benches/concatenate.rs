@@ -34,9 +34,9 @@ fn bench_all(c: &mut Criterion) {
         let logs = generate_logs(size);
         let traces = generate_traces(size);
 
-        let metrics_gapped: Vec<_> = metrics.iter().map(|b| introduce_gaps(b)).collect();
-        let logs_gapped: Vec<_> = logs.iter().map(|b| introduce_gaps(b)).collect();
-        let traces_gapped: Vec<_> = traces.iter().map(|b| introduce_gaps(b)).collect();
+        let metrics_gapped: Vec<_> = metrics.iter().map(introduce_gaps).collect();
+        let logs_gapped: Vec<_> = logs.iter().map(introduce_gaps).collect();
+        let traces_gapped: Vec<_> = traces.iter().map(introduce_gaps).collect();
 
         bench_group(c, &format!("reindex/{size}items/contiguous"), |group| {
             bench_reindex(group, "metrics", &metrics);
@@ -161,7 +161,7 @@ fn double_id_columns(rb: &RecordBatch) -> RecordBatch {
             _ => {}
         }
     }
-    RecordBatch::try_new(schema, columns).unwrap()
+    RecordBatch::try_new(schema, columns).expect("create record batch")
 }
 
 fn double_struct_ids(arr: &StructArray) -> StructArray {
@@ -172,7 +172,7 @@ fn double_struct_ids(arr: &StructArray) -> StructArray {
             columns[i] = double_array(&columns[i]);
         }
     }
-    StructArray::try_new(fields.clone(), columns, arr.nulls().cloned()).unwrap()
+    StructArray::try_new(fields.clone(), columns, arr.nulls().cloned()).expect("create struct")
 }
 
 fn double_primitive<T>(arr: &PrimitiveArray<T>) -> PrimitiveArray<T>
