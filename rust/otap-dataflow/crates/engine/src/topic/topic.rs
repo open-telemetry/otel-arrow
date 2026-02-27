@@ -272,9 +272,9 @@ impl PublisherRegistry {
 /// Lag detection: `try_read()` compares the subscriber's `read_seq` against
 /// `write_seq - capacity` to detect overwritten slots.
 pub(crate) struct FastBroadcastRing<T: Send + Sync + 'static> {
-    /// Ring buffer slots. Each slot holds (sequence_number, payload).
+    /// Ring buffer slots. Each slot holds (ring_seq, message_id, payload).
     /// Uses Mutex instead of RwLock for lower uncontended overhead.
-    slots: Box<[Mutex<Option<(u64, Arc<T>)>>]>,
+    slots: Box<[Mutex<Option<(u64, u64, Arc<T>)>>]>,
     capacity: usize,
     /// Bitmask for power-of-two indexing: `seq & mask` instead of `seq % capacity`.
     mask: usize,
@@ -311,7 +311,7 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
     pub(crate) fn publish_with_id(&self, id: u64, payload: Arc<T>) {
         let seq = self.write_seq.fetch_add(1, Ordering::Release) + 1;
         let idx = ((seq - 1) as usize) & self.mask;
-        *self.slots[idx].lock() = Some((id, payload));
+        *self.slots[idx].lock() = Some((seq, id, payload));
         self.waker_set.wake_all();
     }
 
@@ -335,11 +335,29 @@ impl<T: Send + Sync + 'static> FastBroadcastRing<T> {
         let idx = ((read_seq - 1) as usize) & self.mask;
         let slot = self.slots[idx].lock();
         match &*slot {
-            Some((id, payload)) => BroadcastReadResult::Ready(Envelope {
-                id: *id,
-                payload: Arc::clone(payload),
-            }),
+            Some((slot_seq, id, payload)) if *slot_seq == read_seq => {
+                BroadcastReadResult::Ready(Envelope {
+                    id: *id,
+                    payload: Arc::clone(payload),
+                })
+            }
+            Some((slot_seq, _, _)) if *slot_seq > read_seq => {
+                // Slot was overwritten since `current_write` was sampled.
+                // Recompute lag against a fresh write_seq snapshot.
+                let now = self.write_seq.load(Ordering::Acquire);
+                if now >= self.capacity as u64 && read_seq <= now - self.capacity as u64 {
+                    let new_read_seq = now - self.capacity as u64 + 1;
+                    let missed = new_read_seq - read_seq;
+                    BroadcastReadResult::Lagged {
+                        missed,
+                        new_read_seq,
+                    }
+                } else {
+                    BroadcastReadResult::NotReady
+                }
+            }
             None => BroadcastReadResult::NotReady,
+            Some((_slot_seq, _id, _payload)) => BroadcastReadResult::NotReady,
         }
     }
 
@@ -625,14 +643,18 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
 /// broadcast subscribers. Every publish writes to ALL balanced groups AND
 /// the broadcast ring.
 ///
-/// The consumer groups list is `RwLock<Vec<(name, ConsumerGroup)>>`. The
-/// `publish()` path takes a short read lock to clone the senders, then drops
-/// the guard before any `.await` -- this is critical for keeping the future
-/// `Send`. When no groups are subscribed, the Vec clone is skipped entirely.
+/// The consumer groups list is `RwLock<Vec<(name, ConsumerGroup)>>`.
+/// To avoid per-publish sender-list allocation, `group_senders` caches an
+/// `Arc<[Sender]>` snapshot that is rebuilt only when the set of groups
+/// changes (subscribe path). `publish()` clones that Arc under a short lock,
+/// then drops the guard before any `.await` so the future remains `Send`.
 pub(crate) struct MixedTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
     groups: RwLock<Vec<(Arc<str>, ConsumerGroup<T>)>>,
+    // Cached sender snapshot rebuilt only when groups change, avoiding per-publish Vec alloc/clones.
+    group_senders: RwLock<Arc<[async_channel::Sender<Envelope<T>>]>>,
+    has_balanced_groups: AtomicBool,
     balanced_capacity: usize,
     broadcast_ring: Arc<FastBroadcastRing<T>>,
     registry: Arc<PublisherRegistry>,
@@ -646,6 +668,8 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             name,
             next_id: AtomicU64::new(1),
             groups: RwLock::new(Vec::new()),
+            group_senders: RwLock::new(Arc::from(Vec::new())),
+            has_balanced_groups: AtomicBool::new(false),
             balanced_capacity: opts.balanced_capacity.max(1),
             broadcast_ring: Arc::new(FastBroadcastRing::new(opts.broadcast_capacity)),
             registry,
@@ -666,23 +690,15 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
         self.broadcast_ring.publish_with_id(id, Arc::clone(&msg));
 
         // 2) Deliver to balanced consumer groups only if any exist.
-        //    Collect senders under a short read lock, then drop the guard
-        //    before any .await so the future stays Send.
-        //    When no groups are subscribed we skip the Vec alloc + Arc::clone.
-        let group_senders: Option<Vec<_>> = {
-            let groups = self.groups.read();
-            if groups.is_empty() {
-                None
-            } else {
-                Some(groups.iter().map(|(_, g)| g.tx.clone()).collect())
-            }
-        };
-        if let Some(senders) = group_senders {
+        //    Clone a cached sender snapshot (`Arc<[Sender]>`) under a short lock,
+        //    then drop the guard before any .await so the future stays Send.
+        if self.has_balanced_groups.load(Ordering::Acquire) {
+            let senders = self.group_senders.read().clone();
             let envelope = Envelope {
                 id,
                 payload: Arc::clone(&msg),
             };
-            for tx in &senders {
+            for tx in senders.as_ref() {
                 tx.send(envelope.clone()).await.map_err(|_| TopicClosed)?;
             }
         }
@@ -706,6 +722,15 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
             } else {
                 let (tx, rx) = async_channel::bounded(self.balanced_capacity);
                 groups.push((group.clone(), ConsumerGroup { tx, rx: rx.clone() }));
+
+                // Rebuild sender snapshot once per structural group change.
+                let snapshot: Arc<[async_channel::Sender<Envelope<T>>]> = groups
+                    .iter()
+                    .map(|(_, g)| g.tx.clone())
+                    .collect::<Vec<_>>()
+                    .into();
+                *self.group_senders.write() = snapshot;
+                self.has_balanced_groups.store(true, Ordering::Release);
                 rx
             }
         };
@@ -738,12 +763,13 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
     fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        let groups = self.groups.read();
-        for (_name, g) in groups.iter() {
+        let senders = self.group_senders.read().clone();
+        for tx in senders.as_ref() {
             // Closing the async_channel by dropping the sender.
             // Subscribers will get RecvError::Closed.
-            _ = g.tx.close();
+            _ = tx.close();
         }
+        self.has_balanced_groups.store(false, Ordering::Release);
         self.broadcast_ring.close();
     }
 }
