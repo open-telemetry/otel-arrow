@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module contains code used for joining different expression data domains.
+//! This module contains code used for joining different expression data scopes.
 //!
 //! As the expression evaluates, we may encounter points that need to join data from different
 //! record batches. For example, in an expression like `severity_number + attributes["x"]`, we
@@ -43,7 +43,7 @@ use otap_df_pdata::schema::consts;
 
 use crate::error::{Error, Result};
 use crate::pipeline::expr::{
-    DataDomainId, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME,
+    DataScope, LEFT_COLUMN_NAME, PhysicalExprEvalResult, RIGHT_COLUMN_NAME,
 };
 use crate::pipeline::planner::AttributesIdentifier;
 
@@ -53,63 +53,60 @@ use crate::pipeline::planner::AttributesIdentifier;
 /// expression evaluation results.
 ///
 /// It preserves the IDs/row order from one of the sides, which will be indicated by the returned
-// DataDomainId. Normally this will be the left side, except in cases where left:right is one:many.
+// DataScope. Normally this will be the left side, except in cases where left:right is one:many.
 pub fn join<'a>(
     left: &'a PhysicalExprEvalResult,
     right: &'a PhysicalExprEvalResult,
     otap_batch: &'a OtapArrowRecords,
-) -> Result<(RecordBatch, Rc<DataDomainId>)> {
+) -> Result<(RecordBatch, Rc<DataScope>)> {
     // handle special case where both sides have same source/row order
-    if left.data_domain == right.data_domain {
-        let join_result = EqualDataDomainJoin::default().join(left, right, otap_batch)?;
-        return Ok((join_result, left.data_domain.clone()));
+    if left.data_scope == right.data_scope {
+        let join_result = EqualScopeJoin::default().join(left, right, otap_batch)?;
+        return Ok((join_result, left.data_scope.clone()));
     }
 
     // determine the join strategy from the source of the data
-    match (left.data_domain.as_ref(), right.data_domain.as_ref()) {
-        (
-            DataDomainId::Attributes(left_attrs_id, _),
-            DataDomainId::Attributes(right_attrs_id, _),
-        ) => {
+    match (left.data_scope.as_ref(), right.data_scope.as_ref()) {
+        (DataScope::Attributes(left_attrs_id, _), DataScope::Attributes(right_attrs_id, _)) => {
             if left_attrs_id == right_attrs_id {
                 let join_exec = AttributeToSameAttributeJoin::new();
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_domain.clone()))
+                Ok((join_result, left.data_scope.clone()))
             } else if is_one_to_many(left_attrs_id, right_attrs_id) {
                 let join_exec =
                     AttributeToDifferentAttributeReverseJoin::new(*left_attrs_id, *right_attrs_id);
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_domain.clone()))
+                Ok((join_result, right.data_scope.clone()))
             } else {
                 let join_exec =
                     AttributeToDifferentAttributeJoin::new(*left_attrs_id, *right_attrs_id);
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_domain.clone()))
+                Ok((join_result, left.data_scope.clone()))
             }
         }
-        (DataDomainId::Root, DataDomainId::Attributes(attr_id, _)) => {
+        (DataScope::Root, DataScope::Attributes(attr_id, _)) => {
             let join_exec = RootToAttributesJoin::new(*attr_id);
             let join_result = join_exec.join(left, right, otap_batch)?;
-            Ok((join_result, left.data_domain.clone()))
+            Ok((join_result, left.data_scope.clone()))
         }
-        (DataDomainId::Attributes(attr_id, _), DataDomainId::Root) => match attr_id {
+        (DataScope::Attributes(attr_id, _), DataScope::Root) => match attr_id {
             AttributesIdentifier::Root => {
                 let join_exec = RootAttrsToRootJoin::new();
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, left.data_domain.clone()))
+                Ok((join_result, left.data_scope.clone()))
             }
             AttributesIdentifier::NonRoot(payload_type) => {
                 let join_exec = NonRootAttrsToRootReverseJoin::new(*payload_type);
                 let join_result = join_exec.join(left, right, otap_batch)?;
-                Ok((join_result, right.data_domain.clone()))
+                Ok((join_result, right.data_scope.clone()))
             }
         },
         (left, right) => {
             // Note: with expression trees created by our logical expression planner, we shouldn't
-            // end up in this error case, non-handled combinations of data domains don't end up
+            // end up in this error case, non-handled combinations of data scopes don't end up
             // added to expressions in ways that require joins
             Err(Error::ExecutionError {
-                cause: format!("Invalid data domains for join: left {left:?} right {right:?}"),
+                cause: format!("Invalid data scopes for join: left {left:?} right {right:?}"),
             })
         }
     }
@@ -184,7 +181,7 @@ fn build_simple_join_indices(left_ids: &UInt16Array, right_lookup: &IdJoinLookup
 }
 
 /// Helper function to build join indices for two-hop joins through an intermediate lookup
-/// Used when joining attributes from different domains via the root record batch as an
+/// Used when joining attributes from different scopes via the root record batch as an
 /// intermediary (e.g., resource attrs + scope attrs)
 fn build_two_hop_join_indices(
     left_ids: &UInt16Array,
@@ -342,13 +339,13 @@ trait JoinExec {
 
 // Join strategies ...
 
-/// When both sides of the join come from the same "data domain", meaning that that they select
+/// When both sides of the join come from the same "data scope", meaning that they select
 /// the same rows from the same record batch in the same order, we use this specialized "join"
 /// which just selects the values columns from both sides with no reordering
 #[derive(Default)]
-struct EqualDataDomainJoin {}
+struct EqualScopeJoin {}
 
-impl JoinExec for EqualDataDomainJoin {
+impl JoinExec for EqualScopeJoin {
     fn join(
         &self,
         left: &PhysicalExprEvalResult,

@@ -3,7 +3,7 @@
 
 //! Utilities for identifying and coercing expression types
 
-use crate::pipeline::expr::LogicalDomainExpr;
+use crate::pipeline::expr::ScopedLogicalExpr;
 use arrow::datatypes::{DataType, TimeUnit};
 use datafusion::logical_expr::cast;
 use otap_df_pdata::schema::consts;
@@ -185,7 +185,7 @@ fn coerce_integer_types(left: &ExprLogicalType, right: &ExprLogicalType) -> Expr
 /// Adds a cast logical expression to cast the value of the expression to the passed data type.
 ///
 /// This is used when coercing the input types for expression operations.
-fn cast_expr(expr: &mut LogicalDomainExpr, data_type: DataType) {
+fn cast_expr(expr: &mut ScopedLogicalExpr, data_type: DataType) {
     expr.logical_expr = cast(std::mem::take(&mut expr.logical_expr), data_type)
 }
 
@@ -216,8 +216,8 @@ fn cast_expr(expr: &mut LogicalDomainExpr, data_type: DataType) {
 /// this function will return `Some(Int64)`. However, if at runtime `attributes["x"]` turns out to
 /// not be an Int64 type attribute, the expression evaluation will fail.
 pub fn coerce_arithmetic(
-    left: &mut LogicalDomainExpr,
-    right: &mut LogicalDomainExpr,
+    left: &mut ScopedLogicalExpr,
+    right: &mut ScopedLogicalExpr,
 ) -> Option<ExprLogicalType> {
     match &left.expr_type {
         ExprLogicalType::AnyValue | ExprLogicalType::AnyValueNumeric => {
@@ -374,15 +374,15 @@ mod test {
     use super::*;
     use datafusion::logical_expr::Expr;
 
-    use crate::pipeline::expr::{DataDomainId, LogicalDomainExpr, LogicalExprDataSource};
+    use crate::pipeline::expr::{DataScope, LogicalExprDataSource, ScopedLogicalExpr};
 
-    fn test_expr(expr_type: ExprLogicalType) -> LogicalDomainExpr {
-        LogicalDomainExpr {
+    fn test_expr(expr_type: ExprLogicalType) -> ScopedLogicalExpr {
+        ScopedLogicalExpr {
             expr_type,
 
             // rest of fields are just placeholder values
             logical_expr: Expr::default(),
-            source: LogicalExprDataSource::DataSource(DataDomainId::StaticScalar),
+            source: LogicalExprDataSource::DataSource(DataScope::StaticScalar),
             requires_dict_downcast: false,
         }
     }

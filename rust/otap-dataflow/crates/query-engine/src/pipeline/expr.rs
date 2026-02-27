@@ -1,42 +1,48 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// TODO we'll use this eventually when evaluating attribute insertions and advanced filtering
-// but for now, this isn't called anywhere, so override the dead_code warning.
-#![allow(dead_code)]
-
 //! Implementation of expression evaluation for OTAP (OpenTelemetry Arrow Protocol) batches.
 //!
 //! # Expression Tree
 //!
-//! The expressions are planned an executed as a tree of different expression types. The input
+//! The expressions are planned an executed as a tree of various expression types. The input
 //! for planning is an AST of expressions from the [`data_engine_expressions`]. The planning stage
-//! converts this into a tree of datafusion logical plans ([`Expr`]s). At runtime, these logical
-//! plans are converted to datafusion [`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)
-//! during evaluation.
+//! converts this into a tree containing datafusion logical plans ([`Expr`]s). At runtime, these
+//! logical plans are converted to datafusion physical expressions
+//! ([`PhysicalExpr`s](datafusion::physical_expr::PhysicalExprRef)) during evaluation.
 //!
-//! However, typically with datafusion expression evaluation, there would be a single
-//! [`RecordBatch`] as input and a single expression tree which produces the resulting
-//! [`ColumnValue`]. In this case, are some additional challenges that need to be overcome.
-//! Notably, in the OTAP data-model, not all data is in one [`RecordBatch`].
+//! There is an additional layer of abstraction in the expression tree containing around these
+//! datafusion logical/physical expressions. This is necessary because typically with datafusion
+//! expression evaluation, there would be a single [`RecordBatch`] as input and a single expression
+//! tree which produces the resulting [`ColumnValue`]. However, in the OTAP data-model, not all
+//! data is in one [`RecordBatch`].
 //!
-//! It means that when evaluating an expression like `severity_number + attributes["x"]`, before
-//! invoking the  datafusion expression which does the addition, we need to join multiple
-//! [`RecordBatch`]s together.
+//! For this reason, sections of the expression tree are grouped in higher level tree nodes,
+//! each containing only the portion of the overall expression tree that can be executed on a
+//! single "data scope". Each scope-specific node will evaluate its expression on the source data
+//! and the results of these evaluations will be joined together as the expression evaluates.
 //!
-//! ## Data Domains
+//! ## Data Scopes
 //!
-//! To handle this, the datafusion expression trees are organized inside nodes in a higher level
-//! expression tree where each node is scoped to a "data domain". These data domains indicate the
-//! source of the data for the expression.
+//! The "data scope" represents the source of the data for a given section of the expression tree.
+//! It indicates both the source record batch, and the rows that will be selected.
 //!
-//! Note, the data domain is not simply an indicator of the arrow payload type for the record
-//! batch. A given payload type can have multiple data domains, for example `attributes["x"]` and
+//! For example, consider when evaluating an expression like `severity_number + attributes["x"]`,
+//! The data scope of the left side of this expression is the root record batch, and for the right
+//! side it is the attributes record batch, filtered where `key=="x"`.
+//!
+//! Note, the data scope is _not_ simply an indicator of the arrow payload type for the record
+//! batch. A given payload type can have multiple data scopes, for example `attributes["x"]` and
 //! `attributes["y"]` would produce a different set of filtered rows from the same record batch.
 //!
-//! When evaluating a binary expression with inputs from different data domains, the execution
+//! When evaluating a binary expression with inputs from different data scopes, the execution
 //! will join the two inputs before executing the datafusion expression on the join result.
 //!
+//! *Current status* - for now this only supports a small set of binary arithmetic operations.
+
+// TODO we'll use this eventually when evaluating attribute insertions and advanced filtering
+// but for now, this isn't called anywhere, so override the dead_code warning.
+#![allow(dead_code)]
 
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -77,60 +83,60 @@ pub(crate) const VALUE_COLUMN_NAME: &str = "value";
 pub(crate) const LEFT_COLUMN_NAME: &str = "left";
 pub(crate) const RIGHT_COLUMN_NAME: &str = "right";
 
-/// Identifies portion OTAP domain an expression operates on.
+/// Identifies OTAP data either consumed or produced by some expression.
 ///
-/// OTAP batches contain multiple RecordBatches, and within a given record batch, some expression
+/// OTAP batches contain multiple [`RecordBatch`]s, and within a given record batch, some expression
 /// may indicate a different set of rows. This type is used to identify both the payload type of
 /// the record batch, and which rows may have been selected from it.
 ///
-/// This type is used in many places in both expression planning and expression evaluation.
 #[derive(Clone, Debug, PartialEq)]
-enum DataDomainId {
+enum DataScope {
     /// Main telemetry batch (e.g., Logs with columns like severity_number, severity_text)
     Root,
 
-    /// Attribute batch identified by AttributesIdentifier and filtered by the String key.
-    /// For example, (AttributesIdentifier::Root, "http.method") refers to log attributes
+    /// Attribute batch identified by [`AttributesIdentifier`] and filtered by some key.
+    /// For example, (AttributesIdentifier::Root, "http.method") may refer to log attributes
     /// with key="http.method"
     Attributes(AttributesIdentifier, String),
 
-    /// A special data domain indicating the data produced by some expression comes not from an
-    /// input OTAP batch, but from a static scalar value defined in the input expression tree.
+    /// A special data scope indicating the data is produced from a static scalar value defined
+    /// in the input expression tree, rather than data from the OTAP batch.
     StaticScalar,
 }
 
-impl DataDomainId {
-    /// Determines if expressions for two domains can be combined into a single expression without
+impl DataScope {
+    /// Determines if expressions for two scopes can be combined into a single expression without
     /// performing a join.
     ///
     /// Rules:
-    /// - Any domain can combine with StaticScalar (constants)
-    /// - Same domains can combine (e.g., Root + Root), because the row order is the same.
+    /// - Any scope can combine with StaticScalar (constants)
+    /// - Same scopes can combine (e.g., Root + Root), because the row order is the same.
     fn can_combine(&self, other: &Self) -> bool {
         self.is_scalar() || other.is_scalar() || (self == other)
     }
 
-    /// Returns true if this domain represents a static scalar value.
+    /// Returns true if this scope represents a static scalar value.
     fn is_scalar(&self) -> bool {
         *self == Self::StaticScalar
     }
 }
 
-/// Identifier of the incoming source data for some data domain scoped expression.
+/// Identifier of the incoming source data for some scoped expression.
 #[derive(Debug)]
 enum LogicalExprDataSource {
     /// This indicates the input to the expression data from the incoming OTAP batch
-    DataSource(DataDomainId),
+    DataSource(DataScope),
 
     /// The input to the expression is the result of joining two child expressions
-    Join(Box<LogicalDomainExpr>, Box<LogicalDomainExpr>),
+    Join(Box<ScopedLogicalExpr>, Box<ScopedLogicalExpr>),
 }
 
 /// Represents an expression during the logical planning phase.
 ///
-/// This combines a DataFusion logical expression with data source and type/type coercion info
+/// This combines a DataFusion logical expression with data source and result type/input type
+/// coercion information
 #[derive(Debug)]
-struct LogicalDomainExpr {
+struct ScopedLogicalExpr {
     /// the definition of the datafusion that should be applied to the input data
     logical_expr: Expr,
 
@@ -142,7 +148,7 @@ struct LogicalDomainExpr {
     ///
     /// note: type checking during planning is best-effort and there are some expressions where the
     /// expression type validity cannot be guaranteed before we see the data. this is especially
-    /// true for expressions involving AnyValues (attributes, log body).
+    /// true for expressions involving AnyValues (attributes/logs body).
     expr_type: ExprLogicalType,
 
     /// identifies the source for the incoming data
@@ -155,22 +161,22 @@ struct LogicalDomainExpr {
     /// arrays, so arithmetic expressions require converting the columns to the non-dict encoded
     /// arrow type.
     //
-    // TODO: it would be cleaner to just have an expression type we could add to the plan to remove
-    // dictionary encoding from some column, instead of passing this flag down and doing it during
-    // projection.
+    // TODO: it would be cleaner to just have custom expression impl we could add to the plan to
+    // remove dictionary encoding from some column, instead of passing this flag down and doing it
+    // during projection.
     requires_dict_downcast: bool,
 }
 
-impl LogicalDomainExpr {
+impl ScopedLogicalExpr {
     /// Convert the logical expression (used during planning) into the physical expression
     /// which is used during evaluation.
     ///
-    /// Note that for now, the actual conversion of the underlying datafusion [`Expr`] to the
-    /// `PhysicalDomainExpr` happens lazily when we actually receive the incoming batch.
-    fn into_physical(self) -> Result<PhysicalDomainExpr> {
+    /// Note that for now the actual conversion of the underlying datafusion [`Expr`] to the
+    /// `ScopedPhysicalExpr` happens lazily when we actually receive the incoming batch.
+    fn into_physical(self) -> Result<ScopedPhysicalExpr> {
         let source = match self.source {
-            LogicalExprDataSource::DataSource(domain) => {
-                PhysicalExprDataSource::DataSource(Rc::new(domain))
+            LogicalExprDataSource::DataSource(scope) => {
+                PhysicalExprDataSource::DataSource(Rc::new(scope))
             }
             LogicalExprDataSource::Join(left, right) => PhysicalExprDataSource::Join(
                 Box::new(left.into_physical()?),
@@ -179,10 +185,10 @@ impl LogicalDomainExpr {
         };
         let projection = Projection::try_new(&self.logical_expr)?;
 
-        Ok(PhysicalDomainExpr {
+        Ok(ScopedPhysicalExpr {
             source,
             logical_expr: self.logical_expr,
-            physical_expr: None,
+            physical_expr: None, // computed when data received
             projection,
             projection_opts: ProjectionOptions {
                 downcast_dicts: self.requires_dict_downcast,
@@ -191,11 +197,11 @@ impl LogicalDomainExpr {
     }
 }
 
-/// Logical planner that converts AST expressions into LogicalDomainExpr.
+/// Logical planner that converts AST expressions into ScopedLogicalExpr.
 struct ExprLogicalPlanner {}
 
 impl ExprLogicalPlanner {
-    fn plan_scalar_expr(&self, scalar_expression: &ScalarExpression) -> Result<LogicalDomainExpr> {
+    fn plan_scalar_expr(&self, scalar_expression: &ScalarExpression) -> Result<ScopedLogicalExpr> {
         match scalar_expression {
             ScalarExpression::Source(source_scalar_expr) => {
                 let value_accessor = source_scalar_expr.get_value_accessor();
@@ -211,10 +217,10 @@ impl ExprLogicalPlanner {
                                 ),
                             }
                         })?;
-                        Ok(LogicalDomainExpr {
+                        Ok(ScopedLogicalExpr {
                             logical_expr: col(column_name),
                             requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(DataDomainId::Root),
+                            source: LogicalExprDataSource::DataSource(DataScope::Root),
                             expr_type: field_type,
                         })
                     }
@@ -226,17 +232,17 @@ impl ExprLogicalPlanner {
                                     source_scalar_expr.get_query_location().clone(),
                                 ),
                             })?;
-                        Ok(LogicalDomainExpr {
+                        Ok(ScopedLogicalExpr {
                             logical_expr: col(column_name).field(struct_field_name),
                             requires_dict_downcast: false,
-                            source: LogicalExprDataSource::DataSource(DataDomainId::Root),
+                            source: LogicalExprDataSource::DataSource(DataScope::Root),
                             expr_type: field_type,
                         })
                     }
-                    ColumnAccessor::Attributes(attrs_id, key) => Ok(LogicalDomainExpr {
+                    ColumnAccessor::Attributes(attrs_id, key) => Ok(ScopedLogicalExpr {
                         logical_expr: col(VALUE_COLUMN_NAME),
                         requires_dict_downcast: false,
-                        source: LogicalExprDataSource::DataSource(DataDomainId::Attributes(
+                        source: LogicalExprDataSource::DataSource(DataScope::Attributes(
                             attrs_id, key,
                         )),
                         expr_type: ExprLogicalType::AnyValue,
@@ -267,10 +273,10 @@ impl ExprLogicalPlanner {
                     }
                 };
 
-                Ok(LogicalDomainExpr {
+                Ok(ScopedLogicalExpr {
                     logical_expr,
                     expr_type,
-                    source: LogicalExprDataSource::DataSource(DataDomainId::StaticScalar),
+                    source: LogicalExprDataSource::DataSource(DataScope::StaticScalar),
                     requires_dict_downcast: false,
                 })
             }
@@ -304,7 +310,7 @@ impl ExprLogicalPlanner {
         &self,
         binary_math_expr: &BinaryMathematicalScalarExpression,
         operator: Operator,
-    ) -> Result<LogicalDomainExpr> {
+    ) -> Result<ScopedLogicalExpr> {
         // Recursively plan left and right sub-expressions
         let mut left = self.plan_scalar_expr(binary_math_expr.get_left_expression())?;
         let mut right = self.plan_scalar_expr(binary_math_expr.get_right_expression())?;
@@ -320,38 +326,38 @@ impl ExprLogicalPlanner {
         })?;
 
         // determine if we can execute the binary expression without joining data from a different
-        // data domain. We'd be able to do this if, the left/right side either have the same input
+        // data scope. We'd be able to do this if, the left/right side either have the same input
         // RecordBatch & row order, or if one/both sides are a scalar.
         //
         // for example, we had an expression like:
-        // `severity_text * 2` or `attributes["x"] + attributes["x"]`.
-        let possible_combined_expr_domain = match (&left.source, &right.source) {
+        // `attributes["x"] * 2` or `observed_timestamp_unix_nano - timestamp_unix_nano`.
+        let possible_combined_expr_scope = match (&left.source, &right.source) {
             (
-                LogicalExprDataSource::DataSource(left_domain),
-                LogicalExprDataSource::DataSource(right_domain),
-            ) => left_domain
-                .can_combine(right_domain)
-                .then_some(if !left_domain.is_scalar() {
-                    left_domain
+                LogicalExprDataSource::DataSource(left_scope),
+                LogicalExprDataSource::DataSource(right_scope),
+            ) => left_scope
+                .can_combine(right_scope)
+                .then_some(if !left_scope.is_scalar() {
+                    left_scope
                 } else {
-                    right_domain
+                    right_scope
                 }),
             _ => None,
         };
 
-        if let Some(combined_domain) = possible_combined_expr_domain {
-            Ok(LogicalDomainExpr {
+        if let Some(combined_scope) = possible_combined_expr_scope {
+            Ok(ScopedLogicalExpr {
                 logical_expr: Expr::BinaryExpr(BinaryExpr::new(
                     Box::new(left.logical_expr),
                     operator,
                     Box::new(right.logical_expr),
                 )),
-                source: LogicalExprDataSource::DataSource(combined_domain.clone()),
+                source: LogicalExprDataSource::DataSource(combined_scope.clone()),
                 expr_type,
                 requires_dict_downcast: true,
             })
         } else {
-            Ok(LogicalDomainExpr {
+            Ok(ScopedLogicalExpr {
                 logical_expr: Expr::BinaryExpr(BinaryExpr::new(
                     Box::new(col(LEFT_COLUMN_NAME)),
                     operator,
@@ -365,15 +371,15 @@ impl ExprLogicalPlanner {
     }
 }
 
-/// Physical planner that converts LogicalDomainExpr into PhysicalDomainExpr.
+/// Physical planner that converts ScopedLogicalExpr into ScopedPhysicalExpr.
 ///
-/// This is a thin wrapper that delegates to LogicalDomainExpr::into_physical().
+/// This is a thin wrapper that delegates to ScopedLogicalExpr::into_physical().
 /// Could potentially be removed, but provides a clear separation of concerns.
 struct ExprPhysicalPlanner {}
 
 impl ExprPhysicalPlanner {
-    /// Converts a LogicalDomainExpr into an executable PhysicalDomainExpr.
-    fn plan(&self, logical_expr: LogicalDomainExpr) -> Result<PhysicalDomainExpr> {
+    /// Converts a ScopedLogicalExpr into an executable ScopedPhysicalExpr.
+    fn plan(&self, logical_expr: ScopedLogicalExpr) -> Result<ScopedPhysicalExpr> {
         logical_expr.into_physical()
     }
 }
@@ -388,7 +394,7 @@ impl ExprPhysicalPlanner {
 /// - recursively evaluate left/right child expressions and join them
 /// - create a dummy empty record batch (special case for scalar-only expressions)
 ///
-struct PhysicalDomainExpr {
+struct ScopedPhysicalExpr {
     /// Identifier of the data source from which the input to the PhysicalExpr will be crafted
     source: PhysicalExprDataSource,
 
@@ -415,10 +421,10 @@ struct PhysicalDomainExpr {
 /// Identifies the source for the input to the physical expression
 enum PhysicalExprDataSource {
     /// Source the data from the incoming OTAP record batch
-    DataSource(Rc<DataDomainId>),
+    DataSource(Rc<DataScope>),
 
     /// Source the data by evaluating left/right child expressions and joining the results
-    Join(Box<PhysicalDomainExpr>, Box<PhysicalDomainExpr>),
+    Join(Box<ScopedPhysicalExpr>, Box<ScopedPhysicalExpr>),
 }
 
 /// To evaluate expressions that only produce scalar values, we need to pass some RecordBatch into
@@ -426,18 +432,18 @@ enum PhysicalExprDataSource {
 static SCALAR_RECORD_BATCH_INPUT: LazyLock<RecordBatch> =
     LazyLock::new(|| RecordBatch::new_empty(Arc::new(Schema::new(Vec::<Field>::new()))));
 
-impl PhysicalDomainExpr {
+impl ScopedPhysicalExpr {
     fn execute(
         &mut self,
         otap_batch: &OtapArrowRecords,
         session_context: &SessionContext,
     ) -> Result<Option<PhysicalExprEvalResult>> {
-        // TODO need to avoid cloning the data domain Id here
-        let (source_rb, result_data_domain) = match &mut self.source {
-            PhysicalExprDataSource::DataSource(data_domain_id) => {
-                let input_rb = match data_domain_id.as_ref() {
-                    DataDomainId::Root => otap_batch.root_record_batch().map(Cow::Borrowed),
-                    DataDomainId::Attributes(attrs_id, key) => {
+        // TODO need to avoid cloning the data scope Id here
+        let (source_rb, result_data_scope) = match &mut self.source {
+            PhysicalExprDataSource::DataSource(data_scope_id) => {
+                let input_rb = match data_scope_id.as_ref() {
+                    DataScope::Root => otap_batch.root_record_batch().map(Cow::Borrowed),
+                    DataScope::Attributes(attrs_id, key) => {
                         let attrs_payload_type = match *attrs_id {
                             AttributesIdentifier::Root => match otap_batch.root_payload_type() {
                                 ArrowPayloadType::Logs => ArrowPayloadType::LogAttrs,
@@ -460,48 +466,49 @@ impl PhysicalDomainExpr {
                             .flatten()
                             .map(Cow::Owned)
                     }
-                    DataDomainId::StaticScalar => {
+                    DataScope::StaticScalar => {
                         Some(Cow::Borrowed(SCALAR_RECORD_BATCH_INPUT.deref()))
                     }
                 };
 
-                (input_rb, data_domain_id.clone())
+                (input_rb, data_scope_id.clone())
             }
             PhysicalExprDataSource::Join(left, right) => {
                 let left_result = left.execute(otap_batch, session_context)?;
                 let right_result = right.execute(otap_batch, session_context)?;
                 match (left_result, right_result) {
                     (Some(left_result), Some(right_result)) => {
-                        let (joined_rb, result_data_domain) =
+                        let (joined_rb, result_data_scope) =
                             join(&left_result, &right_result, otap_batch)?;
-                        (Some(Cow::Owned(joined_rb)), result_data_domain)
+                        (Some(Cow::Owned(joined_rb)), result_data_scope)
                     }
                     _ => return Ok(None),
                 }
             }
         };
 
-        let source_rb = match source_rb {
-            Some(rb) => rb,
+        let (source_rb, projected_rb) = match source_rb {
+            Some(rb) => {
+                // project the source record batch into the schema expected by the physical expr
+                let projected = if *result_data_scope != DataScope::StaticScalar {
+                    match self
+                        .projection
+                        .project_with_options(&rb, &self.projection_opts)?
+                    {
+                        Some(projected) => projected,
+                        None => return Ok(None),
+                    }
+                } else {
+                    // don't project for scalar record batch, as it's just a placeholder with no columns
+                    rb.as_ref().clone()
+                };
+                (rb, projected)
+            }
             None => {
                 // the source was not present, return None indicating the expression is evaluated
                 // as null for the entire input
                 return Ok(None);
             }
-        };
-
-        // project the source record batch into the schema expected by the physical expr
-        let projected_rb = if *result_data_domain != DataDomainId::StaticScalar {
-            match self
-                .projection
-                .project_with_options(&source_rb, &self.projection_opts)?
-            {
-                Some(rb) => Cow::Owned(rb),
-                None => return Ok(None),
-            }
-        } else {
-            // don't project for scalar record batch, as it's just a placeholder with no columns
-            Cow::Borrowed(source_rb.as_ref())
         };
 
         // plan the physical expressions from logical expression. This happens lazily the first
@@ -527,7 +534,7 @@ impl PhysicalDomainExpr {
 
         Ok(Some(PhysicalExprEvalResult::new(
             result_vals,
-            result_data_domain,
+            result_data_scope,
             &source_rb,
         )))
     }
@@ -655,9 +662,9 @@ impl PhysicalDomainExpr {
     }
 }
 
-/// Result of the evaluation of some physical expression
+/// Result of evaluating some physical expression scoped to a given data scope.
 ///
-/// This structure contains the resulting array of values, plus identifiers such as data domain and
+/// This structure contains the resulting array of values, plus identifiers such as data scope and
 /// a set of IDs to help identify to which row the resulting values correspond.
 ///
 /// For example, if we had
@@ -674,7 +681,7 @@ pub(crate) struct PhysicalExprEvalResult {
 
     /// identifies with which arrow record batch should be associated, as well as which rows were
     /// selected (in the case of attributes)
-    data_domain: Rc<DataDomainId>,
+    data_scope: Rc<DataScope>,
 
     // ID columns populated from the source data
     ids: Option<ArrayRef>,
@@ -684,12 +691,12 @@ pub(crate) struct PhysicalExprEvalResult {
 }
 
 impl PhysicalExprEvalResult {
-    fn new(values: ColumnarValue, data_domain: Rc<DataDomainId>, source: &RecordBatch) -> Self {
-        let is_root = *data_domain == DataDomainId::Root;
+    fn new(values: ColumnarValue, data_scope: Rc<DataScope>, source: &RecordBatch) -> Self {
+        let is_root = *data_scope == DataScope::Root;
 
         let mut result = Self {
             values,
-            data_domain,
+            data_scope,
             ids: source.column_by_name(consts::ID).cloned(),
             parent_ids: source.column_by_name(consts::PARENT_ID).cloned(),
             scope_ids: None,
